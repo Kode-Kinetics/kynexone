@@ -1,14 +1,15 @@
 'use client';
 
 import { InfoTip } from '../components/InfoTip';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import {
   Shield, Users, Key, GitBranch, Award, Lock, CheckCircle, XCircle,
-  RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye,
+  RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
   UserCheck, UserX, Unlock, RotateCcw, ClipboardList, UserCog,
   CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Table2, Trash2,
-  Building2,
+  Building2, Circle,
 } from 'lucide-react';
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
@@ -16,13 +17,17 @@ import {
   entityGrantsApi,
 } from '../api/identity';
 import { companiesApi } from '../api/organization';
-import client from '../api/client';
+import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult,
+  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult, AccessCeiling,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
+import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
+import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
+import { useLocale } from '../contexts/LocaleContext';
+import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -65,10 +70,10 @@ function StatusBadge({ value }: { value: string }) {
   );
 }
 
-function FormField({ label, children }: { label: string; children: React.ReactNode }) {
+function FormField({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</label>
       {children}
     </div>
   );
@@ -103,6 +108,7 @@ interface UsageData {
 }
 
 function UsersTab() {
+  const { t } = useLocale();
   const searchParams = useSearchParams();
   const [users, setUsers] = useState<UserListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -129,6 +135,10 @@ function UsersTab() {
   const [editLoading, setEditLoading] = useState(false);
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [allPermissions, setAllPermissions] = useState<PermissionItem[]>([]);
+  // What the server will let THIS caller assign (privilege ceiling); roles above it are greyed out.
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  // Link a login to its employee record (opened from a row), or invite an employee (opened from the toolbar).
+  const [employeeLink, setEmployeeLink] = useState<{ user: UserListItem | null } | null>(null);
 
   const pageSize = 20;
 
@@ -167,6 +177,7 @@ function UsersTab() {
   useEffect(() => {
     rolesApi.list().then(setRoles).catch(() => {});
     rolesApi.permissions().then(setAllPermissions).catch(() => {});
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
   }, []);
 
   // Opening any action dialog starts from a clean slate: a link issued for one user must never be
@@ -262,6 +273,13 @@ function UsersTab() {
             </div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => setEmployeeLink({ user: null })}
+          className="flex items-center gap-2 rounded-lg border border-violet-300 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/30"
+        >
+          <UserCheck className="h-4 w-4" aria-hidden="true" /> {t('Invite employee')}
+        </button>
       </div>
 
       {err && <p className="text-sm text-red-500">{err}</p>}
@@ -286,7 +304,15 @@ function UsersTab() {
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
                   <p className="text-xs text-slate-500">{u.email}</p>
-                  {u.employeeId && <p className="text-xs text-violet-500">Emp #{u.employeeId}</p>}
+                  {u.employeeId && (
+                    <p className="text-xs text-violet-500">
+                      {!u.employeeName
+                        ? `Emp #${u.employeeId}`
+                        : u.employeeCode
+                          ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode })
+                          : t('Employee: {name}', { name: u.employeeName })}
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-3"><StatusBadge value={u.status} /></td>
                 <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
@@ -327,6 +353,15 @@ function UsersTab() {
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
+                    {!u.employeeId && (
+                      <button
+                        type="button"
+                        onClick={() => setEmployeeLink({ user: u })}
+                        className="ms-1 whitespace-nowrap rounded-lg border border-violet-200 px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-900/30"
+                      >
+                        {t('Link to employee record')}
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -352,10 +387,15 @@ function UsersTab() {
       )}
 
       {/* User Access Detail Modal */}
-      {selected && <UserAccessModal user={selected} roles={roles} allPermissions={allPermissions} onClose={() => { setSelected(null); load(); }} />}
+      {selected && <UserAccessModal user={selected} roles={roles} allPermissions={allPermissions} ceiling={ceiling} onClose={() => { setSelected(null); load(); }} />}
+
+      {/* Link a login to its employee record / invite an employee to Self-Service */}
+      {employeeLink && (
+        <LinkEmployeeLoginDialog user={employeeLink.user} onClose={() => setEmployeeLink(null)} onChanged={load} />
+      )}
 
       {/* Create User Modal */}
-      {showCreate && <CreateUserModal roles={roles} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreateUserModal roles={roles} ceiling={ceiling} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
 
       {/* Action confirmation modal */}
       {showAction && (
@@ -473,12 +513,15 @@ function UsersTab() {
   );
 }
 
-function UserAccessModal({ user, roles, allPermissions, onClose }: {
+function UserAccessModal({ user, roles, allPermissions, ceiling, onClose }: {
   user: UserListItem;
   roles: RoleItem[];
   allPermissions: PermissionItem[];
+  ceiling: AccessCeiling | null;
   onClose: () => void;
 }) {
+  const { t, locale } = useLocale();
+  const ownAccount = isSelf(ceiling, user.id);
   const [access, setAccess] = useState<UserAccess | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'info' | 'roles' | 'company-access' | 'access-mode' | 'overrides'>('info');
@@ -517,8 +560,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
 
   const saveRoles = async () => {
     setSaving(true); setSaveErr(''); setSaveOk('');
-    try { await usersApi.assignRoles(user.id, selectedRoles); setSaveOk('Roles updated.'); }
-    catch { setSaveErr('Failed to update roles.'); }
+    try { await usersApi.assignRoles(user.id, selectedRoles); setSaveOk(t('Roles updated.')); }
+    catch (e: unknown) { setSaveErr(localizedRefusal(e, locale) ?? t('Roles could not be updated.')); }
     setSaving(false);
   };
 
@@ -725,17 +768,34 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
               {tab === 'roles' && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-500">Select roles to assign to this user. This replaces all current roles.</p>
+                  {ownAccount ? (
+                    <p data-testid="access-self-change" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                      {t('You cannot change your own roles. Another administrator must do it.')}
+                    </p>
+                  ) : ceiling && ceiling.roles.some(rc => !rc.canAssign) && (
+                    <p className="text-xs text-slate-500">{t('Roles above your own access are greyed out, with the reason.')}</p>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
-                    {roles.map(r => (
-                      <label key={r.id} className="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 cursor-pointer hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
-                        <input type="checkbox" checked={selectedRoles.includes(r.name)}
-                          onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
-                        <div>
-                          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{r.name}</p>
-                          <p className="text-xs text-slate-500">{r.description}</p>
-                        </div>
-                      </label>
-                    ))}
+                    {roles.map(r => {
+                      const blocked = assignBlock(ceiling, r.id, locale);
+                      const disabled = ownAccount || !!blocked;
+                      return (
+                        <label key={r.id} data-testid={`role-option-${r.name}`} data-blocked={blocked ? 'true' : 'false'} title={blocked ?? undefined}
+                          className={`flex items-start gap-2 rounded-lg border border-slate-200 p-2.5 dark:border-slate-700 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                          <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={disabled}
+                            onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{r.name}</p>
+                            <p className="text-xs text-slate-500">{r.description}</p>
+                            {blocked && (
+                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                                <span className="font-medium">{t('Above your access')}</span> · {blocked}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -942,7 +1002,7 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
         <div className="border-t border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Close</button>
           {tab === 'roles' && (
-            <button onClick={saveRoles} disabled={saving} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+            <button onClick={saveRoles} disabled={saving || ownAccount} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Roles'}
             </button>
           )}
@@ -962,17 +1022,39 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
   );
 }
 
-function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onClose: () => void; onCreated: () => void }) {
+function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleItem[]; ceiling: AccessCeiling | null; onClose: () => void; onCreated: () => void }) {
+  const { t, locale } = useLocale();
+  const passwordId = useId();
+  const requirementsId = `${passwordId}-requirements`;
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
+  const [policyAttempt, setPolicyAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setPolicyLoading(true);
+    securitySettingsApi.get()
+      .then(policy => { if (active) setPasswordPolicy(policy); })
+      .catch(() => { if (active) setPasswordPolicy(null); })
+      .finally(() => { if (active) setPolicyLoading(false); });
+    return () => { active = false; };
+  }, [policyAttempt]);
+
+  const passwordCheck = passwordPolicy ? evaluatePasswordRequirements(password, passwordPolicy) : null;
+  const metCount = passwordCheck?.requirements.filter(requirement => requirement.met).length ?? 0;
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
-    if (password.length < 10) { setErr('Password must be at least 10 characters.'); return; }
+    if (policyLoading) return;
+    if (passwordCheck && !passwordCheck.valid) { setErr('Please meet all password requirements below.'); return; }
+    if (Array.from(password).length < 10) { setErr('Password must be at least 10 characters.'); return; }
     setLoading(true); setErr('');
     try {
       await usersApi.create({ email, fullName, password, roles: selectedRoles });
@@ -985,39 +1067,97 @@ function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onC
       } else if (status === 422 && data?.error === 'user_limit_reached') {
         setErr(data.message ?? `User limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
-        setErr(data?.message ?? 'Failed to create user.');
+        setErr(localizedRefusal(e, locale) ?? 'Failed to create user.');
       }
     }
     setLoading(false);
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4">
+      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4">
         <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200">Create User</h3>
         <FormField label="Full Name"><input className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
         <FormField label="Email"><input type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
-        <FormField label="Password (min 10 chars)"><input type="password" className={inp()} value={password} onChange={e => setPassword(e.target.value)} /></FormField>
+        <FormField label="Password" htmlFor={passwordId}>
+          <div className="relative">
+            <input
+              id={passwordId}
+              type={showPassword ? 'text' : 'password'}
+              className={inp('h-11 pe-12')}
+              value={password}
+              onChange={e => { setPassword(e.target.value); setErr(''); }}
+              autoComplete="new-password"
+              spellCheck={false}
+              aria-describedby={requirementsId}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(visible => !visible)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              aria-controls={passwordId}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute end-0 top-0 grid h-11 w-11 place-items-center rounded-lg text-slate-500 hover:text-violet-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 dark:text-slate-400 dark:hover:text-violet-300"
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
+            </button>
+          </div>
+          <div id={requirementsId} className="mt-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800">
+            <p className="font-medium text-slate-700 dark:text-slate-200">Password requirements</p>
+            {policyLoading ? (
+              <p className="mt-2 text-slate-500 dark:text-slate-400" role="status">Loading workspace rules…</p>
+            ) : passwordCheck ? (
+              <>
+                <ul className="mt-2 space-y-1.5">
+                  {passwordCheck.requirements.map(requirement => (
+                    <li key={requirement.id} className={`flex items-center gap-2 ${requirement.met ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                      {requirement.met ? <CheckCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : <Circle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                      <span><span className="sr-only">{requirement.met ? 'Met: ' : 'Not met: '}</span>{requirement.label}</span>
+                    </li>
+                  ))}
+                </ul>
+                {passwordCheck.hasInvalidCharacters && <p className="mt-2 text-red-700 dark:text-red-400">Remove hidden or unsupported characters.</p>}
+                <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+                  {passwordCheck.valid ? 'All password requirements met.' : `${metCount} of ${passwordCheck.requirements.length} password requirements met.${passwordCheck.hasInvalidCharacters ? ' Remove hidden or unsupported characters.' : ''}`}
+                </p>
+              </>
+            ) : (
+              <p className="mt-2 text-slate-600 dark:text-slate-400">
+                Workspace rules couldn’t be loaded. Your password will be checked when you create the user.{' '}
+                <button type="button" onClick={() => setPolicyAttempt(attempt => attempt + 1)} className="font-medium text-violet-700 underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 dark:text-violet-300">Retry</button>
+              </p>
+            )}
+          </div>
+        </FormField>
         <FormField label="Roles">
           <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
-            {roles.map(r => (
-              <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="checkbox" checked={selectedRoles.includes(r.name)}
-                  onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
-                {r.name}
-              </label>
-            ))}
+            {roles.map(r => {
+              const blocked = assignBlock(ceiling, r.id, locale);
+              return (
+                <label key={r.id} title={blocked ?? undefined} data-testid={`create-role-option-${r.name}`} data-blocked={blocked ? 'true' : 'false'}
+                  className={`flex items-start gap-2 text-sm ${blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                  <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={!!blocked}
+                    onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
+                  <span className="min-w-0">
+                    {r.name}
+                    {blocked && <span className="block text-xs text-amber-700 dark:text-amber-400">{t('Above your access')}</span>}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </FormField>
         {err && <ErrMsg msg={err} />}
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Cancel</button>
-          <button onClick={submit} disabled={loading} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+          <button onClick={submit} disabled={loading || policyLoading} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
             {loading ? 'Creating…' : 'Create'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1035,6 +1175,8 @@ function RolesTab() {
   const [createForm, setCreateForm] = useState({ name: '', description: '', authorityLevel: 99 });
   const [editForm, setEditForm] = useState({ name: '', description: '', authorityLevel: 99 });
   const [editPerms, setEditPerms] = useState<string[]>([]);
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  const { t, locale } = useLocale();
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -1042,6 +1184,7 @@ function RolesTab() {
       .then(([r, p]) => { setRoles(r); setAllPermissions(p); })
       .catch(() => {})
       .finally(() => setLoading(false));
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
@@ -1072,7 +1215,7 @@ function RolesTab() {
       await rolesApi.setPermissions(editRole.id, editPerms);
       setEditRole(null);
       reload();
-    } catch (e: any) { setErr(e?.response?.data?.message ?? 'Failed to update role'); }
+    } catch (e: unknown) { setErr(localizedRefusal(e, locale) ?? 'Failed to update role'); }
     finally { setSaving(false); }
   };
 
@@ -1081,7 +1224,7 @@ function RolesTab() {
       if (r.isActive) await rolesApi.deactivate(r.id);
       else await rolesApi.activate(r.id);
       reload();
-    } catch (e: any) { alert(e?.response?.data?.message ?? 'Failed'); }
+    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed'); }
   };
 
   const togglePermInEdit = (key: string) => {
@@ -1206,13 +1349,17 @@ function RolesTab() {
                   <div key={module}>
                     <p className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">{module}</p>
                     <div className="grid grid-cols-2 gap-1">
-                      {perms.map(p => (
-                        <label key={p.id} className="flex items-center gap-2 cursor-pointer text-xs">
-                          <input type="checkbox" checked={editPerms.includes(p.key)} onChange={() => togglePermInEdit(p.key)}
-                            className="rounded border-slate-300 text-violet-600 focus:ring-violet-500" />
-                          <span className="font-mono text-violet-700 dark:text-violet-400 truncate" title={p.description}>{p.key}</span>
-                        </label>
-                      ))}
+                      {perms.map(p => {
+                        const notHeld = !canGrantPermission(ceiling, p.key) && !editPerms.includes(p.key);
+                        return (
+                          <label key={p.id} title={notHeld ? t('You do not hold this permission, so you cannot grant it.') : p.description}
+                            className={`flex items-center gap-2 text-xs ${notHeld ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+                            <input type="checkbox" checked={editPerms.includes(p.key)} disabled={notHeld} onChange={() => togglePermInEdit(p.key)}
+                              className="rounded border-slate-300 text-violet-600 focus:ring-violet-500" />
+                            <span className="font-mono text-violet-700 dark:text-violet-400 truncate">{p.key}</span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -1247,13 +1394,19 @@ function RolesTab() {
                 </button>
                 <span className="text-xs text-violet-600 font-medium shrink-0">{r.permissions.length} perms</span>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button type="button" title="Edit role" onClick={() => openEdit(r)}
-                    className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700">
+                  {editBlock(ceiling, r.id, locale) && (
+                    <span data-testid={`role-locked-${r.name}`} title={editBlock(ceiling, r.id, locale) ?? undefined}
+                      className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      {t('Not editable by you')}
+                    </span>
+                  )}
+                  <button type="button" title={editBlock(ceiling, r.id, locale) ?? 'Edit role'} onClick={() => openEdit(r)} disabled={!!editBlock(ceiling, r.id, locale)}
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-slate-700">
                     <Edit2 className="h-3.5 w-3.5" />
                   </button>
                   {!r.isSystem && (
-                    <button type="button" title={r.isActive ? 'Deactivate' : 'Activate'} onClick={() => toggleRoleActive(r)}
-                      className={`h-7 w-7 flex items-center justify-center rounded-lg ${r.isActive ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'}`}>
+                    <button type="button" title={editBlock(ceiling, r.id, locale) ?? (r.isActive ? 'Deactivate' : 'Activate')} onClick={() => toggleRoleActive(r)} disabled={!!editBlock(ceiling, r.id, locale)}
+                      className={`h-7 w-7 flex items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-40 ${r.isActive ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'}`}>
                       {r.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
                     </button>
                   )}
@@ -1332,9 +1485,12 @@ function PermissionMatrixTab() {
   const [dirty, setDirty] = useState(false);
   const [moduleFilter, setModuleFilter] = useState('');
   const [overrides, setOverrides] = useState<Record<string, Record<string, boolean>>>({});
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  const { t, locale } = useLocale();
 
   const load = useCallback(() => {
     setLoading(true);
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
     rolesApi.getMatrix()
       .then(m => {
         setMatrix(m);
@@ -1370,7 +1526,7 @@ function PermissionMatrixTab() {
       await rolesApi.saveMatrix(rolePermissions);
       setDirty(false);
       load();
-    } catch (e: any) { alert(e?.response?.data?.message ?? 'Failed to save'); }
+    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed to save'); }
     finally { setSaving(false); }
   };
 
@@ -1403,12 +1559,17 @@ function PermissionMatrixTab() {
                 <th className="sticky start-0 z-10 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-start font-semibold text-slate-600 dark:text-slate-400 min-w-[200px] border-b border-e border-slate-200 dark:border-slate-700">
                   Permission
                 </th>
-                {matrix.roles.map(role => (
-                  <th key={role.id} className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
-                    <span title={role.description} className="block truncate max-w-[76px]">{role.name}</span>
-                    <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
-                  </th>
-                ))}
+                {matrix.roles.map(role => {
+                  const locked = editBlock(ceiling, role.id, locale);
+                  return (
+                    <th key={role.id} data-testid={`matrix-role-${role.name}`} data-locked={locked ? 'true' : 'false'} title={locked ?? role.description}
+                      className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
+                      <span className="block truncate max-w-[76px]">{role.name}</span>
+                      <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
+                      {locked && <span className="block text-[10px] font-normal text-amber-700 dark:text-amber-400">{t('Not editable by you')}</span>}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -1420,14 +1581,17 @@ function PermissionMatrixTab() {
                   </td>
                   {matrix.roles.map(role => {
                     const checked = overrides[row.permissionKey]?.[role.id] ?? row.roles[role.id] ?? false;
+                    const locked = editBlock(ceiling, role.id, locale)
+                      ?? (!checked && !canGrantPermission(ceiling, row.permissionKey) ? t('You do not hold this permission, so you cannot grant it.') : null);
                     return (
                       <td key={role.id} className="text-center px-2 py-1.5 border-b border-slate-100 dark:border-slate-800/50">
                         <input
                           type="checkbox"
-                          title={`${role.name} — ${row.permissionKey}`}
+                          title={locked ?? `${role.name} — ${row.permissionKey}`}
                           checked={checked}
+                          disabled={!!locked}
                           onChange={() => toggle(row.permissionKey, role.id)}
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                          className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
                         />
                       </td>
                     );
@@ -1504,7 +1668,7 @@ function PermissionGrantorsTab() {
 
   const revoke = async (id: string) => {
     try { await grantorsApi.revoke(id); load(); }
-    catch { alert('Failed to revoke grantor authority.'); }
+    catch (e) { notifyApiError(e, 'Failed to revoke grantor authority.'); }
   };
 
   const selectedPreset = SCOPE_PRESETS.find(p => p.value === form.permissionScope);
@@ -1652,7 +1816,7 @@ function DelegationsTab() {
   };
 
   const cancel = async (id: string) => {
-    try { await delegationsApi.cancel(id); load(); } catch { alert('Failed to cancel delegation.'); }
+    try { await delegationsApi.cancel(id); load(); } catch (e) { notifyApiError(e, 'Failed to cancel delegation.'); }
   };
 
   return (

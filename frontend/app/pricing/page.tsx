@@ -4,9 +4,9 @@ import { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Building2, Users, Globe, Languages, ChevronRight, ChevronLeft,
-  Check, Sparkles, ArrowRight, RefreshCw, AlertCircle, Info,
+  Check, Sparkles, RefreshCw, AlertCircle,
 } from 'lucide-react';
-import { pricingApi, type PricingModule, type PricingEstimate, type OrgType } from '@/src/api/pricing';
+import { pricingApi, type PricingModule, type OrgType } from '@/src/api/pricing';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -15,15 +15,6 @@ const ORG_TYPES: { value: OrgType; label: string; description: string; icon: typ
   { value: 'group',              label: 'Group of Companies',    description: 'Multiple legal entities under common management',                  icon: Users },
   { value: 'enterprise_holding', label: 'Enterprise Holding',    description: 'Holding company with subsidiaries across multiple countries',       icon: Globe },
 ];
-
-const PLAN_BADGE: Record<string, string> = {
-  Trial:      'bg-slate-700/60 text-slate-300',
-  Starter:    'bg-blue-900/60 text-blue-300',
-  Growth:     'bg-purple-900/60 text-purple-300',
-  Enterprise: 'bg-amber-900/60 text-amber-300',
-};
-
-const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
 // ── Wizard state ──────────────────────────────────────────────────────────────
 
@@ -133,7 +124,7 @@ function Step2Structure({ state, update }: { state: WizardState; update: (p: Par
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-white">Tell us about your company structure</h2>
-        <p className="text-sm text-slate-400 mt-1">Used to calculate your estimated total cost.</p>
+        <p className="text-sm text-slate-400 mt-1">Used to scope your proposal.</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
@@ -247,162 +238,12 @@ function Step3Modules({
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 font-medium">Enterprise</span>
                   )}
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {m.addonPriceMonthly > 0 ? `+${fmt(m.addonPriceMonthly)}/mo add-on · ` : ''}
-                  Included in {planIncludes(m)}
-                </p>
+                <p className="text-xs text-slate-500 mt-0.5">Included in {planIncludes(m)}</p>
               </div>
             </button>
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function UsageBar({ label, value, max }: { label: string; value: number; max: number | null }) {
-  const pct = max ? Math.min(100, (value / max) * 100) : 0;
-  return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs text-slate-400">
-        <span>{label}</span>
-        <span className="text-slate-300">{value.toLocaleString()} / {max === null ? '∞' : max.toLocaleString()}</span>
-      </div>
-      {max !== null && (
-        <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
-          <div className="h-full bg-sapphire rounded-full" style={{ width: `${pct}%` }} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Step4Summary({ state, estimate, billing, setBilling }: {
-  state: WizardState;
-  estimate: PricingEstimate;
-  billing: 'monthly' | 'annual';
-  setBilling: (b: 'monthly' | 'annual') => void;
-}) {
-  const plan = estimate.recommendedPlan;
-  const total = billing === 'annual' ? estimate.annualTotal : estimate.monthlyTotal * 12;
-  const monthly = billing === 'annual' ? estimate.annualTotal / 12 : estimate.monthlyTotal;
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-lg font-semibold text-white">Your Estimated Package</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Based on your selections — adjust inputs to see changes.</p>
-        </div>
-        {/* Billing toggle */}
-        <div className="flex rounded-lg border border-white/10 overflow-hidden text-xs shrink-0">
-          {(['monthly', 'annual'] as const).map(b => (
-            <button
-              key={b}
-              type="button"
-              onClick={() => setBilling(b)}
-              className={`px-3 py-1.5 font-medium capitalize transition-colors ${billing === b ? 'bg-sapphire text-white' : 'text-slate-400 hover:text-white'}`}
-            >
-              {b}{b === 'annual' && <span className="ms-1 text-emerald-400">-{estimate.annualDiscountPct}%</span>}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Recommended plan badge */}
-      <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold ${PLAN_BADGE[plan] ?? PLAN_BADGE.Trial}`}>
-        Recommended: {plan}
-        {estimate.isEnterpriseRequired && <span className="text-xs font-normal ms-1 opacity-70">· Custom quote required</span>}
-      </div>
-
-      {/* Price headline */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-5">
-        <div className="flex items-baseline gap-2">
-          <span className="text-3xl font-bold text-white">{fmt(monthly)}</span>
-          <span className="text-slate-500 text-sm">/mo</span>
-          {billing === 'annual' && (
-            <span className="ms-2 text-xs text-slate-500">billed {fmt(total)}/yr</span>
-          )}
-        </div>
-        {estimate.isEnterpriseRequired && (
-          <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
-            <AlertCircle className="h-3.5 w-3.5" />
-            Enterprise pricing — a formal quote is required.
-          </p>
-        )}
-      </div>
-
-      {/* Cost breakdown */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Cost Breakdown</h3>
-        <div className="bg-[#161b22] border border-white/[0.07] rounded-xl divide-y divide-white/[0.05]">
-          {[
-            { label: `${plan} Base Plan`,                value: estimate.breakdown.basePlanPrice },
-            ...(estimate.breakdown.extraEmployeeCharge   > 0 ? [{ label: `${estimate.breakdown.extraEmployeeCount} extra employees`,  value: estimate.breakdown.extraEmployeeCharge }] : []),
-            ...(estimate.breakdown.extraCompanyCharge    > 0 ? [{ label: `${estimate.breakdown.extraCompanyCount} extra companies`,   value: estimate.breakdown.extraCompanyCharge }] : []),
-            ...(estimate.breakdown.extraAdminUserCharge  > 0 ? [{ label: `${estimate.breakdown.extraAdminUserCount} extra admin users`, value: estimate.breakdown.extraAdminUserCharge }] : []),
-            ...(estimate.breakdown.arabicSupplement      > 0 ? [{ label: 'Arabic/Bilingual Interface',                                value: estimate.breakdown.arabicSupplement }] : []),
-            ...(estimate.breakdown.extraCountryCharge    > 0 ? [{ label: `Multi-country (${state.numCountries} countries)`,          value: estimate.breakdown.extraCountryCharge }] : []),
-            ...estimate.breakdown.moduleAddOns.map(m => ({ label: `${m.name} add-on`, value: m.monthlyPrice })),
-          ].map((row, i) => (
-            <div key={i} className="flex justify-between px-4 py-2.5 text-sm">
-              <span className="text-slate-400">{row.label}</span>
-              <span className="text-slate-200 font-medium">{fmt(row.value)}/mo</span>
-            </div>
-          ))}
-          <div className="flex justify-between px-4 py-3 text-sm font-semibold">
-            <span className="text-white">Monthly Total</span>
-            <span className="text-white">{fmt(estimate.monthlyTotal)}/mo</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Included + Add-ons */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {estimate.includedFeatures.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Included Features</h3>
-            <ul className="space-y-1.5">
-              {estimate.includedFeatures.map(f => (
-                <li key={f} className="flex items-center gap-2 text-xs text-slate-300">
-                  <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> {f}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {estimate.paidAddOns.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Paid Add-Ons</h3>
-            <ul className="space-y-1.5">
-              {estimate.paidAddOns.map(f => (
-                <li key={f} className="flex items-center gap-2 text-xs text-slate-300">
-                  <span className="text-amber-400 font-mono text-xs">+</span> {f}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      {/* Usage comparison */}
-      <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-3">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Plan Limits</h3>
-        <UsageBar label="Active Employees" value={state.numEmployees} max={estimate.breakdown.includedEmployees} />
-        <UsageBar label="Legal Companies" value={state.numCompanies} max={estimate.breakdown.includedCompanies} />
-        <UsageBar label="Admin Users" value={state.numAdminUsers} max={estimate.breakdown.includedAdminUsers} />
-      </div>
-
-      {/* Implementation */}
-      <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-blue-950/30 border border-blue-800/30 text-xs text-blue-300">
-        <Info className="h-4 w-4 mt-0.5 shrink-0" />
-        <span>
-          <strong>One-time implementation fee:</strong> {fmt(estimate.breakdown.implementationEstimate)} — includes data migration, configuration, and onboarding training. Final amount confirmed in proposal.
-        </span>
-      </div>
-
-      {/* Disclaimer */}
-      <p className="text-xs text-slate-500 italic">{estimate.disclaimer}</p>
     </div>
   );
 }
@@ -463,15 +304,12 @@ function Step5Contact({ form, setForm }: { form: ContactForm; setForm: (f: Conta
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-const STEPS = ['Organization', 'Structure', 'Modules', 'Pricing', 'Request Quote'];
+const STEPS = ['Organization', 'Structure', 'Modules', 'Request Quote'];
 
 export default function PricingCalculatorPage() {
   const [step, setStep] = useState(0);
   const [wizard, setWizard] = useState<WizardState>(DEFAULT_STATE);
   const [modules, setModules] = useState<PricingModule[]>([]);
-  const [estimate, setEstimate] = useState<PricingEstimate | null>(null);
-  const [billing, setBilling] = useState<'monthly' | 'annual'>('monthly');
-  const [estimating, setEstimating] = useState(false);
   const [contact, setContact] = useState<ContactForm>({ companyName: '', contactName: '', contactEmail: '', phone: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -483,35 +321,11 @@ export default function PricingCalculatorPage() {
     pricingApi.getModules().then(setModules).catch(() => {});
   }, []);
 
-  const runEstimate = useCallback(async () => {
-    setEstimating(true);
-    setError(null);
-    try {
-      const result = await pricingApi.estimate({
-        orgType: wizard.orgType,
-        numCompanies: wizard.numCompanies,
-        numBranches: wizard.numBranches,
-        numEmployees: wizard.numEmployees,
-        numAdminUsers: wizard.numAdminUsers,
-        numCountries: wizard.numCountries,
-        needsArabic: wizard.needsArabic,
-        selectedModules: wizard.selectedModules,
-      });
-      setEstimate(result);
-    } catch {
-      setError('Could not calculate estimate. Please try again.');
-    } finally {
-      setEstimating(false);
-    }
-  }, [wizard]);
+  const goNext = () => setStep(s => Math.min(STEPS.length - 1, s + 1));
 
-  const goNext = async () => {
-    if (step === 2) await runEstimate();
-    setStep(s => Math.min(STEPS.length - 1, s + 1));
-  };
-
+  // The buyer is not shown a price; the proposal carries it. The estimate is still worked out at
+  // submit and stored on the quote, so sales sees the calculator's figure at /platform/pricing.
   const handleSubmit = async () => {
-    if (!estimate) return;
     if (!contact.companyName || !contact.contactName || !contact.contactEmail) {
       setError('Please fill in the required fields.');
       return;
@@ -519,11 +333,7 @@ export default function PricingCalculatorPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await pricingApi.submitQuote({
-        companyName: contact.companyName,
-        contactName: contact.contactName,
-        contactEmail: contact.contactEmail,
-        phone: contact.phone || undefined,
+      const sizing = {
         orgType: wizard.orgType,
         numCompanies: wizard.numCompanies,
         numBranches: wizard.numBranches,
@@ -532,6 +342,14 @@ export default function PricingCalculatorPage() {
         numCountries: wizard.numCountries,
         needsArabic: wizard.needsArabic,
         selectedModules: wizard.selectedModules,
+      };
+      const estimate = await pricingApi.estimate(sizing);
+      await pricingApi.submitQuote({
+        companyName: contact.companyName,
+        contactName: contact.contactName,
+        contactEmail: contact.contactEmail,
+        phone: contact.phone || undefined,
+        ...sizing,
         estimatedMonthlyAmount: estimate.monthlyTotal,
         estimatedAnnualAmount: estimate.annualTotal,
         notes: contact.notes || undefined,
@@ -555,13 +373,6 @@ export default function PricingCalculatorPage() {
           <p className="text-slate-400">
             Thank you, <strong className="text-white">{contact.contactName}</strong>. Our team will send a detailed proposal to <strong className="text-white">{contact.contactEmail}</strong> within 1 business day.
           </p>
-          {estimate && (
-            <div className="bg-white/[0.03] border border-white/[0.07] rounded-xl p-4 space-y-1">
-              <p className="text-xs text-slate-500 uppercase tracking-wider">Estimated</p>
-              <p className="text-2xl font-bold text-white">{fmt(estimate.monthlyTotal)}<span className="text-slate-500 text-sm font-normal">/mo</span></p>
-              <p className={`text-xs font-semibold ${PLAN_BADGE[estimate.recommendedPlan] ?? ''} inline-block px-2 py-0.5 rounded`}>{estimate.recommendedPlan} Plan</p>
-            </div>
-          )}
           <Link href="/" className="inline-flex items-center gap-2 text-sapphire hover:underline text-sm">
             Back to home
           </Link>
@@ -577,10 +388,10 @@ export default function PricingCalculatorPage() {
         <Link href="/" className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors text-sm">
           <span className="font-bold text-sapphire text-lg">KynexOne</span>
           <span className="text-slate-600">/</span>
-          <span>Pricing Calculator</span>
+          <span>Request a Proposal</span>
         </Link>
         <a
-          href="mailto:sales@kynexone.com"
+          href="mailto:info@kodekinetics.com"
           className="text-xs text-slate-500 hover:text-white transition-colors"
         >
           Talk to Sales →
@@ -614,16 +425,7 @@ export default function PricingCalculatorPage() {
           {step === 0 && <Step1OrgType state={wizard} update={update} />}
           {step === 1 && <Step2Structure state={wizard} update={update} />}
           {step === 2 && <Step3Modules state={wizard} update={update} modules={modules} />}
-          {step === 3 && estimate && (
-            <Step4Summary state={wizard} estimate={estimate} billing={billing} setBilling={setBilling} />
-          )}
-          {step === 3 && !estimate && estimating && (
-            <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
-              <RefreshCw className="h-5 w-5 animate-spin" />
-              Calculating your estimate…
-            </div>
-          )}
-          {step === 4 && <Step5Contact form={contact} setForm={setContact} />}
+          {step === 3 && <Step5Contact form={contact} setForm={setContact} />}
         </div>
 
         {error && (
@@ -648,12 +450,10 @@ export default function PricingCalculatorPage() {
             <button
               type="button"
               onClick={goNext}
-              disabled={estimating}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-sapphire hover:bg-sapphire/90 text-white text-sm font-medium transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-sapphire hover:bg-sapphire/90 text-white text-sm font-medium transition-colors"
             >
-              {estimating ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
-              {step === 2 ? 'Calculate Pricing' : step === 3 ? 'Request Proposal' : 'Continue'}
-              {!estimating && <ChevronRight className="h-4 w-4" />}
+              {step === 2 ? 'Request Proposal' : 'Continue'}
+              <ChevronRight className="h-4 w-4" />
             </button>
           ) : (
             <button
@@ -668,24 +468,9 @@ export default function PricingCalculatorPage() {
           )}
         </div>
 
-        {/* Recalculate link on summary step */}
-        {step === 3 && estimate && (
-          <div className="mt-4 text-center">
-            <button
-              type="button"
-              onClick={runEstimate}
-              disabled={estimating}
-              className="text-xs text-slate-500 hover:text-white flex items-center gap-1 mx-auto transition-colors"
-            >
-              <RefreshCw className={`h-3 w-3 ${estimating ? 'animate-spin' : ''}`} />
-              Recalculate with updated inputs
-            </button>
-          </div>
-        )}
-
         {step < 3 && (
           <p className="text-center text-xs text-slate-600 mt-4">
-            No credit card required · Estimate updates live · Final price confirmed in proposal
+            No credit card required · Pricing confirmed in your proposal
           </p>
         )}
       </div>

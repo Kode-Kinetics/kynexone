@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import {
@@ -22,6 +22,13 @@ import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useFullList } from '../hooks/useFullList';
 import { pageWindowText } from '../lib/paging';
 import { requestFailureReason } from '../lib/requestFailure';
+import { JawazatPanel } from '../components/compliance/JawazatPanel';
+import { BenefitsAwaitingNotice } from '../components/entitlements/BenefitsAwaitingNotice';
+import { packageApi, type ContractPackageStatus } from '../api/package';
+import { useLocale } from '../contexts/LocaleContext';
+import { useReleaseA } from '../lib/releaseA';
+import { fill } from '../lib/renewalRadar';
+import { useAuth } from '../contexts/AuthContext';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -135,7 +142,14 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 // ── Contracts Tab ─────────────────────────────────────────────────────────────
 
 function ContractsTab() {
+  // Creating a contract is `compliance.write` on the API (ContractsController.Create); a read-only
+  // compliance user (Auditor) was offered "New Contract" and only ever got a 403.
+  const { hasPermission } = useAuth();
+  const canCreate = hasPermission('compliance.write');
   const [statusFilter, setStatusFilter] = useState('');
+  // Release A (R4): the renewal number and a link to the contract's history, for release_a tenants only.
+  const releaseA = useReleaseA();
+  const { t: tr } = useLocale();
   // Every contract, not the server's first 20: an active contract past its end date is acted on
   // from this register ("Mark expired"), so one on a later page would silently never be.
   const list = useFullList<EmployeeContract>(() => complianceContractsApi.listAll({ status: statusFilter || undefined }));
@@ -150,6 +164,25 @@ function ContractsTab() {
   const load = () => list.reload();
 
   useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
+
+  // Release A: an active contract whose benefits wait for a second person gets one next action on its row.
+  const [packageStatus, setPackageStatus] = useState<Record<string, ContractPackageStatus>>({});
+  const [proposing, setProposing] = useState<string | null>(null);
+  const activeIds = contracts.filter((c) => c.status === 'Active').map((c) => c.id).join(',');
+  const loadPackageStatus = useCallback(async () => {
+    if (!releaseA || !hasPermission('entitlements.read') || !activeIds) { setPackageStatus({}); return; }
+    try {
+      const rows = await packageApi.contractStatus(activeIds.split(',').slice(0, 200));
+      setPackageStatus(Object.fromEntries(rows.map((r) => [r.contractId, r])));
+    } catch { setPackageStatus({}); }
+  }, [releaseA, hasPermission, activeIds]);
+  useEffect(() => { void loadPackageStatus(); }, [loadPackageStatus]);
+  const proposeBenefits = async (status: ContractPackageStatus) => {
+    setProposing(status.contractId);
+    try { await packageApi.propose(status.employeeId, status.contractId); await loadPackageStatus(); }
+    catch (e) { notifyApiError(e); }
+    finally { setProposing(null); }
+  };
 
   const save = async () => {
     if (!form.employeeId || !form.startDate || !form.basicSalary) return;
@@ -192,13 +225,13 @@ function ContractsTab() {
           {['Draft', 'PendingApproval', 'Active', 'Expired', 'Terminated', 'Superseded'].map(s => <option key={s}>{s}</option>)}
         </select>
         {!loading && list.error == null && <RecordCount n={contracts.length} noun="contract" />}
-        <button type="button" onClick={() => setShowCreate(v => !v)}
+        {canCreate && <button type="button" onClick={() => setShowCreate(v => !v)}
           className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
           <Plus className="h-3.5 w-3.5" /> New Contract
-        </button>
+        </button>}
       </div>
 
-      {showCreate && (
+      {canCreate && showCreate && (
         <div className="surface p-4 space-y-3">
           <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Employee Contract</h4>
           <div className="grid grid-cols-2 gap-3">
@@ -251,14 +284,15 @@ function ContractsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
-                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', 'Status', 'Actions'].map(h => (
+                {['Contract #', 'Employee', 'Type', 'Start', 'End', 'Salary', 'Version', ...(releaseA ? [tr('Renewal')] : []), 'Status', 'Actions'].map(h => (
                   <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/5">
               {contracts.map(c => (
-                <tr key={c.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
+                <Fragment key={c.id}>
+                <tr className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
                   <td className="p-3 font-mono text-xs text-sapphire dark:text-cyanAccent">{c.contractNumber}</td>
                   <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{c.employeeName}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">{c.contractType}</td>
@@ -266,6 +300,13 @@ function ContractsTab() {
                   <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{c.endDate ?? 'Indefinite'}</td>
                   <td className="p-3 font-semibold text-slate-900 dark:text-white">{c.currencyCode} {c.basicSalary.toLocaleString()}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">v{c.version}</td>
+                  {releaseA && (
+                    <td className="p-3 text-xs text-slate-500 dark:text-slate-400">
+                      {c.status === 'Draft' || c.status === 'PendingApproval' ? '—'
+                        : c.renewalNumber != null ? fill(tr('Renewal #{n}'), { n: c.renewalNumber }) : tr('History not confirmed')}
+                      <a href={`/contract-renewals?contract=${c.id}`} className="block font-medium text-sapphire underline dark:text-cyanAccent">{tr('Contract history')}</a>
+                    </td>
+                  )}
                   <td className="p-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[c.status] ?? ''}`}>{c.status}</span></td>
                   <td className="p-3">
                     <div className="flex min-w-[230px] flex-wrap items-center gap-2">
@@ -283,6 +324,16 @@ function ContractsTab() {
                     </div>
                   </td>
                 </tr>
+                {packageStatus[c.id] && (
+                  <tr data-testid={`contract-benefits-${c.id}`}>
+                    <td colSpan={9} className="px-3 pb-3">
+                      <BenefitsAwaitingNotice action={packageStatus[c.id].nextAction} busy={proposing === c.id}
+                        onPropose={hasPermission('entitlements.manage') ? () => void proposeBenefits(packageStatus[c.id]) : undefined}
+                        reviewHref={`/people?employeeId=${packageStatus[c.id].employeeId}&tab=package`} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -789,9 +840,9 @@ function ComplianceAITab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'employee-documents' | 'ai';
+type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expiry' | 'employee-documents' | 'ai' | 'jawazat';
 
-const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai'];
+const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai', 'jawazat'];
 
 export default function CompliancePage() {
   const params = useSearchParams();
@@ -804,6 +855,7 @@ export default function CompliancePage() {
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
     { id: 'contracts', label: 'Contracts', icon: FileText },
     { id: 'visa', label: 'Visa & ID', icon: Globe },
+    { id: 'jawazat', label: 'Jawazat', icon: Globe },
     { id: 'renewals', label: 'Renewals', icon: RefreshCw },
     { id: 'expiry', label: 'Expiry Alerts', icon: AlertTriangle },
     { id: 'employee-documents', label: 'Employee Documents', icon: FileWarning },
@@ -841,6 +893,7 @@ export default function CompliancePage() {
       {tab === 'contracts' && <ContractsTab />}
       {/* The passport KPIs drill down to 'passports', which used to render nothing at all. */}
       {(tab === 'visa' || tab === 'passports') && <VisaPassportTab key={tab} initialSubTab={tab === 'passports' ? 'passport' : 'visa'} />}
+      {tab === 'jawazat' && <JawazatPanel />}
       {tab === 'renewals' && <RenewalsTab />}
       {tab === 'expiry' && <ExpiryAlertsTab />}
       {tab === 'employee-documents' && <EmployeeDocumentsTab />}

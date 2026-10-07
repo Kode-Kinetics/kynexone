@@ -188,18 +188,27 @@ public static class PayComponentEngine
     /// existed — so a single override row on an unseeded tenant silently dropped BASIC, HOUSING, statutory
     /// and every other line from every payslip. With no rows at all this is the pre-F2 compiled fallback,
     /// byte-for-byte.</item>
+    /// <item>Non-paying components are dropped here: Facility components (a grade loan limit, per diem —
+    /// <see cref="PayEntitlementClasses.Facility"/>) and Release A contract benefits (air ticket, medical cover,
+    /// education — <see cref="PayComponentTypes.Benefit"/>). They are entitlements, not pay: they carry no amount
+    /// and must never reach a payslip, a WPS file, the EOSB wage or the catalog a run is built from. Their
+    /// non-paying types already keep them out of <see cref="Compute"/>; this filter makes that independent of the
+    /// type, and applies to the compiled seed set too.</item>
+    /// <item>A row that is not offered (<see cref="PayComponent.IsOffered"/> false — a Release A company skip marker) is
+    /// dropped too. Markers are written only for non-paying benefits, so this is defensive: should one ever sit on a
+    /// paying code, the company falls back to the group row instead of being paid that row's empty value.</item>
     /// </list>
     /// </summary>
     public static IReadOnlyList<PayComponent> ResolveInEffect(
         IEnumerable<PayComponent> scopeRows, Guid tenantId, DateOnly periodStart)
     {
         var rows = scopeRows
-            .Where(c => c.IsActive && !c.IsDeleted && c.IsInEffect(periodStart))
+            .Where(c => c.IsActive && !c.IsDeleted && c.IsOffered && c.IsInEffect(periodStart) && !IsNonPaying(c))
             .ToList();
         // (component, rank): persisted company row 2 > persisted tenant default 1 > compiled seed 0.
         var candidates = rows.Select(c => (C: c, Rank: c.CompanyId != null ? 2 : 1));
         if (!rows.Any(r => r.IsSystem))
-            candidates = PayComponentCatalog.SystemComponentSeeds(tenantId).Select(c => (C: c, Rank: 0)).Concat(candidates);
+            candidates = PayComponentCatalog.SystemComponentSeeds(tenantId).Where(c => !IsNonPaying(c)).Select(c => (C: c, Rank: 0)).Concat(candidates);
         return candidates
             .GroupBy(x => (x.C.Code, x.C.ComponentType))
             .Select(g => g
@@ -209,6 +218,13 @@ public static class PayComponentEngine
                 .First().C)
             .ToList();
     }
+
+    /// <summary>True for a non-paying entitlement component — a Facility (loan limit, per diem) or a Release A contract
+    /// Benefit (ticket, medical, education). See <see cref="ResolveInEffect"/>.</summary>
+    public static bool IsNonPaying(PayComponent c) =>
+        c.EntitlementClass == PayEntitlementClasses.Facility
+        || c.ComponentType == PayComponentTypes.Facility
+        || c.ComponentType == PayComponentTypes.Benefit;
 
     private static decimal StructureFieldValue(PayComponent c, PayComponentContext ctx) => c.StructureField switch
     {

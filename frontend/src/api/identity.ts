@@ -18,8 +18,62 @@ export interface UserListItem {
   roles: string[];
   accessMode: string;
   employeeId?: number;
+  /** The employee record this login is linked to (name and code), when it is linked. */
+  employeeName?: string | null;
+  employeeCode?: string | null;
   lastLoginAtUtc?: string;
   createdAtUtc: string;
+}
+
+/** A login as the employee-link dialog shows it. */
+export interface LinkedLogin {
+  userId: string;
+  email: string;
+  status: string;
+  accessMode: string;
+  isActive: boolean;
+}
+
+export type EmployeeLoginNextAction = 'linked' | 'link_existing' | 'invite' | 'needs_work_email' | 'blocked';
+
+/** GET /api/access/employee-logins/{employeeId}: where an employee stands on the way to Self-Service. */
+export interface EmployeeLoginStatus {
+  employeeId: number;
+  employeeName: string;
+  workEmail: string;
+  linkedLogin: LinkedLogin | null;
+  matchingLogin: LinkedLogin | null;
+  nextAction: EmployeeLoginNextAction;
+  /** Plain-language reason, for blocked / needs_work_email. */
+  reason: string | null;
+  /** Stable code for a refusal the screen words itself, e.g. 'login_other_company'. */
+  reasonCode?: string | null;
+  /** The name a coded refusal cites: a company (login_other_company) or an employee (login_pointer_conflict). */
+  reasonSubject?: string | null;
+}
+
+export interface EmployeeLoginLinkResult {
+  employeeId: number;
+  userId: string;
+  email: string;
+  status: string;
+  accessMode: string;
+  isActive: boolean;
+  alreadyLinked: boolean;
+}
+
+/** POST /api/access/employee-logins/invite. `invitationUrl` must be shared by hand when `emailSent` is false. */
+export interface EmployeeLoginInvitation {
+  userId: string;
+  employeeId: number;
+  email: string;
+  accessMode: string;
+  status: string;
+  invitationExpiresAtUtc?: string | null;
+  invitationUrl: string;
+  emailDeliveryConfigured: boolean;
+  emailSent: boolean;
+  deliveryMessage: string;
 }
 
 export interface UserAccess {
@@ -43,6 +97,30 @@ export interface RoleItem {
   isEditable: boolean;
   authorityLevel: number;
   permissions: string[];
+}
+
+/**
+ * The caller's privilege ceiling (GET /api/access/ceiling): what the server will let THIS caller assign or edit.
+ * The reasons are the server's own sentences (EN and AR), so the screen and the 403 always say the same thing.
+ */
+export interface RoleCeiling {
+  roleId: string;
+  name: string;
+  canAssign: boolean;
+  assignRefusalCode?: string | null;
+  assignRefusalEn?: string | null;
+  assignRefusalAr?: string | null;
+  canEdit: boolean;
+  editRefusalCode?: string | null;
+  editRefusalEn?: string | null;
+  editRefusalAr?: string | null;
+}
+
+export interface AccessCeiling {
+  userId: string;
+  isAdmin: boolean;
+  heldPermissions: string[];
+  roles: RoleCeiling[];
 }
 
 export interface PermissionMatrixRow {
@@ -152,6 +230,8 @@ export interface AuditLogItem {
   metadata?: string;
   userId?: string;
   createdAtUtc: string;
+  /** True when metadata, IP and user agent were withheld (caller lacks security.manage). */
+  rawDetailRedacted?: boolean;
 }
 
 export interface PagedResult<T> {
@@ -233,12 +313,29 @@ export const usersApi = {
     client.delete(`/api/access/users/${userId}`),
 
   inviteEmployee: (body: { employeeId: number; email?: string; accessMode: string; roles?: string[]; invitationHours?: number }) =>
-    client.post('/api/access/employee-logins/invite', body).then(r => r.data),
+    client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
+
+  /** Where one employee record stands on the way to Self-Service, and the one next step. */
+  employeeLoginStatus: (employeeId: number) =>
+    client.get<EmployeeLoginStatus>(`/api/access/employee-logins/${employeeId}`).then(r => r.data),
+
+  /** Links an existing, active login to the employee record whose work email it carries. */
+  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string }) =>
+    client.post<EmployeeLoginLinkResult>('/api/access/employee-logins/link-existing', body).then(r => r.data),
 };
 
 export const rolesApi = {
   list: () =>
     client.get<RoleItem[]>('/api/access/roles').then(r => r.data),
+
+  // A reply that is not a ceiling (an older server, a proxy page, a test double) is treated as "unavailable",
+  // exactly like a failed request — the screen then falls back to the server's own 403s, never crashes.
+  ceiling: () =>
+    client.get<AccessCeiling>('/api/access/ceiling').then(r => {
+      const d = r.data as Partial<AccessCeiling> | null | undefined;
+      if (!d || !Array.isArray(d.roles) || !Array.isArray(d.heldPermissions)) throw new Error('access ceiling unavailable');
+      return d as AccessCeiling;
+    }),
 
   permissions: () =>
     client.get<PermissionItem[]>('/api/access/permissions').then(r => r.data),

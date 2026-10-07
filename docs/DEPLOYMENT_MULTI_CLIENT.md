@@ -2,6 +2,8 @@
 
 > Audience: Ops / engineering lead onboarding a new client. This is the authoritative decision guide for HOW we ship Zayra AI Workforce to a client and WHICH deployment shape to use. Read the Hard Rule (§2) before anything else.
 
+Include [client integration prerequisites](CLIENT_INTEGRATION_PREREQUISITES.md) in the handover package. Jawazat live government integration is deferred pending client-authorised provider access and engineering acceptance; it is separate from deploying the internal policy/approval workflow.
+
 ## 1. Architecture in one paragraph (why the rules exist)
 
 Zayra runs on a **single shared PostgreSQL schema**. Every business entity carries a `TenantId` discriminator, and a **global EF Core query filter** scopes every query to the caller's tenant. The tenant is resolved from the JWT `tenant_id` claim at request time; an optional `X-Company-Id` request header applies a **secondary company scope that can only narrow** the tenant scope, never widen it. Tenant JWTs are HMAC-signed with `Jwt__SigningKey` and carry `Jwt__TenantAudience`; platform-admin JWTs carry `Jwt__PlatformAudience`. The database connection comes from `ConnectionStrings__Default`, and in Production a missing value is a hard boot failure (fail-fast), not a silent fallback. Because isolation is enforced **in the application layer by `TenantId`**, and all clients' rows live in one schema, giving any client direct database access to the shared instance would expose every other client's data.

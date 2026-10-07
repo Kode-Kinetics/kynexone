@@ -72,7 +72,13 @@ public record ApprovalRequestDto(
     DateTime CreatedAtUtc,
     DateTime? CompletedAtUtc,
     IReadOnlyCollection<ApprovalDecisionDto> Decisions,
-    bool CanDecide);
+    bool CanDecide,
+    // Why the caller cannot decide, in plain words, whenever CanDecide is false on a pending request.
+    // Computed beside CanDecide by the same service so the screen never has to guess the reason.
+    string? DecisionBlockedReason = null,
+    bool CanWithdraw = false,
+    // What is actually being approved (e.g. "IBAN, passport"), so identical titles stay tellable apart.
+    string? ChangeSummary = null);
 
 /// <param name="WorkflowId">
 /// An explicit workflow, or null to let <c>IApprovalRouter</c> choose the workflow for
@@ -86,6 +92,8 @@ public record CreateApprovalRequest(
     int? RequestedForEmployeeId = null,
     Guid? CompanyId = null,
     [MaxLength(40)] string? Priority = null);
+
+public record ApprovalWithdrawRequest([MaxLength(500)] string? Reason = null);
 
 public record ApprovalDecisionRequest(
     [Required, RegularExpression("Approve|Reject", ErrorMessage = "Decision must be Approve or Reject.")] string Decision,
@@ -122,7 +130,8 @@ public static class ApprovalMappings
         step.EscalationAfterHours,
         step.IsFinalStep);
 
-    public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false) => new(
+    public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false,
+        string? decisionBlockedReason = null, bool canWithdraw = false, string? changeSummary = null) => new(
         request.Id,
         request.WorkflowId,
         request.EntityName,
@@ -150,7 +159,10 @@ public static class ApprovalMappings
         request.CreatedAtUtc,
         request.CompletedAtUtc,
         request.Decisions.OrderBy(x => x.StepOrder).Select(x => x.ToDto()).ToList(),
-        canDecide);
+        canDecide,
+        decisionBlockedReason,
+        canWithdraw,
+        changeSummary);
 
     public static ApprovalDecisionDto ToDto(this ApprovalDecision decision) => new(
         decision.Id,

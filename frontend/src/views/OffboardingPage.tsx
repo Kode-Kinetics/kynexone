@@ -9,6 +9,8 @@ import {
   type Offboarding, type OffboardingSummary, type SeparationTypeInfo,
 } from '../api/offboarding';
 import { employeesApi } from '../api/employees';
+import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
 import { requestFailureReason } from '../lib/requestFailure';
 
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'];
@@ -38,6 +40,10 @@ function apiMessage(e: unknown, fallback: string) {
 }
 
 export function OffboardingPage() {
+  // Initiating a separation is `employees.approve` on the API (OffboardingController.Initiate). The
+  // page is open to employees.write and payroll.approve holders, who were offered the button and got a 403.
+  const { hasPermission } = useAuth();
+  const canInitiate = hasPermission('employees.approve');
   const [items, setItems] = useState<Offboarding[]>([]);
   const [summary, setSummary] = useState<OffboardingSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,9 +87,9 @@ export function OffboardingPage() {
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Offboarding</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">Manage separations end-to-end — notice period, exit interview, clearance checklist and final archive.</p>
         </div>
-        <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setShowInitiate(true)}>
+        {canInitiate && <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setShowInitiate(true)}>
           <UserMinus className="h-3.5 w-3.5" /> Initiate Offboarding
-        </button>
+        </button>}
       </div>
 
       {!loading && !listUnavailable && staleNotices.length > 0 && (
@@ -160,6 +166,9 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
   const [editEi, setEditEi] = useState(false);
   const [error, setError] = useState('');
   const [showSettle, setShowSettle] = useState(false);
+  // Logins the revoke left active because an Admin must switch them off (LinkedLoginDeactivationGate).
+  const [heldLogins, setHeldLogins] = useState<{ email: string; message: string; messageAr: string }[]>([]);
+  const { t, locale } = useLocale();
   const [ei, setEi] = useState({ status: o.exitInterviewStatus, date: o.exitInterviewDate?.slice(0, 10) ?? '', reasonCategory: o.exitReasonCategory, rating: o.exitInterviewRating, notes: o.exitInterviewNotes });
 
   // "Access revoked" is handled separately below: it is an irreversible ACTION, not a note, so it must
@@ -182,7 +191,10 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
 
   const toggle = (k: string, v: boolean) =>
     run(() => offboardingApi.checklist(o.id, { [k]: v }), 'Could not update the checklist.');
-  const revokeAccess = () => run(() => offboardingApi.revokeAccess(o.id), 'Could not revoke access.');
+  const revokeAccess = () => run(async () => {
+    const result = await offboardingApi.revokeAccess(o.id);
+    setHeldLogins(result.linkedLoginHeld ?? []);
+  }, 'Could not revoke access.');
   const saveEi = () => run(async () => { await offboardingApi.exitInterview(o.id, ei); setEditEi(false); }, 'Could not save the exit interview.');
   const complete = () => run(() => offboardingApi.complete(o.id), 'Could not complete the offboarding.');
   const cancel = () => {
@@ -219,6 +231,13 @@ function OffboardingCard({ o, onChange }: { o: Offboarding; onChange: () => void
 
       {o.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">“{o.reason}”</p>}
       {error && <p role="alert" className="mt-2 rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{error}</p>}
+      {heldLogins.map(h => (
+        <p key={h.email} role="status" data-testid="offboarding-login-held"
+          className="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+          <span className="font-semibold">{t('Account still active — an Admin must deactivate it')}</span>
+          {' · '}{h.email}{' · '}{locale === 'ar' ? h.messageAr : h.message}
+        </p>
+      ))}
 
       <div className="mt-3 grid gap-4 lg:grid-cols-2">
         {/* Checklist */}

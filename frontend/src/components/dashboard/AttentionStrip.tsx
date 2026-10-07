@@ -27,8 +27,8 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
     <section aria-labelledby="attention-heading" className="flex min-w-0 items-center gap-2 max-sm:flex-wrap">
       <h2 id="attention-heading" className="me-1 shrink-0 whitespace-nowrap text-[13px] font-semibold text-slate-900 dark:text-white">
         {t('Needs attention')}
-        <span className="ms-1.5 font-medium text-slate-600 dark:text-slate-400">{critical} {t('critical')}, {items.length - critical} {t('to review')}</span>
-        {findingsUnavailable && <span className="ms-1.5 font-normal text-slate-600 dark:text-slate-400">({t('rules check unavailable')})</span>}
+        <span className="ms-1.5 font-medium text-slate-600 dark:text-slate-400">{t('{critical} critical, {review} to review', { critical, review: items.length - critical })}</span>
+        {findingsUnavailable && <span className="ms-1.5 font-normal text-slate-600 dark:text-slate-400">({t('Rules check unavailable')})</span>}
       </h2>
       <ul className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden max-sm:basis-full max-sm:flex-col max-sm:items-stretch">
         {items.slice(0, 3).map((it) => {
@@ -43,7 +43,7 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
                 <span className="sr-only">{crit ? t('Critical') : t('Warning')}: </span>
                 <span className="min-w-0 truncate font-medium">{it.title}</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-semibold text-sapphire group-hover:underline dark:text-blue-300">
-                  {t(it.cta)} <ArrowRight className="h-3 w-3" aria-hidden />
+                  {it.cta} <ArrowRight className="h-3 w-3" aria-hidden />
                 </span>
                 <span className="sr-only">. {it.detail}</span>
               </Link>
@@ -51,7 +51,7 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
           );
         })}
       </ul>
-      {items.length > 3 && <span className="shrink-0 whitespace-nowrap text-xs text-slate-600 dark:text-slate-400" title={items.slice(3).map((i) => i.title).join('; ')}>+{items.length - 3} {t('more')}</span>}
+      {items.length > 3 && <span className="shrink-0 whitespace-nowrap text-xs text-slate-600 dark:text-slate-400" title={items.slice(3).map((i) => i.title).join('; ')}>{t('+{count} more', { count: items.length - 3 })}</span>}
     </section>
   );
 }

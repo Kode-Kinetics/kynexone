@@ -33,5 +33,16 @@ public class ApprovalRequest : ITenantOwned, ICompanyScopedOperational
     public string Priority { get; set; } = "Normal";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAtUtc { get; set; }
+
+    /// <summary>
+    /// Release A (rev 8.3 K3): the frozen witness of what was put up for decision — e.g. a renewal offer
+    /// version. Set once at creation together with <see cref="PayloadSha256"/> (CHECK: both or neither). The
+    /// relational truth after the decision is applied lives in the entitlement and salary rows, never here.
+    /// </summary>
+    public string? Payload { get; set; }
+
+    /// <summary>Lower-case hex SHA-256 of <see cref="Payload"/>; the employee's acceptance compares against it.</summary>
+    public string? PayloadSha256 { get; set; }
+
     public ICollection<ApprovalDecision> Decisions { get; set; } = new List<ApprovalDecision>();
 }

@@ -65,6 +65,52 @@ public record EmployeeLoginInvitationDto(
     bool EmailSent = false,
     string DeliveryMessage = "");
 
+/// <summary>A login as the employee-link screen shows it: who, what state, what access mode.</summary>
+public record LinkedLoginDto(Guid UserId, string Email, string Status, string AccessMode, bool IsActive);
+
+/// <summary>
+/// Where one employee record stands on the way to Self-Service. <see cref="NextAction"/> is one of
+/// <see cref="EmployeeLoginNextActions"/>; <see cref="Reason"/> says why in plain language when it is
+/// <c>blocked</c> or <c>needs_work_email</c>.
+/// </summary>
+public record EmployeeLoginStatusDto(
+    int EmployeeId,
+    string EmployeeName,
+    string WorkEmail,
+    LinkedLoginDto? LinkedLogin,
+    LinkedLoginDto? MatchingLogin,
+    string NextAction,
+    string? Reason)
+{
+    /// <summary>Stable code for a refusal the screen words itself (e.g. <c>login_other_company</c>).</summary>
+    public string? ReasonCode { get; init; }
+    /// <summary>The name a coded refusal cites: the company (<c>login_other_company</c>) or employee (<c>login_pointer_conflict</c>).</summary>
+    public string? ReasonSubject { get; init; }
+}
+
+public static class EmployeeLoginNextActions
+{
+    public const string Linked = "linked";
+    public const string LinkExisting = "link_existing";
+    public const string Invite = "invite";
+    public const string NeedsWorkEmail = "needs_work_email";
+    public const string Blocked = "blocked";
+}
+
+public record LinkExistingLoginRequest(
+    [Required] int EmployeeId,
+    [Required] Guid UserId,
+    [Required, MaxLength(500)] string Reason);
+
+public record EmployeeLoginLinkResultDto(
+    int EmployeeId,
+    Guid UserId,
+    string Email,
+    string Status,
+    string AccessMode,
+    bool IsActive,
+    bool AlreadyLinked);
+
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 
 public record PermissionOverrideRequest([Required] string PermissionKey, [Required] string Effect, string? Reason, DateTime? ExpiresAtUtc);
@@ -123,7 +169,15 @@ public record AuthResponse(
     string AccessToken,
     string RefreshToken,
     DateTime ExpiresAtUtc,
-    AuthUserDto User);
+    AuthUserDto User)
+{
+    /// <summary>
+    /// Known-device token for the HttpOnly cookie the sign-in endpoint sets (LoginAbuseGuard). Never
+    /// serialised: the browser must not be able to read it.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? KnownDeviceToken { get; init; }
+}
 
 public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
 
@@ -185,6 +239,28 @@ public record EffectivePermissionsDto(
 
 public record PermissionDto(Guid Id, string Key, string Module, string Description);
 
+/// <summary>
+/// The caller's privilege ceiling, so the Access screen offers only what the server will accept: the caller's own
+/// effective permissions and, per role, whether they may assign it and edit it — with the coded reason when not.
+/// </summary>
+public record AccessCeilingDto(
+    Guid UserId,
+    bool IsAdmin,
+    IReadOnlyCollection<string> HeldPermissions,
+    IReadOnlyCollection<RoleCeilingDto> Roles);
+
+public record RoleCeilingDto(
+    Guid RoleId,
+    string Name,
+    bool CanAssign,
+    string? AssignRefusalCode,
+    string? AssignRefusalEn,
+    string? AssignRefusalAr,
+    bool CanEdit,
+    string? EditRefusalCode,
+    string? EditRefusalEn,
+    string? EditRefusalAr);
+
 public record UserListDto(
     Guid Id,
     string Email,
@@ -198,7 +274,10 @@ public record UserListDto(
     string AccessMode,
     int? EmployeeId,
     DateTime? LastLoginAtUtc,
-    DateTime CreatedAtUtc);
+    DateTime CreatedAtUtc,
+    // The employee record this login is linked to, for the User Management row. Null when unlinked.
+    string? EmployeeName = null,
+    string? EmployeeCode = null);
 
 public record UpdateUserRequest(
     string? FullName,
@@ -252,6 +331,20 @@ public record SecuritySettingDto(
 /// <summary>Issued after password validates when the user has MFA enabled.
 /// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
 public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
+
+/// <summary>
+/// Mandatory-MFA standing for the signed-in principal. <c>RequiredBecause</c> is "privileged_role",
+/// "workspace_policy" or null; <c>EnforceFromUtc</c> null with <c>Required</c> true means no date is
+/// configured yet (prompt only).
+/// </summary>
+public record MfaStatusDto(
+    bool Enabled,
+    bool Required,
+    string? RequiredBecause,
+    DateTime? EnforceFromUtc,
+    bool Enforced,
+    bool PromptToEnroll,
+    int? RecoveryCodesRemaining = null);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>

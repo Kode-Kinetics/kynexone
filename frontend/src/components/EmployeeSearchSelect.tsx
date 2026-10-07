@@ -19,9 +19,17 @@ interface Props {
   onChange: (emp: EmployeeSelection | null) => void;
   placeholder?: string;
   required?: boolean;
+  /** Lifecycle statuses to search. The list API filters one status at a time, so each is queried and merged. */
+  statuses?: readonly string[];
+  /** Show results in the page flow instead of a floating dropdown — for pickers inside a dialog's
+   *  scrolling body, where a floating list is clipped. */
+  inlineResults?: boolean;
+  autoFocus?: boolean;
 }
 
-export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by name or code…', required }: Props) {
+const ACTIVE_ONLY = ['Active'] as const;
+
+export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by name or code…', required, statuses = ACTIVE_ONLY, inlineResults = false, autoFocus = false }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<EmployeeListItem[]>([]);
   const [open, setOpen] = useState(false);
@@ -43,16 +51,18 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
   // write results; typing, picking or clearing retires every older request, so a slow response for
   // an earlier query can never replace newer results or resurface after a pick.
   const searchGate = useMemo(() => createLatestRequestGate(), []);
+  // A string, so a caller passing a fresh array each render does not restart the search.
+  const statusKey = statuses.join('|');
 
   const search = useCallback(async (q: string) => {
     if (q.trim().length < 1) { searchGate.invalidate(); setResults([]); setSearching(false); return; }
     setSearching(true);
-    await runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: 'Active' }), {
+    await runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: statusKey.split('|') }), {
       onResult: (r) => setResults(r.items ?? []),
       onError: () => setResults([]),
       onSettled: () => setSearching(false),
     });
-  }, [searchGate]);
+  }, [searchGate, statusKey]);
 
   // Debounce search
   useEffect(() => {
@@ -99,13 +109,16 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
           required={required}
+          autoFocus={autoFocus}
           className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-white"
         />
         {searching && <div className="h-4 w-4 animate-spin rounded-full border-2 border-sapphire border-t-transparent" />}
       </div>
 
       {open && results.length > 0 && (
-        <ul className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-white/[0.1] dark:bg-slate-900">
+        <ul className={inlineResults
+          ? 'mt-2 max-h-72 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 dark:border-white/[0.1] dark:bg-slate-900'
+          : 'absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-white/[0.1] dark:bg-slate-900'}>
           {results.map((emp) => (
             <li key={emp.id}>
               <button
@@ -126,7 +139,7 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
         </ul>
       )}
       {open && query.trim().length > 0 && results.length === 0 && !searching && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-400 shadow-lg dark:border-white/[0.1] dark:bg-slate-900">
+        <div className={`${inlineResults ? 'mt-2' : 'absolute z-50 mt-1 shadow-lg'} w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-400 dark:border-white/[0.1] dark:bg-slate-900`}>
           No employees found for "{query}"
         </div>
       )}

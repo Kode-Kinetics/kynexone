@@ -131,7 +131,8 @@ public class AuthSeeder : IAuthSeeder
         // Level 1 — Admin: all permissions
         var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access", permissions, 1, false, cancellationToken);
 
-        // Level 2 — HR Director: full HR + payroll visibility + reports + compliance
+        // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
+        // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
@@ -139,10 +140,12 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
-            "qiwa.read" or "qiwa.sync"
+            "qiwa.read" or "qiwa.sync" ||
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
         ).ToList(), 2, true, cancellationToken);
 
-        // Level 3 — HR Manager: operational HR management
+        // Level 3 — HR Manager: operational HR management.
+        // Release A: entitlements.* and contracts.renewal.* (prepares packages and runs renewal cases).
         // NOTE: the explicit payroll.* / loans.write grants below are RECONCILIATION for the
         // [HasPermission] conversion, not new reach. HR Manager already reaches all PayrollController /
         // GosiController operator+approve endpoints and Bonuses/Loans-type creation today via the
@@ -158,7 +161,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.write"
+            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -180,7 +184,9 @@ public class AuthSeeder : IAuthSeeder
             // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
             "employees.bulk_import",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
-            "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read"
+            // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
+            // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
+            "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
@@ -189,7 +195,13 @@ public class AuthSeeder : IAuthSeeder
             "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
-        // Level 7 — Finance Approver: finance approvals
+        // Level 7 — standalone loan operator. Assigning the role remains an administrator decision.
+        await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
+            "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
+            "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read"
+        }), 7, true, cancellationToken);
+
+        // Level 8 — Finance Approver: finance approvals
         // payroll.lock reconciles the method-level [Authorize(Roles="...Finance Approver")] intent on the
         // run lock/void/send-back endpoints (financial-controller tier) into the effective-permission model.
         // finance.erp.confirm makes this role the CHECKER of the GL hand-off: Payroll Manager produces the
@@ -199,15 +211,15 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm"
-        }), 7, true, cancellationToken);
+        }), 8, true, cancellationToken);
 
-        // Level 8 — Compliance Officer: compliance and contracts
+        // Level 9 — Compliance Officer: compliance and contracts
         await EnsureRole(tenantId, "Compliance Officer", "Manages compliance, contracts and regulatory records", Ps(new[] {
             "dashboard.read", "employees.read", "employees.documents", "organization.read",
             "compliance.read", "compliance.write", "approvals.read", "audit.read", "reports.read", "notifications.read"
-        }), 8, true, cancellationToken);
+        }), 9, true, cancellationToken);
 
-        // Level 9 — Manager: team management and approvals
+        // Level 10 — Manager: team management and approvals
         // approvals.write reconciles Manager's existing role-name reach to POST /approval-requests and
         // POST /approval-workflows/requests (starting an approval request) into the permission model.
         // performance.read/write is the reviewer tier: set and agree goals, write the manager review, run a
@@ -217,47 +229,56 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Manager", "People manager with team oversight and approval authority", Ps(new[] {
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
-            "attendance.read", "overtime.read", "overtime.approve", "profile.read",
+            "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
             "performance.read", "performance.write"
-        }), 9, true, cancellationToken);
+        }), 10, true, cancellationToken);
 
-        // Level 10 — Supervisor: front-line supervision
+        // Level 11 — Supervisor: front-line supervision
         await EnsureRole(tenantId, "Supervisor", "Front-line supervisor for operational staff", Ps(new[] {
             "dashboard.read", "employees.read", "attendance.read", "attendance.write",
             "manager.read", "manager.approve", "leave.read", "overtime.read", "ess.read", "ess.write", "profile.read"
-        }), 10, true, cancellationToken);
+        }), 11, true, cancellationToken);
 
-        // Level 11 — Recruiter: talent acquisition
+        // Level 12 — Recruiter: talent acquisition
         await EnsureRole(tenantId, "Recruiter", "Recruitment and hiring specialist", Ps(new[] {
             "dashboard.read", "employees.read", "recruitment.read", "recruitment.write",
             "notifications.read", "organization.read", "profile.read"
-        }), 11, true, cancellationToken);
+        }), 12, true, cancellationToken);
 
-        // Level 12 — HR Assistant: limited HR support
+        // Level 13 — HR Assistant: limited HR support
         await EnsureRole(tenantId, "HR Assistant", "Junior HR support with limited write access", Ps(new[] {
             "dashboard.read", "employees.read", "organization.read", "notifications.read",
             "attendance.read", "leave.read", "ess.read", "profile.read", "localization.read"
-        }), 12, true, cancellationToken);
+        }), 13, true, cancellationToken);
 
-        // Level 13 — Auditor: read-only audit
+        // Level 14 — Auditor: read-only audit
         await EnsureRole(tenantId, "Auditor", "Read-only audit and compliance reviewer", Ps(new[] {
             "dashboard.read", "employees.read", "organization.read", "approvals.read",
             "audit.read", "payroll.read", "attendance.read", "leave.read", "compliance.read", "reports.read",
             "qiwa.read"
-        }), 13, true, cancellationToken);
-
-        // Level 14 — Kiosk Operator: attendance kiosk only
-        await EnsureRole(tenantId, "Kiosk Operator", "Restricted to kiosk attendance capture only", Ps(new[] {
-            "attendance.kiosk"
         }), 14, true, cancellationToken);
 
-        // Level 15 — Employee: self-service only
+        // Level 15 — Kiosk Operator: attendance kiosk only
+        await EnsureRole(tenantId, "Kiosk Operator", "Restricted to kiosk attendance capture only", Ps(new[] {
+            "attendance.kiosk"
+        }), 15, true, cancellationToken);
+
+        // Level 16 — Employee: self-service only
         // performance.read opens the Performance module, where the employee self-assesses, acknowledges or
         // appeals their own review and records progress on their own goals. Every list there is limited to
         // their own record by data scope. No performance.write: goals are set by the line manager or HR.
-        await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
-            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read"
-        }), 15, true, cancellationToken);
+        var employeeRole = await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
+            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read", "loans.self"
+        }), 16, true, cancellationToken);
+        // Repair tenants that booted the original loan-governance branch: loans.read exposes the
+        // company loan book, reports and staff navigation. Employee self-service uses loans.self.
+        var broadLoanReadId = permissions.Single(x => x.Key == "loans.read").Id;
+        var accidentalBroadGrant = employeeRole.RolePermissions.FirstOrDefault(x => x.PermissionId == broadLoanReadId);
+        if (accidentalBroadGrant != null)
+        {
+            employeeRole.RolePermissions.Remove(accidentalBroadGrant);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
 
         // Establishment matrix: seed the default staffing-level catalog here so EVERY tenant
         // provisioning path (platform create/repair, all demo seeders, future ones) gets the
@@ -326,10 +347,16 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.lock", "Payroll", "Lock, void, or send back a payroll run (financial-controller tier)"),
             ("payroll.run_delete", "Payroll", "Hard-delete a payroll run"),
             // Loans & Advances
+            ("loans.self", "Loans", "Read the signed-in employee's own loan and advance records"),
             ("loans.read", "Loans", "Read loan and advance records"),
             ("loans.write", "Loans", "Create loan and advance applications"),
             ("loans.approve", "Loans", "Approve or reject loans and advances"),
             ("loans.policy_manage", "Loans", "Manage loan types and policies"),
+            // Release A — benefits by grade and contract renewals (Admin via backfill; HR Director and HR Manager below)
+            ("entitlements.read", "Entitlements", "Read benefits by grade and employee packages"),
+            ("entitlements.manage", "Entitlements", "Set benefits by grade and freeze employee packages"),
+            ("contracts.renewal.read", "Contracts", "Read contract renewal cases and contract chains"),
+            ("contracts.renewal.manage", "Contracts", "Run contract renewals: offers, Qiwa evidence and apply"),
             // Recruitment
             ("recruitment.read", "Recruitment", "Read job openings and applications"),
             ("recruitment.write", "Recruitment", "Manage recruitment pipeline"),

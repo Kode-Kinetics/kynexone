@@ -81,21 +81,14 @@ public class EmployeeApplierParityTests
     }
 
     /// <summary>
-    /// THE PARITY GUARD. The same change set, decided on the two screens that can approve it, must reach
-    /// ONE persisted end state. Route 2 (the Approvals screen) used to apply NONE of these six keys.
+    /// THE PARITY GUARD. The Approvals screen used to apply NONE of these six keys. It is now the only
+    /// approval path (the direct EmployeesController.ApproveChange endpoint is retired), so the guard
+    /// is that it reaches exactly the values the approver approved.
     /// </summary>
     [Fact]
-    public async Task BothApprovalPaths_ApplyTheSameKeys_ForAnIdenticalChangeSet()
+    public async Task TheApprovalCenter_AppliesEveryDriftedKey()
     {
-        // Route 1 — EmployeesController.ApproveChange (the direct endpoint).
-        await using var directDb = CreateDb();
-        var directFx = await SeedPendingChangeAsync(directDb, DriftedKeys);
-        var direct = await CreateController(directDb, directFx.TenantId, Guid.NewGuid())
-            .ApproveChange(directFx.Change.Id, CancellationToken.None);
-        direct.Should().BeOfType<OkObjectResult>();
-        var directState = await ReadDriftStateAsync(directDb, directFx);
-
-        // Route 2 — ApprovalWorkflowService.DecideAsync (the normal Approvals screen), same change.
+        // ApprovalWorkflowService.DecideAsync (the normal Approvals screen).
         await using var workflowDb = CreateDb();
         var workflowFx = await SeedPendingChangeAsync(workflowDb, DriftedKeys);
         var approval = await SeedApprovalRequestAsync(workflowDb, workflowFx);
@@ -107,9 +100,7 @@ public class EmployeeApplierParityTests
         decided!.Status.Should().Be("Approved");
         var workflowState = await ReadDriftStateAsync(workflowDb, workflowFx);
 
-        workflowState.Should().BeEquivalentTo(directState,
-            "one change set must reach one end state whichever screen approved it");
-        // And that end state is the values the approver approved — not the old ones.
+        // The end state is the values the approver approved — not the old ones.
         workflowState.Should().BeEquivalentTo(new DriftState(
             new DateOnly(2027, 3, 1), new DateOnly(2027, 4, 1), new DateOnly(2027, 5, 1), new DateOnly(2027, 6, 1),
             "1099887766", "Acme Sponsor LLC"));
@@ -146,8 +137,7 @@ public class EmployeeApplierParityTests
         var change = await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(x => x.EmployeeId == employee.Id);
         change.SensitiveFields.Should().Be("socialInsuranceReference");
 
-        var approved = await CreateController(db, tenantId, Guid.NewGuid()).ApproveChange(change.Id, CancellationToken.None);
-        approved.Should().BeOfType<OkObjectResult>();
+        (await ApprovalCenterDriver.ApproveChangeAsync(db, tenantId, change.Id)).Status.Should().Be("Approved");
         db.ChangeTracker.Clear();
         var profile = await db.EmployeePayrollProfiles.AsNoTracking().SingleAsync(x => x.EmployeeId == employee.Id);
         profile.SocialInsuranceReference.Should().Be("SIO-556677",
@@ -167,8 +157,7 @@ public class EmployeeApplierParityTests
             CancellationToken.None)).Should().BeOfType<AcceptedResult>();
         db.ChangeTracker.Clear();
         var change = await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(x => x.EmployeeId == employee.Id);
-        (await CreateController(db, tenantId, Guid.NewGuid()).ApproveChange(change.Id, CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        (await ApprovalCenterDriver.ApproveChangeAsync(db, tenantId, change.Id)).Status.Should().Be("Approved");
 
         db.ChangeTracker.Clear();
         var profile = await db.EmployeePayrollProfiles.AsNoTracking().SingleAsync(x => x.EmployeeId == employee.Id);

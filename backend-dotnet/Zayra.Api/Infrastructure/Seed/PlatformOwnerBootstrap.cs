@@ -60,6 +60,6 @@ public static class PlatformOwnerBootstrap
             CreatedAtUtc = DateTime.UtcNow
         });
         await db.SaveChangesAsync(ct);
-        logger.LogInformation("PlatformOwnerBootstrap: seeded platform owner {Email}", email);
+        logger.LogInformation("PlatformOwnerBootstrap: seeded the platform owner account.");
     }
 }

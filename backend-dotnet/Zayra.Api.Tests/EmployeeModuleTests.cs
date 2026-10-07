@@ -19,8 +19,15 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
 
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeModuleTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeModuleTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     [Fact]
     public async Task ApproveDraft_ActivatesEmployeeCreatesUserAndHistory()
     {
@@ -161,6 +168,38 @@ public class EmployeeModuleTests
         var stored = await db.Employees.SingleAsync(x => x.TenantId == tenantId && x.EmployeeCode == "EMP-CREATE-001");
         stored.JoiningDate.Kind.Should().Be(DateTimeKind.Utc);
         stored.JoiningDate.Should().Be(new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc));
+    }
+
+    [Fact]
+    public async Task CreateAndUpdate_WithInvalidIban_RefuseWithoutRepeatingTheIban()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db, new AuditService(db), new FakeDocumentStorage(), TestNotifications.For(db));
+        var context = new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+        const string badIban = "SA0480000000608010167519"; // fails mod-97
+        EmployeeCreateRequest Request(string code, string? iban) => new(
+            EmployeeCode: code, ManualEmployeeCode: true, EnglishName: "Iban Entry", ArabicName: null, PreferredName: null,
+            Gender: "Male", DateOfBirth: null, Nationality: "Pakistani", MaritalStatus: null, PersonalEmail: null,
+            WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: null, BranchId: null, DepartmentId: null,
+            DesignationId: null, GradeId: null, CostCenterId: null, JobTitle: null, ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null, EmploymentType: "Full-Time", ContractType: "Unlimited",
+            JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc), ConfirmationDate: null, ProbationStartDate: null,
+            ProbationEndDate: null, NoticePeriodDays: null, WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null,
+            LeavePolicyCode: null, AttendancePolicyCode: null,
+            PayrollProfile: iban is null ? null : new EmployeePayrollProfileRequest(
+                "Test Bank", iban, null, "Bank Transfer", "SAR", null, null, true, true, null, null, null),
+            SalaryBreakdown: null, ComplianceRecords: null);
+
+        var create = async () => await service.CreateAsync(tenantId, Request("EMP-IBAN-C", badIban), context, CancellationToken.None);
+        (await create.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("IBAN ***7519 is invalid: wrong checksum").And.NotContain(badIban);
+
+        var created = await service.CreateAsync(tenantId, Request("EMP-IBAN-U", null), context, CancellationToken.None);
+        var update = async () => await service.UpdateAsync(tenantId, created.Id, Request("EMP-IBAN-U", badIban), context, CancellationToken.None);
+        (await update.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("IBAN ***7519 is invalid: wrong checksum").And.NotContain(badIban);
     }
 
     [Fact]
@@ -439,7 +478,7 @@ public class EmployeeModuleTests
     [Fact]
     public async Task EmployeeImportPreview_InvalidIban_ProducesWarning()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         var ctrl = CreateController(db, tenantId);
 
@@ -453,10 +492,10 @@ public class EmployeeModuleTests
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
         // Row is WillCreate (not Error) because IBAN issue is a warning only
         Assert.Contains("WillCreate", json);
-        Assert.Contains("IBAN", json);
-        Assert.Contains("invalid", json);
+        Assert.Contains("IBAN ***IBAN is invalid", json);
+        Assert.DoesNotContain("INVALID-IBAN", json);
         // No DB records created (preview is dry-run)
-        Assert.Equal(0, await db.EmployeePayrollProfiles.CountAsync());
+        Assert.Equal(0, await db.EmployeePayrollProfiles.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId));
     }
 
     // ── Test: 15-row import on a fresh empty tenant succeeds without pre-setup ─
@@ -581,7 +620,7 @@ public class EmployeeModuleTests
     //    empty errors[] — a success-looking no-op). ──
 
     [Fact]
-    public async Task EmployeeImport_BlankFullName_RecordsPerRowErrorInsteadOfSilentSkip()
+    public async Task EmployeeImport_BlankFullName_RefusesTheWholeFileNamingTheRow()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
@@ -589,23 +628,24 @@ public class EmployeeModuleTests
 
         const string csv =
             "EmployeeCode,FullName,JoiningDate\n" +
+            "EMP-OK-001,Named Person,2024-01-15\n" +
             "EMP-BLANK-001,,2024-01-15\n";
 
         var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        Assert.Contains("\"created\":0", json);
-        Assert.Contains("missing FullName", json);
-        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-BLANK-001"));
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(refused.Value);
+        Assert.Contains("import_rows_invalid", json);
+        Assert.Contains("\"row\":3", json);
+        Assert.Contains("FullName is empty", json);
+        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId), "all or nothing: the named row is not imported either");
     }
 
-    // ── Regression: two rows sharing an EmployeeCode in the SAME file no longer both slip past
-    //    the DB-only duplicate check and blow up the batch SaveChanges — the second is skipped
-    //    with a clear error and the first still persists. ──
+    // ── Two rows sharing an EmployeeCode in the SAME file: the file is refused, naming both rows — it used to
+    //    keep the first and skip the second, so one of the two people silently never arrived. ──
 
     [Fact]
-    public async Task EmployeeImport_DuplicateEmployeeCodeWithinFile_SkipsSecondAndPersistsFirst()
+    public async Task EmployeeImport_DuplicateEmployeeCodeWithinFile_RefusesTheWholeFile()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
@@ -618,11 +658,10 @@ public class EmployeeModuleTests
 
         var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        Assert.Contains("\"created\":1", json);
-        Assert.Contains("duplicated within the import file", json);
-        Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-DUP-001"));
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        var json = System.Text.Json.JsonSerializer.Serialize(refused.Value);
+        Assert.Contains("is also used by row 2", json);
+        Assert.Equal(0, await db.Employees.CountAsync(e => e.TenantId == tenantId));
     }
 
     // ── Regression: an IBAN that fails the ISO 13616 mod-97 checksum is now caught at IMPORT time via a
@@ -649,6 +688,9 @@ public class EmployeeModuleTests
         var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
         Assert.Contains("\"created\":1", json);
         Assert.Contains("mod-97", json);
+        // The warning names the IBAN by its last 4 only: import warnings are shown and kept with the batch.
+        Assert.Contains("IBAN ***9876 is invalid", json);
+        Assert.DoesNotContain("SA4420000009876543219876", json);
         Assert.True(await db.Employees.AnyAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-IBAN-BAD"));
     }
 

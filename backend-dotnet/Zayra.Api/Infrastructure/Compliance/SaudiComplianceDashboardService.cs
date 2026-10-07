@@ -1,3 +1,5 @@
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Application.CountryPack;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Payroll;
@@ -23,12 +25,17 @@ public sealed class SaudiComplianceDashboardService
     /// "not known to be live", which is reported as a simulation — the safe reading (F09).
     /// </param>
     public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation,
-        IQiwaApiAdapter? qiwaAdapter = null)
+        IQiwaApiAdapter? qiwaAdapter = null, IStatutoryRuleReader? rules = null)
     {
         _db = db;
         _reconciliation = reconciliation;
         _qiwaAdapter = qiwaAdapter;
+        // The payslip's own rule reader, so GOSI readiness here is the run's verdict. Defaults to the
+        // database-backed reader for callers that construct the service directly.
+        _rules = rules ?? new StatutoryRuleReader(db);
     }
+
+    private readonly IStatutoryRuleReader _rules;
 
     public async Task<SaudiComplianceDashboard> BuildAsync(Guid tenantId, CancellationToken ct)
     {
@@ -85,7 +92,10 @@ public sealed class SaudiComplianceDashboardService
 
         var failedCount = await _db.QiwaSyncLogs
             .CountAsync(l => l.TenantId == tenantId &&
-                             (l.Status == QiwaSyncLogStatuses.Failed || l.Status == QiwaSyncLogStatuses.DeadLetter), ct);
+                             (l.Status == QiwaSyncLogStatuses.Failed
+                              || (l.Status == QiwaSyncLogStatuses.DeadLetter
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                                  && l.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason)), ct);
 
         // F09: "Last sync" used to be the newest "Success" row — under the sandbox adapter, a
         // simulation. The real filing and the simulator run are now separate fields.
@@ -99,7 +109,7 @@ public sealed class SaudiComplianceDashboardService
             total, ready, blocked.Count, percent,
             failedCount, lastFiled, blocked,
             IsLiveIntegration: live,
-            IntegrationMode: live ? "Live" : QiwaSyncLogStatuses.SimulatedLabel,
+            IntegrationMode: QiwaSyncLogStatuses.ModeLabel(live),
             LastSimulatedSync: lastSimulated);
     }
 
@@ -162,15 +172,6 @@ public sealed class SaudiComplianceDashboardService
             .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
-        // IgnoreQueryFilters is intentional: same as GosiReadinessReportService — Guid.Empty
-        // platform defaults are invisible through the global tenant filter. Scope is re-applied
-        // explicitly: own-tenant overrides + Guid.Empty defaults only.
-        var rules = await _db.GosiContributionRules
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(r => (r.TenantId == Guid.Empty || r.TenantId == tenantId) && r.IsActive)
-            .ToListAsync(ct);
-
         var periodDate   = DateOnly.FromDateTime(DateTime.UtcNow);
         var missingRef   = employees.Count(e => string.IsNullOrWhiteSpace(e.GosiReference));
         // EmployeesMissingGosiEmployerId counts AFFECTED EMPLOYEES, so it is 0 for a tenant with no
@@ -180,20 +181,12 @@ public sealed class SaudiComplianceDashboardService
         var missingEmpId = string.IsNullOrWhiteSpace(company?.GosiEmployerId) ? employees.Count : 0;
         var employerIdConfigured = !string.IsNullOrWhiteSpace(company?.GosiEmployerId);
 
-        // Run readiness validator for every active employee.
-        var reports = employees.Select(e =>
-        {
-            var salary = salaries
-                .Where(s => s.EmployeeId == e.Id && s.EffectiveDate <= periodDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-
-            var applicable = GosiCalculationService.SelectActiveRules(
-                GosiCalculationService.DeriveClassification(e.Nationality),
-                rules, periodDate, tenantId);
-
-            return GosiReadinessValidator.Validate(e, salary?.BasicSalary, applicable);
-        }).ToList();
+        // GOSI readiness is the payroll run's own verdict: the payslip engine's result for the salary the
+        // run would use, judged with the run's codes (GosiReadinessValidator.AssessAsync).
+        var reports = new List<Zayra.Api.Infrastructure.Payroll.GosiReadinessReport>(employees.Count);
+        foreach (var e in employees)
+            reports.Add((await GosiReadinessValidator.AssessAsync(
+                _rules, e, GosiReadinessValidator.SalaryForPeriod(salaries, e.Id, periodDate), periodDate, ct)).Readiness);
 
         var readyCount      = reports.Count(r => r.IsReady);
         var blockedCount    = reports.Count(r => !r.IsReady);
@@ -238,6 +231,10 @@ public sealed class SaudiComplianceDashboardService
             warnings.Add("Company GOSI employer ID is not set.");
         if (gccCount > 0)
             warnings.Add($"{Plural(gccCount, "GCC employee", "GCC employees")} — contribution rates pending legal confirmation.");
+        // GOSI rate/ceiling values saved at tenant level are never applied by payroll (GosiStatutoryValues).
+        var ignoredGosiOverrides = await GosiStatutoryValues.FindIgnoredTenantOverridesAsync(_db, tenantId, ct);
+        if (ignoredGosiOverrides.Count > 0)
+            warnings.Add(GosiStatutoryValues.IgnoredOverrideWarning(ignoredGosiOverrides));
 
         return new GosiDashboardSection(
             missingRef, missingEmpId, employerIdConfigured,
@@ -407,10 +404,10 @@ public sealed class SaudiComplianceDashboardService
             items.Add(new(
                 "qiwa_simulated",
                 "High", "QIWA",
-                "QIWA is a simulation on this server: nothing is filed with Qiwa",
-                "This server runs the Qiwa sandbox simulator. Sync results are labelled Simulated (sandbox); no employee record has been sent to Qiwa or MHRSD.",
+                "Qiwa data check only: nothing is sent to Qiwa",
+                "This server checks your employee records against what Qiwa requires. It does not send anything to Qiwa or MHRSD, so a passed check is not a Qiwa filing.",
                 0,
-                "Ask your platform administrator to enable the live Qiwa adapter before relying on QIWA status for an inspection.",
+                "Record contract and employee changes in Qiwa itself, and keep the Qiwa confirmation as evidence before relying on Qiwa status for an inspection.",
                 "/saudi-compliance?tab=configure&section=qiwa",
                 "compliance.read", false, evaluatedAt));
         }
@@ -588,7 +585,7 @@ public record QiwaDashboardSection(
     IReadOnlyList<BlockedEmployee> BlockedEmployees,
     /// <summary>F09 — false whenever this server runs the sandbox simulator.</summary>
     bool IsLiveIntegration = false,
-    /// <summary>"Live" or "Simulated (sandbox)" — the label every screen shows.</summary>
+    /// <summary><see cref="QiwaSyncLogStatuses.ModeLabel"/> — the label every screen shows.</summary>
     string IntegrationMode = QiwaSyncLogStatuses.SimulatedLabel,
     /// <summary>The last simulator run. Nothing was filed.</summary>
     DateTime? LastSimulatedSync = null);

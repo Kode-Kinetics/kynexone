@@ -18,7 +18,7 @@
 import { resolveTarget } from '../identity/env';
 import {
   ALMARAI_AUDITOR, ALMARAI_BAKERY_HR, ALMARAI_COMPLIANCE, ALMARAI_DAIRY_HR, ALMARAI_DAIRY_PAYROLL,
-  ALMARAI_FINANCE, ALMARAI_HR, ALMARAI_HR_ASSISTANT, ALMARAI_HR_OFFICER, ALMARAI_KIOSK, ALMARAI_OWNER,
+  ALMARAI_FINANCE, ALMARAI_HR, ALMARAI_HR_ASSISTANT, ALMARAI_HR_OFFICER, ALMARAI_KIOSK, ALMARAI_LOAN_FINANCE, ALMARAI_OWNER,
   ALMARAI_PAYROLL_MANAGER, ALMARAI_RECRUITER, ALMARAI_SCOPED_ADMIN, ALMARAI_SLUG, GROUP_PASSWORD,
   INTELLIFLOW_EMP1, INTELLIFLOW_MANAGER, INTELLIFLOW_SLUG, INTELLIFLOW_SUPERVISOR, PLATFORM_EMAIL,
   PLATFORM_PASSWORD, type FixtureUser,
@@ -99,6 +99,8 @@ export const ROLES: RoleFixture[] = [
     'company', ['approver/checker actions', 'sibling-company payroll']),
   tenantRole('payroll-checker', 'Payroll Checker / Finance Approver', ALMARAI_FINANCE, GROUP_SLUG, 'group',
     ['platform administration']),
+  tenantRole('loan-finance', 'Loan Finance Operator', ALMARAI_LOAN_FINANCE, GROUP_SLUG, 'group',
+    ['payroll administration', 'platform administration']),
   tenantRole('auditor', 'Auditor (read-only)', ALMARAI_AUDITOR, GROUP_SLUG, 'group',
     ['any write', 'platform administration']),
   tenantRole('scoped-admin', 'Selected-companies admin (2 of 5)', ALMARAI_SCOPED_ADMIN, GROUP_SLUG, 'companies',

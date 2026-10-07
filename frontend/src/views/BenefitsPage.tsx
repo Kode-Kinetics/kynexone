@@ -14,6 +14,9 @@ import { gradesApi, type GradeDto } from '@/src/api/organization';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useCompany } from '@/src/contexts/CompanyContext';
 import { useAppToast } from '@/src/components/ui/AppToast';
+import { useLocale } from '@/src/contexts/LocaleContext';
+import { useReleaseA } from '@/src/lib/releaseA';
+import Link from 'next/link';
 
 // ── shared styling ──────────────────────────────────────────────────────────────
 
@@ -63,11 +66,12 @@ function FormError({ message }: { message: string | null }) {
 type Tab = 'plans' | 'enrollments';
 
 export function BenefitsPage() {
-  const { hasRole } = useAuth();
+  const { hasRole, hasPermission } = useAuth();
   const { companies, companyVersion } = useCompany();
   const canManagePlans = hasRole('Admin') || hasRole('HR Manager');
   const canEnroll = canManagePlans || hasRole('HR Officer');
-  const canRecordMoney = canManagePlans || hasRole('Finance');
+  // Contributions and payroll-deduction links need employees.approve (BenefitsController).
+  const canRecordMoney = hasPermission('employees.approve');
 
   const [tab, setTab] = useState<Tab>('plans');
   const [plans, setPlans] = useState<BenefitPlan[]>([]);
@@ -284,6 +288,11 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
   canManage: boolean; canEnroll: boolean; onEdit: () => void; onEnroll: () => void;
 }) {
   const toast = useAppToast();
+  const { t } = useLocale();
+  // Release A (R1): which grade gets a benefit is set in Benefits by grade. For a release_a tenant the eligibility rules
+  // are read-only here (the API refuses writes with 409); existing rules stay listed and are shown in the matrix import.
+  const rulesFrozen = useReleaseA();
+  const canEditRules = canManage && !rulesFrozen;
   const [rules, setRules] = useState<BenefitEligibilityRule[] | null>(null);
   const [rulesError, setRulesError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -327,14 +336,20 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
       <section>
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Eligibility rules</h3>
-          {canManage && !adding && (
+          {canEditRules && !adding && (
             <button type="button" className={SECONDARY} onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" /> Add rule</button>
           )}
         </div>
         <p className="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
           An employee is eligible when they match any active rule in effect on their start date. With no rules in effect, the plan is open to everyone in its company scope.
         </p>
-        {adding && (
+        {rulesFrozen && (
+          <p data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300">
+            {t('Which grades get a benefit is now set in Benefits by grade. These rules are kept for reference.')}{' '}
+            <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>
+          </p>
+        )}
+        {adding && canEditRules && (
           <AddRuleForm planId={plan.id} planFrom={plan.effectiveFrom} companies={companies} grades={grades}
             onCancel={() => setAdding(false)} onAdded={() => { setAdding(false); void loadRules(); }} />
         )}
@@ -357,7 +372,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
                 </div>
                 <div className="flex items-center gap-2">
                   <StatusPill active={r.isActive} />
-                  {canManage && r.isActive && (
+                  {canEditRules && r.isActive && (
                     <button type="button" onClick={() => void deactivate(r)} className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/[0.08]" aria-label="Deactivate rule">
                       <CircleSlash className="h-3.5 w-3.5" />
                     </button>

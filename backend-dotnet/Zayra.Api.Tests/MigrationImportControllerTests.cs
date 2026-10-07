@@ -1,3 +1,4 @@
+using Zayra.Api.Application.Auth;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -42,6 +43,39 @@ public sealed class MigrationImportControllerTests
         Assert.Equal(1, await db.Users.CountAsync(x => x.TenantId == tenantId));
         Assert.Equal(1, await db.EmployeeLeaveBalances.CountAsync(x => x.TenantId == tenantId));
         Assert.Equal(1, await db.AttendanceDailyRecords.CountAsync(x => x.TenantId == tenantId));
+    }
+
+    [Fact]
+    public async Task Commit_HashesOnePlaceholderPasswordPerImport_NotOnePerUser()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var hasher = new CountingHasher();
+        var controller = CreateController(db, tenantId, hasher);
+        var request = new MigrationPackageRequest("migration-users-hash-001", new Dictionary<string, string>
+        {
+            ["roles"] = "Name,Description,AuthorityLevel,IsActive\nImported HR,Imported role,50,true\n",
+            ["users"] = "Email,FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\n"
+                + "a@example.com,User A,,en,UTC,Invited,Imported HR,false\n"
+                + "b@example.com,User B,,en,UTC,Invited,Imported HR,false\n"
+                + "c@example.com,User C,,en,UTC,Invited,Imported HR,false\n",
+        }, false);
+
+        var result = await controller.Commit(request, CancellationToken.None);
+
+        Assert.Equal("Completed", Assert.IsType<MigrationReconciliationDto>(Assert.IsType<OkObjectResult>(result.Result).Value).Status);
+        Assert.Equal(3, await db.Users.CountAsync(x => x.TenantId == tenantId));
+        Assert.Equal(1, hasher.Hashes);
+        Assert.True(await db.Users.Where(x => x.TenantId == tenantId).AllAsync(x => x.MustChangePassword && !x.IsEmailConfirmed),
+            "the shared placeholder is unusable: every imported user must still set their own password");
+    }
+
+    private sealed class CountingHasher : IPasswordHasher
+    {
+        private readonly Pbkdf2PasswordHasher _inner = new(1_000);
+        public int Hashes { get; private set; }
+        public string Hash(string password) { Hashes++; return _inner.Hash(password); }
+        public bool Verify(string password, string passwordHash) => _inner.Verify(password, passwordHash);
     }
 
     [Fact]
@@ -111,9 +145,18 @@ public sealed class MigrationImportControllerTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        // Payslip YTD opening balances need a cutover for the employee's legal entity
+        // (OPENING_BALANCE_NEEDS_CUTOVER), so the employee has one and the package declares it.
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Enterprise Co", RegistrationNumber = "ENT-0001",
+            CountryCode = "SAU", Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR", IsActive = true,
+        };
+        db.Companies.Add(company);
         db.Employees.Add(new Employee
         {
             TenantId = tenantId,
+            CompanyId = company.Id,
             EmployeeCode = "EMP-001",
             FullName = "Enterprise Employee",
             Status = EmployeeStatuses.Active
@@ -162,6 +205,7 @@ public sealed class MigrationImportControllerTests
         new Dictionary<string, string>
         {
             ["employeeHistory"] = "EmployeeCode,EventType,FieldName,OldValue,NewValue,EffectiveDate,Reason,SourceSystem,SourceRecordId\nEMP-001,JobChange,Designation,Associate,Manager,2026-01-01,Legacy migration,Workday,HIST-001\n",
+            ["companyCutover"] = "CompanyRegistrationNumber,CompanyLegalName,CutoverDate,SourceSystem,Status,Notes\nENT-0001,,2026-09-01,SAP,Active,Enterprise wave\n",
             ["payrollOpeningBalances"] = "EmployeeCode,Year,BalanceType,ComponentCode,Amount,Currency,SourceSystem,SourceRecordId\nEMP-001,2026,YTD_GROSS,BASIC,120000,SAR,SAP,PAY-OB-001\n",
             ["benefitsEnrollments"] = "EmployeeCode,PlanCode,PlanName,CoverageTier,EffectiveDate,EndDate,EmployeeContribution,EmployerContribution,Currency,Status,SourceSystem,SourceRecordId\nEMP-001,MED-GOLD,Medical Gold,Family,2026-01-01,,500,1500,SAR,Active,Oracle,BEN-001\n",
             ["documentManifests"] = "EmployeeCode,DocumentType,DocumentCategory,FileName,ContentType,StorageUrl,Checksum,VersionNumber,IssueDate,ExpiryDate,ApprovalStatus,RetentionClass,SourceSystem,SourceDocumentId\nEMP-001,Passport,Identity,passport.pdf,application/pdf,s3://legacy/passport.pdf,sha256:abc,1,2024-01-01,2034-01-01,Verified,EmployeeRecord,Workday,DOC-001\n",
@@ -169,14 +213,16 @@ public sealed class MigrationImportControllerTests
             ["reconciliationSignoffs"] = "ReconciliationType,SourceSystem,PreparedBy,ApprovedBy,SignedAtUtc,VarianceCount,VarianceAmount,Status,EvidenceUri\nPayrollOpeningBalances,SAP,payroll.lead@example.com,cfo@example.com,2026-01-05T10:00:00Z,0,0,Signed,s3://legacy/recon/payroll.pdf\n"
         }, false);
 
-    private static MigrationImportController CreateController(ZayraDbContext db, Guid tenantId)
+    private static MigrationImportController CreateController(ZayraDbContext db, Guid tenantId, IPasswordHasher? hasher = null)
     {
-        var controller = new MigrationImportController(db, new Pbkdf2PasswordHasher(), new AuditService(db));
+        var controller = new MigrationImportController(db, hasher ?? new Pbkdf2PasswordHasher(), new AuditService(db));
         var claims = new[]
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Role, "Admin")
+            new Claim(ClaimTypes.Role, "Admin"),
+            // An Admin's token carries security.manage; the roles/users sections require it (access gate).
+            new Claim("permission", "security.manage")
         };
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) } };
         return controller;

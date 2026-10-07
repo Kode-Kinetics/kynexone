@@ -1,5 +1,6 @@
 import client from './client';
 import { fetchAllPages } from '../lib/paging';
+import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
 
 export interface OrgChartNodeDto {
@@ -623,6 +624,20 @@ export interface EmployeeImportFieldGap {
 /** POST /api/employees/import-preview response (dry-run, persists nothing). */
 export interface EmployeeImportPreview {
   received: number;
+  /**
+   * The commit's own verdict: the server ran the real import of this file and rolled it back. A
+   * `would_refuse` here means Confirm would be refused with exactly this message and these rows.
+   */
+  commitCheck?: {
+    outcome: 'would_import' | 'would_refuse';
+    created?: number;
+    repaired?: number;
+    skipped?: number;
+    status?: number;
+    error?: string | null;
+    message?: string;
+    failedRows?: Array<{ row?: number; employeeCode?: string; problem?: string; column?: string }>;
+  } | null;
   wouldCreate: number;
   /** Existing employees that would only have missing details filled in (never overwritten). */
   wouldRepair?: number;
@@ -739,7 +754,9 @@ export const employeesApi = {
   list: (
     params: {
       search?: string;
-      status?: string;
+      // One status, or several: the API filters one status at a time, so several are fetched
+      // (one page each) and merged by id — enough for a picker, not for a paged list.
+      status?: string | readonly string[];
       department?: string;
       // Server-side readiness worklist filter (the "Needs info" deep-link). `readiness` ∈
       // Blocked | NeedsAttention | NotReady | Ready. `gapType`/`importBatchId` narrow to a
@@ -750,10 +767,21 @@ export const employeesApi = {
       page?: number;
       pageSize?: number;
     } = {},
-  ) =>
-    client.get<PagedResult<EmployeeListItem>>('/api/employees', {
-      params: { page: 1, pageSize: 25, ...params },
-    }).then((r) => r.data),
+  ): Promise<PagedResult<EmployeeListItem>> => {
+    const { status, ...rest } = params;
+    const fetchOne = (one: string | undefined) =>
+      client.get<PagedResult<EmployeeListItem>>('/api/employees', {
+        params: { page: 1, pageSize: 25, ...rest, status: one },
+      }).then((r) => requirePage<PagedResult<EmployeeListItem>>(r.data, 'employees'));
+    if (typeof status === 'string' || status === undefined || status.length < 2) {
+      return fetchOne(typeof status === 'string' ? status : status?.[0]);
+    }
+    return Promise.all(status.map(fetchOne)).then((pages) => {
+      const byId = new Map(pages.flatMap((p) => p.items ?? []).map((e) => [e.id, e] as const));
+      const items = [...byId.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)).slice(0, rest.pageSize ?? 25);
+      return { items, total: items.length, page: 1, pageSize: rest.pageSize ?? 25 };
+    });
+  },
 
   /** Every matching employee, page by page, for a list that must be complete (e.g. a select). */
   listAll: (params: { search?: string; status?: string; department?: string } = {}) =>
@@ -791,6 +819,13 @@ export const employeesApi = {
    */
   resolveDuplicate: (id: number, body: ResolveDuplicateRequest) =>
     client.post(`/api/employees/${id}/resolve-duplicate`, body).then((r) => r.data),
+
+  /**
+   * Confirm bank details an import set for a new employee (clears the pay:bankUnverified flag, audited).
+   * The server refuses the person who imported them and the employee themselves.
+   */
+  confirmImportedBankDetails: (id: number, note: string) =>
+    client.post(`/api/employees/${id}/bank-details/confirm`, { note }).then((r) => r.data),
 
   /** Sends only the changed fields; sensitive fields (salary, passport, bank…) return 202 and go to an approval workflow. */
   update: (id: number, effectiveDate: string, changes: Record<string, unknown>) =>

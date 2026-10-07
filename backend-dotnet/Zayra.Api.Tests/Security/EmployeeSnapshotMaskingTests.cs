@@ -10,8 +10,9 @@ namespace Zayra.Api.Tests.Security;
 /// Phase 1A P0: EmployeeHistory.SnapshotJson previously persisted the raw Employee via
 /// JsonSerializer.Serialize(employee) — salary, IBAN, Iqama, passport, national IDs and
 /// medical data landed unmasked in the audit/history table, bypassing EmployeeSensitiveMask
-/// (which only guards API read paths). EmployeeSafeSnapshot is now the only permitted
-/// snapshot serializer. These tests pin its guarantees and lint the source so a raw
+/// (which only guards API read paths). EmployeeSafeSnapshot is the permitted EmployeeHistory
+/// serializer. Separately scoped loan financial projections have exact documented exemptions
+/// below, pinned by adversarial field-allowlist tests. These tests lint the source so a raw
 /// Serialize(employee) can never be reintroduced on a SnapshotJson assignment.
 /// </summary>
 public class EmployeeSnapshotMaskingTests
@@ -198,12 +199,62 @@ public class EmployeeSnapshotMaskingTests
                         || x.Text.Contains("SnapshotJson = System.Text.Json.JsonSerializer.Serialize("))
             // EOSB RulesSnapshotJson serializes a non-PII formula projection, not an Employee.
             .Where(x => !x.Text.Contains("RulesSnapshotJson"))
+            // LoanEmploymentSnapshot is a typed, restricted financial projection, not Employee.
+            // It intentionally retains lender-company salary for affordability change detection;
+            // the normal EmployeeHistory serializer would replace it with an HMAC and break that
+            // contract. LoanLifecycleTests.LoanFinancialSnapshot_UsesExplicitFieldAllowlist_AndExcludesUnrelatedEmployeeSecrets
+            // pins the EXACT keys, salary-change behavior, and absence of bank/identity/medical data.
+            // SystemRefresh_AfterCompanyTransfer_DoesNotCopyNewEmployerCompensationIntoLenderSnapshotOrAudit
+            // additionally pins foreign-company masking. No other assignment or file is exempted.
+            .Where(x => !IsRestrictedLoanFinancialProjection(x.File, x.Text))
+            // LoanEligibilityAssessment is likewise a typed financial decision projection, not
+            // an Employee. Salary and commitments are necessary evidence of affordability.
+            // LoanLifecycleTests.EligibilitySnapshots_AtCreationAndApproval_UseRestrictedFinancialAssessment
+            // pins the ten assessment keys and rejects unrelated employee secrets in persisted JSON.
+            // Only these two exact controller assignments are exempt, never arbitrary SnapshotJson.
+            .Where(x => !IsRestrictedLoanEligibilityProjection(x.File, x.Text))
             .ToList();
 
         offenders.Should().BeEmpty(
             "EmployeeHistory.SnapshotJson must be produced by EmployeeSafeSnapshot.Serialize — " +
             "raw JsonSerializer.Serialize(employee) persists unmasked salary/IBAN/Iqama/passport/medical data");
     }
+
+    [Fact]
+    public void LoanFinancialProjectionExemption_DoesNotPermitOtherFilesOrRawEmployeeAssignments()
+    {
+        var allowedPath = Path.Combine("root", "Infrastructure", "Finance", "LoanLifecycleService.cs");
+        const string allowedLine = "if (current != null) loan.EmploymentSnapshotJson = JsonSerializer.Serialize(current);";
+        IsRestrictedLoanFinancialProjection(allowedPath, allowedLine).Should().BeTrue();
+        IsRestrictedLoanFinancialProjection(Path.Combine("root", "EmployeeManagementService.cs"), allowedLine).Should().BeFalse();
+        IsRestrictedLoanFinancialProjection(allowedPath, "loan.EmploymentSnapshotJson = JsonSerializer.Serialize(employee);").Should().BeFalse();
+        IsRestrictedLoanFinancialProjection(allowedPath, "SnapshotJson = JsonSerializer.Serialize(current);").Should().BeFalse();
+        IsRestrictedLoanFinancialProjection(allowedPath, "if (current != null) loan.EmploymentSnapshotJson = JsonSerializer.Serialize(employee);").Should().BeFalse();
+    }
+
+    private static bool IsRestrictedLoanFinancialProjection(string file, string line) =>
+        file.EndsWith(Path.Combine("Infrastructure", "Finance", "LoanLifecycleService.cs"), StringComparison.Ordinal)
+        && line.Trim() == "if (current != null) loan.EmploymentSnapshotJson = JsonSerializer.Serialize(current);";
+
+    [Fact]
+    public void LoanEligibilityProjectionExemption_OnlyPermitsExactControllerAssignments()
+    {
+        var path = Path.Combine("root", "Controllers", "Finance", "LoansController.cs");
+        const string create = "PolicySnapshotJson = assessment.PolicySnapshotJson, EligibilitySnapshotJson = JsonSerializer.Serialize(assessment),";
+        const string approve = "loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);";
+        foreach (var line in new[] { create, approve })
+        {
+            IsRestrictedLoanEligibilityProjection(path, line).Should().BeTrue();
+            IsRestrictedLoanEligibilityProjection(Path.Combine("root", "Controllers", "EmployeesController.cs"), line).Should().BeFalse();
+            IsRestrictedLoanEligibilityProjection(path, line.Replace("Serialize(assessment)", "Serialize(employee)")).Should().BeFalse();
+            IsRestrictedLoanEligibilityProjection(path, line.Replace("EligibilitySnapshotJson", "SnapshotJson")).Should().BeFalse();
+        }
+    }
+
+    private static bool IsRestrictedLoanEligibilityProjection(string file, string line) =>
+        file.EndsWith(Path.Combine("Controllers", "Finance", "LoansController.cs"), StringComparison.Ordinal)
+        && line.Trim() is "PolicySnapshotJson = assessment.PolicySnapshotJson, EligibilitySnapshotJson = JsonSerializer.Serialize(assessment),"
+            or "loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);";
 
     private static string? ResolveSourceRoot()
     {

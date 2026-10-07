@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { RefreshQueue } from './refreshQueue';
+import { isRefreshRefused } from '../lib/authLoadState';
+import { clearSessionKeepingLocale } from './clearSession';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -106,9 +108,16 @@ client.interceptors.response.use(
     if (err.response?.status === 403) {
       const isFeatureGated = err.response?.data?.error === 'feature_not_enabled';
       if (!isFeatureGated && typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('zayra:access-denied', {
-          detail: 'You do not have permission to perform this action. Please contact your administrator.',
-        }));
+        // Prefer the server's reason (e.g. a separation-of-duties refusal) over the generic text, in Arabic
+        // when the page is Arabic and the server sent one (messageAr, e.g. a privilege-ceiling refusal).
+        const arabic = document.documentElement.lang === 'ar';
+        const arReason = typeof err.response?.data?.messageAr === 'string' ? err.response.data.messageAr.trim() : '';
+        const reason = arabic && arReason
+          ? arReason
+          : typeof err.response?.data?.message === 'string' && err.response.data.message.trim()
+            ? err.response.data.message
+            : 'You do not have permission to perform this action. Please contact your administrator.';
+        window.dispatchEvent(new CustomEvent('zayra:access-denied', { detail: reason }));
       }
       return Promise.reject(err);
     }
@@ -128,7 +137,7 @@ client.interceptors.response.use(
     isRefreshing = true;
     try {
       const refreshToken = localStorage.getItem('zayra_refresh_token');
-      if (!refreshToken) throw new Error('No refresh token');
+      if (!refreshToken) throw Object.assign(new Error('No refresh token'), { noRefreshToken: true });
       const { data } = await publicAuthClient.post('/api/auth/refresh', { refreshToken });
       localStorage.setItem('zayra_access_token', data.accessToken);
       localStorage.setItem('zayra_refresh_token', data.refreshToken);
@@ -137,9 +146,14 @@ client.interceptors.response.use(
       return client(original);
     } catch (refreshError) {
       pendingRefreshes.reject(refreshError);
-      localStorage.clear();
+      // Only a REFUSED refresh ends the session. When the refresh endpoint could not be reached
+      // (offline, a deploy's 502s) the refresh token may still be good: keep the session and let
+      // the caller show "can't reach the server" instead of signing the user out over a blip.
+      if (!isRefreshRefused(refreshError)) return Promise.reject(refreshError);
+      clearSessionKeepingLocale();
       window.location.href = '/login';
-      return Promise.reject(refreshError);
+      // The original 401: callers (AuthContext's /me) read it as a definite "signed out".
+      return Promise.reject(err);
     } finally {
       isRefreshing = false;
     }
@@ -156,11 +170,36 @@ export default client;
  * skipped here to avoid double toasts.
  */
 export function notifyApiError(err: unknown, fallback = 'Something went wrong. Please try again.'): void {
-  const e = err as { response?: { status?: number; data?: { message?: string; error?: string } } };
-  const status = e?.response?.status;
+  const status = (err as { response?: { status?: number } } | null)?.response?.status;
   if (status === 401 || status === 402 || status === 403) return; // handled globally by the interceptor
-  const msg = e?.response?.data?.message ?? e?.response?.data?.error ?? fallback;
+  const msg = apiErrorReason(err, fallback);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('zayra:error', { detail: msg }));
   }
+}
+
+/**
+ * The plain-words reason for a failed action: the server's own sentence when it sent one (a
+ * domain refusal, a validation message), "could not be reached" when nothing answered, otherwise
+ * the caller's fallback. Never a bare error code ("maker_checker_violation") or an HTML page.
+ */
+export function apiErrorReason(err: unknown, fallback: string): string {
+  const e = err as { isAxiosError?: boolean; response?: { status?: number; data?: unknown } } | null;
+  if (e?.isAxiosError && !e.response) return 'The server could not be reached. Check your connection, then retry.';
+  // A 5xx body is server exception text, not a reason for the user: keep the caller's sentence.
+  const status = e?.response?.status;
+  if (status != null && status >= 500) return fallback;
+  const data = e?.response?.data;
+  const sentence = (v: unknown): string | null => (typeof v === 'string' && v.trim() && !/^\s*</.test(v) && v.length < 500 ? v.trim() : null);
+  if (typeof data === 'string') return sentence(data) ?? fallback;
+  if (data && typeof data === 'object') {
+    const body = data as { message?: unknown; detail?: unknown; error?: unknown; errors?: unknown; title?: unknown };
+    const fromErrors = body.errors && typeof body.errors === 'object'
+      ? Object.values(body.errors as Record<string, unknown>).flat().map(sentence).filter((m): m is string => !!m).slice(0, 3).join(' ') || null
+      : null;
+    // `error` is often a machine code; only a value with a space in it is a sentence.
+    const errorText = sentence(body.error);
+    return sentence(body.message) ?? sentence(body.detail) ?? fromErrors ?? (errorText && /\s/.test(errorText) ? errorText : null) ?? fallback;
+  }
+  return fallback;
 }

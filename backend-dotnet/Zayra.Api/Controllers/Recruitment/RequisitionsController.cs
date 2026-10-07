@@ -6,6 +6,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -130,20 +131,19 @@ public class RequisitionsController : ControllerBase
     public async Task<IActionResult> Submit(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var userId = this.GetUserId();
-        var r = await _db.ManpowerRequisitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
-        if (r is null) return NotFound();
-        if (r.Status != "Draft") return BadRequest(new { message = "Only Draft requisitions can be submitted." });
 
-        var approvalId = await _svc.CreateApprovalRequestAsync(
-            tenantId, "ManpowerRequisition", id,
-            $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}",
-            userId, ct);
-
-        r.Status = approvalId.HasValue ? "PendingApproval" : "Submitted";
-        r.SubmittedAtUtc = DateTime.UtcNow;
-        r.ApprovalRequestId = approvalId;
-        await _db.SaveChangesAsync(ct);
+        // ONE serialized unit: lock, read, route, start the approval, stamp the requisition, commit. Before
+        // this the approval was saved by CreateRequestAsync and the requisition by a second SaveChanges, with
+        // nothing between two simultaneous submits: both read Draft and each started its own Pending approval.
+        // Under the advisory lock the second submit reads the committed PendingApproval and is refused. A
+        // refusal after the approval was saved throws SubmitRefused, which rolls the whole unit back.
+        ManpowerRequisition r;
+        try
+        {
+            r = await FinanceDecisionSerializer.SerializeAsync(_db, SubmitLockScope, tenantId, id,
+                () => SubmitCoreAsync(tenantId, id, ct), ct);
+        }
+        catch (SubmitRefused refused) { return refused.Result; }
 
         await _notify.NotifyAsync(tenantId, null,
             "Requisition Submitted",
@@ -151,6 +151,51 @@ public class RequisitionsController : ControllerBase
             "ManpowerRequisition", r.Id.ToString(), ct);
 
         return Ok(r);
+    }
+
+    private const string SubmitLockScope = "recruitment.requisition-submit";
+
+    /// <summary>Carries a refusal out of the serialized unit so its transaction rolls back.</summary>
+    private sealed class SubmitRefused(IActionResult result) : Exception
+    {
+        public IActionResult Result { get; } = result;
+    }
+
+    private async Task<ManpowerRequisition> SubmitCoreAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        var r = await _db.ManpowerRequisitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct)
+            ?? throw new SubmitRefused(NotFound());
+        if (r.Status != "Draft") throw new SubmitRefused(BadRequest(new { message = "Only Draft requisitions can be submitted." }));
+
+        // The ONE router picks the workflow; a requisition has no employee subject, so only tenant-wide
+        // workflows apply, and none keeps the product rule that it is submitted without an approval step.
+        // The request is started through the shared approval service so step 1 is ROUTED to its configured
+        // approver (HR Manager by default, or a tenant's Finance step). It used to be inserted directly with
+        // no approver, which made every requisition's first step an "Any" step.
+        Guid? approvalId = null;
+        try
+        {
+            // Inside the try: a broken workflow (no steps, no final step) throws ApprovalRouteInvalidException
+            // from the router itself, and it is a 422 configuration error, not a 500.
+            var route = await new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(_db)
+                .TryResolveAsync(tenantId, null, "ManpowerRequisition", ct);
+            if (route is not null)
+            {
+                var started = await _approvals.CreateRequestAsync(tenantId, new CreateApprovalRequest(
+                    route.WorkflowId, "ManpowerRequisition", id.ToString(),
+                    $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}"), Context(), ct);
+                approvalId = started.Id;
+            }
+        }
+        // ApprovalRoutingException derives from InvalidOperationException, so it is caught first.
+        catch (ApprovalRoutingException ex) { throw new SubmitRefused(UnprocessableEntity(new { code = ex.Code, message = ex.Message })); }
+        catch (InvalidOperationException ex) { throw new SubmitRefused(BadRequest(new { message = ex.Message })); }
+
+        r.Status = approvalId.HasValue ? "PendingApproval" : "Submitted";
+        r.SubmittedAtUtc = DateTime.UtcNow;
+        r.ApprovalRequestId = approvalId;
+        await _db.SaveChangesAsync(ct);
+        return r;
     }
 
     // ── Decisions ─────────────────────────────────────────────────────────────────────────────

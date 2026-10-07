@@ -12,6 +12,7 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
+import { waitPhrase } from '../lib/retryAfter';
 
 /**
  * The aurora is CODE-SPLIT and never server-rendered.
@@ -107,7 +108,14 @@ export function LoginPage() {
       const status = err?.response?.status;
       if (status === 401)      setError('Invalid credentials. Check your email, password and workspace.');
       else if (status === 400) setError(err.response?.data?.message ?? 'Please check the details you entered.');
-      else if (status === 429) setError('Too many attempts. Please wait a moment and try again.');
+      else if (status === 429) {
+        // Distinct codes from the API (LoginAbuseGuard): only the account limit is "too many attempts".
+        const code = err?.response?.data?.error;
+        const when = waitPhrase(err?.response?.headers?.['retry-after']);
+        if (code === 'account_rate_limited') setError(`Too many attempts for this account. Please try again ${when}.`);
+        else if (code === 'ip_failure_budget') setError(`Too many failed sign-ins from your network. Please try again ${when}.`);
+        else setError(`The sign-in service is busy — try again ${when}.`);
+      }
       else if (!err?.response) setError('Cannot reach the server. Check your connection and try again.');
       else {
         const traceId = err.response?.data?.traceId;
@@ -375,7 +383,7 @@ export function LoginPage() {
                     to it. What is left is the only line here that changes what
                     someone does next. */}
                 <div className="lx-card-foot">
-                  <a className="lx-secondary" href="/pricing">Price it for your headcount</a>
+                  <a className="lx-secondary" href="/pricing">Get a proposal for your headcount</a>
                 </div>
               </div>
             </div>

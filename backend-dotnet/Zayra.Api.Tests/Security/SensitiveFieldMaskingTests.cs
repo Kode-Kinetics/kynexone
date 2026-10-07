@@ -31,7 +31,7 @@ namespace Zayra.Api.Tests.Security;
 /// IqamaNumber, MedicalInformation, DisciplinaryRecords, TerminationReason) is present
 /// when the caller can view sensitive data, and is masked (null / empty string) otherwise.
 ///
-/// Covers: canonical mask unit, list DTO field absence, detail endpoint, draft-approve endpoint.
+/// Covers: list DTO field absence, detail endpoint, draft-approve endpoint, and the permission-only gate.
 /// </summary>
 public class SensitiveFieldMaskingTests
 {
@@ -73,37 +73,6 @@ public class SensitiveFieldMaskingTests
 
     private static RequestContext TestContext(Guid tenantId) =>
         new("127.0.0.1", "test", Guid.NewGuid(), tenantId);
-
-    // ── EmployeeSensitiveMask canonical coverage ──────────────────────────────────
-
-    [Fact]
-    public void EmployeeSensitiveMask_Apply_ClearsAllNineFields()
-    {
-        var emp = new Employee
-        {
-            Salary              = 99_000m,
-            BankName            = "Bank",
-            BankIban            = "SA00000000001",
-            WpsBankDetails      = "WPS",
-            PassportNumber      = "PASSPORT",
-            IqamaNumber         = "IQAMA",
-            MedicalInformation  = "MED",
-            DisciplinaryRecords = "DISC",
-            TerminationReason   = "TERM",
-        };
-
-        EmployeeSensitiveMask.Apply(emp);
-
-        emp.Salary.Should().BeNull();
-        emp.BankName.Should().BeEmpty();
-        emp.BankIban.Should().BeEmpty();
-        emp.WpsBankDetails.Should().BeEmpty();
-        emp.PassportNumber.Should().BeEmpty();
-        emp.IqamaNumber.Should().BeEmpty();
-        emp.MedicalInformation.Should().BeEmpty();
-        emp.DisciplinaryRecords.Should().BeEmpty();
-        emp.TerminationReason.Should().BeEmpty();
-    }
 
     // ── List DTO — IqamaNumber must never appear for any role ─────────────────────
 
@@ -331,77 +300,7 @@ public class SensitiveFieldMaskingTests
         dto.IqamaNumber.Should().BeEmpty("HR Officer must NOT see Iqama in the update response");
     }
 
-    // ── P2.1: ApproveChange — mask gate on write response ────────────────────────
-
-    [Fact]
-    public async Task ApproveChange_AdminRole_ResponseIsEmployeeDetailDto_WithSensitiveData()
-    {
-        await using var db = CreateDb();
-        var tenantId = await SeedTenantAsync(db);
-        var emp = SeedEmployee(db, tenantId);
-        var controller = CreateController(db, tenantId, "Admin");
-
-        var change = new EmployeeChangeRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = emp.Id,
-            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.Date),
-            SensitiveFields = "salary",
-            ProposedChangesJson = System.Text.Json.JsonSerializer.Serialize(
-                new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["salary"] = System.Text.Json.JsonSerializer.SerializeToElement(60_000m)
-                })
-        };
-        db.EmployeeChangeRequests.Add(change);
-        await db.SaveChangesAsync();
-
-        var result = await controller.ApproveChange(change.Id, CancellationToken.None);
-
-        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
-        dto.Should().NotBeNull("ApproveChange must return EmployeeDetailDto");
-        dto.Salary.Should().Be(60_000m, "Admin sees updated salary unmasked after approving change");
-        dto.IqamaNumber.Should().Be("2000000001", "Admin sees Iqama unmasked in approve response");
-    }
-
-    [Fact]
-    public async Task ApproveChange_UnprivilegedViewerForRead_ResponseMasksSensitiveFields()
-    {
-        await using var db = CreateDb();
-        var tenantId = await SeedTenantAsync(db);
-        var emp = SeedEmployee(db, tenantId);
-
-        var change = new EmployeeChangeRequest
-        {
-            TenantId = tenantId,
-            EmployeeId = emp.Id,
-            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.Date),
-            SensitiveFields = "salary",
-            ProposedChangesJson = System.Text.Json.JsonSerializer.Serialize(
-                new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["salary"] = System.Text.Json.JsonSerializer.SerializeToElement(60_000m)
-                })
-        };
-        db.EmployeeChangeRequests.Add(change);
-        await db.SaveChangesAsync();
-
-        // HR Manager can approve but does NOT satisfy CanViewSensitive (only Admin/HR Manager/Payroll Officer do)
-        // ApproveChange is limited to Admin,HR Manager — so test HR Manager seeing salary (they CAN)
-        // and separately confirm CanViewSensitive returns false for non-qualifying roles.
-        // Use Auditor role impersonation on the read side to verify mask in write response.
-        // The practical mask test: CanViewSensitive() in controller returns false when role != Admin/HR Manager/Payroll Officer.
-        // We test this with a role that passes [Authorize(Roles="Admin,HR Manager")] but doesn't satisfy CanViewSensitive.
-        // For this scenario we simply assert that a non-HR-Manager role calling the endpoint gets masked output.
-        // We create a controller with no roles to confirm that CanViewSensitive=false masks the response.
-        var noRoleController = CreateController(db, tenantId, "Auditor");
-        // Note: Auditor cannot call ApproveChange (filtered by Authorize attribute, but in unit tests attribute isn't enforced)
-        var result = await noRoleController.ApproveChange(change.Id, CancellationToken.None);
-
-        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
-        dto.Salary.Should().BeNull("Auditor-role caller must NOT see salary in ApproveChange write response");
-        dto.BankIban.Should().BeEmpty("Auditor-role caller must NOT see IBAN");
-    }
+    // ── P2.1: ApproveChange — retired (410); its response no longer carries employee data. ──
 
     // ── P2.1: ApproveHrTransfer — mask gate on write response ────────────────────
 
@@ -569,7 +468,66 @@ public class SensitiveFieldMaskingTests
         privilegedCsv.Should().NotContain("OTHER-TENANT-CODE");
     }
 
+    // ── Sensitive visibility is the employees.sensitive PERMISSION, never a role name ──────────────
+
+    [Theory]
+    // A tenant-made custom role that happens to be called "Payroll Officer", without the permission.
+    [InlineData("Payroll Officer")]
+    // Built-in names whose holder had employees.sensitive denied per-user (the claim is absent from the token).
+    [InlineData("Admin")]
+    [InlineData("HR Manager")]
+    public async Task Get_RoleNameWithoutSensitivePermission_SeesMaskedValues(string roleName)
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAsync(db);
+        var emp = SeedEmployee(db, tenantId);
+        var controller = CreateControllerWithPermissions(db, tenantId, roleName, "employees.read");
+
+        var result = await controller.Get(emp.Id, CreateService(db), CancellationToken.None);
+
+        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        dto.Salary.Should().BeNull($"a role named '{roleName}' is not a grant");
+        dto.BankIban.Should().BeEmpty($"a role named '{roleName}' is not a grant");
+        dto.IqamaNumber.Should().BeEmpty();
+        dto.PassportNumber.Should().BeEmpty();
+        dto.MedicalInformation.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Get_AnyRoleHoldingSensitivePermission_SeesValues()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAsync(db);
+        var emp = SeedEmployee(db, tenantId);
+        var controller = CreateControllerWithPermissions(db, tenantId, "WPS Desk", "employees.read", "employees.sensitive");
+
+        var result = await controller.Get(emp.Id, CreateService(db), CancellationToken.None);
+
+        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        dto.BankIban.Should().Be("SA0000000000000000001234");
+        dto.Salary.Should().Be(50_000m);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────────
+
+    private static EmployeesController CreateControllerWithPermissions(ZayraDbContext db, Guid tenantId, string role, params string[] permissions)
+    {
+        var controller = new EmployeesController(
+            db, new Pbkdf2PasswordHasher(), new AuditService(db), new FakeDocumentStorage(), new FakeNotificationService(),
+            new FakeHijriDateService(), new DataScopeService(db), new FakeLetterService());
+        var claims = new List<Claim>
+        {
+            new("tenant_id", tenantId.ToString()),
+            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.Role, role),
+        };
+        claims.AddRange(permissions.Select(p => new Claim("permission", p)));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) },
+        };
+        return controller;
+    }
 
     private static async Task<Guid> SeedTenantAsync(ZayraDbContext db)
     {

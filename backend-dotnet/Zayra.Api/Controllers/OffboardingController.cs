@@ -30,17 +30,34 @@ public class OffboardingController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
     private readonly IEmployeeActivationGuard _activationGuard;
-    public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null)
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+
+    public OffboardingController(ZayraDbContext db, IAuditService? audit = null, IEmployeeActivationGuard? activationGuard = null,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
     {
         _db = db;
+        _termLifecycle = termLifecycle;
         // Mirror EmployeesController's ApprovalWorkflowService default: DI always supplies the audit
         // service in production; the optional fallback keeps direct-construction call sites working.
         _audit = audit ?? new Zayra.Api.Infrastructure.Audit.AuditService(db);
         _activationGuard = activationGuard ?? new EmployeeActivationGuard(db);
     }
 
+    /// <summary>
+    /// Release A: completing the offboarding is the separation, so every Active term of the employee ends with
+    /// <see cref="Zayra.Api.Application.Entitlements.ContractEndReasons.Separated"/> — an open renewal case is cancelled
+    /// (T21) by the hooks, in the caller's SaveChanges. A no-op for tenants without release_a.
+    /// </summary>
+    private async Task EndContractTermsOnSeparationAsync(Guid tenantId, Guid employeePublicId, CancellationToken ct) =>
+        // Release A: the employee's Active terms end (Terminated on the day, reason Separated) and their packages close.
+        await Zayra.Api.Infrastructure.Entitlements.SeparationTermEnder.EndActiveTermsAsync(_db, _termLifecycle, tenantId, employeePublicId,
+            this.GetUserId(), ct);
+
+    // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): the role list resolved to employees.read, so every staff role (line Manager, Recruiter,
+    // HR Assistant...) read every exit interview in the tenant. HR, plus the payroll approvers who record settlement payments here.
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> List([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -52,6 +69,7 @@ public class OffboardingController : ControllerBase
 
     [HttpGet("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -62,6 +80,7 @@ public class OffboardingController : ControllerBase
     /// <summary>Attrition insight: in-notice/completed counts, avg exit rating, and reasons breakdown.</summary>
     [HttpGet("summary")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.write", "payroll.approve")]
     public async Task<IActionResult> Summary(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -395,12 +414,16 @@ public class OffboardingController : ControllerBase
             var accessRevokedNow = req.AccessRevoked == true && !graph.Offboarding.AccessRevoked;
             if (accessRevokedNow)
             {
-                EnsureAnotherAdministratorSurvives(graph, changedAtUtc);
-                StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: false, changedAtUtc,
-                    HttpContext.Connection.RemoteIpAddress?.ToString());
+                var decision = await StageGatedAccessRevocationAsync(graph, tenantId, unlinkAccount: false, changedAtUtc,
+                    "offboarding.checklist", token);
                 _db.AuditLogs.Add(CreateOffboardingAudit(
                     revocationAuditId, changedAtUtc, "offboarding.access_revoked", graph,
-                    new { source = "checklist", userIds = graph.TargetUsers.Select(x => x.Id).ToArray() }));
+                    new
+                    {
+                        source = "checklist",
+                        userIds = decision.Deactivate.OrderBy(x => x).ToArray(),
+                        heldLogins = decision.Held.Select(h => new { h.UserId, h.Code }).ToArray()
+                    }));
             }
 
             graph.Offboarding.UpdatedAtUtc = changedAtUtc;
@@ -452,6 +475,7 @@ public class OffboardingController : ControllerBase
         var auditId = Guid.NewGuid();
         IActionResult? refusal = null;
         var alreadyRevoked = false;
+        IReadOnlyList<LinkedLoginDeactivationGate.HeldLogin> held = Array.Empty<LinkedLoginDeactivationGate.HeldLogin>();
 
         async Task<bool> MutateOnceAsync(CancellationToken token)
         {
@@ -477,13 +501,18 @@ public class OffboardingController : ControllerBase
                 return false;
             }
 
-            EnsureAnotherAdministratorSurvives(graph, changedAtUtc);
-            StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: false, changedAtUtc,
-                HttpContext.Connection.RemoteIpAddress?.ToString());
+            var decision = await StageGatedAccessRevocationAsync(graph, tenantId, unlinkAccount: false, changedAtUtc,
+                "offboarding.revoke_access", token);
+            held = decision.Held;
             graph.Offboarding.UpdatedAtUtc = changedAtUtc;
             _db.AuditLogs.Add(CreateOffboardingAudit(
                 auditId, changedAtUtc, "offboarding.access_revoked", graph,
-                new { source = "explicit", userIds = graph.TargetUsers.Select(x => x.Id).ToArray() }));
+                new
+                {
+                    source = "explicit",
+                    userIds = decision.Deactivate.OrderBy(x => x).ToArray(),
+                    heldLogins = decision.Held.Select(h => new { h.UserId, h.Code }).ToArray()
+                }));
             await _db.SaveChangesAsync(token);
             return true;
         }
@@ -508,7 +537,10 @@ public class OffboardingController : ControllerBase
             committed.Id,
             committed.AccessRevoked,
             committed.AccessRevokedAtUtc,
-            alreadyRevoked
+            alreadyRevoked,
+            // The visible exception: logins this actor may not switch off (an Admin's, the last Admin's, or one
+            // holding more than the actor). They stay active; the tenant's Admins were notified.
+            linkedLoginHeld = held.Select(h => new { h.UserId, h.Email, code = h.Code, message = h.MessageEn, messageAr = h.MessageAr }).ToArray()
         });
     }
 
@@ -586,15 +618,15 @@ public class OffboardingController : ControllerBase
                 return false;
             }
 
-            EnsureAnotherAdministratorSurvives(graph, completedAtUtc);
             off.FinalSettlementDone = true;
             off.Status = "Completed";
             off.CompletedAtUtc = completedAtUtc;
             off.UpdatedAtUtc = completedAtUtc;
             graph.Employee.Status = "Archived";
             graph.Employee.UpdatedAtUtc = completedAtUtc;
-            StageAccessRevocation(graph, this.GetUserId(), unlinkAccount: true, completedAtUtc,
-                HttpContext.Connection.RemoteIpAddress?.ToString());
+            await EndContractTermsOnSeparationAsync(tenantId, graph.Employee.PublicId, token);
+            var decision = await StageGatedAccessRevocationAsync(graph, tenantId, unlinkAccount: true, completedAtUtc,
+                "offboarding.complete", token);
 
             var context = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Request.Headers.UserAgent.ToString(), this.GetUserId(), tenantId);
@@ -604,7 +636,8 @@ public class OffboardingController : ControllerBase
                 auditId, completedAtUtc, "offboarding.completed", graph,
                 new
                 {
-                    userIds = graph.TargetUsers.Select(x => x.Id).ToArray(),
+                    userIds = decision.Deactivate.OrderBy(x => x).ToArray(),
+                    heldLogins = decision.Held.Select(h => new { h.UserId, h.Code }).ToArray(),
                     payrollProfilesDeactivated = footprint.Profiles,
                     salaryStructuresDeactivated = footprint.SalaryStructures
                 }));
@@ -688,6 +721,7 @@ public class OffboardingController : ControllerBase
         {
             emp.Status = "Archived";
             emp.UpdatedAtUtc = DateTime.UtcNow;
+            await EndContractTermsOnSeparationAsync(off.TenantId, emp.PublicId, ct);
             // Still unconditional and still unlinks: archiving IS the end of the employment, and the
             // revocation is idempotent when the checklist already ran it.
             await RevokeEmployeeAccessAsync(emp, this.GetUserId(), unlinkAccount: true, ct);
@@ -1324,14 +1358,46 @@ public class OffboardingController : ControllerBase
             passwordResets, mfaChallenges, refreshTokens);
     }
 
+    /// <summary>
+    /// The linked-login gate in front of <see cref="StageAccessRevocation"/>: ending the employment always goes on,
+    /// but a login this actor may not switch off (an Admin's when the actor is not one, the last operational
+    /// Admin's, or one holding more than the actor) is left active and raised as a coded exception: audited, and
+    /// notified to the tenant's Admins (<see cref="LinkedLoginDeactivationGate"/>).
+    /// </summary>
+    private async Task<LinkedLoginDeactivationGate.Decision> StageGatedAccessRevocationAsync(
+        LockedOffboardingGraph graph,
+        Guid tenantId,
+        bool unlinkAccount,
+        DateTime changedAtUtc,
+        string source,
+        CancellationToken ct)
+    {
+        var actorUserId = this.GetUserId();
+        var decision = await LinkedLoginDeactivationGate.DecideAsync(
+            _db, tenantId, actorUserId, graph.TargetUsers.Select(x => x.Id).ToList(), changedAtUtc, ct);
+        StageAccessRevocation(graph, actorUserId, unlinkAccount, changedAtUtc,
+            HttpContext.Connection.RemoteIpAddress?.ToString(), decision.Deactivate, decision.Held.Count > 0);
+        await LinkedLoginDeactivationGate.StageHeldAsync(_db, tenantId, ActorContext(tenantId), source,
+            "EmployeeOffboarding", graph.Offboarding.Id.ToString(), decision.Held, changedAtUtc, ct);
+        return decision;
+    }
+
+    private RequestContext ActorContext(Guid tenantId) => new(
+        HttpContext.Connection.RemoteIpAddress?.ToString(),
+        Request.Headers.UserAgent.ToString(),
+        this.GetUserId(),
+        tenantId);
+
     private void StageAccessRevocation(
         LockedOffboardingGraph graph,
         Guid? actorUserId,
         bool unlinkAccount,
         DateTime changedAtUtc,
-        string? actorIp)
+        string? actorIp,
+        IReadOnlySet<Guid> deactivate,
+        bool anyHeld)
     {
-        foreach (var user in graph.TargetUsers)
+        foreach (var user in graph.TargetUsers.Where(x => deactivate.Contains(x.Id)))
         {
             user.IsActive = false;
             user.IsEmailConfirmed = false;
@@ -1353,7 +1419,7 @@ public class OffboardingController : ControllerBase
             TenantSessionSecurity.RotateStamp(user, changedAtUtc);
         }
 
-        foreach (var link in graph.TargetLinks)
+        foreach (var link in graph.TargetLinks.Where(x => x.UserId is not Guid linked || deactivate.Contains(linked)))
         {
             link.AccessMode = AccessModes.NoLogin;
             link.Status = "NoLogin";
@@ -1367,33 +1433,23 @@ public class OffboardingController : ControllerBase
             link.UpdatedAtUtc = changedAtUtc;
             link.UpdatedBy = actorUserId;
         }
-        foreach (var reset in graph.PasswordResetTokens)
+        foreach (var reset in graph.PasswordResetTokens.Where(x => deactivate.Contains(x.UserId)))
             reset.UsedAtUtc = changedAtUtc;
-        foreach (var challenge in graph.MfaChallenges)
+        foreach (var challenge in graph.MfaChallenges.Where(x => x.UserId is Guid u && deactivate.Contains(u)))
             challenge.UsedAtUtc = changedAtUtc;
-        foreach (var refresh in graph.RefreshTokens)
+        foreach (var refresh in graph.RefreshTokens.Where(x => deactivate.Contains(x.UserId)))
         {
             refresh.RevokedAtUtc = changedAtUtc;
             refresh.RevokedByIp = actorIp;
         }
 
+        // A held-back login keeps its link and the employee pointer, so the Admin who finishes the job finds it,
+        // and the offboarding does not claim access was revoked while a login is still live.
+        if (anyHeld) return;
         if (unlinkAccount) graph.Employee.UserAccountId = null;
         graph.Offboarding.AccessRevoked = true;
         graph.Offboarding.AccessRevokedAtUtc ??= changedAtUtc;
         graph.Offboarding.AccessRevokedByUserId ??= actorUserId;
-    }
-
-    private static void EnsureAnotherAdministratorSurvives(
-        LockedOffboardingGraph graph, DateTime atUtc)
-    {
-        var targetIds = graph.TargetUsers.Select(x => x.Id).ToHashSet();
-        var removesAdministrator = graph.TargetUsers.Any(IsAdministrator);
-        if (!removesAdministrator) return;
-        if (graph.AdministratorCohort.Any(x => !targetIds.Contains(x.Id) && IsOperationalAdministrator(x, atUtc)))
-            return;
-        throw new OffboardingSafetyException(
-            "last_administrator",
-            "This offboarding would disable the tenant's last operational administrator. Assign another administrator first.");
     }
 
     private static bool IsAdministrator(User user) =>
@@ -1524,6 +1580,13 @@ public class OffboardingController : ControllerBase
             .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == employee.TenantId && !u.IsDeleted, ct);
         if (user is null) return;
+        var decision = await LinkedLoginDeactivationGate.DecideAsync(_db, employee.TenantId!.Value, actorUserId, new[] { uid }, DateTime.UtcNow, ct);
+        if (decision.Held.Count > 0)
+        {
+            await LinkedLoginDeactivationGate.StageHeldAsync(_db, employee.TenantId!.Value, ActorContext(employee.TenantId!.Value),
+                "offboarding.complete_legacy", "Employee", employee.Id.ToString(), decision.Held, DateTime.UtcNow, ct);
+            return;
+        }
 
         user.IsActive = false;
         user.Status = "Deactivated";
@@ -1566,6 +1629,15 @@ public class OffboardingController : ControllerBase
             .Include(u => u.EmployeeUserAccounts)
             .FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == employee.TenantId && !u.IsDeleted, ct);
         if (user is null) return false;
+        // Switching a login back ON is an access change too: not an Admin's unless the actor is one, not one above
+        // the actor. Held back, it stays off and the tenant's Admins are told.
+        var decision = await LinkedLoginDeactivationGate.DecideAsync(_db, employee.TenantId!.Value, actorUserId, new[] { uid }, DateTime.UtcNow, ct, restoring: true);
+        if (decision.Held.Count > 0)
+        {
+            await LinkedLoginDeactivationGate.StageHeldAsync(_db, employee.TenantId!.Value, ActorContext(employee.TenantId!.Value),
+                "offboarding.cancel_restore", "Employee", employee.Id.ToString(), decision.Held, DateTime.UtcNow, ct);
+            return false;
+        }
 
         user.IsActive = true;
         user.Status = "Active";

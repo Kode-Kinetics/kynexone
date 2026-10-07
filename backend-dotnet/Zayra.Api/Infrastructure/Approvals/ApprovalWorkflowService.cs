@@ -12,6 +12,10 @@ using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Timesheets;
 using Zayra.Api.Models;
+using Zayra.Api.Application.Jawazat;
+using Zayra.Api.Infrastructure.Jawazat;
+
+using Zayra.Api.Infrastructure.Common;
 
 namespace Zayra.Api.Infrastructure.Approvals;
 
@@ -26,6 +30,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     // Optional so direct constructions keep compiling; without it a future-dated change is still scheduled,
     // but with no baseline, so on its effective date it goes back for review instead of being applied.
     private readonly IDataProtector? _changeBaselineProtector;
+    private readonly IDataScopeService _dataScopes;
+    private readonly IHttpContextAccessor? _http;
+    private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
+    private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -39,7 +47,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IEstablishmentGuard? establishmentGuard = null,
         ILeaveService? leaveService = null,
         IApprovalRouter? router = null,
-        IDataProtectionProvider? dataProtection = null)
+        IDataProtectionProvider? dataProtection = null,
+        IDataScopeService? dataScopes = null,
+        IHttpContextAccessor? http = null)
     {
         _db = db;
         _audit = audit;
@@ -49,6 +59,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // F1 — ONE router shared by this service and the leave aggregate it delegates to.
         _router = router ?? new ApprovalRouter(db, hierarchy);
         _leaveService = leaveService ?? new LeaveService(db, _router);
+        _http = http;
+        _dataScopes = dataScopes ?? new Zayra.Api.Infrastructure.Common.DataScopeService(db, http: http);
     }
 
     public async Task<PagedResult<ApprovalWorkflowDto>> GetWorkflowsAsync(Guid tenantId, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -70,6 +82,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
@@ -84,6 +97,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
+        EnsureRoleStepsNameARole(request);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
@@ -106,6 +120,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var query = _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).Where(x => x.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(entityName)) query = query.Where(x => x.EntityName == entityName);
+        // Company query filters do not enforce employee/department visibility. Apply Jawazat's
+        // employee boundary before Count/Skip/Take so excluded titles and totals never leak.
+        var jawazatScope = await ResolveJawazatScopeAsync(tenantId, context, cancellationToken);
+        var jawazatIds = jawazatScope.AllowedEmployeeIds ?? Array.Empty<int>();
+        var jawazatEntity = JawazatConstants.ApprovalEntityName.ToLowerInvariant();
+        query = query.Where(x => x.EntityName.ToLower() != jawazatEntity || (x.RequestedForEmployeeId != null
+            && (jawazatScope.IsUnrestricted || jawazatIds.Contains(x.RequestedForEmployeeId.Value))));
         if (string.IsNullOrWhiteSpace(queue) && context is not null && !CanViewAllApprovalRequests(context))
         {
             queue = "mine";
@@ -178,10 +199,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(cancellationToken);
+        var summaries = await LoadChangeSummariesAsync(tenantId, approvals, cancellationToken);
+        var otherDeciders = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var items = new List<ApprovalRequestDto>(approvals.Count);
         foreach (var approval in approvals)
         {
-            items.Add(approval.ToDto(await CanDecideRequestAsync(approval, context, cancellationToken)));
+            items.Add(await ProjectAsync(approval, context, summaries, otherDeciders, cancellationToken));
         }
         return new PagedResult<ApprovalRequestDto>(items, total, page, pageSize);
     }
@@ -189,6 +212,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto?> GetRequestAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
     {
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (request is not null && JawazatApprovalSync.IsJawazat(request)) return null;
         return request?.ToDto();
     }
 
@@ -197,12 +221,162 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var request = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (request is null) return null;
         if (!await CanViewRequestAsync(request, context, cancellationToken)) return null;
-        return request.ToDto(await CanDecideRequestAsync(request, context, cancellationToken));
+        var summaries = await LoadChangeSummariesAsync(tenantId, new[] { request }, cancellationToken);
+        return await ProjectAsync(request, context, summaries, new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), cancellationToken);
+    }
+
+    /// <summary>
+    /// The requester takes back their own pending employee change. Only the requester may, only while it
+    /// is pending, and only for <see cref="EmployeeChangeRequest"/>: other entities (leave, timesheets,
+    /// offers…) own a state machine of their own and are cancelled from their own screen, so closing the
+    /// approval alone here would strand them. Without this a mistaken or duplicate submission could only
+    /// sit in the queue until someone else rejected it.
+    /// </summary>
+    public async Task<ApprovalRequestDto?> WithdrawAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken)
+    {
+        var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
+        if (approval is null || !await CanViewRequestAsync(approval, context, cancellationToken)) return null;
+        if (approval.Status != "Pending") throw new InvalidOperationException("Only a pending request can be withdrawn.");
+        if (context.UserId is null || approval.RequestedByUserId != context.UserId)
+            throw new InvalidOperationException("Only the person who requested this can withdraw it.");
+        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("This kind of request is withdrawn from its own screen, not from the Approval Center.");
+
+        var note = string.IsNullOrWhiteSpace(reason) ? "Withdrawn by the requester." : Clean(reason);
+        if (Guid.TryParse(approval.EntityId, out var changeId)
+            && await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == changeId, cancellationToken) is { } change)
+        {
+            if (!string.Equals(change.Status, EmployeeChangeStatuses.PendingApproval, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"This change is already '{change.Status}' and can no longer be withdrawn.");
+            change.Status = EmployeeChangeStatuses.Cancelled;
+            change.RejectionReason = note;
+        }
+        approval.Status = "Cancelled";
+        approval.CompletedAtUtc = DateTime.UtcNow;
+        // Same compare-and-swap as DecideAsync: a withdrawal racing an approval cannot both commit.
+        approval.DecisionVersion++;
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            throw new InvalidOperationException("This request was decided while you were withdrawing it. Refresh to see the outcome.", ex);
+        }
+        await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
+            JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }), cancellationToken);
+        return await GetRequestAsync(tenantId, approval.Id, context, cancellationToken);
+    }
+
+    // context is null on the legacy context-less listing: nobody can decide there, and no reason is owed.
+    private async Task<ApprovalRequestDto> ProjectAsync(ApprovalRequest approval, RequestContext? context,
+        IReadOnlyDictionary<string, string?> summaries, Dictionary<string, bool> otherDeciders, CancellationToken cancellationToken)
+    {
+        // The bar is resolved once per row and shared by canDecide and the reason below.
+        var bar = context is null ? DecisionBar.None : await ResolveDecisionBarAsync(approval, context, cancellationToken);
+        var canDecide = bar == DecisionBar.None
+            && await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false);
+        var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
+        var canWithdraw = approval.Status == "Pending" && requestedByCaller
+            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
+        string? blockedReason = null;
+        if (context is not null && !canDecide && approval.Status == "Pending")
+        {
+            if (bar is DecisionBar.Subject or DecisionBar.DecidedEarlierStep)
+            {
+                // Same shape as maker-checker below: say why, then who can unblock it. A sole Admin who is
+                // the subject, or who decided step 1, must be told nobody else can ever decide it.
+                blockedReason = bar == DecisionBar.Subject
+                    ? "This request is about you, so someone else must decide it."
+                    : "You already decided an earlier step of this request, so a different person must decide this one.";
+                blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
+                    ? $" It is waiting for {OwnerLabel(approval)}."
+                    : NobodyElseSentence(approval, "decide", canWithdraw: false);
+            }
+            else if (requestedByCaller)
+            {
+                // Maker-checker is deliberate and stays. What was missing is saying so: the screen showed
+                // "Watching", and a sole administrator had no way to learn that nobody could ever decide.
+                blockedReason = "You requested this, so someone else must approve it (maker-checker).";
+                blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
+                    ? $" It is waiting for {OwnerLabel(approval)}."
+                    : NobodyElseSentence(approval, "approve", canWithdraw);
+            }
+            else
+            {
+                blockedReason = $"This step is assigned to {OwnerLabel(approval)}, which your access does not cover.";
+            }
+        }
+        return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId));
+    }
+
+    // A step routed to a named person is unblocked by reassigning it, not by granting "their" role.
+    private static string NobodyElseSentence(ApprovalRequest approval, string verb, bool canWithdraw) =>
+        ApprovalUnblock.NobodyElseSentence(verb,
+            approval.CurrentApproverUserId is not null || approval.CurrentApproverEmployeeId is not null
+                ? Clean(approval.CurrentApproverName) is { Length: > 0 } name ? name : "the named approver"
+                : null,
+            Clean(approval.CurrentApproverRole) is "" ? null : OwnerLabel(approval), canWithdraw);
+
+    private static string OwnerLabel(ApprovalRequest approval) =>
+        new[] { approval.CurrentApproverName, approval.CurrentApproverRole, approval.CurrentQueue }
+            .Select(Clean).FirstOrDefault(x => x.Length > 0) ?? "another approver";
+
+    /// <summary>
+    /// Whether any active user other than the requester holds the routed role or a role carrying
+    /// approvals.override. Role grants only: a hint for the "who can unblock this" sentence, never an
+    /// authorisation decision (that is <see cref="CanDecideRequestAsync"/> alone).
+    /// </summary>
+    private async Task<bool> AnyoneElseCanDecideAsync(ApprovalRequest approval, Dictionary<string, bool> cache, CancellationToken cancellationToken)
+    {
+        // Everyone the separation-of-duties bars exclude: the requester, every earlier-step decider and every
+        // login linked to the subject employee. None of them can unblock the request, so none of them count.
+        var excluded = new HashSet<Guid>();
+        if (approval.RequestedByUserId is Guid requester) excluded.Add(requester);
+        foreach (var decision in approval.Decisions)
+            if (decision.DecidedByUserId is Guid decider) excluded.Add(decider);
+        var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
+        if (subject is int subjectId)
+            foreach (var linked in await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)) excluded.Add(linked);
+
+        if (approval.CurrentApproverUserId is Guid named)
+            return !excluded.Contains(named);
+        var role = Clean(approval.CurrentApproverRole);
+        var excludedIds = excluded.OrderBy(x => x).ToArray();
+        var key = $"{role}|{string.Join(",", excludedIds)}";
+        if (cache.TryGetValue(key, out var known)) return known;
+
+        // An empty or "Any" role is open to approvals.decide holders who also hold manager.approve or
+        // approvals.override (CanDecideRequestAsync), so only they count as someone who could unblock it.
+        var anyRole = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase);
+        var exists = anyRole
+            ? await ApprovalUnblock.AnyOtherUserWithPermissionAndAnyOfAsync(_db, approval.TenantId, "approvals.decide",
+                new[] { AnyStepApproverPermission, "approvals.override" }, excludedIds, cancellationToken)
+            : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
+        cache[key] = exists;
+        return exists;
+    }
+
+    /// <summary>"IBAN, passport" for each employee-change approval, keyed by EntityId, in one query.</summary>
+    private async Task<IReadOnlyDictionary<string, string?>> LoadChangeSummariesAsync(Guid tenantId, IReadOnlyCollection<ApprovalRequest> approvals, CancellationToken cancellationToken)
+    {
+        var changeIds = approvals
+            .Where(x => string.Equals(x.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase))
+            .Select(x => Guid.TryParse(x.EntityId, out var id) ? id : (Guid?)null)
+            .Where(x => x is not null).Select(x => x!.Value).Distinct().ToList();
+        if (changeIds.Count == 0) return new Dictionary<string, string?>();
+        var rows = await _db.EmployeeChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && changeIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.SensitiveFields })
+            .ToListAsync(cancellationToken);
+        return rows.ToDictionary(x => x.Id.ToString(), x => Zayra.Api.Controllers.DashboardController.FormatChangedFields(x.SensitiveFields), StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var entityName = Clean(request.EntityName);
+        if (string.Equals(entityName, JawazatConstants.ApprovalEntityName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Jawazat approvals are created by the governed Jawazat request workflow, not directly.");
         // A leave approval is the leave aggregate's routing projection (same id, balance reserved in
         // the same transaction). Starting one here would create a second, orphaned projection.
         if (string.Equals(entityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
@@ -271,6 +445,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             throw new InvalidOperationException("Decision must be Approve or Reject.");
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId)
             throw new InvalidOperationException("Maker-checker violation: requester cannot approve or reject their own approval request.");
+        // Segregation of duties, ahead of every role and override check: neither the employee the
+        // request is about nor someone who already decided one of its steps may decide it.
+        switch (await ResolveDecisionBarAsync(approval, context, cancellationToken))
+        {
+            case DecisionBar.Subject:
+                throw new InvalidOperationException(SubjectBarMessage);
+            case DecisionBar.DecidedEarlierStep:
+                throw new InvalidOperationException(EarlierStepBarMessage);
+        }
+        await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
+            JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
         {
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
@@ -336,14 +521,20 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
+                JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
+                JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             // Timesheets: project the decision onto the timesheet and, on approval, write the
             // attendance reconciliation its hours feed — in THIS SaveChanges, so a decision taken
             // in the Approval Center and one taken on the timesheet screen are the same write.
@@ -351,6 +542,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             // Requisitions: the shared row and the requisition's own status are now one write. Before
             // this the module stamped its status and left this row Pending for ever.
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {
@@ -383,7 +576,28 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
-        return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+        return JawazatApprovalSync.IsJawazat(approval)
+            ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
+            : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// A Role step must name a role. A blank or "Any" role made the step decidable by every approvals.decide
+    /// holder (now: every manager.approve holder) in the tenant. New saves are refused; workflows already saved
+    /// that way still load and route, so live requests are not stranded.
+    /// </summary>
+    internal static void EnsureRoleStepsNameARole(ApprovalWorkflowRequest request)
+    {
+        foreach (var step in request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>())
+        {
+            var type = string.IsNullOrWhiteSpace(step.ApproverType) ? "Role" : step.ApproverType.Trim();
+            if (!type.Equals("Role", StringComparison.OrdinalIgnoreCase)) continue;
+            var role = (step.ApproverRole ?? string.Empty).Trim();
+            if (role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Step {step.StepOrder} ('{Clean(step.StepName)}') is a Role step and must name the role that decides it, " +
+                    "for example HR Manager. A blank or \"Any\" role would let any approver in the company decide it.");
+        }
     }
 
     private static void Apply(ApprovalWorkflow workflow, ApprovalWorkflowRequest request, Guid tenantId)
@@ -470,8 +684,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase)
             && Guid.TryParse(approval.EntityId, out var changeId))
         {
-            return await _db.EmployeeChangeRequests.AsNoTracking()
-                .Where(x => x.TenantId == approval.TenantId && x.Id == changeId)
+            // Tenant-wide: the subject must resolve whichever legal entity the caller is switched to, or the
+            // separation-of-duties bar fails open for a change about an employee in another company.
+            return await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.EmployeeChangeRequests, approval.TenantId,
+                    "Resolve an approval's subject employee for routing and the separation-of-duties bar, whatever company the caller has selected.")
+                .AsNoTracking()
+                .Where(x => x.Id == changeId)
                 .Select(x => (int?)x.EmployeeId)
                 .FirstOrDefaultAsync(cancellationToken);
         }
@@ -555,10 +773,73 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         return await CanDecideRequestAsync(approval, context, cancellationToken);
     }
 
-    private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken)
+    internal const string SubjectBarMessage =
+        "Segregation of duties: this request is about you, so you cannot approve or reject it.";
+    internal const string EarlierStepBarMessage =
+        "Segregation of duties: you already decided an earlier step of this request, so a different approver must decide this one.";
+
+    /// <summary>Why the caller may never decide this request, whatever their role or permissions.</summary>
+    private enum DecisionBar { None, Requester, Subject, DecidedEarlierStep }
+
+    /// <summary>
+    /// The segregation-of-duties bars, in one place for the decision itself, canDecide and the
+    /// "why can't I decide" sentence. They outrank approvals.override and an empty or "Any" approver
+    /// role: those widen WHO may decide a step, never to the person the request is about or to
+    /// someone who already decided another step of it.
+    /// </summary>
+    private async Task<DecisionBar> ResolveDecisionBarAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.UserId is not Guid userId) return DecisionBar.None;
+        if (approval.RequestedByUserId == userId) return DecisionBar.Requester;
+        var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
+        if (subject is int subjectId)
+        {
+            if ((await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
+                return DecisionBar.Subject;
+            // EITHER link marks the subject: the login rows above (Employee.UserAccountId and the account
+            // links), OR the employee the caller's own token is linked to (CallerEmployeeResolver, the lookup
+            // every other surface uses). This bar only ever gets stricter; neither lookup can clear it.
+            if (_http?.HttpContext?.User is { Identity.IsAuthenticated: true } principal
+                && await CallerEmployeeResolver.ResolveAsync(_db, principal, approval.TenantId, cancellationToken) == subjectId)
+                return DecisionBar.Subject;
+        }
+        // Every load of a request for a decision or a listing includes its decision ledger.
+        if (approval.Decisions.Any(x => x.DecidedByUserId == userId)) return DecisionBar.DecidedEarlierStep;
+        return DecisionBar.None;
+    }
+
+    /// <summary>
+    /// Every login linked to the subject employee, read TENANT-WIDE. The company-filtered caller lookup
+    /// (<see cref="ResolveCallerEmployeeIdAsync"/>) resolves to null when the caller's own employee row is
+    /// in another legal entity, or the company switcher is on one, and the bar then failed open. Asking
+    /// "which users is this employee?" instead of "which employee is this user?" also covers a login
+    /// linked to more than one employee row. Cached per subject: a listing asks once per row.
+    /// </summary>
+    private async Task<IReadOnlyCollection<Guid>> SubjectUserIdsAsync(Guid tenantId, int subjectEmployeeId, CancellationToken cancellationToken)
+    {
+        if (_subjectUserIds.TryGetValue((tenantId, subjectEmployeeId), out var known)) return known;
+        var linked = await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, subjectEmployeeId, cancellationToken);
+        _subjectUserIds[(tenantId, subjectEmployeeId)] = linked;
+        return linked;
+    }
+
+    /// <param name="separationOfDuties">False only for visibility: a subject or earlier-step decider
+    /// who is routed this step may still SEE it (and be told why they cannot decide it).</param>
+    /// <summary>The key an "Any" (unassigned) approval step requires besides approvals.decide.</summary>
+    internal const string AnyStepApproverPermission = "manager.approve";
+
+    private async Task<bool> CanDecideRequestAsync(ApprovalRequest approval, RequestContext? context, CancellationToken cancellationToken,
+        bool separationOfDuties = true)
     {
         if (context is null || approval.Status != "Pending") return false;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return false;
+        if (separationOfDuties && await ResolveDecisionBarAsync(approval, context, cancellationToken) != DecisionBar.None) return false;
+        if (JawazatApprovalSync.IsJawazat(approval))
+        {
+            try { await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
+                await ResolveJawazatScopeAsync(approval.TenantId, context, cancellationToken)); }
+            catch (JawazatException) { return false; }
+        }
 
         var permissions = context.Permissions ?? Array.Empty<string>();
         if (permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase)))
@@ -575,21 +856,39 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var requiredRole = Clean(approval.CurrentApproverRole);
         if (string.IsNullOrWhiteSpace(requiredRole) || requiredRole.Equals("Any", StringComparison.OrdinalIgnoreCase))
-            return true;
+            // An unassigned ("Any") step was open to every approvals.decide holder in the tenant: Payroll Manager,
+            // Finance, Finance Approver and ManagerPortal employees could approve an employee's IBAN or salary
+            // change. It now needs an approver's key on top of approvals.decide and the bars above.
+            // (approvals.override already returned true above.)
+            return permissions.Any(x => x.Equals(AnyStepApproverPermission, StringComparison.OrdinalIgnoreCase));
         var roles = context.Roles ?? Array.Empty<string>();
         return roles.Any(x => x.Equals(requiredRole, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<bool> CanViewRequestAsync(ApprovalRequest approval, RequestContext context, CancellationToken cancellationToken)
     {
+        if (JawazatApprovalSync.IsJawazat(approval))
+        {
+            var scope = await ResolveJawazatScopeAsync(approval.TenantId, context, cancellationToken);
+            if (approval.RequestedForEmployeeId is not int subject || !scope.CanAccessEmployee(subject)) return false;
+            if (scope.CallerEmployeeId == subject) return true;
+        }
         if (CanViewAllApprovalRequests(context)) return true;
-        if (await CanDecideRequestAsync(approval, context, cancellationToken)) return true;
+        if (await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false)) return true;
         if (context.UserId is not null && approval.RequestedByUserId == context.UserId) return true;
 
         var callerEmployeeId = await ResolveCallerEmployeeIdAsync(approval.TenantId, context.UserId, cancellationToken);
         if (callerEmployeeId is null || approval.RequestedForEmployeeId is null) return false;
         var teamIds = await ResolveTeamEmployeeIdsAsync(approval.TenantId, callerEmployeeId.Value, cancellationToken);
         return teamIds.Contains(approval.RequestedForEmployeeId.Value);
+    }
+
+    private async Task<DataScope> ResolveJawazatScopeAsync(Guid tenantId, RequestContext? context, CancellationToken ct)
+    {
+        if (context is not null && context.TenantId == tenantId && _jawazatScopes.TryGetValue(context, out var cached)) return cached;
+        var scope = await JawazatApprovalAccess.ResolveAsync(_db, tenantId, context, ct, _dataScopes, _http);
+        if (context is not null && context.TenantId == tenantId) _jawazatScopes[context] = scope;
+        return scope;
     }
 
     private static bool CanViewAllApprovalRequests(RequestContext context)

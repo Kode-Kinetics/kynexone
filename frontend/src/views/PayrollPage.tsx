@@ -13,7 +13,7 @@ import {
   payrollApi,
   type PayrollRun, type PayrollSlip, type PayrollValidationResult,
   type SalaryStructure, type EmployeeSalaryStructure, type Payslip,
-  type PayrollPaymentBatch, type PayrollPaymentRecord,
+  type PayrollPaymentBatch, type PayrollPaymentRecord, type WpsEvidenceKind,
   type PayrollApproval, type PayrollSummary,
   type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
   type PayrollCompany, type PayrollOverview, type PayrollReadiness,
@@ -36,7 +36,10 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
 const salaryStructuresImportExport = {
@@ -81,9 +84,9 @@ const STATUS_COLOR: Record<string, string> = {
   Info: 'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400',
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'PayrollRunStatus' }: { status: string; enumName?: EnumName }) {
   const cls = STATUS_COLOR[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{status.replace(/([A-Z])/g, ' $1').trim()}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
 }
 
 function KpiCard({ label, value, sub, icon: Icon, color }: {
@@ -1196,9 +1199,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   const [reopening, setReopening] = useState<PayrollRun | null>(null);
   const [voiding, setVoiding] = useState<PayrollRun | null>(null);
 
+  // A failed load is shown as a failure, never as "No runs yet" (which invites creating a duplicate run).
+  const [runsError, setRunsError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
-    payrollApi.listAllRuns().then(all => { setRuns(all); setTotal(all.length); }).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listAllRuns()
+      .then(all => { setRuns(all); setTotal(all.length); setRunsError(null); })
+      .catch(e => { setRuns([]); setTotal(0); setRunsError(e); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => {
     load();
@@ -1296,7 +1304,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
             <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Runs</p>
           </div>
           {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>}
-          {!loading && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No runs yet. Create one above.</p>}
+          {!loading && runsError != null && <LoadFailedNotice error={runsError} onRetry={load} />}
+          {!loading && runsError == null && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No runs yet. Create one above.</p>}
           <div className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {runs.map(run => (
               <div key={run.id} role="button" tabIndex={0} onClick={() => openSlips(run)}
@@ -1443,6 +1452,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   </table>
                 </div>
               )}
+              <RunDeductionsReview runId={selectedRun.id} />
             </>
           )}
         </div>
@@ -1845,14 +1855,17 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
   onDone: () => void;
 }) {
   const [reason, setReason] = useState('');
+  const [documentReference, setDocumentReference] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const tooShort = reason.trim().length < MIN_OVERRIDE_REASON;
+  // The deduction-limit override must rest on a named written basis (no legal conclusion is drawn here).
+  const needsDocument = result.code === 'DEDUCTIONS_EXCEED_HALF_WAGE';
+  const tooShort = reason.trim().length < MIN_OVERRIDE_REASON || (needsDocument && !documentReference.trim());
 
   const submit = async () => {
     setSaving(true); setError('');
     try {
-      await payrollApi.resolveValidationResult(runId, result.id, reason.trim());
+      await payrollApi.resolveValidationResult(runId, result.id, reason.trim(), needsDocument ? documentReference.trim() : undefined);
       onDone();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'The override was refused.');
@@ -1881,6 +1894,17 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
             placeholder="Why is this acceptable for this run?"
           />
         </Field>
+        {needsDocument && (
+          <Field label="Decision or document reference (required)">
+            <input
+              aria-label="Decision or document reference"
+              className={inp}
+              value={documentReference}
+              onChange={e => setDocumentReference(e.target.value)}
+              placeholder="Labour court / commission decision or other written basis — its reference number"
+            />
+          </Field>
+        )}
         {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2">
           <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
@@ -2013,6 +2037,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   isFinance: boolean;
   isHROrPayroll: boolean;
 }) {
+  const { hasPermission } = useAuth();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
@@ -2031,6 +2056,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const [gateError, setGateError] = useState('');
   const [ackExcluded, setAckExcluded] = useState(false);
   const [ackOverridden, setAckOverridden] = useState(false);
+  const [ackOutside, setAckOutside] = useState(false);
 
   const refreshRuns = () =>
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
@@ -2059,6 +2085,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   useEffect(() => {
     setAckExcluded(false);
     setAckOverridden(false);
+    setAckOutside(false);
     refreshGate(runId);
   }, [runId, refreshGate]);
 
@@ -2071,8 +2098,11 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const overriddenCount = overrideReport?.overrides.length ?? 0;
   const needsExcludedAck = excludedCount > 0;
   const needsOverriddenAck = overriddenCount > 0;
+  const outsideList = overrideReport?.paidOutsideBankFile ?? [];
+  const outsideCount = outsideList.length;
+  const needsOutsideAck = outsideCount > 0;
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -2084,6 +2114,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         notes,
         expectedExcludedCount: needsExcludedAck && ackExcluded ? excludedCount : null,
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
+        expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
       });
       await refreshRuns();
       setRuns(r => r.map(x => x.id === runId ? { ...x, status: selectedRun?.status === 'Processed' && (isHROrPayroll && !isFinance && !isAdmin) ? 'PendingFinanceReview' : 'Approved' } : x));
@@ -2091,13 +2122,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
       setNotes('');
       setAckExcluded(false);
       setAckOverridden(false);
+      setAckOutside(false);
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
       // A 409 here means the run moved under the approver — re-read the counts so the next attempt
       // acknowledges the truth rather than a stale number.
-      if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged') {
+      if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
+          || data?.error === 'outside_bank_payments_not_acknowledged') {
         setAckExcluded(false);
+        setAckOutside(false);
         setAckOverridden(false);
         refreshGate(runId);
       }
@@ -2118,10 +2152,15 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
     } finally { setSaving(false); }
   };
 
-  const canApproveStep1 = (isHROrPayroll || isAdmin) && selectedRun?.status === 'Processed';
-  const canApproveStep2 = (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
-  const canFinanceApproveDirectly = (isFinance || isAdmin) && selectedRun?.status === 'Processed';
-  const canSendBack = (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
+  // The role decides WHICH step a user acts on; the API decides WHETHER they may: approve is
+  // `payroll.approve` and send-back is `payroll.lock` (PayrollController). A Payroll Officer is in
+  // the HR/payroll bucket but holds neither, so the buttons only ever returned 403 for them.
+  const mayApprove = hasPermission('payroll.approve');
+  const maySendBack = hasPermission('payroll.lock');
+  const canApproveStep1 = mayApprove && (isHROrPayroll || isAdmin) && selectedRun?.status === 'Processed';
+  const canApproveStep2 = mayApprove && (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
+  const canFinanceApproveDirectly = mayApprove && (isFinance || isAdmin) && selectedRun?.status === 'Processed';
+  const canSendBack = maySendBack && (isFinance || isAdmin) && selectedRun?.status === 'PendingFinanceReview';
   const canAct = canApproveStep1 || canApproveStep2 || canFinanceApproveDirectly;
 
   return (
@@ -2207,6 +2246,22 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                 />
               )}
 
+              {needsOutsideAck && overrideReport && (
+                <AcknowledgementPanel
+                  tone="amber"
+                  title={`${outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file`}
+                  blurb={`They will be left out of the bank file and their wages must be paid and recorded separately. ${overrideReport.mudadNote ?? ''}`}
+                  checked={ackOutside}
+                  onChange={setAckOutside}
+                  confirmLabel={`I have reviewed the list and confirm exactly ${outsideCount} employee(s) are paid outside the bank file.`}
+                  rows={outsideList.map(o => ({
+                    key: String(o.employeeId),
+                    primary: `Employee #${o.employeeId}${o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? ' — a valid IBAN is on file' : ''}`,
+                    secondary: o.message,
+                  }))}
+                />
+              )}
+
               {needsOverriddenAck && overrideReport && (
                 <AcknowledgementPanel
                   tone="rose"
@@ -2285,6 +2340,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
 // ── Payslips Tab ────────────────────────────────────────────────────────────────
 
 function PayslipsTab() {
+  // The payslip PDF and the run's ZIP bundle are `payroll.export` on the API (PayrollController
+  // DownloadSlipPdf / DownloadRunPdfBundle); offering them without it only produced a 403.
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission('payroll.export');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [payslips, setPayslips] = useState<Payslip[]>([]);
@@ -2345,7 +2404,7 @@ function PayslipsTab() {
             {generating ? 'Generating…' : 'Generate Payslips'}
           </button>
         )}
-        {payslips.length > 0 && (
+        {payslips.length > 0 && canExport && (
           <button type="button" className={btn.ghost} onClick={downloadBundle} disabled={downloadingBundle}>
             <Download className="h-4 w-4" />
             {downloadingBundle ? 'Preparing ZIP…' : 'Download All (ZIP)'}
@@ -2407,7 +2466,7 @@ function PayslipsTab() {
                   <td className="px-4 py-2 text-xs text-slate-400">{p.publishedAtUtc ? fmtDate(p.publishedAtUtc) : '—'}</td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(p.createdAtUtc)}</td>
                   <td className="px-4 py-2">
-                    <button
+                    {canExport ? <button
                       type="button"
                       title="Download payslip PDF"
                       disabled={downloadingId === p.id}
@@ -2419,7 +2478,7 @@ function PayslipsTab() {
                     >
                       <Download className="h-3.5 w-3.5" />
                       {downloadingId === p.id ? 'Downloading…' : 'PDF'}
-                    </button>
+                    </button> : <span className="text-xs text-slate-400">—</span>}
                   </td>
                 </tr>
               ))}
@@ -2475,7 +2534,17 @@ function BankWpsTab() {
     setCreating(true);
     setError('');
     try {
-      const batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      let batch: PayrollPaymentBatch;
+      try {
+        batch = await payrollApi.createPaymentBatch(runId, paymentMethod);
+      } catch (e) {
+        // A run locked before payment methods were frozen: the cash/cheque list must be acknowledged by count.
+        const data = (e as { response?: { data?: { error?: string; message?: string; outsideBankCount?: number; employees?: { employeeCode: string; method: string }[] } } })?.response?.data;
+        if (data?.error !== 'outside_bank_payments_not_acknowledged' || !data.outsideBankCount) throw e;
+        const list = (data.employees ?? []).map(x => `• ${x.employeeCode} (${x.method})`).join('\n');
+        if (!window.confirm(`${data.message}\n\n${list}\n\nConfirm that exactly ${data.outsideBankCount} employee(s) are paid outside the bank file?`)) return;
+        batch = await payrollApi.createPaymentBatch(runId, paymentMethod, undefined, data.outsideBankCount);
+      }
       if (currentRunRef.current !== runId) return;
       setBatches(b => [batch, ...b]);
       openBatch(batch);
@@ -2493,7 +2562,7 @@ function BankWpsTab() {
       await payrollApi.generateWpsFile(batchId);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'WPS file generation failed.');
+      setError(msg ?? 'File generation failed.');
     }
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
@@ -2546,8 +2615,9 @@ function BankWpsTab() {
                   </div>
                   <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
                   {b.status !== 'FileGenerated' && (
-                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}>
-                      Generate WPS/SIF
+                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}
+                      title={b.isSaudi ? 'For review only. The Saudi bank payroll file is the ANB Connect instruction.' : undefined}>
+                      {b.isSaudi ? 'Generate payroll register (internal — not a bank/WPS file)' : 'Generate WPS/SIF (not verified with any gateway)'}
                     </button>
                   )}
                 </div>
@@ -2592,6 +2662,16 @@ function BankWpsTab() {
           )}
         </div>
       </div>
+      {selectedBatch?.isSaudi && (
+        <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
+          <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Saudi bank payroll file: the <strong>ANB Connect payroll instruction</strong> (with WPS fields) is the file to send to the bank.
+            It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs —
+            keep the bank&apos;s output file or a Mudad screenshot as evidence before marking the batch Accepted.
+          </span>
+        </div>
+      )}
       {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} />}
     </div>
   );
@@ -2603,7 +2683,12 @@ function PaymentTrackingTab() {
   type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
-  const [wpsForms, setWpsForms] = useState<Record<string, { status: string; reference: string; notes: string }>>({});
+  type WpsForm = { status: string; reference: string; notes: string; evidenceKind: WpsEvidenceKind; evidenceFile: File | null };
+  const [evidenceSaving, setEvidenceSaving] = useState<string | null>(null);
+  type OutsideForm = { method: 'Cash' | 'Cheque'; reference: string; date: string };
+  const [outsideForms, setOutsideForms] = useState<Record<string, OutsideForm>>({});
+  const [outsideSaving, setOutsideSaving] = useState<string | null>(null);
+  const [wpsForms, setWpsForms] = useState<Record<string, WpsForm>>({});
   const [wpsSaving, setWpsSaving] = useState<string | null>(null);
   const [financeSaving, setFinanceSaving] = useState<string | null>(null);
   const [financeForms, setFinanceForms] = useState<Record<string, FinanceActionForm>>({});
@@ -2620,29 +2705,69 @@ function PaymentTrackingTab() {
   const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);
   const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : 'Mixed currencies';
   const fileGenerated = batches.filter(b => b.status === 'FileGenerated').length;
-  const allowedWpsNext = (status: string) => {
-    switch (status) {
-      case 'Generated': return ['Submitted'];
-      case 'Downloaded': return ['Submitted'];
-      case 'Submitted': return ['Accepted', 'Rejected'];
-      case 'Accepted': return ['Reconciled'];
-      default: return [];
-    }
-  };
-  const emptyWpsForm = { status: '', reference: '', notes: '' };
-  const setWpsForm = (batchId: string, patch: Partial<{ status: string; reference: string; notes: string }>) =>
+  // The server owns the WPS transition table and the effective status (a frozen ANB instruction counts as
+  // Generated). The screen only renders what it is given, so the two can never drift apart again.
+  const nextStatuses = (b: PayrollPaymentBatch) => b.allowedNextStatuses ?? [];
+  const effectiveStatus = (b: PayrollPaymentBatch) => b.effectiveWpsStatus || b.wpsStatus || 'Draft';
+  const emptyWpsForm: WpsForm = { status: '', reference: '', notes: '', evidenceKind: 'bank_output_file', evidenceFile: null };
+  const setWpsForm = (batchId: string, patch: Partial<WpsForm>) =>
     setWpsForms(prev => ({ ...prev, [batchId]: { ...emptyWpsForm, ...(prev[batchId] ?? {}), ...patch } }));
+  // Evidence is attached on its own: maker-checker means the person who uploads it (or generated the
+  // file) cannot be the one who marks the batch Accepted.
+  const uploadEvidence = async (batch: PayrollPaymentBatch) => {
+    const form = wpsForms[batch.id] ?? emptyWpsForm;
+    if (!form.evidenceFile) {
+      notifyApiError({ response: { data: { message: 'Choose the bank\'s WPS output file or a Mudad compliance screenshot/PDF first.' } } });
+      return;
+    }
+    setEvidenceSaving(batch.id);
+    try {
+      await payrollApi.uploadWpsEvidence(batch.id, form.evidenceKind, form.evidenceFile);
+      setWpsForms(prev => ({ ...prev, [batch.id]: { ...emptyWpsForm, ...(prev[batch.id] ?? {}), evidenceFile: null } }));
+      loadBatches();
+    } catch (e) { notifyApiError(e); }
+    finally { setEvidenceSaving(null); }
+  };
+  const outsideKey = (batchId: string, employeeId: number) => `${batchId}:${employeeId}`;
+  const outsideForm = (key: string): OutsideForm =>
+    outsideForms[key] ?? { method: 'Cash', reference: '', date: new Date().toISOString().slice(0, 10) };
+  const recordOutside = async (batch: PayrollPaymentBatch, employeeId: number) => {
+    const key = outsideKey(batch.id, employeeId);
+    const form = outsideForm(key);
+    if (!form.reference.trim()) {
+      notifyApiError({ response: { data: { message: 'Enter the cheque number or cash receipt reference.' } } });
+      return;
+    }
+    setOutsideSaving(key);
+    try {
+      await payrollApi.recordOutsidePayment(batch.id, { employeeId, method: form.method, reference: form.reference.trim(), paidDate: form.date || undefined });
+      loadBatches();
+    } catch (e) { notifyApiError(e); }
+    finally { setOutsideSaving(null); }
+  };
   const updateWps = async (batch: PayrollPaymentBatch) => {
     const form = wpsForms[batch.id] ?? emptyWpsForm;
     if (!form.status) return;
+    // Accepted is recorded only against stored proof (the bank's WPS output file or a Mudad
+    // screenshot/PDF already attached to this batch), and only by someone other than its maker.
+    const evidenceId = batch.latestEvidenceId ?? undefined;
+    if (form.status === 'Accepted' && !evidenceId) {
+      notifyApiError({ response: { data: { message: 'Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF to this batch first. Another person then marks it Accepted.' } } });
+      return;
+    }
+    if (form.status === 'Accepted' && batch.acceptBlockedReason) {
+      notifyApiError({ response: { data: { message: batch.acceptBlockedReason } } });
+      return;
+    }
     setWpsSaving(batch.id);
     try {
       await payrollApi.updateWpsStatus(batch.id, {
         status: form.status,
         reference: form.reference || undefined,
         notes: form.notes || undefined,
+        evidenceId: form.status === 'Accepted' ? evidenceId : undefined,
       });
-      setWpsForms(prev => ({ ...prev, [batch.id]: { status: '', reference: '', notes: '' } }));
+      setWpsForms(prev => ({ ...prev, [batch.id]: emptyWpsForm }));
       loadBatches();
     } catch (e) { notifyApiError(e); }
     finally { setWpsSaving(null); }
@@ -2677,7 +2802,7 @@ function PaymentTrackingTab() {
       {batches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="WPS Files Generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label="Bank / payroll files generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
           <KpiCard label="Total Amount" value={totalLabel} sub={totalLabel === 'Mixed currencies' ? perCurrency(totals) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
@@ -2707,15 +2832,49 @@ function PaymentTrackingTab() {
                   <td className="px-4 py-2"><StatusBadge status={b.status} /></td>
                   <td className="px-4 py-2">
                     <div className="space-y-1">
-                      <StatusBadge status={b.wpsStatus || 'Draft'} />
+                      <StatusBadge status={effectiveStatus(b)} />
+                      {b.wpsStatusLabel && b.wpsStatusLabel !== effectiveStatus(b) && <p className="max-w-56 text-[11px] text-slate-500">{b.wpsStatusLabel}</p>}
+                      {(b.paymentExclusions?.length ?? 0) > 0 && (
+                        <p className="max-w-56 text-[11px] text-amber-600 dark:text-amber-400" title={b.paymentExclusions!.map(x => `${x.employeeCode}: ${x.reason}`).join('\n')}>
+                          {b.paymentExclusions!.length} not in the bank file (cash/cheque or zero net): {(b.excludedTotal ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </p>
+                      )}
                       {b.wpsSubmissionReference && <p className="text-[11px] text-slate-500">{b.wpsSubmissionReference}</p>}
+                      {(b.acceptanceEvidenceCount ?? 0) > 0 && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">Evidence on record: {b.acceptanceEvidenceCount} file{b.acceptanceEvidenceCount === 1 ? '' : 's'}</p>}
                       {b.wpsRejectionReason && <p className="max-w-48 truncate text-[11px] text-rose-500">{b.wpsRejectionReason}</p>}
                     </div>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(b.createdAtUtc)}</td>
                   <td className="px-4 py-2">
                     <div className="grid min-w-[290px] gap-2">
-                    {allowedWpsNext(b.wpsStatus || 'Draft').length > 0 && (
+                    {effectiveStatus(b) === 'Submitted' && (
+                      <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Acceptance evidence</p>
+                        <select
+                          aria-label={`Evidence type for ${b.batchNumber}`}
+                          className={sel}
+                          value={wpsForms[b.id]?.evidenceKind ?? 'bank_output_file'}
+                          onChange={e => setWpsForm(b.id, { evidenceKind: e.target.value as WpsEvidenceKind, evidenceFile: null })}
+                        >
+                          <option value="bank_output_file">Bank WPS output file (upload it unopened)</option>
+                          <option value="mudad_compliance_screenshot">Mudad compliance screenshot or PDF</option>
+                        </select>
+                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                          <input
+                            type="file"
+                            aria-label={`Evidence file for ${b.batchNumber}`}
+                            className="text-xs"
+                            accept={(wpsForms[b.id]?.evidenceKind ?? 'bank_output_file') === 'mudad_compliance_screenshot' ? '.png,.jpg,.jpeg,.pdf' : undefined}
+                            onChange={e => setWpsForm(b.id, { evidenceFile: e.target.files?.[0] ?? null })}
+                          />
+                          <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => uploadEvidence(b)} disabled={evidenceSaving === b.id || !wpsForms[b.id]?.evidenceFile}>
+                            {evidenceSaving === b.id ? 'Uploading…' : 'Attach evidence'}
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-slate-500">The file is stored with its SHA-256 fingerprint. Mudad&apos;s verdict never reaches this system, so Accepted means &ldquo;evidence attached&rdquo;, and a second person records it.</p>
+                      </div>
+                    )}
+                    {nextStatuses(b).length > 0 && (
                       <>
                         <select
                           title="Next WPS status"
@@ -2724,8 +2883,18 @@ function PaymentTrackingTab() {
                           onChange={e => setWpsForm(b.id, { status: e.target.value })}
                         >
                           <option value="">Next status</option>
-                          {allowedWpsNext(b.wpsStatus || 'Draft').map(s => <option key={s} value={s}>{s}</option>)}
+                          {nextStatuses(b).map(s => (
+                            <option key={s} value={s} disabled={s === 'Accepted' && (!b.latestEvidenceId || !!b.acceptBlockedReason)}>
+                              {s === 'Accepted' ? 'Accepted — evidence attached (not verified by Mudad)' : s}
+                            </option>
+                          ))}
                         </select>
+                        {nextStatuses(b).includes('Accepted') && !b.latestEvidenceId && (
+                          <p className="text-[11px] text-slate-500">Attach evidence above before the batch can be marked Accepted.</p>
+                        )}
+                        {nextStatuses(b).includes('Accepted') && b.latestEvidenceId && b.acceptBlockedReason && (
+                          <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.acceptBlockedReason}</p>
+                        )}
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input
                             className={inp}
@@ -2763,7 +2932,57 @@ function PaymentTrackingTab() {
                         )}
                       </div>
                     )}
-                    {allowedWpsNext(b.wpsStatus || 'Draft').length === 0 && b.wpsStatus !== 'Accepted' && b.wpsStatus !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
+                    {(b.paymentExclusions ?? []).some(x => x.canRecordOutsidePayment) && (
+                      <div className="grid gap-1.5 border-t border-slate-100 pt-2 dark:border-white/10">
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Paid outside the bank file</p>
+                        {b.mudadNote && <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.mudadNote}</p>}
+                        {(b.paymentExclusions ?? []).filter(x => x.canRecordOutsidePayment).map(x => {
+                          const key = outsideKey(b.id, x.employeeId);
+                          const f = outsideForm(key);
+                          return x.outsidePaymentRecorded ? (
+                            <div key={key} className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{x.employeeCode}: payment recorded</p>
+                              {b.wpsStatus !== 'Reconciled' && (
+                                <button type="button" className={`${btn.sm} disabled:opacity-50`} disabled={outsideSaving === key}
+                                  onClick={async () => {
+                                    const reason = window.prompt(`Why is ${x.employeeCode}'s recorded payment being reversed (e.g. cheque bounced)?`);
+                                    if (!reason?.trim()) return;
+                                    setOutsideSaving(key);
+                                    try { await payrollApi.reverseOutsidePayment(b.id, x.employeeId, reason.trim()); loadBatches(); }
+                                    catch (err) { notifyApiError(err); }
+                                    finally { setOutsideSaving(null); }
+                                  }}>
+                                  Reverse payment
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div key={key} className="grid gap-1 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
+                              <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                                {x.employeeCode} — {x.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {b.currency}
+                              </p>
+                              <div className="grid grid-cols-[auto_1fr] gap-1.5">
+                                <select className={sel} aria-label={`Payment method for ${x.employeeCode}`} value={f.method}
+                                  onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, method: e.target.value as 'Cash' | 'Cheque' } }))}>
+                                  <option value="Cash">Cash</option>
+                                  <option value="Cheque">Cheque</option>
+                                </select>
+                                <input className={inp} aria-label={`Cheque or receipt reference for ${x.employeeCode}`} placeholder="Cheque no. / receipt ref."
+                                  value={f.reference} onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, reference: e.target.value } }))} />
+                              </div>
+                              <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                                <input className={inp} type="date" aria-label={`Date paid for ${x.employeeCode}`} value={f.date}
+                                  onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, date: e.target.value } }))} />
+                                <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => recordOutside(b, x.employeeId)} disabled={outsideSaving === key}>
+                                  {outsideSaving === key ? 'Recording…' : 'Record payment outside the bank file'}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
                     </div>
                   </td>
                 </tr>

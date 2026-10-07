@@ -190,6 +190,67 @@ public sealed class EmployeeAuthzRegressionTests
             "the scope gate must not break the legitimate org-wide HR answer");
     }
 
+    // ── Document reports carry the caller's data scope ────────────────────────────
+    //
+    // reports/expiring-documents and reports/missing-documents list employee names. A Manager or Supervisor
+    // reaches them through employees.read (LegacyRoleGateBypassAllowList), so before this a line manager
+    // read the whole tenant's document gaps and expiries.
+
+    private static void SeedExpiringDocument(ZayraDbContext db, Guid tenantId, int employeeId)
+    {
+        db.EmployeeDocuments.Add(new EmployeeDocument
+        {
+            TenantId = tenantId, EmployeeId = employeeId, DocumentType = "Iqama",
+            ExpiryDate = DateOnly.FromDateTime(DateTime.UtcNow.Date).AddDays(10),
+        });
+        db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task DocumentReports_TeamScopedManager_SeeOnlyTheirTeam()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var manager = SeedEmployee(db, tenantId, "MGR-0001", "Manager One");
+        var report = SeedEmployee(db, tenantId, "EMP-0002", "Direct Report", managerEmployeeId: manager.Id);
+        var stranger = SeedEmployee(db, tenantId, "EMP-0003", "Other Department");
+        foreach (var e in new[] { manager, report, stranger }) SeedExpiringDocument(db, tenantId, e.Id);
+
+        var controller = CreateController(db, tenantId, "Manager",
+            permissions: ["employees.read", "manager.read"], callerEmployeeId: manager.Id);
+        var service = CreateService(db);
+
+        var expiring = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeExpiringDocumentDto>>(
+            Assert.IsType<OkObjectResult>((await controller.ExpiringDocuments(service, 60, CancellationToken.None)).Result).Value);
+        expiring.Select(d => d.EmployeeCode).Should().BeEquivalentTo([manager.EmployeeCode, report.EmployeeCode],
+            "a line manager sees their own reporting tree's expiring documents, never a stranger's");
+
+        var missing = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>>(
+            Assert.IsType<OkObjectResult>((await controller.MissingDocuments(service, CancellationToken.None)).Result).Value);
+        missing.Select(d => d.EmployeeCode).Should().BeEquivalentTo([manager.EmployeeCode, report.EmployeeCode]);
+    }
+
+    [Fact]
+    public async Task DocumentReports_OrgWideHr_StillSeeEveryEmployee()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var a = SeedEmployee(db, tenantId, "EMP-0001", "Alice Roster");
+        var b = SeedEmployee(db, tenantId, "EMP-0002", "Bob Roster");
+        SeedExpiringDocument(db, tenantId, a.Id);
+        SeedExpiringDocument(db, tenantId, b.Id);
+
+        var hr = CreateController(db, tenantId, "HR Manager", permissions: ["employees.read", "employees.write"]);
+        var service = CreateService(db);
+
+        var expiring = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeExpiringDocumentDto>>(
+            Assert.IsType<OkObjectResult>((await hr.ExpiringDocuments(service, 60, CancellationToken.None)).Result).Value);
+        expiring.Should().HaveCount(2);
+        var missing = Assert.IsAssignableFrom<IReadOnlyCollection<EmployeeMissingDocumentsReportDto>>(
+            Assert.IsType<OkObjectResult>((await hr.MissingDocuments(service, CancellationToken.None)).Result).Value);
+        missing.Should().HaveCount(2);
+    }
+
     // ── FIX 2 — mutation responses obey the caller's own mask gate ────────────────
 
     [Fact]

@@ -21,13 +21,50 @@ public class LoanType : ITenantOwned
     public bool IsDeleted { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    /// <summary>Opt-in: when true, every application of this type is capped by the employee's grade
+    /// (<see cref="GradeEntitlement"/> rows keyed by <see cref="EntitlementComponentCode"/>). False keeps the
+    /// pre-grade behaviour exactly, so live tenants are unaffected until HR turns it on.</summary>
+    public bool GradeLimited { get; set; }
+
+    /// <summary>The Facility pay component (LOAN_&lt;Code&gt;) the grade limits are keyed by. Created the
+    /// first time a grade grid is published or grade limits are enabled. Required while
+    /// <see cref="GradeLimited"/> is true (database CHECK).</summary>
+    public string? EntitlementComponentCode { get; set; }
 }
 
-public class LoanPolicy : ITenantOwned
+/// <summary>DDL EF cannot express (NOT VALID), shared by the migration and the Postgres test fixture.</summary>
+public static class LoanTypeSql
+{
+    /// <summary>Qard: an employer loan is principal only (Civil Transactions Law Art. 385). NOT VALID enforces every new
+    /// and updated row without failing on legacy interest-bearing rows (see docs/DEPLOY_ROLLBACK_RUNBOOK.md).</summary>
+    public const string AddInterestFreeCheck =
+        "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;";
+    public const string DropInterestFreeCheck = "ALTER TABLE loan_types DROP CONSTRAINT IF EXISTS ck_loan_types__interest_free;";
+}
+
+public class LoanPolicy : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid LoanTypeId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public int Version { get; set; } = 1;
+    public decimal MaxAmount { get; set; }
+    public decimal MaxTotalOutstanding { get; set; }
+    public decimal MaxInstallmentPercentOfSalary { get; set; }
+    public int MinServiceMonths { get; set; }
+    public int MaxInstallments { get; set; } = 600;
+    public bool RequireProbationCompleted { get; set; }
+    public bool BlockDuringNotice { get; set; } = true;
+    public bool BlockOnOverdue { get; set; } = true;
+    public string AllowedEmploymentStatusesJson { get; set; } = "[\"Active\"]";
+    public string AllowedContractTypesJson { get; set; } = "[]";
+    public string AllowedRepaymentMethodsJson { get; set; } = "[\"BankTransfer\",\"DirectDebit\",\"Cash\"]";
+    public string AllowedRepaymentFrequenciesJson { get; set; } = "[\"Monthly\",\"Weekly\",\"BiWeekly\",\"Quarterly\"]";
+    public decimal AdditionalApprovalThreshold { get; set; }
+    public string AdditionalApproverRole { get; set; } = "HR Director";
+    public bool AllowExceptions { get; set; }
     public string PolicyName { get; set; } = string.Empty;
     public int MaxConcurrentLoans { get; set; } = 1;
     public decimal MaxMultiplierOfSalary { get; set; }      // e.g. 3 = max 3x monthly salary
@@ -37,6 +74,19 @@ public class LoanPolicy : ITenantOwned
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+
+    /// <summary>The company's explicit decision to offer this loan type. False on the company's active policy
+    /// means its employees cannot apply, whatever any group-wide policy says. Default true keeps every
+    /// existing policy (and tenant) exactly as it was.</summary>
+    public bool IsOffered { get; set; } = true;
+
+    /// <summary>True when this version was written by the per-company "offered" switch rather than by HR
+    /// publishing terms. Switching the type back ON retires such a version (instead of copying its terms), so the
+    /// group policy or the loan-type baseline it shadowed applies again exactly as before.</summary>
+    public bool CreatedByOfferingSwitch { get; set; }
+
+    /// <summary>For a switch-created version: the policy whose terms it copied (null = the loan-type baseline).</summary>
+    public Guid? CopiedFromPolicyId { get; set; }
 }
 
 public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
@@ -59,6 +109,8 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public decimal InstallmentAmount { get; set; }
     public string RepaymentFrequency { get; set; } = "Monthly";
     public DateOnly? DisbursementDate { get; set; }
+    public string RepaymentMethod { get; set; } = "PayrollDeduction";
+    public string? Currency { get; set; }
     public DateOnly? RepaymentStartDate { get; set; }
     public decimal TotalRepaid { get; set; }
     public decimal OutstandingBalance { get; set; }
@@ -71,6 +123,113 @@ public class EmployeeLoan : ITenantOwned, ICompanyScopedOperational
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+    public Guid? PolicyId { get; set; }
+    public int? PolicyVersion { get; set; }
+    public string PolicySnapshotJson { get; set; } = "{}";
+    public string EligibilitySnapshotJson { get; set; } = "{}";
+    public string EmploymentSnapshotJson { get; set; } = "{}";
+    public bool ReviewRequired { get; set; }
+    public string ReviewReason { get; set; } = string.Empty;
+    public string CollectionStatus { get; set; } = "Normal";
+
+    // ── Grade-limit witnesses (frozen at request, refreshed at the approval re-check) ──
+    // A later promotion or grid change never rewrites them: they record which grade and which cell
+    // the decision was taken under. NULL for every loan of a type that is not grade-limited.
+    public Guid? GradeIdAtRequest { get; set; }
+    public Guid? GradeEntitlementId { get; set; }
+    public decimal? GradePerLoanCap { get; set; }
+    public decimal? GradeOutstandingCap { get; set; }
+
+    // ── Release A (Art. 92): an instalment above 10% of the wage needs the employee's written consent ──
+    /// <summary>The employee's signed LoanDeductionConsent document (restricted type).</summary>
+    public Guid? ConsentDocumentId { get; set; }
+    /// <summary>Witness: the monthly wage the 10% test was computed against.</summary>
+    public decimal? CapBaseWage { get; set; }
+}
+
+public class LoanDisbursementBatch : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public string BatchNumber { get; set; } = string.Empty;
+    public string Currency { get; set; } = string.Empty;
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft";
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? ApprovedBy { get; set; }
+    public DateTime? ApprovedAtUtc { get; set; }
+    public Guid? PaidBy { get; set; }
+    public DateTime? PaidAtUtc { get; set; }
+    public string? PaymentReference { get; set; }
+    public string? PaymentMethod { get; set; }
+    public DateOnly? PaidDate { get; set; }
+}
+
+public class LoanDisbursementLine : ITenantOwned
+{
+    /// <summary>Immutable accounting evidence for the actual payment, not the current account mapping.</summary>
+    public Guid? GlEntryId { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BatchId { get; set; }
+    public Guid LoanId { get; set; }
+    public decimal Amount { get; set; }
+    public bool IsCancelled { get; set; }
+    public string EmployeeName { get; set; } = string.Empty;
+    public string EmployeeCode { get; set; } = string.Empty;
+    public string Iban { get; set; } = string.Empty;
+    public string BankName { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string? PaymentReference { get; set; }
+    public DateOnly? PaidDate { get; set; }
+    public string? PaymentMethod { get; set; }
+    public string? FailureReason { get; set; }
+    public Guid? PaidBy { get; set; }
+}
+
+public class LoanRepayment : ITenantOwned, ICompanyScopedOperational
+{
+    public Guid? GlEntryId { get; set; }
+    public Guid? ReversalGlEntryId { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid LoanId { get; set; }
+    public decimal Amount { get; set; }
+    public DateOnly PaidDate { get; set; }
+    public string Reference { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public bool IsReversed { get; set; }
+    public Guid? ReversedBy { get; set; }
+    public DateTime? ReversedAtUtc { get; set; }
+}
+
+public class LoanChangeRequest : ITenantOwned, ICompanyScopedOperational
+{
+    public string? RequestedRepaymentMethod { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid LoanId { get; set; }
+    public string ChangeType { get; set; } = string.Empty;
+    public string Status { get; set; } = "Pending";
+    public string Reason { get; set; } = string.Empty;
+    public int? RequestedInstallments { get; set; }
+    public DateOnly? RequestedStartDate { get; set; }
+    public string RequestedExceptionsJson { get; set; } = "[]";
+    public decimal OutstandingBalanceAtRequest { get; set; }
+    public Guid? CreatedBy { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public Guid? DecidedBy { get; set; }
+    public DateTime? DecidedAtUtc { get; set; }
+    public string DecisionReason { get; set; } = string.Empty;
+    public Guid? RepaymentId { get; set; }
+    public DateOnly? EffectiveDate { get; set; }
+    public string Reference { get; set; } = string.Empty;
 }
 
 public class LoanApproval : ITenantOwned

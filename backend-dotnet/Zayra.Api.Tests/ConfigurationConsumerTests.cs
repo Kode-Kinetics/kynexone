@@ -384,7 +384,8 @@ public class ConfigurationConsumerTests
     [Fact]
     public void TheProducerRegistryIsNeitherEmptyNorEverything()
     {
-        ApprovalEntities.Producers.Should().HaveCount(4);
+        ApprovalEntities.Producers.Should().HaveCount(5);
+        ApprovalEntities.HasProducer("JawazatRequest").Should().BeTrue("JawazatWorkflowService atomically produces a linked HR-only shared approval");
         ApprovalEntities.HasProducer("PayrollRun").Should().BeFalse();
         ApprovalEntities.HasProducer(null).Should().BeFalse();
         ApprovalEntities.HasProducer("  ").Should().BeFalse();

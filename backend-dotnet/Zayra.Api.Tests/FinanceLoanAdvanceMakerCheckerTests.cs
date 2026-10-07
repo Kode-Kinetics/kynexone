@@ -177,6 +177,7 @@ public class FinanceLoanAdvanceMakerCheckerTests
         FullName = name,
         EnglishName = name,
         Status = EmployeeStatuses.Active,
+        JoiningDate = DateTime.UtcNow.AddYears(-2),
     };
 
     private static LoansController MakeLoansController(ZayraDbContext db, Guid tenantId, Guid userId)

@@ -173,8 +173,8 @@ public sealed class QiwaSyncWorker : BackgroundService
                 if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
                 {
                     var reason = string.IsNullOrWhiteSpace(clientId)
-                        ? "Missing QIWA client ID — credentials not configured for this tenant."
-                        : "QIWA client secret missing or could not be decrypted.";
+                        ? QiwaSyncLogStatuses.MissingClientIdReason
+                        : QiwaSyncLogStatuses.MissingSecretReason;
 
                     // SAFE: logs a status flag only, never any credential value.
                     _log.LogWarning(
@@ -310,7 +310,8 @@ public sealed class QiwaSyncWorker : BackgroundService
         }
 
         log.LastRetriedAtUtc = DateTime.UtcNow;
-        log.ResponsePayloadJson = result.RawResponse;
+        // Status fields only: a live response echoes the employee's record (id_number and the rest) back.
+        log.ResponsePayloadJson = QiwaResponseScrubber.Scrub(result.RawResponse);
 
         if (result.Success)
         {

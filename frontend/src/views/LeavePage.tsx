@@ -17,14 +17,14 @@ import {
   leaveCalendarApi, leaveReportsApi, leaveAIApi,
 } from '../api/leave';
 import type {
-  LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest,
+  LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest, StatutoryLeaveContext,
   PublicHolidayCalendar, PublicHoliday, LeaveBlackoutDate,
   LeaveEncashmentRequest, CompOffCredit, AbsenceRecord,
   LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard,
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
-import client from '../api/client';
+import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -35,7 +35,11 @@ import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { describeApiError } from '../lib/apiError';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -96,10 +100,9 @@ const STATUS_COLORS: Record<string, string> = {
   Processed: 'bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-400',
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LeaveRequestStatus' }: { status: string; enumName?: EnumName }) {
   const cls = STATUS_COLORS[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  const label = status.replace(/([A-Z])/g, ' $1').trim();
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -366,6 +369,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
 // ── Balance Tab ───────────────────────────────────────────────────────────────
 
 function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: number; groupFilter?: GroupFilter }) {
+  const { t } = useLocale();
   const [empId, setEmpId] = useState(selfEmployeeId ? String(selfEmployeeId) : '');
   const [balancePickedEmp, setBalancePickedEmp] = useState<SelectedEmployee | null>(null);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -390,7 +394,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     try {
       await leaveBalancesApi.adjust({ employeeId: adjustModal.employeeId, leaveTypeId: adjustModal.leaveTypeId, year, amount: Number(adjAmount), reason: adjReason });
       setAdjustModal(null); setAdjAmount(''); setAdjReason(''); load();
-    } catch { alert('Adjustment failed.'); }
+    } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
   };
 
   return (
@@ -435,14 +439,24 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                   </div>
                   <button type="button" className={btn.sm} onClick={() => { setAdjustModal(b); setAdjAmount('0'); setAdjReason(''); }}>Adjust</button>
                 </div>
+                {b.statutoryEntitlementDays != null ? (
+                  // Saudi statutory event leave is granted by law per event, not drawn from this
+                  // balance, so its "available" can be negative while a request is pending. Show the
+                  // statutory figure instead of a red balance.
+                  <div className="mb-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                    <p className="font-semibold">{t('Statutory entitlement')}</p>
+                    <p className="text-xs">{t('{days} days per event, set by Saudi labour law.', { days: b.statutoryEntitlementDays })}</p>
+                  </div>
+                ) : (
                 <div className="mb-3 h-2 rounded-full bg-slate-100 dark:bg-white/10">
                   <div className={`h-2 rounded-full transition-all ${pct > 90 ? 'bg-rose-400' : pct > 70 ? 'bg-amber-400' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
                 </div>
+                )}
                 <div className="grid grid-cols-3 gap-2 text-center">
                   {[
                     { label: 'Entitled', val: b.entitled },
                     { label: 'Used', val: b.used },
-                    { label: 'Available', val: available },
+                    { label: 'Available', val: b.statutoryEntitlementDays != null ? '—' : available },
                     { label: 'Pending', val: b.pending },
                     { label: 'Carried Fwd', val: b.carriedForward },
                     { label: 'Encashed', val: b.encashed },
@@ -483,6 +497,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
 // ── Apply Leave Tab ───────────────────────────────────────────────────────────
 
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
+  const { t } = useLocale();
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [pickedEmployee, setPickedEmployee] = useState<SelectedEmployee | null>(null);
   const [delegatePicked, setDelegatePicked] = useState<SelectedEmployee | null>(null);
@@ -491,6 +506,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
     leaveTypeId: '', startDate: '', endDate: '', dayType: 'Full',
     hoursRequested: '', reason: '', isEmergency: false,
     delegateEmployeeId: '', delegateEmployeeName: '',
+    statutoryEventDate: '', separateEventReason: '',
   });
 
   // Sync picker selection into form fields
@@ -532,6 +548,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   // form green-lights a request the API then rejects. Re-spelling it here is what let them diverge.
   const available = balance ? balance.available : null;
   const selectedType = leaveTypes.find(t => t.id === form.leaveTypeId);
+  // Saudi statutory leave asks for the event's date; bereavement, birth and marriage may also be
+  // declared a separate event from earlier leave of the same kind.
+  const applyKind = selectedType ? isSaudiStatutoryLeave(selectedType.code, selectedType.nameEn, selectedType.category) : null;
 
   const submit = async () => {
     if (!form.employeeId || !form.leaveTypeId || !form.startDate || !form.endDate) {
@@ -547,6 +566,8 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         reason: form.reason, isEmergency: form.isEmergency,
         delegateEmployeeId: form.delegateEmployeeId ? Number(form.delegateEmployeeId) : undefined,
         delegateEmployeeName: form.delegateEmployeeName,
+        statutoryEventDate: isDeclarableLeave(applyKind) && form.statutoryEventDate ? form.statutoryEventDate : undefined,
+        separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
       });
       setSuccess(true);
     } catch (e: unknown) {
@@ -602,7 +623,15 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             </select>
           </Field>
 
-          {balance !== null && (
+          {balance !== null && balance.statutoryEntitlementDays != null && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Statutory entitlement')}</span>
+                <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{t('{days} days per event', { days: balance.statutoryEntitlementDays })}</span>
+              </div>
+            </div>
+          )}
+          {balance !== null && balance.statutoryEntitlementDays == null && (
             <div className={`rounded-lg border p-3 ${available !== null && available < requestedDays ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10' : 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10'}`}>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Available Balance</span>
@@ -639,6 +668,18 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           <Field label={`Reason${selectedType?.requiresReason ? ' *' : ''}`}>
             <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? 'Reason is required for this leave type…' : 'Optional reason…'} />
           </Field>
+
+          {isDeclarableLeave(applyKind) && (
+            <Field label={t('Date of the event (death, birth or marriage)')}>
+              <input type="date" className={inp} value={form.statutoryEventDate} onChange={e => set('statutoryEventDate', e.target.value)} />
+            </Field>
+          )}
+          {isDeclarableLeave(applyKind) && (
+            <Field label={t('Separate event? Say why (for example, a second bereavement)')}>
+              <textarea className={inp} rows={2} value={form.separateEventReason} onChange={e => set('separateEventReason', e.target.value)}
+                placeholder={t('Only if this is a different event from your earlier leave of this kind. The event date is required too.')} />
+            </Field>
+          )}
 
           {selectedType?.requiresAttachment && (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-white/20">
@@ -685,10 +726,10 @@ function MyRequestsTab() {
   useEffect(load, [statusFilter, list.reload]);
   const requestCount = list.total ?? requests.length;
 
-  const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch { alert('Withdrawal failed.'); } };
+  const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch (e) { notifyApiError(e, 'Withdrawal failed.'); } };
   const cancel = async () => {
     if (!cancelModal || !cancelReason) return;
-    try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch { alert('Cancellation failed.'); }
+    try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch (e) { notifyApiError(e, 'Cancellation failed.'); }
   };
 
   return (
@@ -768,28 +809,43 @@ function MyRequestsTab() {
 // ── Approvals Tab ─────────────────────────────────────────────────────────────
 
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
+  // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
+  const { hasPermission } = useAuth();
+  const canDecide = hasPermission('leave.approve');
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [rejectModal, setRejectModal] = useState<LeaveRequest | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [history, setHistory] = useState<Record<string, StatutoryLeaveContext>>({});
+  // A failed load says so; "No pending approvals" after a failure would tell a manager the queue is clear.
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const load = () => {
     setLoading(true);
     // The whole queue: an approver used to see only the first 25 pending requests.
-    leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => { setRequests(all); setLoading(false); }).catch(() => setLoading(false));
+    leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => {
+      setRequests(all); setLoadError(null); setLoading(false);
+      // Saudi statutory leave is decided with the employee's earlier leave of the same kind in view.
+      if (all.length > 0)
+        leaveRequestsApi.statutoryHistory(all.map(r => r.id)).then(setHistory).catch(() => setHistory({}));
+      else setHistory({});
+    }).catch(e => { setRequests([]); setLoadError(e); setLoading(false); });
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
 
-  const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch { alert('Approval failed.'); } };
+  const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch (e) { notifyApiError(e, 'Approval failed.'); } };
   const reject = async () => {
     if (!rejectModal || !rejectReason) return;
-    try { await leaveRequestsApi.reject(rejectModal.id, rejectReason); setRejectModal(null); load(); } catch { alert('Rejection failed.'); }
+    try { await leaveRequestsApi.reject(rejectModal.id, rejectReason); setRejectModal(null); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); }
   };
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : requests.length === 0 ? (
+      {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>}
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
+        <LoadFailure what="Pending approvals" error={loadError} />
+      ) : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No pending approvals</p>
@@ -809,13 +865,14 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
                   {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
+                  <StatutoryLeaveHistory context={history[r.id]} />
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
                   <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
-                  <div className="flex gap-2">
+                  {canDecide && <div className="flex gap-2">
                     <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectReason(''); }}>Reject</button>
                     <button type="button" className={btn.primary} onClick={() => approve(r.id)}>Approve</button>
-                  </div>
+                  </div>}
                 </div>
               </div>
             </div>
@@ -943,7 +1000,7 @@ function CreateLeaveTypeModal({ onClose, onSaved }: { onClose: () => void; onSav
   const save = async () => {
     if (!form.code || !form.nameEn) { setError('Code and English name are required.'); return; }
     setSaving(true); setError('');
-    try { await leaveTypesApi.create(form); onSaved(); } catch { setError('Save failed.'); setSaving(false); }
+    try { await leaveTypesApi.create(form); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
@@ -986,9 +1043,16 @@ function LeaveTypesTab() {
   const [types, setTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const load = () => { setLoading(true); leaveTypesApi.list().then(setTypes).catch(() => {}).finally(() => setLoading(false)); };
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const load = () => {
+    setLoading(true);
+    leaveTypesApi.list()
+      .then(rows => { setTypes(rows); setLoadError(null); })
+      .catch(e => { setTypes([]); setLoadError(e); })
+      .finally(() => setLoading(false));
+  };
   useEffect(load, []);
-  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); load(); } catch { alert('Failed.'); } };
+  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'The leave type could not be deactivated.'); } };
 
   return (
     <div className="space-y-4">
@@ -1001,7 +1065,7 @@ function LeaveTypesTab() {
         />
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
       </div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {types.map(t => (
             <div key={t.id} className="surface p-4">
@@ -1060,11 +1124,19 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     weekendsIncluded: existing?.weekendsIncluded ?? false,
     publicHolidaysIncluded: existing?.publicHolidaysIncluded ?? false,
     payrollImpact: existing?.payrollImpact ?? 'Full',
+    allowsHajjBeyondStatutoryEligibility: existing?.allowsHajjBeyondStatutoryEligibility ?? false,
     status: existing?.status ?? 'Draft',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
+  const { t } = useLocale();
+  // Which Saudi statutory leave the selected type is, as the server classifies it: the Hajj waiver
+  // only means something on a Hajj policy, and maternity/iddah are set by law in calendar time.
+  const selectedLeaveType = leaveTypes.find(lt => lt.id === form.leaveTypeId);
+  const statutoryKind = selectedLeaveType ? isSaudiStatutoryLeave(selectedLeaveType.code, selectedLeaveType.nameEn, selectedLeaveType.category) : null;
+  const calendarSpanOnWorkingDays = isCalendarSpanLeave(statutoryKind)
+    && !(form.weekendsIncluded && form.publicHolidaysIncluded);
 
   const save = async () => {
     if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
@@ -1076,7 +1148,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
         await leavePoliciesApi.create(form);
       }
       onSaved();
-    } catch { setError('Save failed.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
@@ -1141,12 +1213,18 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
             <Field label="Notice Required (days)"><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'], ['appliesOnProbation', 'Applies on Probation']] as [keyof typeof form, string][]).map(([k, l]) => (
+            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'], ['appliesOnProbation', 'Applies on Probation'],
+               ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', 'Hajj: allow before 2 years or more than once']] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
               <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
               </label>
             ))}
           </div>
+          {calendarSpanOnWorkingDays && (
+            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+              {t('For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.')}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -1193,7 +1271,7 @@ function PoliciesTab() {
 
   const archive = async (id: string, name: string) => {
     if (!confirm(`Archive "${name}"? It will no longer be applied to new requests.`)) return;
-    try { await leavePoliciesApi.delete(id); load(); } catch { alert('Failed to archive policy.'); }
+    try { await leavePoliciesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'Failed to archive policy.'); }
   };
 
   return (
@@ -1258,6 +1336,7 @@ const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', ho
 const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
 
 function HolidayCalendarTab() {
+  const { t } = useLocale();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
   const [selected, setSelected] = useState<PublicHolidayCalendar | null>(null);
   const [holidays, setHolidays] = useState<PublicHoliday[]>([]);
@@ -1293,11 +1372,8 @@ function HolidayCalendarTab() {
   }, [selected]);
 
   // ── error helper ──
-  const apiErr = (err: unknown) => {
-    const ax = err as { response?: { status?: number; data?: unknown } };
-    if (ax?.response) return `${ax.response.status}: ${JSON.stringify(ax.response.data)}`;
-    return String(err);
-  };
+  // One translated sentence, never the raw response body (lib/apiError.ts).
+  const apiErr = (err: unknown) => describeApiError(err, t);
 
   // ── Calendar save (create or edit) ──
   const saveCal = async () => {
@@ -1311,7 +1387,7 @@ function HolidayCalendarTab() {
         await reloadCalendars();
       }
       setCalModal('none');
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditCal = (c: PublicHolidayCalendar) => {
@@ -1325,7 +1401,7 @@ function HolidayCalendarTab() {
       await holidayCalendarApi.deleteCalendar(c.id);
       if (selected?.id === c.id) { setSelected(null); setHolidays([]); }
       await reloadCalendars();
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   // Normalise date from API (DateOnly → "YYYY-MM-DD" for <input type=date>)
@@ -1357,7 +1433,7 @@ function HolidayCalendarTab() {
       setHolidayModal('none');
       setEditingHoliday(null);
       await reloadHolidays(selected);
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditHoliday = (h: PublicHoliday) => {
@@ -1382,7 +1458,7 @@ function HolidayCalendarTab() {
     try {
       await holidayCalendarApi.deleteHoliday(h.id);
       setHolidays(prev => prev.filter(x => x.id !== h.id));
-    } catch (err) { alert(`Failed: ${apiErr(err)}`); }
+    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openAddHoliday = () => {
@@ -1570,7 +1646,7 @@ function HolidayCalendarTab() {
 // ── Encashment Tab ────────────────────────────────────────────────────────────
 
 function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
-  const { user } = useAuth();
+  const { hasPermission } = useAuth();
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<Record<string, string>>({});
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -1579,9 +1655,11 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const [form, setForm] = useState({ employeeId: '', employeeName: '', leaveTypeId: '', year: new Date().getFullYear(), daysToEncash: '', reason: '' });
   const [saving, setSaving] = useState(false);
   const { currencyCode } = useTenantSettings();
-  const canHrApprove = user?.roles.some(r => ['Admin', 'HR Manager'].includes(r)) ?? false;
-  const canPayrollApprove = user?.roles.some(r => ['Admin', 'Payroll Officer', 'Payroll Manager'].includes(r)) ?? false;
-  const canVoid = user?.roles.some(r => ['Admin', 'Payroll Manager'].includes(r)) ?? false;
+  // The same keys the API requires (EncashmentController): HR decision and reject need employees.approve,
+  // payroll approval and void need payroll.approve.
+  const canHrApprove = hasPermission('employees.approve');
+  const canPayrollApprove = hasPermission('payroll.approve');
+  const canVoid = hasPermission('payroll.approve');
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   useEffect(() => {
@@ -1607,24 +1685,24 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     try {
       await encashmentApi.create({ employeeId: Number(form.employeeId), leaveTypeId: form.leaveTypeId, year: Number(form.year), daysToEncash: Number(form.daysToEncash), reason: form.reason });
       setShowCreate(false); load();
-    } catch { alert('Failed.'); }
+    } catch (e) { notifyApiError(e, 'Could not create the encashment request.'); }
     setSaving(false);
   };
 
-  const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch { alert('Failed.'); } };
+  const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch (e) { notifyApiError(e, 'HR approval failed.'); } };
   const payrollApprove = async (id: string) => {
     const payrollRunId = selectedRun[id];
     if (!payrollRunId) return;
     try { await encashmentApi.payrollApprove(id, payrollRunId); load(); }
-    catch { alert('Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
+    catch (e) { notifyApiError(e, 'Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
   };
   const voidEncashment = async (id: string) => {
     const reason = prompt('Void reason (required):')?.trim() ?? '';
     if (reason.length < 5) return;
     try { await encashmentApi.void(id, reason); load(); }
-    catch { alert('Void failed. If payroll was processed, void or reopen the payroll run first.'); }
+    catch (e) { notifyApiError(e, 'Void failed. If payroll was processed, void or reopen the payroll run first.'); }
   };
-  const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch { alert('Failed.'); } };
+  const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); } };
 
   return (
     <div className="space-y-4">
@@ -1739,11 +1817,11 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     if (!form.employeeId || !form.workedDate || !form.daysEarned) return;
     setSaving(true);
     try { await compOffApi.create({ employeeId: Number(form.employeeId), workedDate: form.workedDate, workType: form.workType, hoursWorked: Number(form.hoursWorked), daysEarned: Number(form.daysEarned), expiryDate: form.expiryDate || undefined }); setShowCreate(false); load(); }
-    catch { alert('Failed.'); }
+    catch (e) { notifyApiError(e, 'The comp-off credit could not be saved.'); }
     setSaving(false);
   };
 
-  const approve = async (id: string) => { try { await compOffApi.approve(id); load(); } catch { alert('Failed.'); } };
+  const approve = async (id: string) => { try { await compOffApi.approve(id); load(); } catch (e) { notifyApiError(e, 'The comp-off credit could not be approved.'); } };
 
   return (
     <div className="space-y-4">
@@ -1819,7 +1897,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const regularize = async () => {
     if (!regModal || !regReason) return;
     try { await absenceApi.submitRegularization({ employeeId: regModal.employeeId, absenceRecordId: regModal.id, reason: regReason }); setRegModal(null); load(); }
-    catch { alert('Failed.'); }
+    catch (e) { notifyApiError(e, 'The regularization request could not be submitted.'); }
   };
 
   return (
@@ -1940,8 +2018,8 @@ function AIInsightsTab() {
   const load = () => { void list.reload(); };
   useEffect(load, [list.reload]);
 
-  const generate = async () => { setGenerating(true); try { await leaveAIApi.generate(); load(); } catch { alert('Generation failed.'); } setGenerating(false); };
-  const ack = async (id: string) => { try { await leaveAIApi.acknowledge(id); load(); } catch { alert('Failed.'); } };
+  const generate = async () => { setGenerating(true); try { await leaveAIApi.generate(); load(); } catch (e) { notifyApiError(e, 'Generation failed.'); } setGenerating(false); };
+  const ack = async (id: string) => { try { await leaveAIApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, 'The insight could not be acknowledged.'); } };
 
   const SEV_CARD: Record<string, string> = {
     Info: 'border-blue-200 bg-blue-50 dark:border-blue-500/20 dark:bg-blue-500/10',
@@ -2018,7 +2096,7 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
 ];
 
 export function LeavePage() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('dashboard');
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
@@ -2060,7 +2138,8 @@ export function LeavePage() {
       if (['types', 'policies', 'holidays', 'reports', 'ai-insights'].includes(t.id)) return isAdmin;
       if (t.id === 'approvals') return isAdmin || isManager;
       if (t.id === 'absences') return isAdmin || isManager;
-      if (t.id === 'encashment') return isAdmin || isManager || isPayroll;
+      // Plus anyone who can take an encashment decision (HR Director, Finance Approver hold these keys).
+      if (t.id === 'encashment') return isAdmin || isManager || isPayroll || hasPermission('employees.approve') || hasPermission('payroll.approve');
       if (t.id === 'compoff') return isAdmin || isManager;
       return true;
     });

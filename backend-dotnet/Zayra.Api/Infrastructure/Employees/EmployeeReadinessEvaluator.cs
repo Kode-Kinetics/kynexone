@@ -288,6 +288,7 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             ["link:supervisor"] = "Supervisor not linked",
             ["pay:salaryHeld"] = "Salary held (no grade)",
             ["pay:salaryReview"] = "Salary needs review",
+            ["pay:bankUnverified"] = "Imported bank details not yet verified",
             // A CSV cell that could not be read (left blank and flagged, never guessed).
             ["data:unparsedDate"] = "A date in the file could not be read",
             ["data:unparsedNumber"] = "A number in the file could not be read",

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -73,9 +74,9 @@ public class LeavePoliciesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var leaveTypeExists = await _db.LeaveTypes
-            .AnyAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
-        if (!leaveTypeExists)
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is null)
             return BadRequest(new { message = "Leave type not found." });
 
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
@@ -108,8 +109,12 @@ public class LeavePoliciesController : ControllerBase
             PublicHolidaysIncluded = req.PublicHolidaysIncluded,
             PayrollImpact = req.PayrollImpact ?? "Full",
             ApprovalWorkflowId = req.ApprovalWorkflowId,
+            AllowsHajjBeyondStatutoryEligibility = req.AllowsHajjBeyondStatutoryEligibility,
             Status = req.Status ?? "Draft"
         };
+
+        if (await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
+            return floorRefusal;
 
         _db.LeavePolicies.Add(policy);
         await _db.SaveChangesAsync(ct);
@@ -117,6 +122,7 @@ public class LeavePoliciesController : ControllerBase
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Created", string.Empty, policy.Name, "Leave policy created",
             User.Identity?.Name ?? "Admin", ct);
+        await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore: false, ct);
 
         return Created($"/api/leave/policies/{policy.Id}", policy);
     }
@@ -150,6 +156,82 @@ public class LeavePoliciesController : ControllerBase
             })
             : null;
 
+    /// <summary>
+    /// KSA statutory special leave (maternity, marriage, bereavement, birth, Hajj, iddah) cannot be
+    /// configured below the Labour Law's figure, as unpaid, or — for maternity and iddah — counted in
+    /// working days, for a policy that reaches Saudi employees. Refused with the citation rather than stored: a policy saved at 70 maternity days
+    /// would read back as the tenant's policy and be applied as if it were lawful.
+    /// </summary>
+    private async Task<IActionResult?> RefuseBelowStatutoryFloorAsync(
+        Guid tenantId, LeaveType leaveType, LeavePolicy policy, CancellationToken ct)
+    {
+        var violations = await KsaStatutoryLeavePolicyGuard.CheckAsync(
+            _db, tenantId, policy.Id, leaveType.Id, leaveType.Code, leaveType.NameEn, leaveType.Category,
+            policy.CountryCode, policy.CompanyId, policy.Status,
+            policy.AnnualEntitlementDays, policy.MaximumDaysPerRequest, policy.PayrollImpact,
+            policy.WeekendsIncluded, policy.PublicHolidaysIncluded, ct);
+        return violations.Count == 0
+            ? null
+            : BadRequest(new
+            {
+                error = "statutory_leave_floor",
+                message = string.Join(" ", violations) + " An employer may grant more than the law; it may not grant less.",
+                violations,
+            });
+    }
+
+    /// <summary>
+    /// Two statutory choices are recorded in the leave audit trail on every save:
+    /// <list type="bullet">
+    /// <item>turning the Hajj eligibility waiver on or off (old → new) — it grants leave the statute
+    /// does not, so who chose it and when must be on the record;</item>
+    /// <item>a Saudi maternity or iddah policy saved on WORKING-day counting: lawful when it grants at
+    /// least the statutory figure in its own unit, but the law counts calendar days, so a
+    /// <c>StatutoryReviewNeeded</c> row prompts HR to move it — the same worklist the 2025 data
+    /// correction writes to.</item>
+    /// </list>
+    /// </summary>
+    private async Task AuditStatutoryChoicesAsync(Guid tenantId, LeaveType leaveType, LeavePolicy policy, bool waiverBefore, CancellationToken ct)
+    {
+        var actor = User.Identity?.Name ?? "Admin";
+        if (waiverBefore != policy.AllowsHajjBeyondStatutoryEligibility)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(), "HajjEligibilityWaiverChanged",
+                $"allows_hajj_beyond_statutory_eligibility={waiverBefore.ToString().ToLowerInvariant()}",
+                $"allows_hajj_beyond_statutory_eligibility={policy.AllowsHajjBeyondStatutoryEligibility.ToString().ToLowerInvariant()}",
+                "Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 (before two years' service, or more than once).",
+                actor, ct);
+
+        var kind = Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category);
+        var needsReview = kind is { } k
+            && Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.NeedsCalendarCounting(k, policy.WeekendsIncluded && policy.PublicHolidaysIncluded)
+            && !string.Equals(policy.Status, "Archived", StringComparison.OrdinalIgnoreCase)
+            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None;
+
+        // One open review item per policy: the latest of Needed / Resolved decides whether one is open,
+        // so re-saving a working-day policy does not pile up duplicate rows, and fixing it closes it.
+        var policyId = policy.Id.ToString();
+        var latest = await _db.LeaveAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EntityType == "LeavePolicy" && a.EntityId == policyId
+                        && (a.Action == "StatutoryReviewNeeded" || a.Action == "StatutoryReviewResolved"))
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => a.Action)
+            .FirstOrDefaultAsync(ct);
+        var open = latest == "StatutoryReviewNeeded";
+
+        if (needsReview && !open)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policyId, "StatutoryReviewNeeded",
+                $"annual_entitlement_days={policy.AnnualEntitlementDays:0.##}; maximum_days_per_request={policy.MaximumDaysPerRequest:0.##}; counting=working days",
+                "required: counting=calendar days",
+                $"{Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Describe(kind!.Value)} is set by law in calendar time "
+                + $"({Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.Citation(kind.Value)}). This policy counts working days; it "
+                + "is honoured as it counts, but switch it to calendar days (tick Count Weekends and Count Public Holidays).",
+                actor, ct);
+        else if (!needsReview && open)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policyId, "StatutoryReviewResolved",
+                "counting=working days", policy.WeekendsIncluded && policy.PublicHolidaysIncluded ? "counting=calendar days" : "no longer applies to Saudi employees",
+                "The statutory review item for this policy is closed by this save.", actor, ct);
+    }
+
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateLeavePolicyRequest req, CancellationToken ct)
@@ -164,6 +246,7 @@ public class LeavePoliciesController : ControllerBase
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
             return carryForwardRefusal;
 
+        var waiverBefore = policy.AllowsHajjBeyondStatutoryEligibility;
         if (!string.IsNullOrWhiteSpace(req.Name)) policy.Name = req.Name;
         if (req.CountryCode is not null) policy.CountryCode = req.CountryCode;
         if (req.CompanyId.HasValue) policy.CompanyId = req.CompanyId;
@@ -187,14 +270,25 @@ public class LeavePoliciesController : ControllerBase
         if (req.PublicHolidaysIncluded.HasValue) policy.PublicHolidaysIncluded = req.PublicHolidaysIncluded.Value;
         if (!string.IsNullOrWhiteSpace(req.PayrollImpact)) policy.PayrollImpact = req.PayrollImpact;
         if (req.ApprovalWorkflowId.HasValue) policy.ApprovalWorkflowId = req.ApprovalWorkflowId;
+        if (req.AllowsHajjBeyondStatutoryEligibility.HasValue) policy.AllowsHajjBeyondStatutoryEligibility = req.AllowsHajjBeyondStatutoryEligibility.Value;
         if (!string.IsNullOrWhiteSpace(req.Status)) policy.Status = req.Status;
         policy.UpdatedAtUtc = DateTime.UtcNow;
+
+        // Checked on the policy as it WILL be, so a change to any one field — the days, the cap, the
+        // country, the company, the pay treatment or the status — is judged against the others.
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == policy.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is not null
+            && await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
+            return floorRefusal;
 
         await _db.SaveChangesAsync(ct);
 
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Updated", string.Empty, policy.Name, "Leave policy updated",
             User.Identity?.Name ?? "Admin", ct);
+        if (leaveType is not null)
+            await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore, ct);
 
         return Ok(policy);
     }
@@ -242,7 +336,8 @@ public record CreateLeavePolicyRequest(
     bool PublicHolidaysIncluded,
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
-    string? Status);
+    string? Status,
+    bool AllowsHajjBeyondStatutoryEligibility = false);
 
 public record UpdateLeavePolicyRequest(
     string? Name,
@@ -268,4 +363,5 @@ public record UpdateLeavePolicyRequest(
     bool? PublicHolidaysIncluded,
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
-    string? Status);
+    string? Status,
+    bool? AllowsHajjBeyondStatutoryEligibility = null);

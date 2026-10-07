@@ -24,16 +24,16 @@ namespace Zayra.Api.Tests;
 
 /// <summary>
 /// P0 money bug: `bankIban`/`bankName` are SENSITIVE, so every bank change becomes an
-/// <see cref="EmployeeChangeRequest"/> and there are TWO appliers —
-/// <c>EmployeesController.ApproveChange</c> (the direct endpoint) and
+/// <see cref="EmployeeChangeRequest"/>. There used to be TWO appliers —
+/// <c>EmployeesController.ApproveChange</c> (the direct endpoint, now retired with 410) and
 /// <c>ApprovalWorkflowService.SyncEmployeeChangeDecisionAsync</c> (the normal Approvals screen).
 /// The WPS/SIF export reads <c>EmployeePayrollProfile.Iban</c>, NOT <c>Employee.BankIban</c>.
 /// Only the first applier called <c>EmployeeBankProfileSync</c>, so an IBAN approved from the
 /// Approvals screen left the payroll profile on the OLD account — the employee was paid into the
 /// previous bank account, or dropped from the WPS file entirely.
 ///
-/// These tests assert on PERSISTED values (never a status code) and the second one is the
-/// permanent regression guard that the two appliers keep producing one end state.
+/// These tests assert on PERSISTED values (never a status code). The two-applier parity guard went
+/// with the direct endpoint: the Approval Center is now the only applier.
 /// </summary>
 public class EmployeeBankChangeSyncTests
 {
@@ -212,36 +212,7 @@ public class EmployeeBankChangeSyncTests
         state.ProfileBankName.Should().Be(NewBank);
         state.ProfileStamped.Should().BeTrue("the synced profile row must carry an update stamp");
         state.ChangeStatus.Should().Be("ApprovedApplied");
-    }
-
-    // ── (b) Regression guard — the two appliers must not drift apart again ──
-
-    [Fact]
-    public async Task BothAppliers_ProduceIdenticalPersistedBankEndState()
-    {
-        // Route 1 — EmployeesController.ApproveChange (the direct endpoint).
-        await using var directDb = CreateDb();
-        var directFx = await SeedPendingBankChangeAsync(directDb);
-        var directApprover = Guid.NewGuid();
-        var directResult = await CreateController(directDb, directFx.TenantId, directApprover)
-            .ApproveChange(directFx.Change.Id, CancellationToken.None);
-        directResult.Should().BeOfType<OkObjectResult>();
-        var directState = await ReadEndStateAsync(directDb, directFx);
-
-        // Route 2 — ApprovalWorkflowService.DecideAsync (the Approvals screen), same change.
-        await using var workflowDb = CreateDb();
-        var workflowFx = await SeedPendingBankChangeAsync(workflowDb);
-        var workflowApproval = await SeedApprovalRequestAsync(workflowDb, workflowFx);
-        await CreateWorkflowService(workflowDb).DecideAsync(
-            workflowFx.TenantId, workflowApproval.Id, new ApprovalDecisionRequest("Approve", "Verified against the bank letter."),
-            ApproverCtx(workflowFx.TenantId, Guid.NewGuid()), CancellationToken.None);
-        var workflowState = await ReadEndStateAsync(workflowDb, workflowFx);
-
-        // One change, one end state — no matter which screen the approver used.
-        workflowState.Should().BeEquivalentTo(directState);
-        directState.ProfileIban.Should().Be(NewIban);
-        workflowState.ProfileIban.Should().Be(NewIban);
-        directState.HistoryRows.Should().Be(1, "both appliers record the approval in employee history");
+        state.HistoryRows.Should().Be(1, "the approval is recorded in employee history");
     }
 
     // ── Stubs ────────────────────────────────────────────────────────────────

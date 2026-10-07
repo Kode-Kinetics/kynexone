@@ -79,6 +79,8 @@ public class CompanyComplianceProfile : ITenantOwned, ICompanyScoped
     public string Status { get; set; } = CompanyPolicyStatuses.Active;
     // JSON array of statutory field requirements, e.g. [{"field":"IqamaNumber","failClosed":true}].
     public string RequiredFieldsJson { get; set; } = string.Empty;
+    /// <summary>Typed, versioned Jawazat company policy; separate from employee-readiness requirements.</summary>
+    public string? JawazatPolicyJson { get; set; }
     public string Notes { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }

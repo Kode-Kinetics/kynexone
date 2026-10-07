@@ -185,7 +185,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                             nameof(PlatformUser.FailedLoginCount) or
                             nameof(PlatformUser.LockoutEndUtc) or
                             nameof(PlatformUser.LastLoginAtUtc) or
-                            nameof(PlatformUser.LastLoginIp));
+                            nameof(PlatformUser.LastLoginIp) or
+                            // Consuming or regenerating recovery codes changes no identity, role or
+                            // factor; rotating the stamp would sign the operator out mid-session.
+                            nameof(PlatformUser.MfaRecoveryCodeHashes) or
+                            // Replay-protection bookkeeping on every MFA sign-in, likewise.
+                            nameof(PlatformUser.MfaLastTotpStep));
                 // User.UpdatedAtUtc is likewise the tenant access-token security stamp. Routine
                 // login telemetry must allow multiple legitimate device/browser sessions and a
                 // sub-threshold bad-password attempt must not revoke an existing session. Lockout,
@@ -1071,7 +1076,15 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── Loans, Advances & Bonuses ──────────────────────────────────────────────
     public DbSet<LoanType> LoanTypes => Set<LoanType>();
     public DbSet<LoanPolicy> LoanPolicies => Set<LoanPolicy>();
+    public DbSet<GradeEntitlement> GradeEntitlements => Set<GradeEntitlement>();
+    // Release A (rev 8.3.2): the contract-year package and the renewal case. Mapped in ReleaseAModelConfiguration.
+    public DbSet<EmployeeEntitlement> EmployeeEntitlements => Set<EmployeeEntitlement>();
+    public DbSet<ContractRenewalCase> ContractRenewalCases => Set<ContractRenewalCase>();
+    public DbSet<LoanChangeRequest> LoanChangeRequests => Set<LoanChangeRequest>();
     public DbSet<EmployeeLoan> EmployeeLoans => Set<EmployeeLoan>();
+    public DbSet<LoanDisbursementBatch> LoanDisbursementBatches => Set<LoanDisbursementBatch>();
+    public DbSet<LoanDisbursementLine> LoanDisbursementLines => Set<LoanDisbursementLine>();
+    public DbSet<LoanRepayment> LoanRepayments => Set<LoanRepayment>();
     public DbSet<LoanApproval> LoanApprovals => Set<LoanApproval>();
     public DbSet<LoanInstallment> LoanInstallments => Set<LoanInstallment>();
     public DbSet<LoanSettlement> LoanSettlements => Set<LoanSettlement>();
@@ -1451,6 +1464,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("hr_requests");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.WorkflowVersion).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.DueAtUtc });
         });
@@ -1667,6 +1682,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.MidSalary).HasPrecision(14, 2);
             entity.Property(x => x.MaxSalary).HasPrecision(14, 2);
             entity.Property(x => x.Currency).HasMaxLength(8);
+            entity.Property(x => x.NameAr).HasMaxLength(120);
         });
 
         modelBuilder.Entity<GradePayScaleComponent>(entity =>
@@ -1723,8 +1739,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<PayComponent>(entity =>
         {
-            entity.ToTable("pay_components");
+            entity.ToTable("pay_components", t =>
+            {
+                t.HasCheckConstraint("ck_pay_components__entitlement_class",
+                    "entitlement_class IN ('None','QiwaWage','Contractual','Facility')");
+                t.HasCheckConstraint("ck_pay_components__statutory_floor",
+                    "statutory_floor IN ('None','Housing','Transport','Medical','Art40')");
+            });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.EntitlementClass).HasMaxLength(20).HasDefaultValue(PayEntitlementClasses.None);
+            entity.Property(x => x.StatutoryFloor).HasMaxLength(20).HasDefaultValue(PayStatutoryFloors.None);
             // Non-unique helper index; the real UNIQUE (tenant, company, code, component_type) NULLS NOT
             // DISTINCT is created via raw SQL in the AddPayComponentDefinitions migration (Npgsql 8 cannot
             // express NULLS NOT DISTINCT fluently — same idiom as gl_drivers). component_type is part of the
@@ -2058,6 +2082,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TotalDays).HasPrecision(6,2);
             entity.Property(x => x.HoursRequested).HasPrecision(5,2);
+            entity.Property(x => x.StatutoryLeaveKind).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.StartDate });
         });
@@ -3177,6 +3202,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Role).HasMaxLength(40);
             entity.Property(x => x.LastLoginIp).HasMaxLength(64);
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
+            entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(2000);
             entity.HasIndex(x => x.Email).IsUnique();
             entity.Property(x => x.IsActive).HasDefaultValue(true);
         });
@@ -3848,18 +3874,102 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // ── Loans ──────────────────────────────────────────────────────────────
         modelBuilder.Entity<LoanType>(entity =>
         {
-            entity.ToTable("loan_types");
+            entity.ToTable("loan_types", t =>
+                t.HasCheckConstraint("ck_loan_types__grade_limited_has_component",
+                    "NOT grade_limited OR entitlement_component_code IS NOT NULL"));
             entity.HasKey(x => x.Id);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.InterestRate).HasPrecision(8, 4);
+            entity.Property(x => x.GradeLimited).HasDefaultValue(false);
+            entity.Property(x => x.EntitlementComponentCode).HasMaxLength(64);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+        });
+
+        // Slice L1 — grade entitlement grid. Close-only, effective-dated; the no-overlap EXCLUDE (which EF
+        // cannot model) is added by the migration from GradeEntitlementSql.
+        modelBuilder.Entity<GradeEntitlement>(entity =>
+        {
+            entity.ToTable("grade_entitlements", t =>
+            {
+                t.HasCheckConstraint("ck_grade_entitlements__entitlement_class",
+                    "entitlement_class IN ('QiwaWage','Contractual','Facility')");
+                // Release A widened the value types and the shape (ReleaseAModelConfiguration.ValueShapeSql, shared
+                // with employee_entitlements); every L1 loan cell keeps its shape under the wider rule.
+                t.HasCheckConstraint("ck_grade_entitlements__value_type", "value_type IN " + ReleaseAModelConfiguration.ValueTypesIn);
+                t.HasCheckConstraint("ck_grade_entitlements__value_shape", ReleaseAModelConfiguration.ValueShapeSql);
+                t.HasCheckConstraint("ck_grade_entitlements__ineligible_has_no_values",
+                    "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL AND coverage_tier IS NULL"
+                    + " AND quantity IS NULL AND max_dependants IS NULL AND dependant_scope = 'None')");
+                t.HasCheckConstraint("ck_grade_entitlements__coverage_tier",
+                    "coverage_tier IS NULL OR coverage_tier IN " + ReleaseAModelConfiguration.CoverageTiersIn);
+                t.HasCheckConstraint("ck_grade_entitlements__quantity", "quantity IS NULL OR quantity > 0");
+                t.HasCheckConstraint("ck_grade_entitlements__dependant_scope", "dependant_scope IN " + ReleaseAModelConfiguration.DependantScopesIn);
+                t.HasCheckConstraint("ck_grade_entitlements__max_dependants",
+                    "max_dependants IS NULL OR (max_dependants >= 0 AND dependant_scope <> 'None')");
+                t.HasCheckConstraint("ck_grade_entitlements__limit_period",
+                    "limit_period IS NULL OR limit_period IN " + ReleaseAModelConfiguration.LimitPeriodsIn);
+                t.HasCheckConstraint("ck_grade_entitlements__min_service_months", "min_service_months IS NULL OR min_service_months >= 0");
+                t.HasCheckConstraint("ck_grade_entitlements__nationality_scope",
+                    "nationality_scope IN " + ReleaseAModelConfiguration.NationalityScopesIn);
+                // Non-discrimination (Art. 61(4)): a nationality criterion must carry its recorded legal basis.
+                t.HasCheckConstraint("ck_grade_entitlements__nationality_has_basis",
+                    "nationality_scope = 'Any' OR (nationality_basis IS NOT NULL AND trim(nationality_basis) <> '')");
+                t.HasCheckConstraint("ck_grade_entitlements__outstanding_is_facility",
+                    "max_outstanding_amount IS NULL OR (entitlement_class = 'Facility' AND max_outstanding_amount >= 0)");
+                t.HasCheckConstraint("ck_grade_entitlements__dates",
+                    "effective_to IS NULL OR effective_to >= effective_from");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            // FK target for employee_entitlements.grade_entitlement_id: the FK carries the component code, so a
+            // frozen row can only cite a cell of its own component.
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id, x.PayComponentCode });
+            entity.Property(x => x.CoverageTier).HasMaxLength(20);
+            entity.Property(x => x.DependantScope).HasMaxLength(10).HasDefaultValue(DependantScopes.None);
+            entity.Property(x => x.LimitPeriod).HasMaxLength(10);
+            entity.Property(x => x.NationalityScope).HasMaxLength(10).HasDefaultValue(NationalityScopes.Any);
+            entity.Property(x => x.NationalityBasis).HasMaxLength(300);
+            entity.Property(x => x.CompanyKey)
+                .HasComputedColumnSql("COALESCE(company_id, '00000000-0000-0000-0000-000000000000')", stored: true);
+            entity.Property(x => x.PayComponentCode).HasMaxLength(64);
+            entity.Property(x => x.EntitlementClass).HasMaxLength(20);
+            entity.Property(x => x.ValueType).HasMaxLength(20);
+            entity.Property(x => x.Amount).HasPrecision(18, 2);
+            entity.Property(x => x.Rate).HasPrecision(9, 4);
+            entity.Property(x => x.MaxOutstandingAmount).HasPrecision(18, 2);
+            entity.Property(x => x.Note).HasMaxLength(500);
+            entity.Property(x => x.SourceRule).HasMaxLength(100);
+            // Serves the resolver: "the cell for (tenant, grade, component) in effect on a date", newest first.
+            entity.HasIndex(x => new { x.TenantId, x.GradeId, x.PayComponentCode, x.EffectiveFrom })
+                .IsDescending(false, false, false, true);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => new { x.TenantId, x.GradeId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<LoanPolicy>(entity =>
         {
-            entity.ToTable("loan_policies");
+            entity.ToTable("loan_policies", t =>
+            {
+                // Only the offering switch records what a version copied, and a switch stub only ever says "not offered".
+                t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+                t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+            });
             entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.Property(x => x.MaxMultiplierOfSalary).HasPrecision(8, 2);
+            entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
+            entity.Property(x => x.MaxTotalOutstanding).HasPrecision(14, 2);
+            entity.Property(x => x.MaxInstallmentPercentOfSalary).HasPrecision(5, 2);
+            entity.Property(x => x.AdditionalApprovalThreshold).HasPrecision(14, 2);
+            // Default true backfills existing policies. ValueGeneratedNever: EF must always send the value, or a false
+            // (the CLR default) would be skipped on insert and the database default would silently re-offer the type.
+            entity.Property(x => x.IsOffered).HasDefaultValue(true).ValueGeneratedNever();
+            entity.Property(x => x.CreatedByOfferingSwitch).HasDefaultValue(false);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId, x.Version }).IsUnique().HasFilter("company_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.LoanTypeId }).IsUnique().HasFilter("company_id IS NOT NULL AND is_active");
             entity.HasIndex(x => new { x.TenantId, x.LoanTypeId });
         });
 
@@ -3872,9 +3982,107 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.InstallmentAmount).HasPrecision(14, 2);
             entity.Property(x => x.TotalRepaid).HasPrecision(14, 2);
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
+            entity.Property(x => x.RepaymentMethod).HasMaxLength(32).HasDefaultValue("PayrollDeduction");
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
             entity.HasIndex(x => new { x.TenantId, x.LoanNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
+            entity.Property(x => x.GradePerLoanCap).HasPrecision(18, 2);
+            entity.Property(x => x.GradeOutstandingCap).HasPrecision(18, 2);
+            entity.HasOne<GradeEntitlement>().WithMany().HasForeignKey(x => new { x.TenantId, x.GradeEntitlementId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<LoanDisbursementBatch>(entity =>
+        {
+            entity.ToTable("loan_disbursement_batches", t =>
+            {
+                t.HasCheckConstraint("ck_loan_payment_batch_status", "status IN ('Draft','Approved','PartiallyPaid','Completed','Paid','Cancelled')");
+                t.HasCheckConstraint("ck_loan_payment_batch_amount", "total_amount > 0");
+                t.HasCheckConstraint("ck_loan_payment_batch_paid_evidence", "status <> 'Paid' OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.Property(x => x.TotalAmount).HasPrecision(14, 2);
+            entity.Property(x => x.BatchNumber).HasMaxLength(64);
+            entity.Property(x => x.Currency).HasMaxLength(3);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.PaymentReference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.HasIndex(x => new { x.TenantId, x.BatchNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PaymentReference }).IsUnique()
+                .HasFilter("payment_reference IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status });
+        });
+
+        modelBuilder.Entity<LoanDisbursementLine>(entity =>
+        {
+            entity.ToTable("loan_disbursement_lines", t =>
+            {
+                t.HasCheckConstraint("ck_loan_payment_line_amount", "amount > 0");
+                t.HasCheckConstraint("ck_loan_payment_line_status", "status IN ('Pending','Paid','Failed','Cancelled','Reversed')");
+                t.HasCheckConstraint("ck_loan_payment_line_evidence", "status NOT IN ('Paid','Reversed') OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL AND trim(payment_reference) <> '' AND payment_method IS NOT NULL AND payment_method IN ('BankTransfer','DirectDebit','Cash'))");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Iban).HasMaxLength(34);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(100);
+            entity.Property(x => x.BankName).HasMaxLength(250);
+            entity.Property(x => x.EmployeeName).HasMaxLength(250);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.PaymentReference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.Property(x => x.FailureReason).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.GlEntryId }).IsUnique().HasFilter("gl_entry_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.LoanId }).IsUnique().HasFilter("NOT is_cancelled");
+            entity.HasOne<LoanDisbursementBatch>().WithMany().HasForeignKey(x => new { x.TenantId, x.BatchId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.GlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<LoanRepayment>(entity =>
+        {
+            entity.ToTable("loan_repayments", t =>
+            {
+                t.HasCheckConstraint("ck_loan_receipt_amount", "amount > 0");
+                t.HasCheckConstraint("ck_loan_receipt_method", "payment_method IN ('BankTransfer','DirectDebit','Cash')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            entity.Property(x => x.Reference).HasMaxLength(160);
+            entity.Property(x => x.PaymentMethod).HasMaxLength(32);
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Reference }).IsUnique();
+            entity.HasAlternateKey(x => new { x.TenantId, x.LoanId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.GlEntryId }).IsUnique().HasFilter("gl_entry_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.ReversalGlEntryId }).IsUnique().HasFilter("reversal_gl_entry_id IS NOT NULL");
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.GlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<FinanceGlEntry>().WithMany().HasForeignKey(x => new { x.TenantId, x.ReversalGlEntryId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<LoanChangeRequest>(entity =>
+        {
+            entity.ToTable("loan_change_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ChangeType).HasMaxLength(40);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Reason).HasMaxLength(2000);
+            entity.Property(x => x.DecisionReason).HasMaxLength(2000);
+            entity.Property(x => x.Reference).HasMaxLength(160);
+            entity.Property(x => x.OutstandingBalanceAtRequest).HasPrecision(14, 2);
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.LoanId, x.Reference }).IsUnique().HasFilter("reference <> ''");
+            entity.HasOne<LoanRepayment>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId, x.RepaymentId })
+                .HasPrincipalKey(x => new { x.TenantId, x.LoanId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeLoan>().WithMany().HasForeignKey(x => new { x.TenantId, x.LoanId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<LoanApproval>(entity =>
@@ -4167,6 +4375,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // Timesheets keep their fluent configuration next to their model so this file stays
         // append-only for the module (the convention Models/Timesheets.cs documents).
         TimesheetModelConfiguration.Configure(modelBuilder);
+
+        // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
+        ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

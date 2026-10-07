@@ -127,7 +127,7 @@ export const setupAssistantApi = {
     })),
 
   apply: (draft: SetupDraft, countryCode: string, currencyCode: string, legalEntityName?: string) =>
-    client.post<{ applied: Record<string, number>; total: number }>(
+    client.post<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string }> }>(
       '/api/setup-assistant/apply', { draft, countryCode, currencyCode, legalEntityName },
     ).then(r => r.data),
 };

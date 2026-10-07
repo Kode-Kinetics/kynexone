@@ -261,13 +261,15 @@ test.describe('HR Command Center: layout and interaction', () => {
 
   test('assistant opens as a drawer, labelled advisory', async ({ page }, info) => {
     await open(page);
-    await page.getByRole('button', { name: 'Open assistant' }).click();
-    const drawer = page.getByRole('dialog', { name: 'Assistant' });
+    const launcher = page.getByRole('button', { name: 'Open Kody the HR Assistant' });
+    await launcher.click();
+    const drawer = page.getByRole('dialog', { name: 'Kody the HR Assistant' });
     await expect(drawer).toBeVisible();
     await expect(drawer.getByText('Advisory', { exact: true })).toBeVisible();
     await evidence(page, `${info.project.name}-assistant`);
     await page.keyboard.press('Escape');
     await expect(drawer).toBeHidden();
+    await expect(launcher).toBeFocused();
   });
 
   test('reduced motion: no keyframe animations run', async ({ page }, info) => {

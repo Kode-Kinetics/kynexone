@@ -148,11 +148,11 @@ public class GosiReadinessEndpointTests
     // ── GCC employee ──────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GccEmployee_HasPendingConfirmationWarning()
+    public async Task GccEmployee_WithoutHomeSchemeRates_IsBlockedLikeTheRun()
     {
+        // The run blocks a GCC national whose home-state rates are not configured
+        // (GOSI_GCC_SCHEME_NOT_CONFIGURED). Readiness used to call them Ready with a warning.
         using var db = MakeDb();
-        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
-
         db.Employees.Add(Employee(TenantA, 1, "UAE", gosiRef: "GCC001"));
         db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
         await db.SaveChangesAsync();
@@ -161,6 +161,25 @@ public class GosiReadinessEndpointTests
         var emp = Assert.Single(report.Employees);
 
         Assert.Equal("GCC", emp.Classification);
+        Assert.False(emp.IsReady);
+        Assert.Contains(emp.BlockingIssues, i => i.Code == PayrollValidationEngine.GosiGccSchemeNotConfigured);
+    }
+
+    [Fact]
+    public async Task GccEmployee_WithHomeSchemeRates_IsReady_WithPendingConfirmationWarning()
+    {
+        using var db = MakeDb();
+        db.Employees.Add(Employee(TenantA, 1, "UAE", gosiRef: "GCC001"));
+        db.EmployeeSalaryStructures.Add(Salary(TenantA, 1, 9_000m));
+        await db.SaveChangesAsync();
+
+        var rules = TestReconciliation.KsaRuleReader()
+            .Set("gosi.gcc.AE.employee_rate", 0.05m)
+            .Set("gosi.gcc.AE.employer_rate", 0.125m);
+        var report = await new GosiReadinessReportService(db, rules).BuildAsync(TenantA, CancellationToken.None);
+        var emp = Assert.Single(report.Employees);
+
+        Assert.True(emp.IsReady);
         Assert.Contains(emp.Warnings, w => w.Code == "GCC_RULES_PENDING_CONFIRMATION");
     }
 

@@ -45,7 +45,8 @@ public class PayrollModuleTests
 
     // ── Controller factory ───────────────────────────────────────────────────
 
-    private static PayrollController MakeCtrl(ZayraDbContext db, Guid tenantId, Zayra.Api.Application.CountryPack.ICountryPackResolver? packResolver = null, string[]? permissions = null)
+    private static PayrollController MakeCtrl(ZayraDbContext db, Guid tenantId, Zayra.Api.Application.CountryPack.ICountryPackResolver? packResolver = null, string[]? permissions = null,
+        Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null)
     {
         var claims = new List<Claim>
         {
@@ -66,7 +67,7 @@ public class PayrollModuleTests
             packResolver ?? new _NullPackResolver(),
             new StubRuleReader(),
             new _NullLetterService(),
-            new NullDocumentStorage(),
+            storage ?? new NullDocumentStorage(),
             new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
         return ctrl;
@@ -1191,14 +1192,31 @@ public class PayrollModuleTests
         db.WPSFileBatches.Add(file);
         await db.SaveChangesAsync();
 
-        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" });
+        var storage = new MemoryDocumentStorage();
+        var ctrl = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: storage);
 
         var missingReference = await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Submitted, null), CancellationToken.None);
         missingReference.Should().BeOfType<BadRequestObjectResult>();
 
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Submitted, null, "SUB-123"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
+        // Accepted is no longer a dropdown choice: it needs stored evidence.
         (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456"), CancellationToken.None))
+            .Should().BeOfType<BadRequestObjectResult>();
+        var bankOutput = System.Text.Encoding.UTF8.GetBytes("[DEST-ID]\tRJHI\t[FILE-REF]\t2026070101\n");
+        var upload = await ctrl.UploadWpsEvidence(batch.Id, new WpsEvidenceUploadForm
+        {
+            Kind = Zayra.Api.Infrastructure.Payroll.WpsEvidenceKinds.BankOutputFile,
+            File = new FormFile(new MemoryStream(bankOutput), 0, bankOutput.Length, "file", "wps-out.txt")
+                { Headers = new HeaderDictionary(), ContentType = "text/plain" },
+        }, CancellationToken.None);
+        var evidenceId = (Guid)upload.Should().BeOfType<OkObjectResult>().Subject.Value!
+            .GetType().GetProperty("EvidenceId")!.GetValue(((OkObjectResult)upload).Value)!;
+        // Maker-checker: whoever uploaded the evidence may not record Accepted; a second person does.
+        (await ctrl.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        var checker = MakeCtrl(db, tenantId, permissions: new[] { "payroll.export" }, storage: storage);
+        (await checker.UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Accepted, null, "ACK-456", evidenceId), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
 
         var savedBatch = await db.PayrollPaymentBatches.FindAsync(batch.Id);

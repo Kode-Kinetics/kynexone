@@ -31,6 +31,19 @@ tenant-wide `42703`/`42P01` outages. Read this before promoting or reverting a b
    > the check returns the `-1` unknown sentinel and reports `not_ready` — it **fails closed**
    > instead of reporting a comfortable zero. See `Infrastructure/Operations/MigrationManifest.cs`.
 
+   **Shutdown drain.** On SIGTERM the old instance answers `/health/ready` with
+   `503 {"status":"draining"}` straight away (no database call), keeps serving for
+   `Shutdown__ReadinessDrainSeconds` (default 0 — set it to about 5 only once two or more instances
+   sit behind a balancer; on today's single Render instance with a disk it would only add downtime),
+   then stops accepting and gives in-flight requests up to `Shutdown__TimeoutSeconds` (default 30).
+   The drain delay runs inside that timeout, not on top of it, and is capped to leave in-flight
+   requests at least 10s of it, so the worst case is about 30s;
+   Render's default `maxShutdownDelaySeconds` is 30. `/health/live` is unchanged. See `ShutdownDrain.cs`.
+
+   **Rolling back a migration.** Running a migration's `Down` (`dotnet ef database update <previous>`)
+   is itself a contract-phase change: do it only after the code has been rolled back to a release that
+   no longer uses what `Down` removes, and take a Neon branch first.
+
 5. **Before any of the above**, two CI gates must pass. Both exist because the checks that were
    supposed to cover this ground did not:
    - `scripts/check_render_env.py` — every key `render.yaml` marks `sync: false` must actually be
@@ -93,10 +106,380 @@ harmful.
   `job_applications`, `offer_letters`. No pre-existing column or row is touched; the only data lost
   is the new company assignments (re-derivable by `CompanyScopeBackfill` on the next boot).
 
+- **Grade loan limits (`20261006000100_AddGradeLoanLimits`, `20261006000200_AddGradeNameArAndLoanOffering`).** Rolling the *app* back to
+  a release before grade limits leaves the columns in place but **stops enforcing them**: loan types with
+  "Limit this loan type by grade" on, and companies that switched a loan type off, accept requests on policy
+  rules alone until the release is restored. Take a Neon branch before rolling back, and list what is
+  affected with `SELECT id, code FROM loan_types WHERE grade_limited` and
+  `SELECT company_id, loan_type_id FROM loan_policies WHERE is_active AND NOT is_offered`. Both
+  `Down()` migrations refuse to run while those rows exist.
+
+- **Before deploying `20261006000200_AddGradeNameArAndLoanOffering` (owner runs this; agents never touch production).** The
+  migration adds `ck_loan_types__interest_free` as `NOT VALID`: legacy rows survive, but any edit to an
+  interest-bearing loan type is refused from then on. List them first, read-only:
+
+  ```sql
+  SELECT lt.tenant_id, lt.id, lt.code, lt.name_en, lt.is_interest_free, lt.interest_rate,
+         count(el.id) FILTER (WHERE el.status IN ('Pending','Approved'))          AS pending_or_approved_loans,
+         count(el.id) FILTER (WHERE el.status IN ('Active','Overdue'))            AS disbursed_open_loans
+  FROM loan_types lt
+  LEFT JOIN employee_loans el ON el.loan_type_id = lt.id AND NOT el.is_deleted
+  WHERE NOT lt.is_deleted AND (NOT lt.is_interest_free OR lt.interest_rate <> 0)
+  GROUP BY lt.tenant_id, lt.id, lt.code, lt.name_en, lt.is_interest_free, lt.interest_rate
+  ORDER BY lt.tenant_id, lt.code;
+  ```
+
+  Zero rows is expected (the API has refused interest since before this release). Once any rows are cleaned,
+  `ALTER TABLE loan_types VALIDATE CONSTRAINT ck_loan_types__interest_free;` makes the rule cover history too.
+
+- **Release A foundation (`20261007000100_ReleaseAEntitlementsAndRenewals`).** Additive only: two new tables
+  (`employee_entitlements`, `contract_renewal_cases`), nullable or defaulted columns on `pay_components`,
+  `grade_entitlements`, `employee_contracts`, `employee_salary_structures`, `approval_requests` and `employee_loans`,
+  and four triggers. Every Release A surface is behind the per-tenant `release_a` opt-in flag, which is **off** unless
+  the platform enables it, so rolling the *app* back is safe for every tenant that never had it on. For a tenant that
+  did, switch the flag off first (`PUT /api/platform/tenants/{id}/features/release_a {"isEnabled": false}`), then roll
+  back the image. `Down()` refuses while any Release A data exists (a frozen package, a renewal case, a skipped
+  benefit, a stamped contract chain, a salary basis or Qiwa confirmation, an approval payload, a loan consent, or a
+  grade cell using a Release A value type or criterion) — take a Neon branch and fix forward instead. Order: image →
+  flag → schema `Down`.
+- **Release A R2 dependants soft delete (`20261008000200_ReleaseAR2DependantsSoftDelete`).** Expand-only: adds
+  `employee_dependents.is_deleted` (default false), `deleted_at_utc` and `deleted_by`. Roll it back before R0's migration.
+  Its `Down()` refuses (`R2_DEPENDANTS_SOFT_DELETED`) while any removed dependant exists, because dropping the column would
+  make every removed dependant covered again. Restore or purge those rows deliberately (with HR sign-off), or fix forward.
+
+- **Release A R0b (`20261007000200_ReleaseAContractChainSource`).** Additive: `employee_contracts.chain_source` (nullable)
+  and four CHECKs added **NOT VALID** (`chain_source`, `chain_pair`, `renewed_from_counts`, `chain_starts_by_term_start`):
+  no table scan at deploy, every new or changed row is checked. **Before the later VALIDATE migration**, run this
+  read-only pre-check on each environment; every count must be 0 (a non-zero row is fixed through chain confirm, never by
+  hand):
+  ```sql
+  SELECT tenant_id,
+         count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded')))            AS bad_chain_source,
+         count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL)))                    AS bad_chain_pair,
+         count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1
+                                     OR provisional_basis IS NOT NULL))                                         AS bad_renewed_from,
+         count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date))               AS bad_chain_start
+  FROM employee_contracts GROUP BY tenant_id
+  HAVING count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL))) > 0
+      OR count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded'))) > 0;
+  ```
+  Rollback: `Down()` refuses while any term carries HR-recorded history (`chain_source = 'Recorded'`); otherwise it drops
+  the four CHECKs and the column. Order: image → schema `Down` (R0b before R0).
+  Re-applying R0b after a Down marks every term that still carries a stamped chain (`renewal_number` and
+  `chain_started_on` set, `chain_source` dropped with the column) as `Derived` again — they can only have come from
+  the census, because recorded history blocks the Down.
+
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.
 - Never promote an image whose migration has not been applied — the `/health/ready` gate (and the
   optional `preDeployCommand`) enforce this automatically, but confirm manually after any manual deploy.
+
+## Pre-deploy checklist — KSA WPS pilot
+
+1. **Nationality audit.** Run the read-only query in the next section and hand the list to payroll
+   (past payslips of those employees carried no employee GOSI; nothing is recomputed automatically).
+2. **Bank-file settings per legal entity:** MOL establishment ID (as shown in Qiwa), the 16-digit ANB
+   main account, organisation name and three address lines, company name, narrative, batch type; the
+   10-digit national unified number if ANB auto-WPS is on. If a GCC WPS agent ID is also set it must equal
+   the MOL establishment ID, or the export is refused.
+3. **Pay-redirection guard.** A pending approval-gated change to IBAN, beneficiary details, account
+   number or routing code blocks the bank export for that employee. A CSV import never writes bank
+   details for an EXISTING employee (they go to approval); a NEW employee's imported bank details are
+   flagged in the import warnings for verification before the first payroll.
+3a. **Beneficiary BIC.** One resolver serves pre-lock, export and the SIF check: the approved
+   `Employee.WpsBankDetails.bicCode`, else the payroll profile's `BankRoutingCode` (case-insensitive). An
+   ANB-to-ANB credit needs a 16-digit ANB account number with BIC `ARNBSARI` in either place.
+4. **Cash / cheque employees are supported at go-live** — there is no "no cash/cheque" condition. Set
+   payment method `Cash` or `Cheque` on the payroll profile. The flow:
+   - warned before Lock (`PAID_OUTSIDE_BANK_FILE`, stronger `…_WITH_IBAN` when a valid IBAN is on file) and
+     acknowledged by count at Approve; the acknowledged list is sealed into the approval;
+   - if the list changes after approval, Lock sends the run back for approval (re-validating alone does not
+     make it lockable); otherwise Lock freezes the methods and the batch reads them from there;
+   - the bank batch settles only its own employees; each cash/cheque wage is recorded per employee
+     ("Record payment outside the bank file") — serialized per batch, once per employee — and can be
+     reversed with a reason (not by the employee, not after Reconciled) and recorded again;
+   - Salaries Payable (2100) is clear, and the batch can reach Reconciled, only after the bank batch is
+     settled and every outside payment is recorded;
+   - a run locked before this release falls back to the live profile, but batch creation first lists the
+     cash/cheque employees and requires `expectedOutsideBankCount`.
+   Cash wages count against Mudad WPS compliance.
+5. **Two payroll users with `payroll.export`** per legal entity: the person who generates the bank/WPS
+   file or uploads the evidence cannot mark the batch Accepted.
+6. Leave `QIWA_USE_LIVE_ADAPTER` unset (Qiwa data check only).
+
+### Final settlements and the Art. 92/93 cap
+
+A final-settlement run recovers an outstanding loan or advance through the ordinary `LOAN_EMI` /
+`ADVANCE_EMI` lines, which are debt-type. Recovering a large balance from one final wage can therefore
+exceed half of that wage and raise `DEDUCTIONS_EXCEED_HALF_WAGE`, blocking Approve and Lock. Either
+reschedule the recovery (leave the remainder as a receivable) and re-process, or have an approver who is
+neither the run's preparer nor the leaver override it citing a labour court / commission decision or
+other lawful written basis, with its reference (`documentReference`). The bank export honours that
+override. No legal conclusion about when set-off is permitted is built into the product.
+
+## Saudi nationality normaliser — pre/post-deploy diagnostic (read-only)
+
+GOSI used to recognise only `SA`, `SAU`, `Saudi`, `Saudi Arabia`, `Saudi Arabian`, compared without
+trimming. The shared normaliser (`Infrastructure/Compliance/SaudiNationality.cs`) also accepts `KSA`,
+`SaudiArabia`, `Kingdom of Saudi Arabia` and the Arabic `سعودي` / `سعودى` / `سعودية` / `السعودية` /
+`المملكة العربية السعودية`, and trims. Employees recorded with one of
+the newly recognised values were classified as expatriates: **their past payslips carried no employee GOSI.**
+From the next processed run they are Saudi. **Do not recompute or edit filed/locked payslips;** take the
+list to payroll and the GOSI portal for a reviewed correction.
+
+Run on the production database (SELECT only) to count and list those employees:
+
+```sql
+-- Employees whose nationality is newly classified as Saudi (was NonSaudi before this release).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, status, nationality
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+ORDER BY tenant_id, company_id, employee_code;
+
+-- Count only, per tenant.
+SELECT tenant_id, count(*) AS newly_saudi
+FROM employees
+WHERE NOT is_deleted
+  AND (lower(btrim(nationality)) IN ('ksa', 'saudiarabia', 'kingdom of saudi arabia',
+                                     'سعودي', 'سعودى', 'سعودية', 'السعودية', 'المملكة العربية السعودية')
+       OR (nationality <> btrim(nationality)
+           AND lower(btrim(nationality)) IN ('sa', 'sau', 'saudi', 'saudi arabia', 'saudi arabian')))
+GROUP BY tenant_id;
+```
+
+The second branch catches previously recognised spellings stored with surrounding spaces (the old
+comparison did not trim). Zero rows means no past payslip was affected.
+
+## Identity-document dates — expiry stored as issue date (read-only detection)
+
+Until c9d43a34 the employee edit form's offline field catalogue bound the **work-permit** expiry input (all six
+GCC profiles) and the **residency** expiry input (KW/OM) to the *issue-date* column, and until 6b0c26ab that
+offline catalogue was what every user got. A permit expiring 2027-03-01 was saved as *issued* 2027-03-01: the
+expiry stayed empty and no renewal alert could fire. Neither `employees.work_permit_issue_date` nor
+`employees.residency_issue_date` has an expiry column beside it, so the tell-tale is an issue date in the
+future, or one equal to the employee's own residence-card expiry. Passport, visa and the compliance mirror do
+have both columns, so for them the check is expiry on or before issue.
+
+**This is detection only. Do not write a data fix from it.** Hand the list to the tenant's HR to confirm each
+document against the physical card; a wrong date corrected by a guess is worse than a flagged one. Run on the
+target database (SELECT only):
+
+```sql
+-- 1. Issue dates that look like expiries (no expiry column exists for these two documents).
+SELECT tenant_id, company_id, id AS employee_id, employee_code, 'work_permit' AS document,
+       work_permit_issue_date AS issue_date, NULL::date AS expiry_date,
+       CASE WHEN work_permit_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END AS reason
+FROM employees
+WHERE NOT is_deleted AND work_permit_issue_date IS NOT NULL
+  AND (work_permit_issue_date > current_date
+       OR work_permit_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'residency',
+       residency_issue_date, NULL::date,
+       CASE WHEN residency_issue_date > current_date THEN 'issue date in the future'
+            ELSE 'issue date equals iqama/residence expiry' END
+FROM employees
+WHERE NOT is_deleted AND residency_issue_date IS NOT NULL
+  AND (residency_issue_date > current_date
+       OR residency_issue_date IN (iqama_expiry_date, emirates_id_expiry_date, qid_expiry_date, civil_id_expiry_date))
+-- 2. Documents that have both columns: expiry equal to, or before, issue.
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'passport', passport_issue_date, passport_expiry_date,
+       CASE WHEN passport_expiry_date = passport_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND passport_expiry_date <= passport_issue_date
+UNION ALL
+SELECT tenant_id, company_id, id, employee_code, 'visa', visa_issue_date, visa_expiry_date,
+       CASE WHEN visa_expiry_date = visa_issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employees
+WHERE NOT is_deleted AND visa_expiry_date <= visa_issue_date
+UNION ALL
+SELECT r.tenant_id, e.company_id, r.employee_id, e.employee_code, r.field_key, r.issue_date, r.expiry_date,
+       CASE WHEN r.expiry_date = r.issue_date THEN 'expiry equals issue' ELSE 'expiry before issue' END
+FROM employee_compliance_records r
+JOIN employees e ON e.id = r.employee_id AND e.tenant_id = r.tenant_id
+WHERE NOT r.is_deleted AND NOT e.is_deleted AND r.expiry_date <= r.issue_date
+ORDER BY 1, 2, 4, 5;
+```
+
+Zero rows means nothing to review. Rows from part 1 with reason "issue date in the future" are almost certainly
+expiries; the others need the card in hand.
+
+## GOSI tenant overrides that were saved but never applied (read-only)
+
+GOSI contribution rates and the contributory-wage ceiling/floor are statutory. Payroll reads only the
+platform row (`statutory_rules`, `tenant_id IS NULL`). Before `GOSI_RATE_IS_STATUTORY` refused them,
+four write paths accepted a tenant value for these keys:
+- `/api/statutory-rules`
+- the company statutory-override maker-checker
+- the setup assistant
+- tenant-admin country rules
+
+Nothing ever read those values. **Do not delete these rows** — they are the record of what was attempted.
+The GOSI readiness report and the Saudi compliance dashboard warn about them per tenant. To list them
+(SELECT only):
+
+```sql
+-- Tenant-level GOSI rate/ceiling values payroll has never applied. Same predicate as
+-- GosiStatutoryValues.IsStatutory: gosi.*_rate, or gosi.covered_wage_*.
+WITH gosi AS (
+  SELECT 'statutory_rules' AS source, tenant_id, NULL::uuid AS company_id, id, rule_key, rule_value AS value, NULL AS status
+  FROM statutory_rules WHERE tenant_id IS NOT NULL
+  UNION ALL
+  SELECT 'company_statutory_overrides', tenant_id, company_id, id, rule_key, override_value, status
+  FROM company_statutory_overrides WHERE NOT is_deleted
+  UNION ALL
+  SELECT 'country_payroll_rules', tenant_id, NULL::uuid, id, rule_key, rule_value, NULL
+  FROM country_payroll_rules
+)
+SELECT * FROM gosi
+WHERE lower(rule_key) LIKE 'gosi.%'
+  AND (lower(rule_key) LIKE '%\_rate' OR lower(rule_key) LIKE 'gosi.covered\_wage\_%')
+ORDER BY tenant_id, source, rule_key;
+```
+
+Zero rows means no tenant ever believed it had changed a GOSI rate. For any rows returned, tell the tenant
+that the GOSI-published rate was applied throughout.
+
+## Stored full IBANs — post-deploy diagnostic (read-only)
+
+Before the pilot-sensitive-leaks release, an `INVALID_IBAN` payroll validation finding wrote the whole
+IBAN into `payroll_validation_results.message`, and the migration import wrote legacy history values into
+`employee_histories.old_value` / `new_value` unmasked. New rows carry only the last 4 characters
+(`IBAN ***1234 is invalid: …`). **Existing rows are not rewritten by the release.** A run's findings are
+replaced the next time it is validated or processed; locked runs keep theirs. Count what is left with
+these queries (SELECT only), then decide on a reviewed clean-up:
+
+```sql
+-- Validation findings whose message still holds an IBAN-shaped value (2 letters, 2 digits, 11-30 alphanumerics).
+SELECT tenant_id, code, count(*) AS rows_with_iban
+FROM payroll_validation_results
+WHERE message ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, code
+ORDER BY tenant_id, code;
+
+-- Employee history values that still hold an IBAN-shaped value.
+SELECT tenant_id, field_name, count(*) AS rows_with_iban
+FROM employee_histories
+WHERE old_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+   OR new_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+GROUP BY tenant_id, field_name
+ORDER BY tenant_id, field_name;
+
+-- Migration batches that still hold the raw package (written before the masked copy, policy "masked-v1").
+-- The second pattern catches 10-digit Saudi national IDs / iqama numbers.
+SELECT tenant_id, package_type, count(*) AS batches_with_raw_identifiers
+FROM migration_import_batches
+WHERE package_type = 'MigrationPackage'
+  AND (payload_json ->> 'policy') IS DISTINCT FROM 'masked-v1'
+  AND (payload_json::text ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+       OR payload_json::text ~ '(^|[^0-9])[12][0-9]{9}([^0-9]|$)')
+GROUP BY tenant_id, package_type
+ORDER BY tenant_id;
+```
+
+The migration batch's `payload_json` now keeps the checksum, the row count per section and a masked copy of
+each section. Nothing reads it back to run an import: Resume takes the package again from the caller and
+matches it on the checksum, so an old raw payload can be cleared without breaking a resume.
+
+Zero rows means nothing is left to clean up. The pattern is deliberately broad, so review what it finds
+before acting on it. `PayrollIbanMaskingPostgresTests` runs the first and third queries, so keep them in sync.
+
+## Migration import — who used it to create roles or grant access (read-only exposure check)
+
+Before this fix the migration import (`POST /api/migrations/preview|commit|{id}/resume`) accepted `roles` and
+`users` sections from any caller the controller admits — Admin, HR Manager, and through `employees.bulk_import`
+also HR Officer and HR Director — although the Access screen requires `security.manage`. An HR Manager could
+create roles and give any account, their own included, the Admin role. Those sections wrote **no per-entity
+audit row**; the evidence is the batch ledger (`migration_import_batches.payload_json` keeps the whole package and
+`created_by` the committer) and the `migration.import_completed` audit row.
+
+**Detection only — run it, read it, do not "fix" from it.** Review each hit with the tenant owner; removing a role or
+an account is a decision for the Access screen, with its own audit. Do **not** run it against production without
+the owner's say-so. SELECT only:
+
+```sql
+-- Matching rule (queries 2 and 3): the email or role name must be a whole CELL of the section, in ANY column —
+-- start of line or after a comma, optional spaces/tabs/non-breaking spaces and double quotes around it (spaces
+-- allowed inside the quotes too), then a comma or the end of the line (LF or CRLF). The package is read from
+-- payload_json's "Sections" or, in the masked audit copy (#198), "sections". The CSV header order is free, so anchoring on "first column" misses rows.
+
+-- 1. Every committed (non-dry-run) migration package that carried a roles or users section, who committed it,
+--    when the import recorded its completion (audit_logs migration.import_completed), and whether the committer
+--    holds security.manage TODAY (the gate's requirement, which was not checked then).
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
+           b.created_at_utc, b.completed_at_utc,
+           coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'roles' AS had_roles,
+           coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'users' AS had_users
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ?| array['roles', 'users'])
+SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
+       ab.had_roles, ab.had_users, committer.email AS committed_by,
+       done.created_at_utc AS completed_audit_at, done.user_id AS completed_audit_user_id,
+       EXISTS (SELECT 1 FROM user_roles ur
+               JOIN role_permissions rp ON rp.role_id = ur.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE ur.user_id = ab.created_by AND p.permission_key = 'security.manage') AS committer_holds_security_manage_now
+FROM access_batches ab
+LEFT JOIN users committer ON committer.id = ab.created_by
+LEFT JOIN LATERAL (
+    SELECT a.created_at_utc, a.user_id FROM audit_logs a
+    WHERE a.tenant_id = ab.tenant_id AND a.action = 'migration.import_completed'
+      AND a.entity_name = 'MigrationImportBatch' AND a.entity_id = ab.batch_id::text
+    ORDER BY a.created_at_utc DESC LIMIT 1) done ON TRUE
+ORDER BY ab.completed_at_utc DESC NULLS FIRST;
+
+-- 2. The accounts those packages named (an Email cell in any column), with the roles they hold NOW.
+--    privileged = holds Admin or any role carrying security.manage.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id, b.created_by,
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'users', '')) AS users_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'users')
+SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_active, u.is_group_scope,
+       u.id = ab.created_by AS committer_changed_own_account,
+       string_agg(DISTINCT r.name, ', ') AS roles_now,
+       coalesce(bool_or(r.normalized_name = 'ADMIN' OR p.permission_key = 'security.manage'), false) AS privileged
+FROM access_batches ab
+JOIN users u ON u.tenant_id = ab.tenant_id AND NOT u.is_deleted
+ AND ab.users_csv ~ ('(^|[\n,])[ \t\u00a0]*"?[ \t\u00a0]*' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '[ \t\u00a0]*"?[ \t\u00a0]*(,|\r?\n|$)')
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id AND NOT r.is_deleted
+LEFT JOIN role_permissions rp ON rp.role_id = r.id
+LEFT JOIN permissions p ON p.id = rp.permission_id
+GROUP BY ab.tenant_id, ab.batch_id, ab.created_by, u.id, u.email, u.status, u.is_active, u.is_group_scope
+ORDER BY privileged DESC, ab.tenant_id, u.email;
+
+-- 3. The roles those packages named (a Name cell in any column), as they stand NOW.
+WITH access_batches AS (
+    SELECT b.tenant_id, b.id AS batch_id,
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'roles', '')) AS roles_csv
+    FROM migration_import_batches b
+    WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'roles')
+SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_active, r.created_at_utc,
+       (SELECT count(*) FROM user_roles ur WHERE ur.role_id = r.id) AS members_now,
+       (SELECT string_agg(p.permission_key, ', ' ORDER BY p.permission_key) FROM role_permissions rp
+          JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id) AS permissions_now
+FROM access_batches ab
+JOIN roles r ON (r.tenant_id = ab.tenant_id OR r.tenant_id IS NULL) AND NOT r.is_deleted
+ AND ab.roles_csv ~ ('(^|[\n,])[ \t\u00a0]*"?[ \t\u00a0]*' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '[ \t\u00a0]*"?[ \t\u00a0]*(,|\r?\n|$)')
+ORDER BY ab.tenant_id, r.name;
+```
+
+Zero rows from query 1 means the sections were never committed. From this release on, every role and user the
+import writes also gets its own `access.role_created|role_updated|user_created|user_updated|roles_assigned` audit
+row with `"source":"migration_import"` and the batch id in its metadata.
 
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.

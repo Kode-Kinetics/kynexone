@@ -32,8 +32,15 @@ namespace Zayra.Api.Tests;
 /// primitive + 422 caught before InvalidOperationException, (6) import name-only lenient + dry-run.
 /// A KSA expat missing GOSI/Iqama is blocked by the CODE FLOOR alone (no profile seeded).
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeActivationGateTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeActivationGateTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -248,7 +255,7 @@ public class EmployeeActivationGateTests
     [Fact]
     public async Task ImportPreview_ProjectsLandingStates_WithoutPersisting()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var fx = await SeedTenant(db);
         const string csv = "FullName,CountryCode,Nationality,Status\nBlocked Expat,SA,Indian,Active\nReady Expat,SA,Saudi,\n";
         var res = (OkObjectResult)await Controller(db, fx.TenantId).ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
@@ -366,7 +373,7 @@ public class EmployeeActivationGateTests
     [Fact]
     public async Task ImportPreview_AggregatesFieldGaps_AcrossRows()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var fx = await SeedTenant(db);
         // Two KSA expats missing the Iqama floor → a per-field summary the modal can render.
         // NOTE (P1 follow-up, EmployeesController.ImportPreview): the aggregator records

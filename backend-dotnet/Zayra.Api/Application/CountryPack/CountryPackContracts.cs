@@ -82,7 +82,18 @@ public sealed record StatutoryDeductionInput(
     public string? SocialInsuranceCohort { get; init; }
 }
 
-public sealed record StatutoryDeductionLine(string Code, string Label, decimal EmployeeAmount, decimal EmployerAmount);
+public sealed record StatutoryDeductionLine(string Code, string Label, decimal EmployeeAmount, decimal EmployerAmount)
+{
+    /// <summary>
+    /// The rate the line was computed at, as a decimal FRACTION of <see cref="ContributoryWage"/>
+    /// (0.09 = 9%), or null for a pack that does not state one. A witness, not an input: it lets a
+    /// preview or report show the rate the payslip actually applied instead of reading a second store.
+    /// </summary>
+    public decimal? Rate { get; init; }
+
+    /// <summary>The clamped contributory wage the rate was applied to, or null when not stated.</summary>
+    public decimal? ContributoryWage { get; init; }
+}
 
 public sealed record StatutoryDeductionResult(
     decimal TotalEmployeeDeduction,

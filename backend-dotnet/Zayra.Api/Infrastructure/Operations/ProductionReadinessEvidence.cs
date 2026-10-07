@@ -14,10 +14,15 @@ public static class ProductionReadinessEvidence
 {
     private static readonly string[] OpenRequisitionStatuses = ["Draft", "Submitted", "PendingApproval", "Approved"];
 
-    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct)
+    /// <param name="includeDetail">
+    /// False for the anonymous <c>/health/ready</c> probe: the status rule needs only the database,
+    /// migration parity and the worker fleet, so the tenant counts, queue counters and SMTP mode are
+    /// not computed at all (they are not returned either — see <see cref="PublicReadiness"/>).
+    /// </param>
+    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
-        var tenantCounts = dbProbe.Healthy
+        var tenantCounts = dbProbe.Healthy && includeDetail
             ? await db.Tenants.AsNoTracking()
                 .GroupBy(_ => 1)
                 .Select(g => new { Total = g.Count(), Active = g.Count(x => x.IsActive) })
@@ -32,7 +37,7 @@ public static class ProductionReadinessEvidence
         var workers = dbProbe.Healthy && pendingMigrations == 0
             ? EvaluateWorkers(await db.WorkerHeartbeats.AsNoTracking().ToListAsync(ct), DateTime.UtcNow)
             : WorkerFleetReadiness.Unavailable;
-        var queues = dbProbe.Healthy && pendingMigrations == 0
+        var queues = dbProbe.Healthy && pendingMigrations == 0 && includeDetail
             ? await BuildQueueHealthAsync(db, ct)
             : QueueHealthEvidence.Unavailable;
 
@@ -43,7 +48,7 @@ public static class ProductionReadinessEvidence
                 dbProbe,
                 RedisDependency(config),
                 QiwaDependency(config),
-                dbProbe.Healthy ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
+                dbProbe.Healthy && includeDetail ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
                 workers),
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
@@ -80,21 +85,36 @@ public static class ProductionReadinessEvidence
                 && nowUtc - x.UpdatedAtUtc <= TimeSpan.FromMinutes(5));
             var failed = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Failed
                 && nowUtc - x.UpdatedAtUtc <= maxAge);
-            var effective = healthy ?? starting ?? failed ?? latest;
+            // Skipped (another instance held the sweep lease) and Interrupted (lease lost part-way) are
+            // visible but do not fail readiness: /health/ready is Render's health check, and a sweep that
+            // is running elsewhere, or that resumes next tick, is no reason to pull this instance.
+            var skipped = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Skipped
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var interrupted = instances.FirstOrDefault(x => x.Status == WorkerHeartbeatStatuses.Interrupted
+                && nowUtc - x.UpdatedAtUtc <= maxAge);
+            var effective = healthy ?? starting ?? failed ?? interrupted ?? skipped ?? latest;
             var state = healthy is not null ? "healthy"
                 : starting is not null ? "starting"
                 : failed is not null ? "failed"
+                : interrupted is not null ? "interrupted"
+                : skipped is not null ? "skipped"
                 : "stale";
-            statuses.Add(new WorkerReadiness(name, state, effective.LastSucceededAtUtc, effective.UpdatedAtUtc));
+            var reason = state is "failed" or "interrupted" or "skipped" && !string.IsNullOrEmpty(effective.LastErrorCode)
+                ? effective.LastErrorCode : null;
+            statuses.Add(new WorkerReadiness(name, state, effective.LastSucceededAtUtc, effective.UpdatedAtUtc, reason));
         }
         return new WorkerFleetReadiness(
-            statuses.All(x => x.Status is "healthy" or "starting"),
+            statuses.All(x => x.Status is "healthy" or "starting" or "skipped" or "interrupted"),
             statuses.Count(x => x.Status == "healthy"),
             statuses.Count(x => x.Status == "starting"),
             statuses.Count(x => x.Status == "stale"),
             statuses.Count(x => x.Status == "failed"),
             statuses.Count(x => x.Status == "missing"),
-            statuses);
+            statuses)
+        {
+            SkippedCount = statuses.Count(x => x.Status == "skipped"),
+            InterruptedCount = statuses.Count(x => x.Status == "interrupted"),
+        };
     }
 
     /// <summary>
@@ -229,7 +249,11 @@ public static class ProductionReadinessEvidence
             .Select(_ => new
             {
                 QiwaPending = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.Pending || x.Status == QiwaSyncLogStatuses.Processing),
-                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter),
+                // Credential-only dead letters (written before sync refused to queue unsendable work) are not
+                // an actionable check; see QiwaSyncLogStatuses.IsCredentialsDeadLetter.
+                QiwaDeadLetter = db.QiwaSyncLogs.Count(x => x.Status == QiwaSyncLogStatuses.DeadLetter
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingClientIdReason
+                    && x.DeadLetterReason != QiwaSyncLogStatuses.MissingSecretReason),
                 NotificationsPending = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Queued || x.Outcome == DeliveryOutcomes.Sending),
                 // Terminal failures that are NOT dead letters: refused on the first try, or unconfirmed.
                 NotificationsFailed = db.NotificationDeliveries.Count(x => x.Outcome == DeliveryOutcomes.Failed || x.Outcome == DeliveryOutcomes.Unknown),
@@ -296,19 +320,23 @@ public static class ProductionReadinessEvidence
     }
 
     /// <summary>The label every surface uses for the sandbox adapter's results. One string, one place.</summary>
-    public const string QiwaSimulatedLabel = "Simulated (sandbox)";
+    public const string QiwaSimulatedLabel = QiwaSyncLogStatuses.SimulatedLabel;
 
     public static DependencyMode QiwaDependency(IConfiguration config)
     {
-        var live = (config["QIWA_USE_LIVE_ADAPTER"] ?? Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"))
-            ?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
         // F09: "sandbox_adapter / configured:false" read like a missing setting, not like a
-        // simulator producing results. It now says what it is.
-        return live
-            ? new DependencyMode("live_adapter", true)
-            : new DependencyMode("sandbox_adapter", false, Simulated: true,
+        // simulator producing results. It now says what it is — and the live switch alone is no longer
+        // "live": without a recorded partner agreement the live adapter is refused.
+        return Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Decide(config) switch
+        {
+            Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Mode.Live => new DependencyMode("live_adapter", true),
+            Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy.Mode.RefusedLive => new DependencyMode("live_adapter_refused", false, Simulated: true,
+                Detail: $"{QiwaSimulatedLabel}: QIWA_USE_LIVE_ADAPTER is set but no Qiwa partner agreement is recorded, "
+                        + "so live calls are refused. No request reaches Qiwa and nothing is filed with MHRSD."),
+            _ => new DependencyMode("sandbox_adapter", false, Simulated: true,
                 Detail: $"{QiwaSimulatedLabel}: this server runs the Qiwa simulator. No request reaches Qiwa and "
-                        + "nothing is filed with MHRSD. Set QIWA_USE_LIVE_ADAPTER=true with live credentials to file for real.");
+                        + "nothing is filed with MHRSD. Live calls need a signed Qiwa partner agreement."),
+        };
     }
 
     /// <summary>
@@ -377,6 +405,19 @@ public sealed record ReadinessEvidence(
     int PendingMigrations,
     QueueHealthEvidence Queues);
 
+/// <summary>
+/// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
+/// code; CI and the e2e preflight read <c>status</c> and <c>pendingMigrations</c>. Everything else in
+/// <see cref="ReadinessEvidence"/> — tenant counts, worker names, SMTP and Qiwa modes, queue depths —
+/// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
+/// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
+/// </summary>
+public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
+{
+    public static PublicReadiness From(ReadinessEvidence evidence)
+        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
+}
+
 public sealed record ReadinessDependencies(
     DependencyProbe Database,
     DependencyMode Redis,
@@ -416,6 +457,12 @@ public sealed record WorkerFleetReadiness(
     int MissingCount,
     IReadOnlyList<WorkerReadiness> Workers)
 {
+    /// <summary>Workers whose freshest evidence is a skipped sweep (another instance holds the lease).</summary>
+    public int SkippedCount { get; init; }
+
+    /// <summary>Workers whose freshest evidence is a sweep that stopped part-way (lease lost).</summary>
+    public int InterruptedCount { get; init; }
+
     /// <summary>
     /// The fleet was NOT MEASURED, because an earlier term — the database probe or migration parity —
     /// already decided the answer (see BuildReadinessAsync). Every count is zero and every worker reads
@@ -432,7 +479,8 @@ public sealed record WorkerFleetReadiness(
         ProductionWorkerNames.All.Select(x => new WorkerReadiness(x, "not_evaluated", null, null)).ToList());
 }
 
-public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc);
+/// <param name="Reason">For failed / interrupted / skipped: the heartbeat's reason code (e.g. <c>lease_held_elsewhere</c>).</param>
+public sealed record WorkerReadiness(string Name, string Status, DateTime? LastSucceededAtUtc, DateTime? UpdatedAtUtc, string? Reason = null);
 
 /// <summary>
 /// Queue counters. F09 added the six trailing fields: a delivery that gave up after its retries

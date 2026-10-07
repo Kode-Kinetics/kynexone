@@ -21,8 +21,15 @@ namespace Zayra.Api.Tests;
 /// count parity, manager email-fallback + auto-code linking, advisory-gap activatability, gap self-heal, and
 /// the server-side readiness / gap deep-link filter.
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeImportAcceptNeverBlockTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeImportAcceptNeverBlockTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -80,36 +87,45 @@ public class EmployeeImportAcceptNeverBlockTests
 
     // ── THE LAW: only no-name + dup-code drop; everything else imports + gap ─────────────────────
     [Fact]
-    public async Task Import_DropsOnlyNoNameAndDupCode_EverythingElseImportsWithGaps()
+    public async Task Import_RefusesTheFileForARowItCannotTake_AndImportsEveryOtherFileWithGaps()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme");
         var ctrl = ImportController(db, tenantId);
 
-        // E1 fires 4 org leaks (unknown company/dept/grade/position) — all become gaps, row imports.
-        // E2 has no name → dropped. E3 imports. E3 (dup) → dropped.
-        var csv =
+        // A nameless row and a repeated code are rows the import cannot take without guessing: the WHOLE file is
+        // refused with both rows named, and nothing lands (they used to be dropped while the rest imported).
+        var bad =
             "EmployeeCode,FullName,CompanyLegalName,Department,Grade,PositionCode,JoiningDate\n" +
             "E1,Alice,Ghost Co,Ghost Dept,Ghost Grade,GHOST-POS,2024-01-01\n" +
             "E2,,,,,,2024-01-01\n" +
             "E3,Bob,,,,,2024-01-01\n" +
             "E3,Bob Dup,,,,,2024-01-01\n";
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await ctrl.Import(new EmployeesController.ImportEmployeesRequest(bad), CancellationToken.None));
+        var refusal = S(refused.Value!);
+        Assert.Contains("\"row\":3", refusal);
+        Assert.Contains("\"row\":5", refusal);
+        Assert.False(await db.Employees.AnyAsync(e => e.TenantId == tenantId));
+
+        // E1 fires 4 org leaks (unknown company/dept/grade/position) — all become gaps, the row imports.
+        // An all-blank spreadsheet row is not a person: ignored (skippedNoName), never a refusal.
+        var csv =
+            "EmployeeCode,FullName,CompanyLegalName,Department,Grade,PositionCode,JoiningDate\n" +
+            "E1,Alice,Ghost Co,Ghost Dept,Ghost Grade,GHOST-POS,2024-01-01\n" +
+            ",,,,,,\n" +
+            "E3,Bob,,,,,2024-01-01\n";
 
         var payload = S(Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)));
 
         Assert.Contains("\"created\":2", payload);
-        Assert.Contains("\"skipped\":2", payload);
+        Assert.Contains("\"skipped\":1", payload);
         Assert.Contains("\"skippedNoName\":1", payload);
-        Assert.Contains("\"skippedDupCode\":1", payload);
-
-        // The invariant: dropped rows == the two lawful reasons and NOTHING else.
-        const int received = 4, created = 2, skipped = 2;
-        Assert.Equal(received, created + skipped);
-        Assert.Equal(2, skipped); // exactly the two lawful reasons (1 no-name + 1 dup) — no other drop
+        Assert.Contains("\"skippedDupCode\":0", payload);
 
         var e1 = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "E1");
-        Assert.Equal(acme.Id, e1.CompanyId); // unknown company defaulted, not dropped
+        Assert.Equal(acme.Id, e1.CompanyId); // unknown company → the tenant's ONLY company, flagged
         var types = await db.EmployeeImportGaps.Where(g => g.TenantId == tenantId && g.EmployeeId == e1.Id).Select(g => g.GapType).ToListAsync();
         Assert.Contains("org:company", types);
         Assert.Contains("org:department", types);
@@ -121,7 +137,7 @@ public class EmployeeImportAcceptNeverBlockTests
     [Fact]
     public async Task ImportPreview_CountsMatchCommit()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenant(db);
         await SeedCompany(db, tenantId, "Acme");
         var ctrl = ImportController(db, tenantId);
@@ -129,9 +145,8 @@ public class EmployeeImportAcceptNeverBlockTests
         var csv =
             "EmployeeCode,FullName,CompanyLegalName,Department,Grade,PositionCode,JoiningDate\n" +
             "E1,Alice,Ghost Co,Ghost Dept,Ghost Grade,GHOST-POS,2024-01-01\n" +
-            "E2,,,,,,2024-01-01\n" +
-            "E3,Bob,,,,,2024-01-01\n" +
-            "E3,Bob Dup,,,,,2024-01-01\n";
+            ",,,,,,\n" +
+            "E3,Bob,,,,,2024-01-01\n";
 
         var preview = Payload(await ctrl.ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         int wouldCreate = (int)preview.GetType().GetProperty("wouldCreate")!.GetValue(preview)!;
@@ -142,7 +157,7 @@ public class EmployeeImportAcceptNeverBlockTests
         Assert.Contains($"\"created\":{wouldCreate}", commit);
         Assert.Contains($"\"skipped\":{wouldSkip}", commit);
         Assert.Equal(2, wouldCreate);
-        Assert.Equal(2, wouldSkip);
+        Assert.Equal(1, wouldSkip); // the all-blank row: not a person, ignored by both
     }
 
     // ── Dup-code is case-insensitive in BOTH preview and commit (Issue 3 parity) ─────────────────
@@ -152,7 +167,7 @@ public class EmployeeImportAcceptNeverBlockTests
         // An existing "ABC" makes an incoming "abc" a duplicate. Preview already treats it as a dup;
         // commit previously used a case-sensitive DB check and would have CREATED the case-variant,
         // diverging from preview. Both paths must now drop it (aligned to the in-file dedup folding).
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenant(db);
         db.Employees.Add(new Employee
         {

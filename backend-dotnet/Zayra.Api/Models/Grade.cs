@@ -7,6 +7,8 @@ public class Grade : ITenantOwned
     public Guid TenantId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    /// <summary>Optional Arabic display name. Readers fall back to <see cref="Name"/> when it is empty.</summary>
+    public string? NameAr { get; set; }
     public string Band { get; set; } = string.Empty;
     public int Level { get; set; }
 

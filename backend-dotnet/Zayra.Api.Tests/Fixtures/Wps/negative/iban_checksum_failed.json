@@ -1,0 +1,10 @@
+{
+  "expectedCode": "iban_checksum_failed",
+  "patch": {
+    "rows": {
+      "0": {
+        "iban": "SA0480000000608010167519"
+      }
+    }
+  }
+}
