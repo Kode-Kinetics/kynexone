@@ -948,6 +948,10 @@ public class EmployeesController : ControllerBase
                     .Select(e => e.WorkEmail).ToListAsync(ct)).Select(AuthService.Normalize),
                 StringComparer.Ordinal);
             var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
+            // Login usernames: a row whose work email already IS a login is warned about (never refused).
+            var existingLoginNorm = (await ScopedBypass.TenantWide(_db.Users, tenantId,
+                    "Employee import: the tenant's login usernames are compared with imported work emails across legal entities, to warn only.")
+                .AsNoTracking().Select(u => u.NormalizedEmail).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
             // ── DUPLICATE-PERSON DETECTION preload (accept-never-block) ─────────────────────────────────
             // Preloaded-dictionary path (N1): existing employees loaded ONCE into the matcher — never a DB
@@ -1242,6 +1246,9 @@ public class EmployeesController : ControllerBase
                         else claimedEmailNorm.Add(norm);
                     }
                 }
+
+                if (!string.IsNullOrWhiteSpace(workEmail) && existingLoginNorm.Contains(AuthService.Normalize(workEmail)))
+                    RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
 
                 // SHARED with ImportPreview: the same builder records the same data:unparsed* gaps in both.
                 var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps);
@@ -1682,7 +1689,12 @@ public class EmployeesController : ControllerBase
             }
             if (gapEntities.Count > 0) _db.EmployeeImportGaps.AddRange(gapEntities);
 
-            // Single persist covering Pass 2 links, the advisory re-stamp, and the gap rows.
+            // Every created row's initial work email, attributed to the importer (two-person rule for linking).
+            var importedAtUtc = DateTime.UtcNow;
+            foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
+                _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
+
+            // Single persist covering Pass 2 links, the advisory re-stamp, the gap rows and the work-email audit.
             if (await PersistAsync("links") is { } finalSaveError) return finalSaveError;
 
             // A repaired employee's stored readiness badge is recomputed from its now-complete record, so a filled
@@ -3494,6 +3506,10 @@ public class EmployeesController : ControllerBase
                         JsonSerializer.Serialize(new { draftId, employeePublicId = employee.PublicId }));
                     marker.CompanyId = employee.CompanyId;
                     _db.AuditLogs.Add(marker);
+                    // The initial work email: set by the approver's decision; the drafter who typed it is recorded too.
+                    if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
+                        _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(
+                            employee, tenantId, requestContext, approvedAtUtc, "draft_approval", draft.CreatedByUserId));
                     await _db.SaveChangesAsync(ct);
                     return true;
                 }, ct);

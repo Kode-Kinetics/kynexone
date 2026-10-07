@@ -109,7 +109,21 @@ public record EmployeeLoginLinkResultDto(
     string Status,
     string AccessMode,
     bool IsActive,
-    bool AlreadyLinked);
+    bool AlreadyLinked)
+{
+    /// <summary>
+    /// True when someone other than the person had held a credential for the login (created it, set its password,
+    /// or was shown a reset or invitation link): the link made the old password unusable, and the person sets their
+    /// own from a fresh invitation to their work email.
+    /// </summary>
+    public bool CredentialReset { get; init; }
+    /// <summary>The invitation link, returned ONLY when it could not be emailed — the linker passes it on by hand.</summary>
+    public string? InvitationUrl { get; init; }
+    public DateTime? InvitationExpiresAtUtc { get; init; }
+    public bool EmailSent { get; init; }
+    /// <summary>What happened to the invitation, in plain words. Empty when the credential was not reset.</summary>
+    public string DeliveryMessage { get; init; } = string.Empty;
+}
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 

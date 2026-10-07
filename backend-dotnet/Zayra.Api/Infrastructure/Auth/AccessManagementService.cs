@@ -830,6 +830,12 @@ public class AccessManagementService : IAccessManagementService
         var auditId = Guid.NewGuid();
         var newLinkId = Guid.NewGuid();
         var newGrantId = Guid.NewGuid();
+        var credentialResetAuditId = Guid.NewGuid();
+        // Minted once, outside the retry loop, so an execution-strategy replay writes the same credential.
+        var rotationToken = _tokenService.CreateSecureToken();
+        var rotationTokenHash = _tokenService.HashToken(rotationToken);
+        var rotationExpiresAtUtc = linkedAtUtc.AddHours(LinkCredentialResetInvitationHours);
+        var unreachablePasswordHash = _passwordHasher.Hash(Convert.ToBase64String(RandomNumberGenerator.GetBytes(64)));
         EmployeeLoginLinkResultDto? result = null;
 
         async Task<bool> LinkOnceAsync(CancellationToken ct)
@@ -908,6 +914,8 @@ public class AccessManagementService : IAccessManagementService
             var refusal = await EvaluateLinkAsync(tenantId, user, facts, employee.Id, employee.UserAccountId, employee.CompanyId,
                 employee.WorkEmail ?? string.Empty, entityScope, context.UserId, linkedAtUtc, ct);
             if (refusal is not null) throw new EmployeeLinkRefusedException(refusal);
+            // Someone other than the person has held a credential for this login: the link rotates it (below).
+            var rotateCredential = await HasCredentialHandlersAsync(tenantId, user.Id, ct);
             var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
 
             // The Employee role: what Self-Service needs. Every other role the login holds is kept as it is.
@@ -990,6 +998,52 @@ public class AccessManagementService : IAccessManagementService
             }
             employee.UserAccountId = user.Id;
 
+            // CREDENTIAL ROTATION. An administrator created this login, set its password, or was shown a reset or
+            // invitation link for it, so someone other than the person may know the password. Binding it to the
+            // person's Self-Service must not hand them that access: the password becomes unusable and the person
+            // sets their own from a fresh invitation to the employee's work email. Roles, MFA and the access mode
+            // (carried by the link, restored on acceptance) are kept.
+            if (rotateCredential)
+            {
+                link.Status = "Invited";
+                link.RequiresPasswordSetup = true;
+                link.InvitationTokenHash = rotationTokenHash;
+                link.InvitedAtUtc = linkedAtUtc;
+                link.InvitationExpiresAtUtc = rotationExpiresAtUtc;
+                link.InvitationAcceptedAtUtc = null;
+
+                user.PasswordHash = unreachablePasswordHash;
+                user.Status = "Invited";
+                user.AccessMode = AccessModes.NoLogin;
+                user.IsActive = false;
+                user.IsEmailConfirmed = false;
+                user.MustChangePassword = false;
+                user.FailedLoginCount = 0;
+                user.LastPasswordChangedAt = linkedAtUtc;
+                user.UpdatedAtUtc = linkedAtUtc;
+
+                // Every reset link minted under the old credential dies with it.
+                foreach (var reset in await _db.PasswordResetTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+                    .OrderBy(x => x.Id)
+                    .ToListAsync(ct))
+                    reset.UsedAtUtc = linkedAtUtc;
+
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    credentialResetAuditId,
+                    linkedAtUtc,
+                    LinkCredentialResetAction,
+                    "User",
+                    user.Id.ToString(),
+                    context with { TenantId = tenantId },
+                    System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        employeeId = employee.Id,
+                        invitationExpiresAtUtc = rotationExpiresAtUtc,
+                        reason = "credential_handled_by_administrator"
+                    })));
+            }
+
             // The graph as it will be committed must be whole: every live link names a living employee of this tenant.
             if (!await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GraphInconsistent());
@@ -1013,10 +1067,19 @@ public class AccessManagementService : IAccessManagementService
                     companyGrantAdded,
                     accessMode = link.AccessMode,
                     previousEmployeeId,
-                    previousPointerCleared
+                    previousPointerCleared,
+                    credentialReset = rotateCredential
                 })));
             await _db.SaveChangesAsync(ct);
             result = ToLinkResult(employee.Id, user, link, alreadyLinked: false);
+            if (rotateCredential)
+                result = result with
+                {
+                    CredentialReset = true,
+                    InvitationExpiresAtUtc = rotationExpiresAtUtc,
+                    // The controller emails it, or hands it back (and records that) when no email went out.
+                    InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
+                };
             return true;
         }
 
@@ -1112,6 +1175,26 @@ public class AccessManagementService : IAccessManagementService
                 return EmployeeLinkRefusals.GroupAdminRequired();
         }
         return await TwoPersonRefusalAsync(tenantId, user, employeeId, callerUserId, ct);
+    }
+
+    /// <summary>How long the invitation minted by a credential-rotating link stays redeemable.</summary>
+    internal const int LinkCredentialResetInvitationHours = 72;
+
+    /// <summary>Written when a link rotated the login's credential (entity User). Also marks the login as once activated.</summary>
+    public const string LinkCredentialResetAction = "access.employee_login_credential_reset";
+
+    /// <summary>
+    /// Has ANYONE other than the person held a credential for this login — created it, set its password, or been
+    /// shown a reset or invitation link for it (platform operators included)? Then a link rotates the credential.
+    /// A login whose only password came from an emailed invitation or reset has no handler and links as it is.
+    /// </summary>
+    private async Task<bool> HasCredentialHandlersAsync(Guid tenantId, Guid userId, CancellationToken ct)
+    {
+        var userKey = userId.ToString();
+        return await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+                .AnyAsync(x => x.EntityName == "User" && x.EntityId == userKey && CredentialHandlerActions.Contains(x.Action), ct)
+            || await ScopedBypass.TenantWide(_db.AdminAuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+                .AnyAsync(x => x.EntityType == "User" && x.EntityId == userKey && CredentialDisclosureAdminActions.Contains(x.Action), ct);
     }
 
     /// <summary>Audit actions (central audit, entity User) whose ACTOR has held a credential for that login.</summary>

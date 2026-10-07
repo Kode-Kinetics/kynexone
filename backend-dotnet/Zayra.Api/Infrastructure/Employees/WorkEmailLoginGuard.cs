@@ -41,9 +41,11 @@ public static class WorkEmailLoginGuard
     }
 
     /// <summary>Audit actions (entity User) that prove a login was activated at some point: a password the owner
-    /// set, a sign-in, or creation as an active login (Create User, import).</summary>
+    /// set, a sign-in, creation as an active login (Create User, import), or a link that rotated the credential of
+    /// what was an active login (it awaits a password again, but it is a person's login, never a staged one).</summary>
     private static readonly string[] ActivationEvidence =
-        ["auth.invitation_accepted", "auth.password_reset", "auth.password_changed", "auth.login", "access.user_created"];
+        ["auth.invitation_accepted", "auth.password_reset", "auth.password_changed", "auth.login", "access.user_created",
+         AccessManagementService.LinkCredentialResetAction];
 
     /// <summary>
     /// STAGED = never activated. Every one of: a live link to this employee still awaiting its first password
@@ -65,6 +67,29 @@ public static class WorkEmailLoginGuard
     /// Throws <see cref="InvalidOperationException"/> before anything is written when a staged login's new
     /// username would collide with another login. Saves nothing itself: the caller's unit of work commits it.
     /// </summary>
+    /// <summary>
+    /// The audit row for a work email SET at creation (create, draft approval, import): old = null. The two-person
+    /// rule for linking reads the last such row, so an initial value counts exactly like a later edit.
+    /// </summary>
+    public static AuditLog InitialWorkEmailAudit(Employee employee, Guid tenantId, RequestContext context, DateTime nowUtc,
+        string source, Guid? draftedBy = null) =>
+        AuthAuditEntry.Create(
+            Guid.NewGuid(),
+            nowUtc,
+            AccessManagementService.WorkEmailChangedAction,
+            "Employee",
+            employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            context with { TenantId = tenantId },
+            JsonSerializer.Serialize(new { oldWorkEmail = (string?)null, newWorkEmail = (employee.WorkEmail ?? string.Empty).Trim(), source, draftedBy }));
+
+    /// <summary>A warning, never a refusal: the work email set at creation is already some login's username.</summary>
+    public static async Task<bool> BelongsToExistingLoginAsync(ZayraDbContext db, Guid tenantId, string? workEmail, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(workEmail)) return false;
+        var norm = AuthService.Normalize(workEmail);
+        return await ScopedBypass.TenantWide(db.Users, tenantId, Why).AsNoTracking().AnyAsync(x => x.NormalizedEmail == norm, ct);
+    }
+
     /// <param name="context">The editor. Every work-email change is audited as
     /// <see cref="AccessManagementService.WorkEmailChangedAction"/> with them as actor, in the caller's unit of work —
     /// the two-person rule refuses a login link by whoever last changed the work email.</param>

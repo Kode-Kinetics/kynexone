@@ -520,22 +520,8 @@ public class AccessController : ControllerBase
             // rule (AccessManagementService.TwoPersonRefusalAsync) never lets them link it to an employee.
             var disclosed = !invite.EmailSent && !string.IsNullOrEmpty(invite.InvitationUrl);
             if (disclosed)
-            {
-                _db.AuditLogs.Add(AuthAuditEntry.Create(
-                    Guid.NewGuid(),
-                    DateTime.UtcNow,
-                    AccessManagementService.InvitationLinkDisclosedAction,
-                    "User",
-                    invite.UserId.ToString(),
-                    GetContext() with { TenantId = tenantId.Value },
-                    System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        employeeId = invite.EmployeeId,
-                        emailDeliveryConfigured = invite.EmailDeliveryConfigured,
-                        expiresAtUtc = invite.InvitationExpiresAtUtc
-                    })));
-                await _db.SaveChangesAsync(cancellationToken);
-            }
+                await RecordInvitationLinkDisclosedAsync(tenantId.Value, invite.UserId, invite.EmployeeId,
+                    invite.EmailDeliveryConfigured, invite.InvitationExpiresAtUtc, "invite", cancellationToken);
             invite = invite with
             {
                 InvitationToken = string.Empty,
@@ -576,8 +562,23 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null || GetUserId() is null) return Unauthorized();
-            return Ok(await _accessManagement.LinkExistingLoginAsync(
-                tenantId.Value, request, this.GetEntityScope(), GetContext(), cancellationToken));
+            var linked = await _accessManagement.LinkExistingLoginAsync(
+                tenantId.Value, request, this.GetEntityScope(), GetContext(), cancellationToken);
+            if (!linked.CredentialReset || string.IsNullOrEmpty(linked.InvitationUrl)) return Ok(linked with { InvitationUrl = null });
+
+            // The link rotated the credential: deliver the fresh invitation exactly as the invite endpoint does.
+            var delivered = await AttachInvitationDeliveryAsync(tenantId.Value, new EmployeeLoginInvitationDto(
+                linked.UserId, linked.EmployeeId, linked.Email, linked.AccessMode, linked.Status, string.Empty,
+                linked.InvitationExpiresAtUtc, linked.InvitationUrl), cancellationToken);
+            if (!delivered.EmailSent)
+                await RecordInvitationLinkDisclosedAsync(tenantId.Value, linked.UserId, linked.EmployeeId,
+                    delivered.EmailDeliveryConfigured, linked.InvitationExpiresAtUtc, "link_credential_reset", cancellationToken);
+            return Ok(linked with
+            {
+                InvitationUrl = delivered.EmailSent ? null : linked.InvitationUrl,
+                EmailSent = delivered.EmailSent,
+                DeliveryMessage = delivered.DeliveryMessage,
+            });
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_login_linked", "User", request.UserId.ToString()); }
         catch (AccessTargetNotFoundException ex) { return NotFound(new { message = ex.Message }); }
@@ -587,6 +588,24 @@ public class AccessController : ControllerBase
             return ex.Refusal.StatusCode == StatusCodes.Status400BadRequest ? BadRequest(body) : StatusCode(ex.Refusal.StatusCode, body);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// An invitation link was handed back to the caller instead of reaching the invitee: the caller has held a
+    /// credential for that login. Recorded so the two-person rule never lets them link it to an employee.
+    /// </summary>
+    private async Task RecordInvitationLinkDisclosedAsync(Guid tenantId, Guid userId, int employeeId, bool emailDeliveryConfigured,
+        DateTime? expiresAtUtc, string source, CancellationToken cancellationToken)
+    {
+        _db.AuditLogs.Add(AuthAuditEntry.Create(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            AccessManagementService.InvitationLinkDisclosedAction,
+            "User",
+            userId.ToString(),
+            GetContext() with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new { employeeId, emailDeliveryConfigured, expiresAtUtc, source })));
+        await _db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<EmployeeLoginInvitationDto> AttachInvitationDeliveryAsync(

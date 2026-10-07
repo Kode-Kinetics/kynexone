@@ -874,6 +874,7 @@ public sealed class EmployeeLoginLinkTests
     // ── P0: the two-person rule — whoever held a credential, or last changed the work email, never links ──
 
     private const string OwnersOwnPassword = "OwnersOwn1!Password";
+    private const string PersonsNewPassword = "PersonsNew2!Password";
 
     /// <summary>
     /// THE TAKEOVER. Admin X makes new.hire@ in Create User with a password X knows, and links it to the new hire's
@@ -895,14 +896,72 @@ public sealed class EmployeeLoginLinkTests
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
 
         await AssertCredentialHandlerRefusedAsync(w, creator, login, employeeId);
+        (await SignInAsync(w, email)).Should().NotBeNull("the creator knows the password they chose");
+        var refreshTokenId = await AddRefreshTokenAsync(login);
 
+        EmployeeLoginLinkResultDto linked;
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
             status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
-            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
-                new LinkExistingLoginRequest(employeeId, login, "Linked by a second administrator"), default)).Result).UserId.Should().Be(login);
+            linked = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "Linked by a second administrator"), default)).Result);
         }
+        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: Password, linker: w.AdminId, accessMode: AccessModes.FullPortal);
+    }
+
+    /// <summary>
+    /// After a link that rotated the credential: the old password is dead everywhere, sessions are gone, the person
+    /// sets their own from the fresh invitation (here handed to the linker, no mail transport), and then signs in
+    /// with their own password, employee_id and original access mode intact.
+    /// </summary>
+    private async Task AssertCredentialRotatedAsync(World w, EmployeeLoginLinkResultDto linked, Guid login, string email, Guid refreshTokenId,
+        string oldPassword, Guid linker, string accessMode)
+    {
+        linked.UserId.Should().Be(login);
+        linked.CredentialReset.Should().BeTrue();
+        linked.IsActive.Should().BeFalse();
+        linked.Status.Should().Be("Invited");
+        linked.EmailSent.Should().BeFalse();
+        linked.InvitationUrl.Should().Contain("/accept-invitation").And.Contain("#token=");
+        linked.DeliveryMessage.Should().Contain("No email delivery is configured");
+
+        await SignInFailsAsync(w, email, oldPassword);
+        await using (var verify = _fixture.CreateRetryingDb())
+        {
+            (await verify.RefreshTokens.SingleAsync(x => x.Id == refreshTokenId)).RevokedAtUtc.Should().NotBeNull();
+            var link = await verify.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.UserId == login && !x.IsDeleted);
+            link.RequiresPasswordSetup.Should().BeTrue();
+            link.InvitationExpiresAtUtc.Should().BeCloseTo(DateTime.UtcNow.AddHours(72), TimeSpan.FromMinutes(5));
+            link.AccessMode.Should().Be(accessMode, "the access mode is kept for when the person accepts");
+            // Not merely switched off: the old password no longer matches the stored credential at all, so no later
+            // reactivation path can bring it back.
+            var rotated = await verify.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == login);
+            new Pbkdf2PasswordHasher().Verify(oldPassword, rotated.PasswordHash).Should().BeFalse();
+            rotated.IsActive.Should().BeFalse();
+            (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.Action == AccessManagementService.LinkCredentialResetAction
+                && x.EntityId == login.ToString())).Should().Be(1);
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == login.ToString() && x.UserId == linker)).Should().BeTrue("the linker was handed a credential");
+        }
+
+        var token = Uri.UnescapeDataString(linked.InvitationUrl![(linked.InvitationUrl.IndexOf("#token=", StringComparison.Ordinal) + "#token=".Length)..]);
+        await using (var db = _fixture.CreateRetryingDb())
+            await Auth(db).AcceptInvitationAsync(new AcceptInvitationRequest(token, PersonsNewPassword, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
+        await SignInFailsAsync(w, email, oldPassword);
+        var principal = await SignInAsync(w, email, PersonsNewPassword);
+        principal.FindFirstValue("employee_id").Should().Be(linked.EmployeeId.ToString());
+        principal.FindFirstValue("access_mode").Should().Be(accessMode);
+    }
+
+    private async Task SignInFailsAsync(World w, string email, string password)
+    {
+        await using var db = _fixture.CreateRetryingDb();
+        AuthLoginResult? response = null;
+        try { response = await Auth(db).LoginAsync(new LoginRequest(email, password, w.Slug), new RequestContext("127.0.0.1", "tests"), default); }
+        catch (UnauthorizedAccessException) { return; }
+        catch (InvalidOperationException) { return; }
+        response!.Tokens.Should().BeNull("a password someone else knew must not sign in after the link");
     }
 
     /// <summary>
@@ -927,10 +986,13 @@ public sealed class EmployeeLoginLinkTests
             await Auth(db).ResetPasswordAsync(new ResetPasswordRequest(token, OwnersOwnPassword, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
 
         await AssertCredentialHandlerRefusedAsync(w, w.AdminId, login, employeeId);
+        var refreshTokenId = await AddRefreshTokenAsync(login);
+        EmployeeLoginLinkResultDto linked;
         await using (var db = _fixture.CreateRetryingDb())
-            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, peer).LinkExistingLogin(
-                new LinkExistingLoginRequest(employeeId, login, "Linked by an administrator who never saw the link"), default)).Result)
-                .UserId.Should().Be(login);
+            linked = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, peer).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "Linked by an administrator who never saw the link"), default)).Result);
+        // The redeemed password is rotated too: the administrator who saw the link was a handler.
+        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: OwnersOwnPassword, linker: peer, accessMode: AccessModes.FullPortal);
     }
 
     [Fact]
@@ -1135,12 +1197,14 @@ public sealed class EmployeeLoginLinkTests
     });
 
     /// <summary>A real password sign-in through AuthService; returns the access token's claims.</summary>
-    private async Task<ClaimsPrincipal> SignInAsync(World w, string email)
+    private Task<ClaimsPrincipal> SignInAsync(World w, string email) => SignInAsync(w, email, Password);
+
+    private async Task<ClaimsPrincipal> SignInAsync(World w, string email, string password)
     {
         await using var db = _fixture.CreateRetryingDb();
         var auth = new AuthService(db, new Pbkdf2PasswordHasher(), new JwtTokenService(Jwt), new AuditService(db), new FakeEmailService(), Jwt,
             new NullMfaService(), new TotpService(DataProtectionProvider.Create("ZayraTests")), NullLogger<AuthService>.Instance);
-        var login = await auth.LoginAsync(new LoginRequest(email, Password, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
+        var login = await auth.LoginAsync(new LoginRequest(email, password, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
         login.Tokens.Should().NotBeNull("the login is active and has a password");
         var token = new JwtSecurityTokenHandler().ReadJwtToken(login.Tokens!.AccessToken);
         return new ClaimsPrincipal(new ClaimsIdentity(token.Claims, "Bearer"));

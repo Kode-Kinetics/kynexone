@@ -39,7 +39,9 @@ public class EmployeeModuleTests
         db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
         db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
         await db.SaveChangesAsync();
-        var controller = CreateController(db, tenantId);
+        var drafter = Guid.NewGuid();
+        var approver = Guid.NewGuid();
+        var controller = CreateController(db, tenantId, drafter);
         // Nationality and country are stated as "Emirati"/"AE", not the free text "UAE" this fixture
         // used to carry: "UAE" is neither ISO-2 nor ISO-3, so it normalises to nothing and the employee
         // would have no identifiable jurisdiction, which now refuses activation. The draft already
@@ -49,13 +51,19 @@ public class EmployeeModuleTests
         await controller.SubmitDraft(draft.Id, CancellationToken.None);
 
         // Maker-checker: the HR user who prepared the draft cannot activate it; a second one does.
-        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
+        var approval = await CreateController(db, tenantId, approver).ApproveDraft(draft.Id, CancellationToken.None);
 
         var profile = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(approval.Result).Value);
         Assert.Equal("Active", profile.Status);
         Assert.StartsWith("EMP-", profile.EmployeeCode);
         Assert.NotNull(profile.UserAccountId);
         Assert.True(await db.EmployeeHistories.AnyAsync(x => x.EmployeeId == profile.Id && x.EventType == "Activated"));
+        // The initial work email is a work-email change: attributed to the approver, naming the drafter.
+        var initial = await db.AuditLogs.SingleAsync(x => x.Action == Zayra.Api.Infrastructure.Auth.AccessManagementService.WorkEmailChangedAction
+            && x.EntityId == profile.Id.ToString());
+        Assert.Equal(approver, initial.UserId);
+        Assert.Contains($"\"draftedBy\":\"{drafter}\"", initial.Metadata);
+        Assert.Contains("\"oldWorkEmail\":null", initial.Metadata);
     }
 
     [Fact]

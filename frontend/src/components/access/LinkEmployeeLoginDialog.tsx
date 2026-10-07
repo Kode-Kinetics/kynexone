@@ -5,7 +5,7 @@ import { Modal } from '../Modal';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../EmployeeSearchSelect';
 import { usersApi } from '../../api/identity';
 import { employeesApi, type EmployeeListItem } from '../../api/employees';
-import type { EmployeeLoginInvitation, EmployeeLoginStatus, UserListItem } from '../../api/identity';
+import type { EmployeeLoginInvitation, EmployeeLoginLinkResult, EmployeeLoginStatus, UserListItem } from '../../api/identity';
 import { localizedRefusal } from '../../lib/accessCeiling';
 import { useLocale } from '../../contexts/LocaleContext';
 
@@ -25,7 +25,7 @@ interface Props {
 }
 
 type Outcome =
-  | { kind: 'linked'; employeeName: string }
+  | { kind: 'linked'; employeeName: string; linked: EmployeeLoginLinkResult }
   | { kind: 'invited'; invitation: EmployeeLoginInvitation };
 
 /** The server's refusal codes this dialog words itself, so the reader gets their own language. */
@@ -154,8 +154,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (!reason.trim()) { setError(t('Give a reason. It is kept in the audit trail.')); return; }
     setSubmitting(true); setError('');
     try {
-      await usersApi.linkExistingLogin({ employeeId: status.employeeId, userId, reason: reason.trim() });
-      setOutcome({ kind: 'linked', employeeName: status.employeeName });
+      const linked = await usersApi.linkExistingLogin({ employeeId: status.employeeId, userId, reason: reason.trim() });
+      setOutcome({ kind: 'linked', employeeName: status.employeeName, linked });
       onChanged();
     } catch (e: unknown) {
       setError(writeError(e, t('The login could not be linked.')));
@@ -317,10 +317,51 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
         {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-        {outcome?.kind === 'linked' && (
+        {outcome?.kind === 'linked' && !outcome.linked.credentialReset && (
           <div role="status" className="space-y-1 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
             <p className="font-medium">{t('Linked to {name}.', { name: outcome.employeeName })}</p>
             <p>{t('{name} must sign out and sign in again to see Self-Service.', { name: outcome.employeeName })}</p>
+          </div>
+        )}
+
+        {outcome?.kind === 'linked' && outcome.linked.credentialReset && (
+          <div role="status" className="space-y-3">
+            <div className="space-y-1 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+              <p className="font-medium">{t('Linked. {name} must set a new password from the invitation.', { name: outcome.employeeName })}</p>
+              <p>{t("Someone other than {name} had handled this login's password, so the old password no longer works.", { name: outcome.employeeName })}</p>
+            </div>
+            {outcome.linked.deliveryMessage && (
+              <p className={`text-sm ${outcome.linked.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                {outcome.linked.deliveryMessage}
+              </p>
+            )}
+            {outcome.linked.invitationUrl && !outcome.linked.emailSent && (
+              <div>
+                <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  {t('Invitation link — copy it now and send it to them yourself')}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    aria-label={t('Invitation link')}
+                    value={outcome.linked.invitationUrl}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="field-ltr w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(outcome.linked.invitationUrl ?? '')
+                        .then(() => setCopied(true))
+                        .catch(() => setCopied(false));
+                    }}
+                    className={`shrink-0 ${btnSecondary}`}
+                  >
+                    {copied ? t('Link copied') : t('Copy link')}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

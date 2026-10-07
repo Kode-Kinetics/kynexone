@@ -202,6 +202,13 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
+        // The initial work email is a work-email change like any other (two-person rule for linking).
+        if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
+        {
+            _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(employee, tenantId, context, DateTime.UtcNow, "create"));
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
         // that (per S1) never hard-stops the create but must still leave a record.
@@ -219,7 +226,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         // The write response is a READ of the record, so it obeys the SAME mask gate as GET {id}.
         // Hard-coding true here made every create/update/status-flip an unmasked salary + IBAN read for
         // any caller holding employees.write, and (via GetAsync) falsely stamped employee.sensitive_viewed.
-        return (await GetAsync(tenantId, employee.Id, includeSensitive, context, cancellationToken))!;
+        return (await GetAsync(tenantId, employee.Id, includeSensitive, context, cancellationToken))! with
+        {
+            WorkEmailHasExistingLogin = workEmailHasExistingLogin
+        };
     }
 
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)

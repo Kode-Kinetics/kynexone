@@ -65,6 +65,10 @@ export const employeeLogin: ReleaseADict = {
       "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.",
     'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
       'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.',
+    "Linked. {name} must set a new password from the invitation.":
+      "Linked. {name} must set a new password from the invitation.",
+    "Someone other than {name} had handled this login's password, so the old password no longer works.":
+      "Someone other than {name} had handled this login's password, so the old password no longer works.",
   },
   ar: {
     'Link to employee record': 'ربط بسجل موظف',
@@ -126,5 +130,9 @@ export const employeeLogin: ReleaseADict = {
       'لقد تعاملت مع بيانات اعتماد حساب الدخول هذا (أنشأته، أو عيّنت كلمة مروره، أو عُرض عليك رابط إعادة تعيين أو دعوة له)، لذا لا يمكنك ربطه بسجل موظف. يجب أن يربطه مسؤول آخر.',
     'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
       'آخر من غيّر البريد الإلكتروني للعمل في سجل هذا الموظف هو أنت أو صاحب حساب الدخول هذا، لذا يجب أن يربطه مسؤول آخر.',
+    "Linked. {name} must set a new password from the invitation.":
+      "تم الربط. يجب على {name} تعيين كلمة مرور جديدة من خلال الدعوة.",
+    "Someone other than {name} had handled this login's password, so the old password no longer works.":
+      "تعامل شخص غير {name} مع كلمة مرور حساب الدخول هذا، لذا لم تعد كلمة المرور القديمة صالحة.",
   },
 };

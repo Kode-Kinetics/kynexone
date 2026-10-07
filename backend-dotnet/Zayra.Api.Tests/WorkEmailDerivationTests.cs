@@ -8,6 +8,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Organization;
@@ -351,6 +352,53 @@ public class WorkEmailDerivationTests
     }
 
     // ── Bulk import ─────────────────────────────────────────────────────────────────────────────
+    // ── Initial work email: audited like an edit; an existing login with it is a warning ─────────────
+    [Fact]
+    public async Task Create_RecordsTheInitialWorkEmail_AndWarnsWhenALoginAlreadyUsesIt()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
+        db.Users.Add(new User { TenantId = tenantId, Email = "jane.doe@acme.sa", NormalizedEmail = "JANE.DOE@ACME.SA", FullName = "Jane", PasswordHash = "x" });
+        await db.SaveChangesAsync();
+        var ctx = Ctx(tenantId);
+
+        var plain = await Svc(db).CreateAsync(tenantId, Req("John Smith", null, acme.Id), ctx, CancellationToken.None);
+        plain.WorkEmailHasExistingLogin.Should().BeFalse();
+        var clash = await Svc(db).CreateAsync(tenantId, Req("Jane Doe", null, acme.Id), ctx, CancellationToken.None);
+        clash.WorkEmail.Should().Be("jane.doe@acme.sa", "a login with the address never blocks the create");
+        clash.WorkEmailHasExistingLogin.Should().BeTrue();
+
+        var initial = await db.AuditLogs.SingleAsync(x => x.Action == AccessManagementService.WorkEmailChangedAction && x.EntityId == plain.Id.ToString());
+        initial.UserId.Should().Be(ctx.UserId);
+        initial.Metadata.Should().Contain("\"oldWorkEmail\":null").And.Contain("john.smith@acme.sa");
+    }
+
+    [Fact]
+    public async Task Import_RecordsEachInitialWorkEmail_AndWarnsWhenALoginAlreadyUsesIt()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        await SeedCompany(db, tenantId, "Acme", "acme.sa");
+        db.Users.Add(new User { TenantId = tenantId, Email = "jane.doe@acme.sa", NormalizedEmail = "JANE.DOE@ACME.SA", FullName = "Jane", PasswordHash = "x" });
+        await db.SaveChangesAsync();
+        var ctrl = ImportController(db, tenantId);
+        var importer = Guid.Parse(ctrl.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value);
+
+        var csv =
+            "EmployeeCode,FullName,CompanyLegalName,JoiningDate\n" +
+            "E1,John Smith,Acme,2024-01-01\n" +
+            "E2,Jane Doe,Acme,2024-01-01\n";
+        var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+
+        System.Text.Json.JsonSerializer.Serialize(Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(result).Value)
+            .Should().Contain("already belongs to an existing login");
+        (await db.Employees.SingleAsync(e => e.EmployeeCode == "E2")).WorkEmail.Should().Be("jane.doe@acme.sa", "a warning, never a refusal");
+        var rows = await db.AuditLogs.Where(x => x.Action == AccessManagementService.WorkEmailChangedAction).ToListAsync();
+        rows.Should().HaveCount(2);
+        rows.Should().OnlyContain(x => x.UserId == importer && x.Metadata!.Contains("\"source\":\"import\""));
+    }
+
     [Fact]
     public async Task Import_DerivesWorkEmail_WhenBlank_AndSuffixesCollisions()
     {

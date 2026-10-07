@@ -40,7 +40,7 @@ const employees = [
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page, opts: { slowLookupFor?: string } = {}) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -60,6 +60,12 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string } =
       writes.push({ method: request.method(), path: pathname, body: request.postDataJSON() });
       if (pathname === '/api/access/employee-logins/link-existing') {
         linked = true;
+        if (opts.credentialReset) return json({
+          employeeId: 42, userId: noah.id, email: noah.email, status: 'Invited', accessMode: 'FullPortal', isActive: false, alreadyLinked: false,
+          credentialReset: true, emailSent: false,
+          invitationUrl: 'https://app.example.test/accept-invitation?workspace=kkdemo#token=rotated123',
+          deliveryMessage: 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
+        });
         return json({ employeeId: 42, userId: noah.id, email: noah.email, status: 'Active', accessMode: 'FullPortal', isActive: true, alreadyLinked: false });
       }
       if (pathname === '/api/access/employee-logins/invite') {
@@ -162,6 +168,29 @@ test('an existing login is linked to its employee record from the user row', asy
   // The row now names the employee and no longer offers the link.
   await expect(row.getByText('Employee: Noah Williams (EMP-0042)')).toBeVisible();
   await expect(row.getByRole('button', { name: 'Link to employee record' })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a login an administrator had handled is linked with a fresh password invitation, copyable when no email went out', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+  const { writes, errors } = await openUserManagement(page, { credentialReset: true });
+  const row = page.getByRole('row').filter({ hasText: noah.email });
+  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('employee-login-status')).toBeVisible();
+  await dialog.getByLabel('Reason (kept in the audit trail)').fill('Created in User Management');
+  await dialog.getByRole('button', { name: 'Link this login', exact: true }).click();
+
+  const status = dialog.getByRole('status');
+  await expect(status).toContainText('Linked. Noah Williams must set a new password from the invitation.');
+  await expect(status).toContainText("Someone other than Noah Williams had handled this login's password, so the old password no longer works.");
+  await expect(status).not.toContainText('must sign out and sign in again');
+  await expect(dialog.getByText('No email delivery is configured for this workspace', { exact: false })).toBeVisible();
+  await expect(dialog.getByLabel('Invitation link', { exact: true })).toHaveValue('https://app.example.test/accept-invitation?workspace=kkdemo#token=rotated123');
+  await dialog.getByRole('button', { name: 'Copy link', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Link copied', exact: true })).toBeVisible();
+  expect(writes).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 

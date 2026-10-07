@@ -60,6 +60,13 @@ export interface EmployeeLoginLinkResult {
   accessMode: string;
   isActive: boolean;
   alreadyLinked: boolean;
+  /** Someone other than the person had held a credential for the login: its password was made unusable and the
+   *  person sets their own from a fresh invitation to their work email. */
+  credentialReset?: boolean;
+  /** Returned only when the invitation could not be emailed — pass it on by hand. */
+  invitationUrl?: string | null;
+  emailSent?: boolean;
+  deliveryMessage?: string;
 }
 
 /** POST /api/access/employee-logins/invite. `invitationUrl` must be shared by hand when `emailSent` is false. */
