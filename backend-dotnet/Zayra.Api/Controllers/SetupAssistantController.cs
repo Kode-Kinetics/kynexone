@@ -574,11 +574,16 @@ public class SetupAssistantController : ControllerBase
             foreach (var r in d.StatutoryRules)
             {
                 if (!existingRules.Add(r.RuleKey.ToUpper())) continue;
+                // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
+                // only, so a tenant value here would be saved and never applied. Refused with a code.
+                // See Infrastructure/Payroll/GosiStatutoryValues.cs.
+                if (GosiStatutoryValues.TenantWriteRefusal(r.RuleKey) is { } gosiRefusal)
+                    return UnprocessableEntity(gosiRefusal);
                 // UNIT GATE — the wizard writes statutory rates too, so it is held to the same
                 // rule as the admin surfaces: a rate is a decimal FRACTION (0.09 = 9%).
                 // See Infrastructure/Payroll/StatutoryValueUnits.cs.
                 if (StatutoryValueUnits.Validate(r.RuleKey, r.DataType, r.RuleValue) is { } unitError)
-                    return BadRequest(new { message = unitError });
+                    return BadRequest(StatutoryValueUnits.Refusal(unitError));
                 _db.StatutoryRules.Add(new StatutoryRule
                 {
                     TenantId = tenantId, CountryCode = country, Jurisdiction = $"{country}-default",
