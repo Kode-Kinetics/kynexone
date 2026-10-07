@@ -81,11 +81,21 @@ public sealed class ReservedRoleNamesRatchetTests
     }
 
     [Fact]
-    public void TheReservedNamesAreAdminOnly_ThroughIsAdminOnlyRole()
+    public void AReservedName_IsAnAdminsToCreateOrRenameTo_AndACustomRoleCarryingOne_IsAdminOnly()
     {
+        var consoleAdmin = PrivilegeCeiling.ForCaller(Guid.NewGuid(), false, ["security.manage"], []);
+        var admin = PrivilegeCeiling.ForCaller(Guid.NewGuid(), true, ["security.manage"], []);
         foreach (var name in PrivilegeCeiling.ReservedRoleNames)
+        {
+            Assert.Equal(PrivilegeCeiling.Codes.ReservedRoleName, PrivilegeCeiling.NameRefusal(consoleAdmin, name.ToLowerInvariant(), null)?.Code);
+            Assert.Null(PrivilegeCeiling.NameRefusal(admin, name, null));
+            // A custom role an Admin gave this name grants the name's authority: Admin-only to assign.
             Assert.True(PrivilegeCeiling.IsAdminOnlyRole(new PrivilegeCeiling.RoleFacts(
                 Guid.NewGuid(), name, name, Guid.NewGuid(), IsSystem: false, IsEditable: true, Array.Empty<string>())), name);
+        }
+        // A seeded role with a reserved name is assigned through the ordinary ceiling (unless protected).
+        Assert.False(PrivilegeCeiling.IsAdminOnlyRole(new PrivilegeCeiling.RoleFacts(
+            Guid.NewGuid(), "Employee", "EMPLOYEE", Guid.NewGuid(), IsSystem: true, IsEditable: true, Array.Empty<string>())));
     }
 
     private static IEnumerable<(string File, string Line)> CodeLines(string root) =>

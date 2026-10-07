@@ -484,6 +484,45 @@ public sealed class AccessPrivilegeCeilingTests
     }
 
     [Fact]
+    public async Task AnHrManager_CanStillInviteAnEmployeeLogin_WithoutAnAdmin()
+    {
+        // The HR invite flow: the default Employee role and the self-service access mode. The HR Manager holds
+        // security.manage but none of the self-service permissions (ess.*, loans.self) the Employee role carries;
+        // that baseline is always within reach, so no Admin is needed.
+        var w = await SeedAsync();
+        int employeeId;
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var company = new Company { TenantId = w.TenantId, LegalNameEn = "Invite Co", RegistrationNumber = $"R-{Guid.NewGuid():N}", IsActive = true };
+            seed.Companies.Add(company);
+            await seed.SaveChangesAsync();
+            var employee = new Employee
+            {
+                TenantId = w.TenantId, CompanyId = company.Id, EmployeeCode = $"ESS-{Guid.NewGuid():N}"[..12], FullName = "New Starter",
+                WorkEmail = $"starter-{Guid.NewGuid():N}@example.test", Status = "Active", JoiningDate = DateTime.UtcNow,
+            };
+            seed.Employees.Add(employee);
+            await seed.SaveChangesAsync();
+            employeeId = employee.Id;
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var result = await Controller(db, w, w.HrId, new NoEmail()).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), CancellationToken.None);
+            var created = Assert.IsType<CreatedResult>(result.Result);
+            var invite = Assert.IsType<EmployeeLoginInvitationDto>(created.Value);
+            Assert.False(string.IsNullOrWhiteSpace(invite.InvitationUrl));
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            // And assigning the Employee role directly is within reach too; Payroll Manager is not.
+            Assert.IsType<OkObjectResult>((await Controller(db, w, w.HrId).AssignRoles(
+                w.StaffId, new AssignRolesRequest(["Employee"]), CancellationToken.None)).Result);
+        }
+    }
+
+    [Fact]
     public async Task Probe_ReachUp_ViaEditingASharedRole()
     {
         // "Reporting" sits inside the Console Admin's ceiling, but the Admin holds it too: editing it would change
@@ -636,10 +675,11 @@ public sealed class AccessPrivilegeCeilingTests
         Assert.False(byName["Payroll Lead"].CanAssign);
         Assert.Equal(PrivilegeCeiling.Codes.RoleAboveCeiling, byName["Payroll Lead"].AssignRefusalCode);
         Assert.False(string.IsNullOrWhiteSpace(byName["Payroll Lead"].AssignRefusalAr));
-        // Reserved names (checked by name in code) are an Admin's to give, whatever they carry.
+        // Seeded roles go through the ordinary ceiling: Payroll Manager is above the Console Admin, and the
+        // Employee role is the baseline, always within reach.
         Assert.False(byName["Payroll Manager"].CanAssign);
-        Assert.Equal(PrivilegeCeiling.Codes.AdminOnlyRole, byName["Payroll Manager"].AssignRefusalCode);
-        Assert.False(byName["Employee"].CanAssign);
+        Assert.Equal(PrivilegeCeiling.Codes.RoleAboveCeiling, byName["Payroll Manager"].AssignRefusalCode);
+        Assert.True(byName["Employee"].CanAssign);
         Assert.True(byName["Reporting"].CanAssign);
         Assert.True(byName["Console Admin"].CanAssign);
         Assert.False(byName["Console Admin"].CanEdit);
@@ -659,7 +699,7 @@ public sealed class AccessPrivilegeCeilingTests
         return body;
     }
 
-    private static AccessController Controller(ZayraDbContext db, World w, Guid callerId)
+    private static AccessController Controller(ZayraDbContext db, World w, Guid callerId, Zayra.Api.Infrastructure.Email.IEmailService? email = null)
     {
         var claims = new List<Claim>
         {
@@ -669,7 +709,7 @@ public sealed class AccessPrivilegeCeilingTests
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
         var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db), new FakeTokenService());
-        return new AccessController(service, db, null!)
+        return new AccessController(service, db, email!)
         {
             ControllerContext = new ControllerContext
             {
@@ -775,6 +815,14 @@ public sealed class AccessPrivilegeCeilingTests
 
         public string HashToken(string token) => Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
+    }
+
+    private sealed class NoEmail : Zayra.Api.Infrastructure.Email.IEmailService
+    {
+        public Task SendAsync(string toAddress, string toName, string subject, string htmlBody,
+            IReadOnlyList<Zayra.Api.Infrastructure.Email.EmailAttachment>? attachments = null, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+        public Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
     private sealed class NullAuditService : IAuditService

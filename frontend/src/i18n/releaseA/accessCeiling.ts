@@ -10,6 +10,7 @@ export const accessCeiling: ReleaseADict = {
     'Roles updated.': 'Roles updated.',
     'Roles could not be updated.': 'Roles could not be updated.',
     'Not editable by you': 'Not editable by you',
+    'Account still active — an Admin must deactivate it': 'Account still active — an Admin must deactivate it',
   },
   ar: {
     'Above your access': 'خارج صلاحياتك',
@@ -19,5 +20,6 @@ export const accessCeiling: ReleaseADict = {
     'Roles updated.': 'تم تحديث الأدوار.',
     'Roles could not be updated.': 'تعذّر تحديث الأدوار.',
     'Not editable by you': 'لا يمكنك تعديله',
+    'Account still active — an Admin must deactivate it': 'الحساب لا يزال نشطاً — يجب أن يعطّله مسؤول نظام',
   },
 };

@@ -50,8 +50,11 @@ public static class PrivilegeCeiling
     /// <summary>
     /// Role NAMES that carry authority of their own, beyond the role's permissions: the product checks them by
     /// name (<c>User.IsInRole("…")</c>, <c>[Authorize(Roles = "…")]</c>, report data domains, loan approval
-    /// steps). A role called "Finance Controller" passes those checks whatever permissions it carries, so these
-    /// names are Admin-only: only an Admin creates or renames a role to one, assigns or removes one, or edits one.
+    /// steps). A role called "Finance Controller" passes those checks whatever permissions it carries, so only an
+    /// Admin creates a role with one of these names or renames a role to one (<see cref="NameRefusal"/>).
+    /// Assigning a SEEDED role (Employee, Manager, HR Manager…) goes through the ordinary ceiling; a custom role
+    /// that an Admin gave a reserved name is Admin-only to assign (<see cref="IsAdminOnlyRole"/>), because its
+    /// name, not its permissions, is what it grants.
     /// Normalised (<see cref="AuthService.Normalize"/>). ReservedRoleNamesRatchetTests fails the build when a name
     /// is checked somewhere in code but missing here. Replacing name checks with permissions is backlog.
     /// </summary>
@@ -98,9 +101,13 @@ public static class PrivilegeCeiling
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>The Admin role, a platform-wide role, a role marked non-editable, or a reserved name.</summary>
+    /// <summary>
+    /// Admin-only to assign or remove: the Admin role, a platform-wide role, a role marked non-editable, or a
+    /// CUSTOM (non-seeded) role carrying a reserved name. Seeded roles with reserved names (Employee, Manager,
+    /// HR Manager…) are assigned through the ordinary subset ceiling.
+    /// </summary>
     public static bool IsAdminOnlyRole(RoleFacts role) =>
-        IsProtectedRole(role) || IsReservedName(role.NormalizedName);
+        IsProtectedRole(role) || (!role.IsSystem && IsReservedName(role.NormalizedName));
 
     /// <summary>Never edited by anyone: the Admin role, a platform-wide role, or a role marked non-editable.</summary>
     public static bool IsProtectedRole(RoleFacts role) =>
@@ -136,7 +143,9 @@ public static class PrivilegeCeiling
     {
         if (IsAdminOnlyRole(role) && !caller.IsAdmin)
             return Refuse(Codes.AdminOnlyRole, role.Name);
-        var missing = Missing(caller.Held, role.Permissions);
+        // The baseline every employee gets is always within reach: the Employee role can be given by anyone who
+        // may manage access, whether or not they hold self-service permissions themselves.
+        var missing = Missing(caller.Held, role.Permissions.Where(p => !caller.Baseline.Contains(p)));
         return missing.Count > 0 ? Refuse(Codes.RoleAboveCeiling, role.Name, missing) : null;
     }
 
@@ -148,7 +157,8 @@ public static class PrivilegeCeiling
     {
         if (IsProtectedRole(role)) return Refuse(Codes.ProtectedRole, role.Name);
         if (caller.RoleIds.Contains(role.Id)) return Refuse(Codes.OwnRole, role.Name);
-        if ((role.IsSystem || IsReservedName(role.NormalizedName)) && !caller.IsAdmin) return Refuse(Codes.BuiltInRoleAdminOnly, role.Name);
+        if (role.IsSystem && !caller.IsAdmin) return Refuse(Codes.BuiltInRoleAdminOnly, role.Name);
+        if (IsReservedName(role.NormalizedName) && !caller.IsAdmin) return Refuse(Codes.ReservedRoleName, role.Name);
         var above = Missing(caller.Held, role.Permissions);
         if (above.Count > 0) return Refuse(Codes.RoleAboveCeiling, role.Name, above);
         return newPermissions is null ? null : GrantRefusal(caller, newPermissions);
@@ -228,8 +238,8 @@ public static class PrivilegeCeiling
                 $"'{role}' is a built-in role. Only an Admin can change it.",
                 $"'{role}' دور مدمج. لا يمكن تعديله إلا من قِبل مسؤول النظام (Admin)."),
             Codes.ReservedRoleName => (
-                $"'{role}' is a reserved role name: the product grants authority to it by name. Only an Admin can create, rename to, assign or change a role with this name.",
-                $"'{role}' اسم دور محجوز: يمنح النظام صلاحيات لهذا الاسم بحد ذاته. لا يمكن إنشاء دور بهذا الاسم أو إعادة التسمية إليه أو تعيينه أو تعديله إلا من قِبل مسؤول نظام (Admin)."),
+                $"'{role}' is a reserved role name: the product grants authority to it by name. Only an Admin can create a role with this name, rename a role to it, or change such a role.",
+                $"'{role}' اسم دور محجوز: يمنح النظام صلاحيات لهذا الاسم بحد ذاته. لا يمكن إنشاء دور بهذا الاسم أو إعادة التسمية إليه أو تعديل هذا الدور إلا من قِبل مسؤول نظام (Admin)."),
             Codes.RoleHolderAbove => (
                 $"'{role}' is held by an Admin or by someone with access you do not have{(missing.Count > 0 ? $" ({list})" : string.Empty)}. Changing it would change their access; only an Admin, or someone with at least that access, can.",
                 $"دور '{role}' يملكه مسؤول نظام أو شخص لديه صلاحيات لا تملكها{(missing.Count > 0 ? $" ({list})" : string.Empty)}. تعديله يغيّر صلاحياتهم؛ لا يمكن ذلك إلا لمسؤول نظام أو لمن يملك هذه الصلاحيات على الأقل."),
