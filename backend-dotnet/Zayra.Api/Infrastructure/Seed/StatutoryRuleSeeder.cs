@@ -590,6 +590,16 @@ public static class StatutoryRuleSeeder
             "[PRODUCT] Preparation days before the offer is due. A case opens no later than end − (notice + offer lead + "
             + "this margin), so a contract with a long notice period still opens in time."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.original_term_joining_tolerance_days", "0", "int", eff07,
+            "[PRODUCT] Days a first contract on file may start after the employee's joining date and still count as the original "
+            + "term of the Art.55 chain. 0 (default): only a contract starting on the joining date is the original; any later "
+            + "start means earlier contracts may exist off-system, so HR confirms the history. A tenant may set 0-31."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.chain_gap_tolerance_days", "0", "int", eff07,
+            "[COUNSEL] Days of gap between two fixed-term contracts with the same employer still counted as one continuous "
+            + "Art.55 chain. 0 (default): only a contract starting the day after the previous one ended continues it; any gap "
+            + "leaves the history for HR to confirm. A tenant may set 0-31 on counsel's advice."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "contracts.as_is_requires_employee_acceptance", "true", "bool", eff07,
             "[COUNSEL] Owner decision: the employee accepts every renewal in the app, including an unchanged one. A tenant "
             + "may switch this off for unchanged (fast-lane) renewals only on counsel's advice."));

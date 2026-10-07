@@ -59,7 +59,29 @@ public static class ReleaseABlockReasons
     public const string EntitlementProposalSameUser = "ENTITLEMENT_PROPOSAL_SAME_USER";
     public const string EntitlementProposalDocumentRequired = "ENTITLEMENT_PROPOSAL_DOCUMENT_REQUIRED";
     public const string EntitlementProposalClosed = "ENTITLEMENT_PROPOSAL_CLOSED";
+    // R2 review rounds 2–4 (added by R2 after #189 merged, per the integration owner):
+    public const string EntitlementRowNeverTookEffect = "ENTITLEMENT_ROW_NEVER_TOOK_EFFECT";
+    public const string EntitlementPredecessorUnconfirmed = "ENTITLEMENT_PREDECESSOR_UNCONFIRMED";
+    public const string EntitlementEarlierServiceUnconfirmed = "ENTITLEMENT_EARLIER_SERVICE_UNCONFIRMED";
+    public const string EntitlementJoiningDateChanged = "ENTITLEMENT_JOINING_DATE_CHANGED";
+    public const string EntitlementTermHasPackage = "ENTITLEMENT_TERM_HAS_PACKAGE";
+    public const string EntitlementTermRunningNeedsProposal = "ENTITLEMENT_TERM_RUNNING_NEEDS_PROPOSAL";
+    public const string EntitlementProposalOpen = "ENTITLEMENT_PROPOSAL_OPEN";
+    public const string EntitlementProposalRequesterUnknown = "ENTITLEMENT_PROPOSAL_REQUESTER_UNKNOWN";
+    public const string EntitlementOutsideTerm = "ENTITLEMENT_OUTSIDE_TERM";
+    public const string EntitlementCompanyMismatch = "ENTITLEMENT_COMPANY_MISMATCH";
+    public const string EntitlementBasisNotOwnSalary = "ENTITLEMENT_BASIS_NOT_OWN_SALARY";
+    public const string EntitlementCarriedDiffers = "ENTITLEMENT_CARRIED_DIFFERS";
+    public const string EntitlementCarriedOverlaps = "ENTITLEMENT_CARRIED_OVERLAPS";
+    public const string EntitlementCloseOnly = "ENTITLEMENT_CLOSE_ONLY";
 
+    // R4 review (PR #191)
+    public const string RenewalContractStillActive = "RENEWAL_CONTRACT_STILL_ACTIVE";
+    public const string RenewalCaseChanged = "RENEWAL_CASE_CHANGED";
+    public const string RenewalCaseInProgress = "RENEWAL_CASE_IN_PROGRESS";
+    public const string RenewalNationalityUnconfirmed = "RENEWAL_NATIONALITY_UNCONFIRMED";
+    public const string RenewalHoldoverPending = "RENEWAL_HOLDOVER_PENDING";
+    public const string RenewalOutcomeReset = "RENEWAL_OUTCOME_RESET";
     private const string HrManager = "HR Manager";
     private const string HrDirector = "HR Director";
     private const string PayrollManager = "Payroll Manager";
@@ -324,6 +346,114 @@ public static class ReleaseABlockReasons
             "سبق تأكيد هذه الباقة المقترحة أو رفضها، أو أن العقد مثبتة باقته بالفعل.",
             "No action needed.",
             "لا يلزم أي إجراء.",
+            HrManager),
+        new BlockReason(EntitlementRowNeverTookEffect,
+            "A fixed benefit has not started yet", "توجد ميزة مثبتة لم تبدأ بعد",
+            "This contract has a fixed benefit that starts on or after the day of this change, so it has not taken effect. Fixed benefits are never removed, so the contract stays as it is for now.",
+            "لهذا العقد ميزة مثبتة تبدأ في يوم هذا التغيير أو بعده، فلم تُطبَّق بعد. والمزايا المثبتة لا تُحذف، لذلك يبقى العقد كما هو حالياً.",
+            "Make the change on or after the date shown. Until then the contract and its benefits stay exactly as they are.",
+            "أجرِ التغيير في التاريخ الظاهر أو بعده، وحتى ذلك الحين يبقى العقد ومزاياه كما هي تماماً.", HrManager),
+        new BlockReason(EntitlementPredecessorUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee's previous contract has no confirmed benefits, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "لا توجد مزايا مؤكدة للعقد السابق للموظف، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementEarlierServiceUnconfirmed,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "The employee joined before this contract and no confirmed benefits from an earlier contract are on file, so this contract's benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة من عقد سابق، لذلك تؤخذ مزايا هذا العقد من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the benefits, then ask another HR user to confirm them.", "اقترح المزايا ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementJoiningDateChanged,
+            "Joining date changed after the benefits were fixed", "تغيّر تاريخ الالتحاق بعد تثبيت المزايا",
+            "These benefits were fixed from the grade table as a new hire's, but the employee's joining date now says they joined earlier. Nothing was changed automatically.",
+            "ثُبّتت هذه المزايا من جدول الدرجات على أنها لموظف جديد، لكن تاريخ الالتحاق يشير الآن إلى التحاق أبكر، ولم يُغيَّر شيء تلقائياً.",
+            "Check the joining date in the employee's history and the signed contract; correct whichever is wrong.",
+            "راجع تاريخ الالتحاق في سجل الموظف والعقد الموقّع، وصحّح الخطأ منهما.", HrDirector),
+        new BlockReason(EntitlementTermHasPackage,
+            "Change it through the contract screen", "عدّله من شاشة العقود",
+            "This contract already has fixed or proposed benefits, so the import cannot change its start date or status.",
+            "لهذا العقد مزايا مثبتة أو مقترحة، لذلك لا يمكن للاستيراد تغيير تاريخ بدايته أو حالته.",
+            "Use Supersede (or Terminate) on the contract screen.", "استخدم الاستبدال (أو الإنهاء) من شاشة العقود.", HrManager),
+        new BlockReason(EntitlementTermRunningNeedsProposal,
+            "Needs a second person's check", "يحتاج إلى تحقق شخص آخر",
+            "This contract term has already started, so its benefits are taken from the grade table only as a proposal that another HR user checks against the signed contract.",
+            "بدأ هذا العقد بالفعل، لذلك تؤخذ مزاياه من جدول الدرجات كمقترح فقط يراجعه مستخدم آخر في الموارد البشرية مقابل العقد الموقّع.",
+            "Propose the package, then ask another HR user to confirm it.", "اقترح الباقة ثم اطلب من مستخدم آخر في الموارد البشرية تأكيدها.", HrManager),
+        new BlockReason(EntitlementProposalOpen,
+            "A proposal is waiting", "يوجد مقترح بانتظار القرار",
+            "A proposed package for this term is waiting for a second HR user, so it cannot also be fixed directly.",
+            "توجد باقة مقترحة لهذا العقد بانتظار مستخدم آخر في الموارد البشرية، فلا يمكن تثبيتها مباشرة أيضاً.",
+            "Confirm or reject the proposal first.", "أكّد المقترح أو ارفضه أولاً.", HrManager),
+        new BlockReason(EntitlementProposalRequesterUnknown,
+            "Who asked for it is unknown", "مقدّم الطلب غير معروف",
+            "This proposal does not record who asked for it, so nobody can be shown to be a different person.",
+            "لا يسجّل هذا المقترح من طلبه، لذلك لا يمكن التحقق من أن المؤكِّد شخص مختلف.",
+            "Reject it and propose the package again.", "ارفضه واقترح الباقة مجدداً.", HrDirector),
+        new BlockReason(EntitlementOutsideTerm,
+            "Outside the contract term", "خارج مدة العقد",
+            "A benefit's dates would fall outside its contract term.", "ستقع تواريخ الميزة خارج مدة العقد.",
+            "Check the contract's start and end dates.", "راجع تاريخي بداية العقد ونهايته.", HrManager),
+        new BlockReason(EntitlementCompanyMismatch,
+            "Different company", "منشأة مختلفة",
+            "The benefit is not for the company named on its contract.", "الميزة ليست للمنشأة المذكورة في عقدها.",
+            "Check the employing company on the contract.", "راجع المنشأة صاحبة العمل في العقد.", HrManager),
+        new BlockReason(EntitlementBasisNotOwnSalary,
+            "Salary record of someone else", "سجل راتب لموظف آخر",
+            "A percentage benefit cites a salary record that is not this employee's.", "ميزة بنسبة مئوية تستند إلى سجل راتب ليس لهذا الموظف.",
+            "Fix the employee's salary record.", "صحّح سجل راتب الموظف.", HrManager),
+        new BlockReason(EntitlementCarriedDiffers,
+            "Carried benefit differs", "الميزة المنقولة مختلفة",
+            "A benefit carried into a new term must equal the one it carries, and it does not.", "يجب أن تساوي الميزة المنقولة إلى عقد جديد الميزة الأصلية، وهي لا تساويها.",
+            "Fix the package for the new term again.", "ثبّت باقة العقد الجديد مجدداً.", HrManager),
+        new BlockReason(EntitlementCarriedOverlaps,
+            "Carried benefit overlaps", "الميزة المنقولة متداخلة",
+            "A carried benefit must start after the one it carries ends.", "يجب أن تبدأ الميزة المنقولة بعد انتهاء الميزة الأصلية.",
+            "Check the start date of the new term.", "راجع تاريخ بداية العقد الجديد.", HrManager),
+        new BlockReason(EntitlementCloseOnly,
+            "Fixed benefits are never changed", "المزايا المثبتة لا تُعدَّل",
+            "A fixed benefit can only be ended earlier, never changed, extended or removed.", "يمكن إنهاء الميزة المثبتة مبكراً فقط، ولا يجوز تعديلها أو تمديدها أو حذفها.",
+            "End it and fix a new value from the next day.", "أنهِها وثبّت قيمة جديدة من اليوم التالي.", HrManager),
+        new BlockReason(RenewalContractStillActive,
+            "The contract is still in force", "العقد ما زال سارياً",
+            "A renewal review can be cancelled only once its contract has ended. While the contract is in force its review must stay visible, because the renewal deadlines keep running.",
+            "لا تُلغى مراجعة التجديد إلا بعد انتهاء عقدها. وما دام العقد سارياً يجب أن تبقى المراجعة ظاهرة لأن مواعيد التجديد مستمرة.",
+            "Put the review on hold instead, or end the contract first.",
+            "علّق المراجعة بدلاً من ذلك، أو أنهِ العقد أولاً.",
+            HrManager),
+        new BlockReason(RenewalCaseChanged,
+            "The review changed meanwhile", "تغيّرت المراجعة في الأثناء",
+            "Someone else changed this renewal review, or its contract, at the same time, so this change was not saved.",
+            "قام شخص آخر بتعديل مراجعة التجديد أو عقدها في الوقت نفسه، لذلك لم يُحفظ هذا التعديل.",
+            "Reload the review and try again.",
+            "أعد تحميل المراجعة وحاول مرة أخرى.",
+            HrManager),
+        new BlockReason(RenewalCaseInProgress,
+            "The renewal review has started", "بدأت مراجعة التجديد",
+            "A renewal decision is already being prepared from this contract history, so the history cannot be changed underneath it.",
+            "يجري إعداد قرار التجديد بناءً على سجل العقود هذا، لذلك لا يمكن تعديل السجل أثناء ذلك.",
+            "Cancel or finish the review, then correct the history.",
+            "ألغِ المراجعة أو أكملها، ثم صحّح السجل.",
+            HrManager),
+        new BlockReason(RenewalNationalityUnconfirmed,
+            "Saudi or non-Saudi not confirmed", "لم يتم تأكيد سعودي أو غير سعودي",
+            "Article 37 and Article 55 apply differently to Saudi and non-Saudi workers, and this employee's recorded nationality is missing, not recognised, a GCC nationality or contradicts the declared class. Nothing is assumed.",
+            "تختلف أحكام المادتين 37 و55 بين العامل السعودي وغير السعودي، وجنسية هذا الموظف غير مسجلة أو غير معروفة أو خليجية أو تخالف الفئة المصرّح بها، ولا يُفترض أي شيء.",
+            "Record the employee's nationality, or confirm Saudi or non-Saudi in the contract history.",
+            "سجّل جنسية الموظف، أو أكّد سعودي أو غير سعودي في سجل العقود.",
+            HrManager),
+        new BlockReason(RenewalHoldoverPending,
+            "Contract expired: continuing by law", "انتهى العقد: مستمر بحكم النظام",
+            "The contract reached its end date while its renewal review was open. Under Article 74(2) it continues on its current terms, so the review stays open until the continuation is recorded.",
+            "بلغ العقد تاريخ انتهائه ومراجعة تجديده مفتوحة. ووفق المادة 74 فقرة 2 يستمر بشروطه الحالية، لذلك تبقى المراجعة مفتوحة حتى يُسجَّل استمراره.",
+            "Record the continuation (holdover) or apply the renewal; do not cancel the review.",
+            "سجّل استمرار العقد أو طبّق التجديد، ولا تُلغِ المراجعة.",
+            HrManager),
+        new BlockReason(RenewalOutcomeReset,
+            "The end date changed after an outcome was chosen — choose again", "تغيّر تاريخ الانتهاء بعد اختيار النتيجة — اختر مجدداً",
+            "An amendment that changes the contract's end date was signed after the renewal outcome had been chosen. The outcome was chosen for the old end date, so it was cleared and the options and deadlines were worked out again for the new one.",
+            "تم توقيع تعديل يغيّر تاريخ انتهاء العقد بعد اختيار نتيجة التجديد. وقد اختيرت النتيجة لتاريخ الانتهاء السابق، لذلك أُلغيت وأُعيد احتساب الخيارات والمواعيد للتاريخ الجديد.",
+            "Review the new deadlines and choose the renewal outcome again.",
+            "راجع المواعيد الجديدة واختر نتيجة التجديد مرة أخرى.",
             HrManager),
     }.ToDictionary(r => r.Code, StringComparer.Ordinal);
 

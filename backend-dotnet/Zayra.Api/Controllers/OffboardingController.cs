@@ -48,15 +48,10 @@ public class OffboardingController : ControllerBase
     /// <see cref="Zayra.Api.Application.Entitlements.ContractEndReasons.Separated"/> — an open renewal case is cancelled
     /// (T21) by the hooks, in the caller's SaveChanges. A no-op for tenants without release_a.
     /// </summary>
-    private async Task EndContractTermsOnSeparationAsync(Guid tenantId, Guid employeePublicId, CancellationToken ct)
-    {
-        if (_termLifecycle is null) return;
-        var terms = await _db.EmployeeContracts
-            .Where(c => c.TenantId == tenantId && c.EmployeeId == employeePublicId && c.Status == "Active" && !c.IsDeleted)
-            .ToListAsync(ct);
-        foreach (var term in terms)
-            await _termLifecycle.OnEndedAsync(term, Zayra.Api.Application.Entitlements.ContractEndReasons.Separated, ct);
-    }
+    private async Task EndContractTermsOnSeparationAsync(Guid tenantId, Guid employeePublicId, CancellationToken ct) =>
+        // Release A: the employee's Active terms end (Terminated on the day, reason Separated) and their packages close.
+        await Zayra.Api.Infrastructure.Entitlements.SeparationTermEnder.EndActiveTermsAsync(_db, _termLifecycle, tenantId, employeePublicId,
+            this.GetUserId(), ct);
 
     // Role-gate bypass sweep (LegacyRoleGateBypassSweepTests): the role list resolved to employees.read, so every staff role (line Manager, Recruiter,
     // HR Assistant...) read every exit interview in the tenant. HR, plus the payroll approvers who record settlement payments here.
