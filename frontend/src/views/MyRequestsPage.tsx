@@ -5,7 +5,8 @@ import { essActionsApi, essApi, type EssHrRequest, type EssHrRequestCategory, ty
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { hrRequestStatus } from '@/src/lib/essSelfService';
+import { hrRequestStatus, markReplySeen } from '@/src/lib/essSelfService';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
 import { requestFailureReason } from '@/src/lib/requestFailure';
 
@@ -20,6 +21,7 @@ export function MyRequestsPage() {
   const { t } = useLocale();
   const fmtDate = useEssDate();
   const canWrite = useCanWriteEss();
+  const { user } = useAuth();
   const [categories, setCategories] = useState<EssHrRequestCategory[]>([]);
   const [requests, setRequests] = useState<EssHrRequest[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,7 +70,10 @@ export function MyRequestsPage() {
     setThreadError(null);
     setReply('');
     try {
-      setThread(await essApi.hrRequestDetail(id));
+      const detail = await essApi.hrRequestDetail(id);
+      setThread(detail);
+      // Opened: HR's reply leaves the overview's "Needs your attention".
+      if (detail.hrResponded) markReplySeen(user?.id, id);
     } catch (err) {
       setThread(null);
       setThreadError(t(requestFailureReason(err)));

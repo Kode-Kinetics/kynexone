@@ -9,7 +9,7 @@ import {
   FileSignature, MessageCircleReply, type LucideIcon,
 } from 'lucide-react';
 import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
-import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH, hrRequestStatus, splitMinutes } from '../lib/essSelfService';
+import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH, hrRequestStatus, readSeenReplies, splitMinutes } from '../lib/essSelfService';
 import { ESS_DOCUMENTS_PATH } from '../routes/essSections';
 import { essActionsApi, essApi, type EssDashboard, type EssHrRequest, type EssRosterEntry } from '../api/ess';
 import type { LeaveType } from '../api/leave';
@@ -455,7 +455,9 @@ export function EmployeeSelfServicePage() {
     });
   }
   // "Responded" lasts until HR closes the request, so several replies collapse into one line.
-  const replied = myRequests.filter((x) => x.responseStatus === 'Responded');
+  // Replies already opened on /ess/requests are not exceptions any more (lib/essSelfService readSeenReplies).
+  const seenReplies = readSeenReplies(user?.id);
+  const replied = myRequests.filter((x) => x.responseStatus === 'Responded' && !seenReplies.has(x.id));
   if (replied.length === 1) {
     const r = replied[0];
     attention.push({

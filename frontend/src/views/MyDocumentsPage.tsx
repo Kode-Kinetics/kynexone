@@ -39,9 +39,14 @@ export function MyDocumentsPage() {
     return locale === 'ar' && ty.nameAr ? ty.nameAr : ty.nameEn;
   };
 
-  const refresh = async () => {
+  /** Reloads the list. A failure keeps a list already on screen (returns false) instead of wiping it. */
+  const refresh = async (): Promise<boolean> => {
     setListError(null);
-    try { setRequests(await essDocumentsApi.list()); } catch (e) { setListError(e); }
+    try { setRequests(await essDocumentsApi.list()); return true; }
+    catch (e) {
+      if (requests === null) setListError(e);
+      return false;
+    }
   };
 
   const loadTypes = async () => {
@@ -63,9 +68,12 @@ export function MyDocumentsPage() {
     setBusy(true); setNotice(null);
     try {
       await essDocumentsApi.create({ letterType, language, purpose, addresseeName: addressee });
-      setNotice({ tone: 'ok', text: t('Requested. HR will issue it and it will appear below to download.') });
       setPurpose(''); setAddressee('');
-      await refresh();
+      const refreshed = await refresh();
+      // The request went through either way; say so, and say when the list below is out of date.
+      setNotice({ tone: 'ok', text: refreshed
+        ? t('Requested. HR will issue it and it will appear below to download.')
+        : t('Requested. HR will issue it. The list below could not be refreshed, so reload the page to see it.') });
     } catch (e) {
       const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setNotice({ tone: 'error', text: detail ?? t('The request could not be submitted. Please try again.') });

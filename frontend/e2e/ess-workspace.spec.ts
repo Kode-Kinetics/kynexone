@@ -44,10 +44,14 @@ interface BootOptions {
   /** Module catalog entries; `enabled: false` switches a module (and its paths) off. */
   modules?: Array<{ key: string; labelEn: string; enabled: boolean; navPaths: string[] }>;
   failRequests?: boolean;
+  /** The employee's letters; with `lettersFailAfterRequest`, every list read after a new request fails. */
+  letters?: unknown[];
+  lettersFailAfterRequest?: boolean;
 }
 
 async function boot(page: Page, route: string, opts: BootOptions = {}) {
   const errors: string[] = [];
+  let letterRequested = false;
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('status of 503')) errors.push(m.text()); });
   await page.addInitScript((locale) => {
@@ -79,7 +83,11 @@ async function boot(page: Page, route: string, opts: BootOptions = {}) {
     ]);
     if (path === '/api/leave/types') return json([]);
     if (path === '/api/ess/document-requests/types') return json([{ letterType: 'salary_certificate', nameEn: 'Salary certificate', nameAr: 'تعريف بالراتب' }]);
-    if (path === '/api/ess/document-requests') return json([]);
+    if (path === '/api/ess/document-requests') {
+      if (route.request().method() === 'POST') { letterRequested = true; return json({ id: 'd-2' }); }
+      if (opts.lettersFailAfterRequest && letterRequested) return route.fulfill({ status: 503, json: { message: 'unavailable' } });
+      return json(opts.letters ?? []);
+    }
     if (path === '/api/ess/payslips') return json([]);
     if (path === '/api/tenant-admin/localization') return json({ currencyCode: 'SAR' });
     if (path === '/api/notifications') return json([]);
@@ -189,6 +197,10 @@ test('"Read the reply" opens that request with HR\'s reply', async ({ page }) =>
   await page.getByTestId('ess-attention').getByRole('link', { name: 'Read the reply' }).click();
   await expect(page).toHaveURL(/\/ess\/requests\?open=r-1$/, { timeout: 60_000 }); // a dev server compiles each page on first visit
   await expect(page.getByTestId('my-requests-thread')).toContainText('Your bank letter is ready to collect.', { timeout: 30_000 });
+  // Read: the reply is no longer something that needs the employee.
+  await page.goto('/ess');
+  await expect(page.getByTestId('ess-attention')).toContainText('A punch is missing from today', { timeout: 60_000 });
+  await expect(page.getByTestId('ess-attention')).not.toContainText('HR replied');
 });
 
 test('a read-only employee is offered nothing to submit, and no loans link without a loans permission', async ({ page }) => {
@@ -227,4 +239,16 @@ test('a failed HR-requests read is never shown as "nothing needs your attention"
   await expect(attention).toContainText('Your HR requests could not be loaded', { timeout: 60_000 });
   await expect(attention).not.toContainText('Nothing needs your attention');
   await expect(page.getByTestId('ess-home-hr-requests')).toContainText('could not be loaded');
+});
+
+test('a failed refresh after a letter request keeps the list and the confirmation', async ({ page }) => {
+  const issued = { id: 'd-1', letterType: 'salary_certificate', language: 'bilingual', status: 'Issued', isIssued: true, referenceNumber: 'HRL-2026-0042', createdAtUtc: '2026-10-01T09:00:00Z', decisionNote: null };
+  await boot(page, '/ess/documents', { letters: [issued], lettersFailAfterRequest: true });
+  const list = page.getByTestId('ess-documents-list');
+  await expect(list).toContainText('HRL-2026-0042', { timeout: 60_000 });
+  await page.getByTestId('ess-documents-request').getByRole('button', { name: 'Request letter' }).click();
+  await expect(page.getByText('Requested. HR will issue it. The list below could not be refreshed')).toBeVisible();
+  // What was on screen stays on screen.
+  await expect(list).toContainText('HRL-2026-0042');
+  await expect(list).not.toContainText('You have not asked for any letters yet.');
 });

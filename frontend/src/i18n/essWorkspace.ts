@@ -77,6 +77,7 @@ export const essWorkspace: { en: Record<string, string>; ar: Record<string, stri
     'Driving License': 'Driving License',
     'National ID': 'National ID',
     'Medical Insurance': 'Medical Insurance',
+    'Requested. HR will issue it. The list below could not be refreshed, so reload the page to see it.': 'Requested. HR will issue it. The list below could not be refreshed, so reload the page to see it.',
   },
   ar: {
     'Self-service sections': 'أقسام الخدمة الذاتية',
@@ -151,5 +152,6 @@ export const essWorkspace: { en: Record<string, string>; ar: Record<string, stri
     'Driving License': 'رخصة القيادة',
     'National ID': 'الهوية الوطنية',
     'Medical Insurance': 'التأمين الطبي',
+    'Requested. HR will issue it. The list below could not be refreshed, so reload the page to see it.': 'تم الطلب، وستصدره الموارد البشرية. تعذّر تحديث القائمة أدناه، لذا أعد تحميل الصفحة لرؤيته.',
   },
 };
