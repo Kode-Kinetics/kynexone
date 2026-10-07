@@ -32,8 +32,15 @@ namespace Zayra.Api.Tests;
 /// (never blocked — compliance #3), the offboarding side-door precondition (security R5), and
 /// grandfathering on unrelated edits (AC1/AC5).
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EstablishmentEnforcementPathTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EstablishmentEnforcementPathTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() => new(new DbContextOptionsBuilder<ZayraDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -219,7 +226,7 @@ public class EstablishmentEnforcementPathTests
         // Dry-run↔commit parity (Issue 2): the establishment budget downgrade the commit performs must
         // also appear in preview. An over-budget Manager row in Enforced mode is projected Draft (never
         // "would skip"), with the same over-budget detail commit surfaces — no row diverges.
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var fx = await SeedOrg(db, managerBudget: 1);
         var controller = CreateController(db, fx.TenantId);
 

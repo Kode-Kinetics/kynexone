@@ -11,6 +11,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -124,11 +125,15 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new DuplicatePersonException(strongDuplicates);   // → controller maps to advisory 409
         // Any detected-but-proceeding case is audited AFTER creation (with the real employee id) — never silent.
 
-        var code = request.ManualEmployeeCode ? Clean(request.EmployeeCode) : await GenerateEmployeeCode(tenantId, request, context, cancellationToken);
-        if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Employee code is required.");
-        if (await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, cancellationToken))
+        // A MANUAL code is checked here. A GENERATED one is taken inside the save's transaction, under the ID-rule lock
+        // the import also takes (EmployeeIdRuleLock) — it used to be read here, before any transaction, so a hire saved
+        // during an import reused a code the import had dispensed and wrote the sequence back over the import's.
+        var code = request.ManualEmployeeCode ? Clean(request.EmployeeCode) : string.Empty;
+        if (request.ManualEmployeeCode)
         {
-            throw new InvalidOperationException("Employee code already exists in this tenant.");
+            if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Employee code is required.");
+            if (await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, cancellationToken))
+                throw new InvalidOperationException("Employee code already exists in this tenant.");
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
@@ -144,12 +149,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
+        var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
         // create never leaves a half-saved Draft when the bank details fail the checksum. UpsertPayrollProfile
         // below is the backstop for other callers.
         var createIban = Clean(request.PayrollProfile?.Iban);
         if (!string.IsNullOrWhiteSpace(createIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(createIban))
-            throw new InvalidOperationException($"IBAN '{createIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(createIban)}. Enter a correct IBAN before saving.");
         employee.Status = "Draft";
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         // ESTABLISHMENT GUARD (path "create"): hard-enforced at the form save even though a Draft
@@ -157,21 +164,39 @@ public class EmployeeManagementService : IEmployeeManagementService
         // session. The authoritative consume re-check happens at the occupying transition
         // (ChangeStatusAsync). Lock + enforce + persist run atomically under the execution
         // strategy; over-budget throws EstablishmentBudgetExceededException → structured 409.
-        await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+        async Task<bool> PersistAsync() => await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
             excludeEmployeeId: null, path: "create", context, async () =>
             {
+                if (!request.ManualEmployeeCode)
+                    employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
                 await _db.SaveChangesAsync(cancellationToken);
                 await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-                await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
+                await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
             }, cancellationToken);
+        if (!request.ManualEmployeeCode && _db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+        {
+            // The generated code and the employee land in ONE transaction, so the ID-rule lock is held until the code
+            // is committed (the establishment guard joins this transaction on its lockable path).
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+                await PersistAsync();
+                await tx.CommitAsync(cancellationToken);
+            });
+        }
+        else
+        {
+            await PersistAsync();
+        }
         // Stamp the readiness badge now that the employee + payroll/compliance rows are persisted.
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -221,11 +246,12 @@ public class EmployeeManagementService : IEmployeeManagementService
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-        await UpsertEmployeeSalaryStructure(employee, request.SalaryBreakdown, context, cancellationToken);
+        await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
@@ -1544,14 +1570,18 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _audit.WriteAsync("employee.work_email_renamed", "Employee", id, context, audit.RenamedJson, ct);
     }
 
-    private async Task<string> GenerateEmployeeCode(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
+    /// <summary>A generated employee code, taken under the shared ID-rule lock (<see cref="EmployeeIdRuleLock"/>) inside the
+    /// caller's transaction; codes already in use anywhere in the tenant are skipped. Nothing is saved here — the
+    /// sequence bump rides on the employee's own save.</summary>
+    private async Task<string> AllocateEmployeeCodeAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var rule = await _db.EmployeeIdRules.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted && (x.CompanyId == request.CompanyId || x.CompanyId == null), cancellationToken);
+        var rules = await EmployeeIdRuleLock.LockAsync(_db, tenantId, cancellationToken);
+        var rule = rules.FirstOrDefault(x => x.CompanyId != null && x.CompanyId == request.CompanyId)
+                   ?? rules.FirstOrDefault(x => x.CompanyId == null);
         if (rule is null)
         {
             rule = new EmployeeIdRule { TenantId = tenantId, CompanyId = request.CompanyId, CreatedBy = context.UserId };
             _db.EmployeeIdRules.Add(rule);
-            await _db.SaveChangesAsync(cancellationToken);
         }
         var parts = new List<string> { Clean(rule.CompanyPrefix) };
         var country = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? "";
@@ -1567,8 +1597,14 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (!string.IsNullOrWhiteSpace(deptCode)) parts.Add(deptCode);
         }
         if (rule.UseYear) parts.Add(DateTime.UtcNow.Year.ToString());
-        var code = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x))) + "-" + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
-        rule.NextSequence += 1;
+        var prefix = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x))) + "-";
+        string code;
+        do
+        {
+            code = prefix + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
+            rule.NextSequence += 1;
+        }
+        while (await EmployeeIdRuleLock.CodeTakenAsync(_db, tenantId, code, cancellationToken));
         rule.UpdatedAtUtc = DateTime.UtcNow;
         rule.UpdatedBy = context.UserId;
         return code;
@@ -1589,7 +1625,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
         if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
-            throw new InvalidOperationException($"IBAN '{cleanIban}' is invalid — its country format/length or ISO 13616 mod-97 checksum is incorrect. Enter a correct IBAN before saving.");
+            throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(cleanIban)}. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
         profile.PaymentMethod = Clean(request.PaymentMethod);
@@ -1615,27 +1651,28 @@ public class EmployeeManagementService : IEmployeeManagementService
             var position = await _db.Positions.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employee.PositionId && !x.IsDeleted, cancellationToken);
             if (position is null) throw new InvalidOperationException("Selected position was not found.");
-            if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed)
-                throw new InvalidOperationException($"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.");
-            if (position.EffectiveFrom > DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' is not effective on the employee joining date.");
-            if (position.EffectiveTo is not null && position.EffectiveTo < DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' expired before the employee joining date.");
-            if (position.IncumbentEmployeeId is not null && position.IncumbentEmployeeId != employee.Id)
-                throw new InvalidOperationException($"Position '{position.Code}' is already occupied by another employee.");
-
-            void RequireMatch(Guid? expected, Guid? actual, string label)
+            // The SAME decision the CSV import makes (EmployeeAssignmentRules); only the answer differs — the
+            // form refuses the save, the import leaves the position unassigned with a review gap.
+            var refusal = EmployeeAssignmentRules.CheckPosition(position, employee.Id == 0 ? null : employee.Id,
+                DateOnly.FromDateTime(employee.JoiningDate), employee.CompanyId, employee.BranchId, employee.DepartmentId,
+                employee.CostCenterId, employee.DesignationId, employee.GradeId);
+            string Requires(Guid? expected, string label) => $"Position '{position.Code}' requires {label} '{expected}'.";
+            var message = refusal switch
             {
-                if (expected is not null && actual != expected)
-                    throw new InvalidOperationException($"Position '{position.Code}' requires {label} '{expected}'.");
-            }
-
-            RequireMatch(position.CompanyId, employee.CompanyId, "its configured legal entity");
-            RequireMatch(position.BranchId, employee.BranchId, "its configured branch");
-            RequireMatch(position.DepartmentId, employee.DepartmentId, "its configured department");
-            RequireMatch(position.CostCenterId, employee.CostCenterId, "its configured cost center");
-            RequireMatch(position.DesignationId, employee.DesignationId, "its configured designation");
-            RequireMatch(position.GradeId, employee.GradeId, "its configured grade");
+                PositionRefusal.None => null,
+                PositionRefusal.FrozenOrClosed => $"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.",
+                PositionRefusal.NotYetEffective or PositionRefusal.JoiningDateUnknown => $"Position '{position.Code}' is not effective on the employee joining date.",
+                PositionRefusal.Expired => $"Position '{position.Code}' expired before the employee joining date.",
+                PositionRefusal.Occupied => $"Position '{position.Code}' is already occupied by another employee.",
+                PositionRefusal.CompanyMismatch => Requires(position.CompanyId, "its configured legal entity"),
+                PositionRefusal.BranchMismatch => Requires(position.BranchId, "its configured branch"),
+                PositionRefusal.DepartmentMismatch => Requires(position.DepartmentId, "its configured department"),
+                PositionRefusal.CostCenterMismatch => Requires(position.CostCenterId, "its configured cost center"),
+                PositionRefusal.DesignationMismatch => Requires(position.DesignationId, "its configured designation"),
+                PositionRefusal.GradeMismatch => Requires(position.GradeId, "its configured grade"),
+                _ => $"Position '{position.Code}' cannot receive this employee.",
+            };
+            if (message is not null) throw new InvalidOperationException(message);
         }
 
         if (employee.DesignationId is not null)
@@ -1705,7 +1742,12 @@ public class EmployeeManagementService : IEmployeeManagementService
             ? null
             : await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
 
-        var components = grade is null
+        var effectiveDate = SalaryEffectiveDate(employee, request);
+        // Release A: one fact in one place. The grade's cash allowances are the matrix (Benefits by grade); the frozen
+        // legacy pay scale is never read for a release_a tenant. The request was already prefilled from the matrix
+        // (PrefillSalaryFromMatrixAsync) and is used as it stands. Tenants without the flag are unchanged.
+        var releaseA = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, employee.TenantId.Value, cancellationToken);
+        var components = grade is null || releaseA
             ? new List<GradePayScaleComponent>()
             : await _db.GradePayScaleComponents
                 .AsNoTracking()
@@ -1713,12 +1755,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .OrderBy(x => x.SortOrder)
                 .ToListAsync(cancellationToken);
 
-        var salary = BuildSalaryBreakdown(request, components);
+        var salary = releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components);
         // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
         // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
 
-        var effectiveDate = request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
         await _db.EmployeeSalaryStructures
             .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
@@ -1726,7 +1767,13 @@ public class EmployeeManagementService : IEmployeeManagementService
         var structureCode = Clean(request?.SalaryStructureCode);
         if (string.IsNullOrWhiteSpace(structureCode))
             structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
-        var structure = await _db.SalaryStructures.FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted, cancellationToken);
+        // The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import uses,
+        // so company B's new hire is never attached to company A's structure lines.
+        var structure = await _db.SalaryStructures
+            .Where(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted
+                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
+            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
+            .FirstOrDefaultAsync(cancellationToken);
         if (structure is null)
         {
             // Currency, most specific first: what the operator typed, then the grade's, then the
@@ -1748,6 +1795,10 @@ public class EmployeeManagementService : IEmployeeManagementService
             };
             _db.SalaryStructures.Add(structure);
 
+            if (releaseA && grade is not null)
+                _db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(
+                    await EntitlementMatrixService.CashAllowancesAsync(_db, employee.TenantId.Value, grade.Id, employee.CompanyId, effectiveDate, cancellationToken),
+                    employee.TenantId.Value, structure.Id));
             foreach (var component in components)
             {
                 _db.SalaryComponents.Add(new SalaryComponent
@@ -1800,6 +1851,60 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(x => x.DefaultCurrency)
             .FirstOrDefaultAsync(cancellationToken);
         return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
+    }
+
+    private static readonly EmployeeSalaryBreakdownRequest EmptyBreakdown = new(null, null, null, null, null, null, null, null, null, null);
+
+    private static DateOnly SalaryEffectiveDate(Employee employee, EmployeeSalaryBreakdownRequest? request) =>
+        request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
+
+    /// <summary>
+    /// Release A salary prefill. For a release_a tenant whose employee has a grade, a cash allowance left blank (null — not
+    /// 0) on a salary that has figures is filled from Benefits by grade in force on the salary's effective date: the
+    /// amount, or the percentage of the basic salary entered; 0 when the grade gets it in kind or not at all. When the
+    /// grade has no value — or a percentage has no basic to apply to — nothing is guessed: the save is refused and the
+    /// allowance must be entered. No figures at all is the ordinary empty salary section and is left alone. Tenants
+    /// without the flag are returned unchanged (their prefill is the legacy pay scale, in BuildSalaryBreakdown).
+    /// </summary>
+    private async Task<EmployeeSalaryBreakdownRequest?> PrefillSalaryFromMatrixAsync(Employee employee, EmployeeSalaryBreakdownRequest? request,
+        Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (request is null || GrossSalary(request) <= 0 || employee.GradeId is not Guid gradeId) return request;
+        if (!await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, cancellationToken)) return request;
+        var effectiveDate = SalaryEffectiveDate(employee, request);
+        var allowances = await EntitlementMatrixService.CashAllowancesAsync(_db, tenantId, gradeId, employee.CompanyId, effectiveDate, cancellationToken);
+        var basic = request.BasicSalary ?? 0m;
+        var filled = request;
+        var problems = new List<string>();
+        foreach (var allowance in allowances)
+        {
+            var supplied = allowance.Field switch
+            {
+                "HousingAllowance" => request.HousingAllowance,
+                "TransportAllowance" => request.TransportAllowance,
+                _ => request.OtherAllowance,
+            };
+            if (supplied is not null) continue;
+            var name = EntitlementComponentRules.For(allowance.ComponentCode)?.NameEn ?? allowance.ComponentCode;
+            if (allowance.MonthlyCash(basic) is not decimal cash)
+            {
+                problems.Add(allowance.Missing
+                    ? $"{name}: this grade has no value in Benefits by grade on {effectiveDate:yyyy-MM-dd}"
+                    : $"{name}: it is a percentage of basic salary, and no basic salary was entered");
+                continue;
+            }
+            filled = allowance.Field switch
+            {
+                "HousingAllowance" => filled with { HousingAllowance = cash },
+                "TransportAllowance" => filled with { TransportAllowance = cash },
+                _ => filled with { OtherAllowance = cash },
+            };
+        }
+        if (problems.Count > 0)
+            throw new InvalidOperationException(
+                "Enter these allowances on the salary, or set them for the grade in Benefits by grade first. Nothing was filled in for you: "
+                + string.Join("; ", problems) + ".");
+        return filled;
     }
 
     private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
@@ -1894,7 +1999,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(c => (Guid?)c.Id)
             .Take(2)
             .ToListAsync(cancellationToken);
-        return ids.Count == 1 ? ids[0] : null;
+        // The same rule the CSV import uses: the only active company, never the oldest of several.
+        return EmployeeAssignmentRules.DefaultCompany(ids);
     }
 
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)

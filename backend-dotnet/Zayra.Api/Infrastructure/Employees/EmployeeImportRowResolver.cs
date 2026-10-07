@@ -15,7 +15,10 @@ public sealed record ImportGap(string Type, string Category, string Detail, stri
 public enum ImportSalaryDecision { Apply, Hold, Review }
 
 /// <summary>Lightweight designation projection the resolver needs (avoids leaking the entity).</summary>
-public sealed record DesignationRef(Guid Id, Guid? GradeId, string TitleEn);
+public sealed record DesignationRef(Guid Id, Guid? GradeId, string TitleEn, Guid? DepartmentId = null, bool IsActive = true);
+
+/// <summary>A department as the name lookup needs it: the branch is what tells two same-named ones apart.</summary>
+public sealed record DepartmentRef(Guid Id, Guid? BranchId);
 
 /// <summary>Master-data lookups loaded ONCE per import (preview and commit share the loader, so the two
 /// endpoints resolve against identical data → dry-run counts == commit).</summary>
@@ -33,6 +36,60 @@ public sealed class ImportLookups
     public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // name (lower)
     public required IReadOnlyDictionary<Guid, Grade> GradeById { get; init; }
     public required IReadOnlyDictionary<string, Position> PositionsByCode { get; init; } // CODE (upper)
+
+    /// <summary>How many active companies the importer can see — the default-company rule needs it.</summary>
+    public int ActiveCompanyCount { get; init; }
+
+    /// <summary>
+    /// Lookup keys that match MORE THAN ONE record, as "kind|KEY" → the stored values that collide (e.g.
+    /// two department codes 'ops' and 'OPS', or two companies with the same legal name). Such a key is
+    /// left OUT of the lookups above and resolves to nothing with a review gap naming the clash — it used
+    /// to throw while the lookups were built (a duplicate dictionary key), which failed every employee
+    /// import and preview for that tenant with a 500 until someone found and renamed the rows, or, where
+    /// the loader grouped instead, silently picked the first record. Built by <see cref="ImportLookupBuilder"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Ambiguous { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>();
+
+    /// <summary>Every department sharing an ambiguous name (lower-case), so the row's branch can pick one.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DepartmentRef>> DeptNameCandidates { get; init; } =
+        new Dictionary<string, IReadOnlyList<DepartmentRef>>();
+
+    /// <summary>Every designation sharing an ambiguous title (lower-case), so the row's department can pick one.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DesignationRef>> DesigTitleCandidates { get; init; } =
+        new Dictionary<string, IReadOnlyList<DesignationRef>>();
+
+    /// <summary>The colliding stored values when <paramref name="key"/> of <paramref name="kind"/> is ambiguous.</summary>
+    public IReadOnlyList<string>? AmbiguousValues(string kind, string key) =>
+        Ambiguous.TryGetValue(ImportLookupBuilder.AmbiguityKey(kind, key), out var values) ? values : null;
+}
+
+/// <summary>
+/// Builds a by-key lookup that never throws on a duplicate key and never picks one of several matches: a key
+/// shared by two or more distinct records is recorded as ambiguous and left out. ONE place for the employee
+/// importer's case/duplicate handling of every reference column (company, branch, cost centre, department,
+/// designation, grade, position), the read-side twin of <c>OrgCodes.TryBuildLookup</c> used by the org importers.
+/// </summary>
+public static class ImportLookupBuilder
+{
+    public static string AmbiguityKey(string kind, string key) => $"{kind}|{key}";
+
+    public static Dictionary<TKey, TValue> Build<TItem, TKey, TValue>(
+        IEnumerable<TItem> items, Func<TItem, TKey> keyOf, Func<TItem, TValue> valueOf, Func<TItem, Guid> identityOf,
+        Func<TItem, string> rawOf, string kind, Func<TKey, string> keyText,
+        Dictionary<string, IReadOnlyList<string>> ambiguous)
+        where TKey : notnull
+    {
+        var lookup = new Dictionary<TKey, TValue>();
+        foreach (var group in items.GroupBy(keyOf))
+        {
+            var distinct = group.GroupBy(identityOf).Select(g => g.First()).ToList();
+            if (distinct.Count == 1) { lookup[group.Key] = valueOf(distinct[0]); continue; }
+            ambiguous[AmbiguityKey(kind, keyText(group.Key))] = distinct.Select(rawOf).Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+        return lookup;
+    }
 }
 
 /// <summary>The resolved FKs + typed gaps for a single CSV row — the SINGLE SOURCE OF TRUTH for every
@@ -77,49 +134,75 @@ public static class EmployeeImportRowResolver
 {
     public static async Task<ImportLookups> LoadImportLookupsAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
-        // Company/Branch/CostCenter: IsActive && !IsDeleted (operational master data).
-        var companiesByName = await db.Companies.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.LegalNameEn.ToUpperInvariant(), ct);
-        var defaultCompany = companiesByName.Values.OrderBy(c => c.CreatedAtUtc).FirstOrDefault();
+        // Every lookup goes through ImportLookupBuilder: a key matching two records (case-only code clashes,
+        // same-named companies/departments/designations/grades) is AMBIGUOUS — left out and flagged per row —
+        // instead of throwing while the dictionary is built or quietly taking the first record.
+        var ambiguous = new Dictionary<string, IReadOnlyList<string>>();
 
-        var branchesByCode = (await db.Branches.AsNoTracking()
+        // Company/Branch/CostCenter: IsActive && !IsDeleted (operational master data).
+        var activeCompanies = await db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc)
+            .ToListAsync(ct);
+        var companiesByName = ImportLookupBuilder.Build(activeCompanies, c => c.LegalNameEn.Trim().ToUpperInvariant(), c => c,
+            c => c.Id, c => c.LegalNameEn, "company", k => k, ambiguous);
+        // The SAME default-company rule as the Add Employee form: the only active company, never the oldest.
+        var defaultCompany = EmployeeAssignmentRules.DefaultCompany(activeCompanies);
+
+        var branches = await db.Branches.AsNoTracking()
             .Where(b => b.TenantId == tenantId && b.IsActive && !b.IsDeleted)
-            .ToListAsync(ct))
-            .GroupBy(b => (b.CompanyId, Code: b.Code.ToUpperInvariant()))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
-        var branchesByCompany = branchesByCode.Values
+            .ToListAsync(ct);
+        var branchesByCode = ImportLookupBuilder.Build(branches, b => (b.CompanyId, Code: b.Code.Trim().ToUpperInvariant()), b => b,
+            b => b.Id, b => b.Code, "branch", k => $"{k.CompanyId}|{k.Code}", ambiguous);
+        var branchesByCompany = branches
             .GroupBy(b => b.CompanyId)
             .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).ToList());
 
-        var costCentersByCode = (await db.CostCenters.AsNoTracking()
+        var costCenters = await db.CostCenters.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
-            .ToListAsync(ct))
-            .GroupBy(c => (c.CompanyId, Code: c.Code.ToUpperInvariant()))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.CreatedAtUtc).First());
+            .ToListAsync(ct);
+        var costCentersByCode = ImportLookupBuilder.Build(costCenters, c => (c.CompanyId, Code: c.Code.Trim().ToUpperInvariant()), c => c,
+            c => c.Id, c => c.Code, "costcenter", k => $"{k.CompanyId}|{k.Code}", ambiguous);
 
         // Departments/Designations/Grades: !IsDeleted (matches the authoritative commit filter — parity).
-        var deptByCode = await db.Departments.AsNoTracking()
+        var departments = await db.Departments.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.Code.ToUpperInvariant(), d => d.Id, ct);
-        var deptByName = await db.Departments.AsNoTracking()
+            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId })
+            .ToListAsync(ct);
+        var deptByCode = ImportLookupBuilder.Build(departments, d => d.Code.Trim().ToUpperInvariant(), d => d.Id,
+            d => d.Id, d => d.Code, "department-code", k => k, ambiguous);
+        var deptByName = ImportLookupBuilder.Build(departments, d => d.NameEn.Trim().ToLowerInvariant(), d => d.Id,
+            d => d.Id, d => d.NameEn, "department-name", k => k, ambiguous);
+        var deptNameCandidates = departments
+            .GroupBy(d => d.NameEn.Trim().ToLowerInvariant())
+            .Where(g => g.Count() > 1)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<DepartmentRef>)g.Select(d => new DepartmentRef(d.Id, d.BranchId)).ToList());
+
+        var designations = await db.Designations.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .ToDictionaryAsync(d => d.NameEn.ToLowerInvariant(), d => d.Id, ct);
-        var desigByTitle = (await db.Designations.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .Select(d => new { d.Id, d.GradeId, d.TitleEn })
-            .ToListAsync(ct))
-            .GroupBy(d => d.TitleEn.ToLowerInvariant())
-            .ToDictionary(g => g.Key, g => new DesignationRef(g.First().Id, g.First().GradeId, g.First().TitleEn));
+            .Select(d => new DesignationRef(d.Id, d.GradeId, d.TitleEn, d.DepartmentId, d.IsActive))
+            .ToListAsync(ct);
+        var desigByTitle = ImportLookupBuilder.Build(designations, d => d.TitleEn.Trim().ToLowerInvariant(), d => d,
+            d => d.Id, d => d.TitleEn, "designation", k => k, ambiguous);
+        var desigTitleCandidates = designations
+            .GroupBy(d => d.TitleEn.Trim().ToLowerInvariant())
+            .Where(g => g.Count() > 1)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<DesignationRef>)g.ToList());
+
         var grades = await db.Grades.AsNoTracking()
             .Where(g => g.TenantId == tenantId && !g.IsDeleted)
             .ToListAsync(ct);
-        var gradeByCode = grades.GroupBy(g => g.Code.ToUpperInvariant()).ToDictionary(g => g.Key, g => g.First());
-        var gradeByName = grades.GroupBy(g => g.Name.ToLowerInvariant()).ToDictionary(g => g.Key, g => g.First());
+        var gradeByCode = ImportLookupBuilder.Build(grades, g => g.Code.Trim().ToUpperInvariant(), g => g,
+            g => g.Id, g => g.Code, "grade-code", k => k, ambiguous);
+        var gradeByName = ImportLookupBuilder.Build(grades, g => g.Name.Trim().ToLowerInvariant(), g => g,
+            g => g.Id, g => g.Name, "grade-name", k => k, ambiguous);
         var gradeById = grades.GroupBy(g => g.Id).ToDictionary(g => g.Key, g => g.First());
-        var positionsByCode = await db.Positions.AsNoTracking()
+
+        var positions = await db.Positions.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
-            .ToDictionaryAsync(p => p.Code.ToUpperInvariant(), ct);
+            .ToListAsync(ct);
+        var positionsByCode = ImportLookupBuilder.Build(positions, p => p.Code.Trim().ToUpperInvariant(), p => p,
+            p => p.Id, p => p.Code, "position", k => k, ambiguous);
 
         return new ImportLookups
         {
@@ -135,6 +218,10 @@ public static class EmployeeImportRowResolver
             GradeByName = gradeByName,
             GradeById = gradeById,
             PositionsByCode = positionsByCode,
+            ActiveCompanyCount = activeCompanies.Count,
+            Ambiguous = ambiguous,
+            DeptNameCandidates = deptNameCandidates,
+            DesigTitleCandidates = desigTitleCandidates,
         };
     }
 
@@ -154,28 +241,61 @@ public static class EmployeeImportRowResolver
 
     /// <summary>Resolve one row. NEVER drops. Every unresolved reference becomes a typed gap + a warning,
     /// and the person is imported with the weakest-safe FK (null / default company). <paramref name="claimedPositionCodes"/>
-    /// is mutated cumulatively (file order wins) exactly as the legacy commit loop did.</summary>
-    public static ResolvedImportRow ResolveRow(Dictionary<string, string> row, ImportLookups lk, HashSet<string> claimedPositionCodes)
+    /// is mutated cumulatively (file order wins) exactly as the legacy commit loop did. <paramref name="joiningDate"/>
+    /// is the row's readable joining date (null when it is unknown): a position's effective window is checked
+    /// against it, exactly as the Add Employee form checks it (<see cref="EmployeeAssignmentRules"/>).</summary>
+    public static ResolvedImportRow ResolveRow(Dictionary<string, string> row, ImportLookups lk, HashSet<string> claimedPositionCodes,
+        DateOnly? joiningDate = null)
     {
         var r = new ResolvedImportRow();
         string V(string k) => row.GetValueOrDefault(k, string.Empty).Trim();
+        static string Clash(IReadOnlyList<string> values) => string.Join(", ", values.Select(v => $"'{v}'"));
 
-        // ── Company (Leak #1): unknown → default company (or null if tenant has none). NEVER drops.
+        // ── Company (Leak #1): NEVER drops. A name that is not found, or that matches more than one company,
+        // falls back to the tenant's ONLY active company (the Add Employee form's default rule); with several
+        // companies nothing is assumed — the person lands without a company and the row says why. A blank cell
+        // used to file the person into the OLDEST company silently, which in a group tenant is the wrong legal
+        // employer (wrong GOSI / WPS establishment) with nothing on screen to show it.
         var companyNameRaw = V("CompanyLegalName");
-        Company? company = string.IsNullOrWhiteSpace(companyNameRaw)
-            ? lk.DefaultCompany
-            : lk.CompaniesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant());
-        if (!string.IsNullOrWhiteSpace(companyNameRaw) && company is null)
+        Company? company = null;
+        if (string.IsNullOrWhiteSpace(companyNameRaw))
         {
-            company = lk.DefaultCompany; // may still be null when the tenant has zero companies
+            company = lk.DefaultCompany;
+            if (company is null && lk.ActiveCompanyCount > 1)
+            {
+                r.Gaps.Add(new ImportGap("org:company", "org",
+                    $"No CompanyLegalName supplied and the tenant has {lk.ActiveCompanyCount} companies — none is assumed; assign the employing company.",
+                    null));
+                r.Warnings.Add($"No CompanyLegalName supplied — the tenant has {lk.ActiveCompanyCount} companies, so none is assumed; imported without a company.");
+            }
+        }
+        else if (lk.AmbiguousValues("company", companyNameRaw.ToUpperInvariant()) is { } companyClash)
+        {
+            company = null; // two or more companies share the name, so there is no "only company" either
             r.Gaps.Add(new ImportGap("org:company", "org",
-                company is not null
-                    ? $"Company '{companyNameRaw}' not found — assigned the default company."
-                    : $"Company '{companyNameRaw}' not found and no company exists — imported without a company.",
+                $"Company '{companyNameRaw}' matches more than one company ({Clash(companyClash)}) — imported without a company; rename one of them in Organization setup.",
                 companyNameRaw));
-            r.Warnings.Add(company is not null
-                ? $"CompanyLegalName '{companyNameRaw}' not found — assigned default company '{company.LegalNameEn}'."
-                : $"CompanyLegalName '{companyNameRaw}' not found and no company exists to default to — imported without a company.");
+            r.Warnings.Add($"CompanyLegalName '{companyNameRaw}' matches more than one company ({Clash(companyClash)}) — imported without a company.");
+        }
+        else
+        {
+            company = lk.CompaniesByName.GetValueOrDefault(companyNameRaw.ToUpperInvariant());
+            if (company is null)
+            {
+                company = lk.DefaultCompany; // the only company, or null — never a guess between several
+                r.Gaps.Add(new ImportGap("org:company", "org",
+                    company is not null
+                        ? $"Company '{companyNameRaw}' not found — assigned the default company."
+                        : lk.ActiveCompanyCount > 1
+                            ? $"Company '{companyNameRaw}' not found — imported without a company (the tenant has {lk.ActiveCompanyCount} companies; none is assumed)."
+                            : $"Company '{companyNameRaw}' not found and no company exists — imported without a company.",
+                    companyNameRaw));
+                r.Warnings.Add(company is not null
+                    ? $"CompanyLegalName '{companyNameRaw}' not found — assigned default company '{company.LegalNameEn}'."
+                    : lk.ActiveCompanyCount > 1
+                        ? $"CompanyLegalName '{companyNameRaw}' not found — imported without a company (none of the {lk.ActiveCompanyCount} companies is assumed)."
+                        : $"CompanyLegalName '{companyNameRaw}' not found and no company exists to default to — imported without a company.");
+            }
         }
         r.CompanyId = company?.Id;
         r.CompanyCountryCode = company?.CountryCode ?? string.Empty;
@@ -252,7 +372,15 @@ public static class EmployeeImportRowResolver
         Branch? branch = company is not null && !string.IsNullOrWhiteSpace(branchCodeRaw)
             ? lk.BranchesByCode.GetValueOrDefault((company.Id, branchCodeRaw))
             : null;
-        if (!string.IsNullOrWhiteSpace(branchCodeRaw) && branch is null)
+        var branchClash = company is not null && !string.IsNullOrWhiteSpace(branchCodeRaw)
+            ? lk.AmbiguousValues("branch", $"{company.Id}|{branchCodeRaw}") : null;
+        if (branchClash is not null)
+        {
+            r.Gaps.Add(new ImportGap("org:branch", "org",
+                $"BranchCode '{branchCodeRaw}' matches more than one branch of '{company!.LegalNameEn}' ({Clash(branchClash)}) — not linked.", branchCodeRaw));
+            r.Warnings.Add($"BranchCode '{branchCodeRaw}' matches more than one branch ({Clash(branchClash)}) — imported without a branch.");
+        }
+        else if (!string.IsNullOrWhiteSpace(branchCodeRaw) && branch is null)
         {
             r.Gaps.Add(new ImportGap("org:branch", "org",
                 company is null
@@ -285,7 +413,11 @@ public static class EmployeeImportRowResolver
         CostCenter? cc = company is not null && !string.IsNullOrWhiteSpace(ccRaw)
             ? lk.CostCentersByCode.GetValueOrDefault(((Guid?)company.Id, ccRaw))
             : null;
-        if (!string.IsNullOrWhiteSpace(ccRaw) && cc is null)
+        var ccClash = company is not null && !string.IsNullOrWhiteSpace(ccRaw)
+            ? lk.AmbiguousValues("costcenter", $"{company.Id}|{ccRaw}") : null;
+        if (ccClash is not null)
+            r.Warnings.Add($"CostCenterCode '{ccRaw}' matches more than one cost center ({Clash(ccClash)}) — imported without a cost center.");
+        else if (!string.IsNullOrWhiteSpace(ccRaw) && cc is null)
             r.Warnings.Add(company is null
                 ? $"CostCenterCode '{ccRaw}' supplied but no company could be resolved — imported without a cost center."
                 : $"CostCenterCode '{ccRaw}' not found for company '{company.LegalNameEn}' — imported without a cost center.");
@@ -296,9 +428,27 @@ public static class EmployeeImportRowResolver
         var deptNameRaw = V("Department");
         var deptCodeRaw = V("DepartmentCode").ToUpperInvariant();
         Guid? deptId = null;
+        IReadOnlyList<string>? deptClash = null;
+        var deptNameKey = deptNameRaw.ToLowerInvariant();
         if (!string.IsNullOrEmpty(deptCodeRaw) && lk.DeptByCode.TryGetValue(deptCodeRaw, out var d1)) deptId = d1;
-        else if (!string.IsNullOrEmpty(deptNameRaw) && lk.DeptByName.TryGetValue(deptNameRaw.ToLowerInvariant(), out var d2)) deptId = d2;
-        if (deptId is null && (!string.IsNullOrEmpty(deptCodeRaw) || !string.IsNullOrEmpty(deptNameRaw)))
+        else if (!string.IsNullOrEmpty(deptCodeRaw) && lk.AmbiguousValues("department-code", deptCodeRaw) is { } codeClash) deptClash = codeClash;
+        else if (!string.IsNullOrEmpty(deptNameRaw) && lk.DeptByName.TryGetValue(deptNameKey, out var d2)) deptId = d2;
+        else if (!string.IsNullOrEmpty(deptNameRaw) && lk.AmbiguousValues("department-name", deptNameKey) is { } nameClash)
+        {
+            // Same-named departments in different branches are ordinary; the row's branch tells them apart.
+            var inBranch = r.BranchId is Guid rowBranch && lk.DeptNameCandidates.TryGetValue(deptNameKey, out var candidates)
+                ? candidates.Where(c => c.BranchId == rowBranch).ToList() : new List<DepartmentRef>();
+            if (inBranch.Count == 1) deptId = inBranch[0].Id;
+            else deptClash = nameClash;
+        }
+        if (deptId is null && deptClash is not null)
+        {
+            var raw = !string.IsNullOrEmpty(deptCodeRaw) ? deptCodeRaw : deptNameRaw;
+            r.Gaps.Add(new ImportGap("org:department", "org",
+                $"Department '{raw}' matches more than one department ({Clash(deptClash)}) — stored as text, not linked; use a DepartmentCode that names one.", raw));
+            r.Warnings.Add($"Department '{raw}' matches more than one department ({Clash(deptClash)}) — imported as free text without an org link.");
+        }
+        else if (deptId is null && (!string.IsNullOrEmpty(deptCodeRaw) || !string.IsNullOrEmpty(deptNameRaw)))
         {
             var raw = !string.IsNullOrEmpty(deptCodeRaw) ? deptCodeRaw : deptNameRaw;
             r.Gaps.Add(new ImportGap("org:department", "org", $"Department '{raw}' not found — stored as text, not linked.", raw));
@@ -310,10 +460,34 @@ public static class EmployeeImportRowResolver
         var desigTitleRaw = V("Designation");
         Guid? desigId = null;
         Guid? designationGradeId = null;
-        if (!string.IsNullOrEmpty(desigTitleRaw) && lk.DesigByTitle.TryGetValue(desigTitleRaw.ToLowerInvariant(), out var desig))
+        var desigKey = desigTitleRaw.ToLowerInvariant();
+        DesignationRef? desig = null;
+        IReadOnlyList<string>? desigClash = null;
+        if (!string.IsNullOrEmpty(desigTitleRaw) && lk.DesigByTitle.TryGetValue(desigKey, out var byTitle)) desig = byTitle;
+        else if (!string.IsNullOrEmpty(desigTitleRaw) && lk.AmbiguousValues("designation", desigKey) is { } titleClash)
+        {
+            // The same title in several departments is ordinary; the row's department tells them apart.
+            var inDept = deptId is Guid rowDept && lk.DesigTitleCandidates.TryGetValue(desigKey, out var candidates)
+                ? candidates.Where(c => c.DepartmentId == rowDept).ToList() : new List<DesignationRef>();
+            if (inDept.Count == 1) desig = inDept[0];
+            else desigClash = titleClash;
+        }
+        if (desig is not null && !desig.IsActive)
+        {
+            // The form refuses an inactive designation ("Selected designation is not active"); so does the import.
+            r.Gaps.Add(new ImportGap("org:designation", "org", $"Designation '{desigTitleRaw}' is inactive — stored as text, not linked.", desigTitleRaw));
+            r.Warnings.Add($"Designation '{desigTitleRaw}' is inactive — imported as free text without an org link.");
+        }
+        else if (desig is not null)
         {
             desigId = desig.Id;
             designationGradeId = desig.GradeId;
+        }
+        else if (desigClash is not null)
+        {
+            r.Gaps.Add(new ImportGap("org:designation", "org",
+                $"Designation '{desigTitleRaw}' matches more than one designation ({Clash(desigClash)}) — stored as text, not linked.", desigTitleRaw));
+            r.Warnings.Add($"Designation '{desigTitleRaw}' matches more than one designation — imported as free text without an org link.");
         }
         else if (!string.IsNullOrEmpty(desigTitleRaw))
         {
@@ -326,9 +500,25 @@ public static class EmployeeImportRowResolver
         Grade? resolvedGrade = null;
         if (!string.IsNullOrWhiteSpace(gradeRaw))
         {
-            if (!lk.GradeByCode.TryGetValue(gradeRaw.ToUpperInvariant(), out resolvedGrade))
-                lk.GradeByName.TryGetValue(gradeRaw.ToLowerInvariant(), out resolvedGrade);
-            if (resolvedGrade is null)
+            var gradeClash = lk.AmbiguousValues("grade-code", gradeRaw.ToUpperInvariant());
+            if (gradeClash is null && !lk.GradeByCode.TryGetValue(gradeRaw.ToUpperInvariant(), out resolvedGrade))
+            {
+                gradeClash = lk.AmbiguousValues("grade-name", gradeRaw.ToLowerInvariant());
+                if (gradeClash is null) lk.GradeByName.TryGetValue(gradeRaw.ToLowerInvariant(), out resolvedGrade);
+            }
+            if (resolvedGrade is not null && !resolvedGrade.IsActive)
+            {
+                // The form refuses an inactive grade ("Selected grade is not active"); so does the import.
+                r.Gaps.Add(new ImportGap("org:grade", "org", $"Grade '{gradeRaw}' is inactive — grade left unassigned.", gradeRaw));
+                r.Warnings.Add($"Grade '{gradeRaw}' is inactive — imported without a grade.");
+                resolvedGrade = null;
+            }
+            else if (gradeClash is not null)
+            {
+                r.Gaps.Add(new ImportGap("org:grade", "org", $"Grade '{gradeRaw}' matches more than one grade ({Clash(gradeClash)}) — grade left unassigned.", gradeRaw));
+                r.Warnings.Add($"Grade '{gradeRaw}' matches more than one grade — imported without a grade.");
+            }
+            else if (resolvedGrade is null)
             {
                 r.Gaps.Add(new ImportGap("org:grade", "org", $"Grade '{gradeRaw}' not found — grade left unassigned.", gradeRaw));
                 r.Warnings.Add($"Grade '{gradeRaw}' not found — imported without a grade.");
@@ -348,6 +538,14 @@ public static class EmployeeImportRowResolver
 
         var finalGradeId = resolvedGrade?.Id ?? designationGradeId;
         Grade? finalGrade = resolvedGrade ?? (finalGradeId is not null ? lk.GradeById.GetValueOrDefault(finalGradeId.Value) : null);
+        if (finalGrade is { IsActive: false })
+        {
+            // A designation's own grade that has since been deactivated is not inherited either.
+            r.Gaps.Add(new ImportGap("org:grade", "org", $"Grade '{finalGrade.Code}' (from designation '{desigTitleRaw}') is inactive — grade left unassigned.", finalGrade.Code));
+            r.Warnings.Add($"Grade '{finalGrade.Code}' from designation '{desigTitleRaw}' is inactive — imported without a grade.");
+            finalGrade = null;
+            finalGradeId = null;
+        }
         r.GradeId = finalGradeId;
         r.FinalGradeCode = finalGrade?.Code ?? string.Empty;
 
@@ -355,31 +553,54 @@ public static class EmployeeImportRowResolver
         var posCodeRaw = V("PositionCode").ToUpperInvariant();
         if (!string.IsNullOrWhiteSpace(posCodeRaw))
         {
-            if (!lk.PositionsByCode.TryGetValue(posCodeRaw, out var position))
+            var positionClash = lk.AmbiguousValues("position", posCodeRaw);
+            if (positionClash is not null)
+            {
+                r.Gaps.Add(new ImportGap("org:position", "org", $"PositionCode '{posCodeRaw}' matches more than one position ({Clash(positionClash)}) — position left unassigned.", posCodeRaw));
+                r.Warnings.Add($"PositionCode '{posCodeRaw}' matches more than one position — imported without a position.");
+            }
+            else if (!lk.PositionsByCode.TryGetValue(posCodeRaw, out var position))
             {
                 r.Gaps.Add(new ImportGap("org:position", "org", $"PositionCode '{posCodeRaw}' not found — position left unassigned.", posCodeRaw));
                 r.Warnings.Add($"PositionCode '{posCodeRaw}' not found — imported without a position.");
             }
-            else if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed
-                     || position.IncumbentEmployeeId is not null
-                     || claimedPositionCodes.Contains(posCodeRaw))
-            {
-                r.Gaps.Add(new ImportGap("org:position", "org", $"PositionCode '{posCodeRaw}' is not available for assignment.", posCodeRaw));
-                r.Warnings.Add($"PositionCode '{posCodeRaw}' is not available for assignment — imported without a position.");
-            }
-            else if ((position.CompanyId is not null && position.CompanyId != r.CompanyId)
-                     || (position.BranchId is not null && position.BranchId != r.BranchId)
-                     || (position.DepartmentId is not null && position.DepartmentId != r.DepartmentId)
-                     || (position.DesignationId is not null && position.DesignationId != r.DesignationId)
-                     || (position.GradeId is not null && position.GradeId != finalGradeId))
-            {
-                r.Gaps.Add(new ImportGap("org:position", "org", $"PositionCode '{posCodeRaw}' is not eligible for the supplied organization, designation, or grade.", posCodeRaw));
-                r.Warnings.Add($"PositionCode '{posCodeRaw}' is not eligible for the supplied org/designation/grade — imported without a position.");
-            }
             else
             {
-                claimedPositionCodes.Add(posCodeRaw);
-                r.PositionId = position.Id;
+                // The SAME decision as the Add Employee form (EmployeeAssignmentRules.CheckPosition), plus the
+                // import-only in-file claim (two rows in one file cannot both take one position).
+                var refusal = claimedPositionCodes.Contains(posCodeRaw)
+                    ? PositionRefusal.Occupied
+                    : EmployeeAssignmentRules.CheckPosition(position, null, joiningDate,
+                        r.CompanyId, r.BranchId, r.DepartmentId, r.CostCenterId, r.DesignationId, finalGradeId);
+                var (detail, warning) = refusal switch
+                {
+                    PositionRefusal.None => (null, null),
+                    PositionRefusal.FrozenOrClosed or PositionRefusal.Occupied =>
+                        ($"PositionCode '{posCodeRaw}' is not available for assignment.",
+                         $"PositionCode '{posCodeRaw}' is not available for assignment — imported without a position."),
+                    PositionRefusal.JoiningDateUnknown =>
+                        ($"PositionCode '{posCodeRaw}' cannot be checked without a readable joining date — position left unassigned.",
+                         $"PositionCode '{posCodeRaw}' needs a readable joining date — imported without a position."),
+                    PositionRefusal.NotYetEffective =>
+                        ($"PositionCode '{posCodeRaw}' is not effective on the joining date (it starts {position.EffectiveFrom:yyyy-MM-dd}).",
+                         $"PositionCode '{posCodeRaw}' is not effective on the joining date — imported without a position."),
+                    PositionRefusal.Expired =>
+                        ($"PositionCode '{posCodeRaw}' expired ({position.EffectiveTo:yyyy-MM-dd}) before the joining date.",
+                         $"PositionCode '{posCodeRaw}' expired before the joining date — imported without a position."),
+                    _ =>
+                        ($"PositionCode '{posCodeRaw}' is not eligible for the supplied organization, designation, or grade.",
+                         $"PositionCode '{posCodeRaw}' is not eligible for the supplied org/designation/grade — imported without a position."),
+                };
+                if (detail is not null)
+                {
+                    r.Gaps.Add(new ImportGap("org:position", "org", detail, posCodeRaw));
+                    r.Warnings.Add(warning!);
+                }
+                else
+                {
+                    claimedPositionCodes.Add(posCodeRaw);
+                    r.PositionId = position.Id;
+                }
             }
         }
 

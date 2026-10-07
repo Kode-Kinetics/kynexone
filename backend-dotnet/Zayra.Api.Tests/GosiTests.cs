@@ -1,3 +1,4 @@
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
@@ -347,8 +348,7 @@ public class GosiTests
     [Fact]
     public void Validate_ReadyEmployee_NoIssues()
     {
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.Saudi, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 10_000m, rules);
+        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 10_000m, computed: null);
 
         Assert.True(report.IsReady);
         Assert.Empty(report.BlockingIssues);
@@ -359,8 +359,7 @@ public class GosiTests
     {
         var emp = ReadyEmployee();
         emp.GosiReference = "";
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.Saudi, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(emp, 10_000m, rules);
+        var report = GosiReadinessValidator.Validate(emp, 10_000m, computed: null);
 
         Assert.False(report.IsReady);
         Assert.Contains(report.BlockingIssues, i => i.Code == "MISSING_GOSI_REFERENCE");
@@ -369,8 +368,7 @@ public class GosiTests
     [Fact]
     public void Validate_MissingBasicSalary_BlockingIssue()
     {
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.Saudi, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 0m, rules);
+        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 0m, computed: null);
 
         Assert.False(report.IsReady);
         Assert.Contains(report.BlockingIssues, i => i.Code == "MISSING_BASIC_SALARY");
@@ -379,8 +377,7 @@ public class GosiTests
     [Fact]
     public void Validate_NullSalary_BlockingIssue()
     {
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.Saudi, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(ReadyEmployee(), null, rules);
+        var report = GosiReadinessValidator.Validate(ReadyEmployee(), null, computed: null);
 
         Assert.Contains(report.BlockingIssues, i => i.Code == "MISSING_BASIC_SALARY");
     }
@@ -390,8 +387,7 @@ public class GosiTests
     {
         var emp = ReadyEmployee();
         emp.Nationality = "";
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.NonSaudi, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(emp, 10_000m, rules);
+        var report = GosiReadinessValidator.Validate(emp, 10_000m, computed: null);
 
         // Missing nationality is a warning, not a blocker
         Assert.True(report.IsReady);
@@ -403,21 +399,36 @@ public class GosiTests
     {
         var emp = ReadyEmployee();
         emp.Nationality = "UAE";
-        var rules  = GosiCalculationService.SelectActiveRules(GosiClassifications.GCC, DefaultRules(), Period, Guid.Empty);
-        var report = GosiReadinessValidator.Validate(emp, 10_000m, rules);
+        var report = GosiReadinessValidator.Validate(emp, 10_000m, computed: null);
 
         Assert.True(report.IsReady);
         Assert.Contains(report.Warnings, w => w.Code == "GCC_RULES_PENDING_CONFIRMATION");
     }
 
-    [Fact]
-    public void Validate_NoApplicableRules_Warning()
-    {
-        var rules  = new List<GosiContributionRule>(); // empty — no rules
-        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 10_000m, rules);
+    // The verdict follows the payroll run's own findings, taken from the payslip engine's result.
 
-        Assert.True(report.IsReady); // not blocking
-        Assert.Contains(report.Warnings, w => w.Code == "NO_APPLICABLE_RULES");
+    [Fact]
+    public void Validate_NewEntrantCohort_IsBlockedWithTheRunsCode()
+    {
+        var computed = new GosiContributionResult(GosiClassifications.Saudi, 975m, 1_175m, Array.Empty<GosiContributionLine>())
+        { Cohort = GosiCohorts.NewEntrant };
+        var report = GosiReadinessValidator.Validate(ReadyEmployee(), 10_000m, computed);
+
+        Assert.False(report.IsReady);
+        Assert.Contains(report.BlockingIssues, i => i.Code == PayrollValidationEngine.GosiNewEntrantScheduleNotModelled);
+        Assert.Equal(GosiCohorts.NewEntrant, report.Cohort);
+    }
+
+    [Fact]
+    public void Validate_GccWithoutHomeScheme_IsBlockedWithTheRunsCode()
+    {
+        var emp = ReadyEmployee();
+        emp.Nationality = "Bahraini";
+        var computed = new GosiContributionResult(GosiClassifications.GCC, 0m, 0m, Array.Empty<GosiContributionLine>());
+        var report = GosiReadinessValidator.Validate(emp, 10_000m, computed);
+
+        Assert.False(report.IsReady);
+        Assert.Contains(report.BlockingIssues, i => i.Code == PayrollValidationEngine.GosiGccSchemeNotConfigured);
     }
 
     // ── GosiRuleSeeder defaults ────────────────────────────────────────────────

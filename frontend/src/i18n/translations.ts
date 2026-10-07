@@ -16,6 +16,9 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  'Saved, never applied': 'Saved, never applied',
+  'Payroll uses the GOSI-published rate.': 'Payroll uses the GOSI-published rate.',
+  'GOSI-published rate — cannot be overridden': 'GOSI-published rate — cannot be overridden',
   'Say how you checked them, for example "matches the bank letter".': 'Say how you checked them, for example "matches the bank letter".',
   'Bank details confirmed. Payroll will no longer warn about them.': 'Bank details confirmed. Payroll will no longer warn about them.',
   'Imported bank details not yet verified': 'Imported bank details not yet verified',
@@ -1238,12 +1241,21 @@ const en: Dict = {
   'Name (Arabic, optional)': 'Name (Arabic, optional)',
   'Details are visible to HR and to the employee who raised this request.': 'Details are visible to HR and to the employee who raised this request.',
 
+  // Employee import — the commit's own verdict in the preview (pilot import safety).
+  'This file will not be imported.': 'This file will not be imported.',
+  'Row {row}: {problem}': 'Row {row}: {problem}',
+  'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.',
+  'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.',
+
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  'Saved, never applied': 'حُفظ ولم يُطبَّق',
+  'Payroll uses the GOSI-published rate.': 'يستخدم مسير الرواتب النسبة المنشورة من المؤسسة العامة للتأمينات الاجتماعية.',
+  'GOSI-published rate — cannot be overridden': 'نسبة منشورة من المؤسسة العامة للتأمينات الاجتماعية — لا يمكن تجاوزها',
   'Say how you checked them, for example "matches the bank letter".': 'اذكر كيف تحققت منها، مثلاً «مطابقة لخطاب البنك».',
   'Bank details confirmed. Payroll will no longer warn about them.': 'تم تأكيد البيانات البنكية. لن يُنبّه الرواتب بشأنها بعد الآن.',
   'Imported bank details not yet verified': 'بيانات بنكية مستوردة لم يتم التحقق منها بعد',
@@ -2467,6 +2479,12 @@ const ar: Dict = {
   'Details are visible to HR and to the employee who raised this request.': 'التفاصيل مرئية لفريق الموارد البشرية وللموظف الذي قدّم هذا الطلب.',
 
   // Release A — see ./releaseA.
+  // Employee import — the commit's own verdict in the preview (pilot import safety).
+  'This file will not be imported.': 'لن يتم استيراد هذا الملف.',
+  'Row {row}: {problem}': 'الصف {row}: {problem}',
+  'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'لم يُستورد أي شيء. شغّل هذا الفحص عملية الاستيراد نفسها ثم تراجع عنها، لذلك يعرض بالضبط ما سيفعله الاستيراد.',
+  'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'صفوف يجب تصحيحها: {count}. راجع الصفوف المعلّمة «مرفوض». الاستيراد يتم كاملاً أو لا يتم، فلن يُستورد شيء حتى يُصحَّح الملف.',
+
   ...releaseA.ar,
 };
 

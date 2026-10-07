@@ -36,7 +36,8 @@ public sealed record KsaWageFileRow(
     decimal Net,
     decimal SlipDeductions,
     decimal DebtDeductions = 0m,
-    bool DebtCapOverridden = false);
+    bool DebtCapOverridden = false,
+    decimal? WageDue = null);
 
 /// <summary>Errors block the file; warnings are shown and the file may still be generated.</summary>
 public sealed record KsaWageFileValidation(
@@ -359,8 +360,11 @@ public static class KsaWageFileRules
         // absence/loss-of-pay and unpaid leave are not debts and are not counted — counting them blocked
         // lawful payslips. An approver override recorded against the pre-lock error (which requires the
         // reference of its written basis) is honoured here.
-        if (!r.DebtCapOverridden && WageDeductionClassification.ExceedsHalfWage(r.DebtDeductions, r.Gross))
-            Err(Codes.DeductionsOverHalf, $"loan, advance, penalty and damages deductions ({Fmt(r.DebtDeductions)}) are more than half of the wage ({Fmt(r.Gross)}). Saudi Labour Law Art. 92/93 caps them at 50%. Reschedule the instalment or reduce the deduction, then re-process.", "salaryDeductions");
+        // Wage due = gross minus absence/LOP and unpaid leave (WageDeductionClassification.WageDue); a row built without its
+        // lines falls back to gross.
+        var wageDue = r.WageDue ?? r.Gross;
+        if (!r.DebtCapOverridden && WageDeductionClassification.ExceedsHalfWage(r.DebtDeductions, wageDue))
+            Err(Codes.DeductionsOverHalf, $"loan, advance, penalty and damages deductions ({Fmt(r.DebtDeductions)}) are more than half of the wage due after absence ({Fmt(wageDue)}). Saudi Labour Law Art. 92/93 caps them at 50%. Reschedule the instalment or reduce the deduction, then re-process.", "salaryDeductions");
     }
 
     private static bool IsArabic(char c) =>

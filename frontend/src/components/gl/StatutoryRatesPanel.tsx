@@ -10,6 +10,7 @@ import {
   type StatutoryRateRow,
 } from '../../api/financeRates';
 import { Modal } from '../Modal';
+import { useT } from '../../hooks/useT';
 import { Badge, Field, FieldError, PanelState, fmtDate, todayIso } from './glUi';
 
 interface Props {
@@ -54,6 +55,7 @@ function unitHintFor(ruleKey: string): { hint: string; min?: number; max?: numbe
 }
 
 export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdiction, canOverride, canApprove }: Props) {
+  const t = useT();
   const [rows, setRows] = useState<StatutoryRateRow[]>([]);
   const [loading, setLoading] = useState(true);
   // PendingApproval overrides created this session (the list endpoint only surfaces Active ones).
@@ -236,6 +238,9 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
                             {r.defaultDriftedSinceOverride && (
                               <Badge tone="rose" title="The platform default changed after this override was set. Review it.">Default drifted</Badge>
                             )}
+                            {r.neverApplied && (
+                              <Badge tone="rose" title={t('Payroll uses the GOSI-published rate.')}>{t('Saved, never applied')}</Badge>
+                            )}
                           </div>
                           <p className="text-[11px] text-slate-400">
                             {r.reason}
@@ -243,6 +248,8 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
                             {r.reviewBy && <span> · review by {fmtDate(r.reviewBy)}</span>}
                           </p>
                         </div>
+                      ) : r.statutoryLocked ? (
+                        <span className="text-[11px] text-slate-400">{t('GOSI-published rate — cannot be overridden')}</span>
                       ) : (
                         <span className="text-[11px] text-slate-400">Uses platform default</span>
                       )}
@@ -287,7 +294,7 @@ export function StatutoryRatesPanel({ scope, scopeLabel, countryCode, jurisdicti
                             </button>
                           )
                         ) : (
-                          canOverride && (
+                          canOverride && !r.statutoryLocked && (
                             <button type="button" onClick={() => openOverride(r)} className="btn-secondary h-7 px-2 text-xs">
                               Override…
                             </button>

@@ -77,36 +77,23 @@ public sealed class GosiReadinessReportService
             .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
-        // IgnoreQueryFilters is intentional: platform-wide default rules carry TenantId==Guid.Empty
-        // and are excluded by the global tenant filter. We bypass the filter and re-apply explicit
-        // scope: own-tenant overrides + Guid.Empty defaults only. No other tenant's rows are visible.
-        var rules = await _db.GosiContributionRules
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(r => (r.TenantId == Guid.Empty || r.TenantId == tenantId) && r.IsActive)
-            .ToListAsync(ct);
-
         var rows = new List<GosiEmployeeReadinessRow>(employees.Count);
         var readyCount = 0;
 
         foreach (var emp in employees)
         {
-            var salary = salaries
-                .Where(s => s.EmployeeId == emp.Id && s.EffectiveDate <= periodDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-
-            var applicable = GosiCalculationService.SelectActiveRules(
-                GosiCalculationService.DeriveClassification(emp.Nationality),
-                rules, periodDate, tenantId);
-
-            var readiness = GosiReadinessValidator.Validate(emp, salary?.BasicSalary, applicable);
+            // The salary the RUN would use for this month (effective by the period END), and the
+            // readiness verdict taken from the payslip engine's own result with the run's own codes —
+            // a new entrant or an unconfigured GCC national is Not ready here exactly as the run blocks
+            // them. The retired gosi_contribution_rules table plays no part.
+            var salary = GosiReadinessValidator.SalaryForPeriod(salaries, emp.Id, periodDate);
+            var (readiness, calc) = await GosiReadinessValidator.AssessAsync(_rules, emp, salary, periodDate, ct);
 
             decimal employeeTotal = 0m;
             decimal employerTotal = 0m;
             var lines = Array.Empty<GosiContributionLineDto>();
 
-            if (readiness.IsReady)
+            if (readiness.IsReady && calc is not null)
             {
                 // S1/A2(b) — basic + housing is the GOSI contributory wage for a Saudi national, and
                 // is what the payroll run's country pack has always deducted on. Passing basic alone
@@ -121,13 +108,12 @@ public sealed class GosiReadinessReportService
                 var contributoryWage = bounds.Clamp(uncapped);
                 if (contributoryWage < uncapped) ceilingBoundCount++;
 
-                // The bounds are handed to the calculator as well: GosiCalculationService is the
-                // ONE place the clamp is applied to a contribution line, and it no longer reads
-                // GosiContributionRule.Min/MaxContributoryWage at all. Clamping here first is
-                // idempotent and is what lets the report say WHICH employees the ceiling bound.
-                var calc = GosiCalculationService.Calculate(
-                    emp.Nationality, contributoryWage, rules, periodDate, tenantId, bounds);
-
+                // ONE ENGINE, ONE STORE. The amounts come from the payslip's own calculator reading the
+                // payslip's own effective-dated statutory rules — not from gosi_contribution_rules,
+                // which a tenant override could move without moving the payslip. The engine applies
+                // the same ceiling itself; `contributoryWage` above only lets the report say WHICH
+                // employees the ceiling bound.
+                // calc above is the payslip engine's result for this employee — ONE ENGINE, ONE STORE.
                 employeeTotal = calc.EmployeeTotal;
                 employerTotal = calc.EmployerTotal;
                 // ContributoryWage excluded — it reveals the employee's basic salary.
@@ -148,7 +134,11 @@ public sealed class GosiReadinessReportService
                 Warnings:                 readiness.Warnings.Select(i => new GosiIssueDto(i.Code, i.Message)).ToArray(),
                 EmployeeContributionTotal: employeeTotal,
                 EmployerContributionTotal: employerTotal,
-                Lines:                    lines));
+                Lines:                    lines)
+            {
+                Cohort = readiness.Cohort,
+                Basis  = readiness.Basis,
+            });
         }
 
         return new GosiReadinessReport(
@@ -164,7 +154,22 @@ public sealed class GosiReadinessReportService
                 + $"('{GosiContributoryWageBasis.CeilingRuleKey}' = {ceiling:N0} SAR on {periodDate:yyyy-MM-dd}) — "
                 + "the same base and the same ceiling the payslip deducts on.",
             EmployeesAtWageCeiling: ceilingBoundCount,
-            Employees:      rows);
+            Employees:      rows)
+        {
+            TenantWarnings = await IgnoredGosiOverridesAsync(tenantId, ct),
+        };
+    }
+
+    /// <summary>
+    /// GOSI rate/ceiling values this tenant saved before such writes were refused. Payroll reads the
+    /// platform row only, so they were saved and never applied; surfaced so nobody believes they are in force.
+    /// </summary>
+    private async Task<IReadOnlyList<GosiIssueDto>> IgnoredGosiOverridesAsync(Guid tenantId, CancellationToken ct)
+    {
+        var ignored = await GosiStatutoryValues.FindIgnoredTenantOverridesAsync(_db, tenantId, ct);
+        return ignored.Count == 0
+            ? Array.Empty<GosiIssueDto>()
+            : new[] { new GosiIssueDto(GosiStatutoryValues.IgnoredOverrideWarningCode, GosiStatutoryValues.IgnoredOverrideWarning(ignored)) };
     }
 }
 
@@ -185,7 +190,14 @@ public record GosiReadinessReport(
     string                               ContributoryWageBasis,
     // How many employees had the ceiling bind. Zero means it never applied.
     int                                  EmployeesAtWageCeiling,
-    IReadOnlyList<GosiEmployeeReadinessRow> Employees);
+    IReadOnlyList<GosiEmployeeReadinessRow> Employees)
+{
+    /// <summary>
+    /// Tenant-level findings that are not about one employee — today, GOSI rate/ceiling values this
+    /// tenant saved before such writes were refused, which payroll has never applied.
+    /// </summary>
+    public IReadOnlyList<GosiIssueDto> TenantWarnings { get; init; } = Array.Empty<GosiIssueDto>();
+}
 
 public record GosiEmployeeReadinessRow(
     int                                  EmployeeId,
@@ -197,7 +209,14 @@ public record GosiEmployeeReadinessRow(
     IReadOnlyList<GosiIssueDto>          Warnings,
     decimal                              EmployeeContributionTotal,
     decimal                              EmployerContributionTotal,
-    IReadOnlyList<GosiContributionLineDto> Lines);
+    IReadOnlyList<GosiContributionLineDto> Lines)
+{
+    /// <summary>The GOSI cohort the payslip engine computed on — the same one the run would use.</summary>
+    public string? Cohort { get; init; }
+
+    /// <summary>The payslip engine's plain-language basis (cohort, rates, period) for the figure.</summary>
+    public string? Basis { get; init; }
+}
 
 /// <summary>Issue DTO — symbolic code + human-readable message.  Never contains raw identifiers.</summary>
 public record GosiIssueDto(string Code, string Message);

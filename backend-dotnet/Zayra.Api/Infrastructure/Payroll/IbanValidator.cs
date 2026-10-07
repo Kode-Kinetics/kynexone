@@ -1,3 +1,5 @@
+using Zayra.Api.Application.Common;
+
 namespace Zayra.Api.Infrastructure.Payroll;
 
 /// <summary>
@@ -28,6 +30,33 @@ public static class IbanValidator
 
         return remainder == 1;
     }
+
+    /// <summary>
+    /// Why <see cref="IsValid"/> rejects this value, in plain words, WITHOUT repeating the value. Messages
+    /// about a bad IBAN are shown to users and most are persisted (payroll validation results, import
+    /// warnings), so they name the IBAN only through <see cref="Describe"/>'s last-4 mask.
+    /// Returns null for a valid IBAN.
+    /// </summary>
+    public static string? InvalidReason(string? iban)
+    {
+        if (string.IsNullOrWhiteSpace(iban)) return "it is empty";
+        var cleaned = iban.Replace(" ", "").ToUpperInvariant();
+        if (!cleaned.All(char.IsLetterOrDigit)) return "it contains characters other than letters and digits";
+        if (cleaned.StartsWith("SA", StringComparison.Ordinal) && cleaned.Length != 24)
+            return $"wrong length (it has {cleaned.Length} characters; a Saudi IBAN has exactly 24)";
+        if (cleaned.Length is < 15 or > 34)
+            return $"wrong length (it has {cleaned.Length} characters; an IBAN has 15 to 34)";
+        if (cleaned.StartsWith("SA", StringComparison.Ordinal) && !HasSaudiStructure(cleaned))
+            return "wrong format (after 'SA', a Saudi IBAN has 2 check digits and a 2-digit bank code)";
+        return IsValid(cleaned) ? null : "wrong checksum (ISO 13616 mod-97)";
+    }
+
+    /// <summary>
+    /// "IBAN ***1234 is invalid: wrong checksum (ISO 13616 mod-97)". The user-facing description of a
+    /// rejected IBAN: only the last 4 characters survive (<see cref="SensitiveValueMask.MaskId"/>).
+    /// </summary>
+    public static string Describe(string? iban) =>
+        $"IBAN {SensitiveValueMask.MaskId(iban)} is invalid: {InvalidReason(iban) ?? "unknown reason"}";
 
     /// <summary>True only for a 24-character Saudi IBAN with valid country structure and mod-97.</summary>
     public static bool IsSaudiIban(string? iban)
