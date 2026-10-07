@@ -1,3 +1,4 @@
+using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -288,6 +289,26 @@ public class QiwaTests
         var entries = await db.AuditLogs.ToListAsync();
         foreach (var entry in entries)
             Assert.DoesNotContain("test-super-secret", entry.Metadata ?? "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SyncWorker_StoresOnlyTheResponseStatusFields_NeverTheEchoedEmployeeRecord()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        db.Employees.Add(ReadyEmployee(tenantId));
+        db.QiwaTenantConnections.Add(new QiwaTenantConnection { TenantId = tenantId, Environment = "sandbox" });
+        await CreateService(db).SaveApiCredentialAsync(
+            tenantId, "test-client-id", "test-super-secret", "sandbox", Guid.NewGuid(), "127.0.0.1");
+        var log = new QiwaSyncLog { TenantId = tenantId, EmployeeId = 1, Status = QiwaSyncLogStatuses.Pending, Direction = "Push", MaxRetries = 3 };
+        db.QiwaSyncLogs.Add(log);
+        await db.SaveChangesAsync();
+
+        await CreateWorker(db, new EchoingQiwaApiAdapter()).ProcessOnceAsync(CancellationToken.None);
+
+        var stored = (await db.QiwaSyncLogs.SingleAsync(l => l.Id == log.Id)).ResponsePayloadJson;
+        stored.Should().Contain("\"status\":\"synced\"").And.Contain("\"request_id\":\"Q-77\"");
+        stored.Should().NotContain("1234567890").And.NotContain("id_number").And.NotContain("Test Employee");
     }
 
     // ── Feature flag ──────────────────────────────────────────────────────────
@@ -652,6 +673,19 @@ file sealed class SpyQiwaApiAdapter : IQiwaApiAdapter
     public Task<QiwaApiResult> GetEmployeeStatusAsync(
         string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
         => Task.FromResult(new QiwaApiResult(true, null, null, "{\"status\":\"active\"}"));
+}
+
+/// <summary>A live-shaped response that echoes the employee's record back, as the real gateway does.</summary>
+file sealed class EchoingQiwaApiAdapter : IQiwaApiAdapter
+{
+    public string AdapterName => "echo";
+    public Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct)
+        => Task.FromResult<string?>("echo-token");
+    public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+        => Task.FromResult(new QiwaApiResult(true, null, null,
+            $"{{\"status\":\"synced\",\"request_id\":\"Q-77\",\"employee\":{{\"id_number\":\"{payload.IdNumber}\",\"name\":\"Test Employee\"}},\"id_number\":\"{payload.IdNumber}\"}}"));
+    public Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
+        => Task.FromResult(new QiwaApiResult(true, null, null, "{}"));
 }
 
 /// <summary>

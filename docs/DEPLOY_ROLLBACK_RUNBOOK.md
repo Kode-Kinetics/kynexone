@@ -280,10 +280,25 @@ WHERE old_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
    OR new_value ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
 GROUP BY tenant_id, field_name
 ORDER BY tenant_id, field_name;
+
+-- Migration batches that still hold the raw package (written before the masked copy, policy "masked-v1").
+-- The second pattern catches 10-digit Saudi national IDs / iqama numbers.
+SELECT tenant_id, package_type, count(*) AS batches_with_raw_identifiers
+FROM migration_import_batches
+WHERE package_type = 'MigrationPackage'
+  AND (payload_json ->> 'policy') IS DISTINCT FROM 'masked-v1'
+  AND (payload_json::text ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+       OR payload_json::text ~ '(^|[^0-9])[12][0-9]{9}([^0-9]|$)')
+GROUP BY tenant_id, package_type
+ORDER BY tenant_id;
 ```
 
+The migration batch's `payload_json` now keeps the checksum, the row count per section and a masked copy of
+each section. Nothing reads it back to run an import: Resume takes the package again from the caller and
+matches it on the checksum, so an old raw payload can be cleared without breaking a resume.
+
 Zero rows means nothing is left to clean up. The pattern is deliberately broad, so review what it finds
-before acting on it. `PayrollIbanMaskingPostgresTests` runs the same pattern, so keep the two in sync.
+before acting on it. `PayrollIbanMaskingPostgresTests` runs the first and third queries, so keep them in sync.
 
 ## Invariants
 - **Schema leads code.** Migrations apply in `migrate-backend` before the deploy hook fires.

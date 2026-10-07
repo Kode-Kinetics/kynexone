@@ -70,6 +70,43 @@ public class PayrollIbanMaskingPostgresTests
     }
 
     [Fact]
+    public async Task RunbookMigrationBatchQuery_CountsOnlyARawLegacyPayload()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var sections = new Dictionary<string, string>
+        {
+            ["employeeHistory"] = "EmployeeCode,FieldName,OldValue,NewValue\nE1,IBAN,SA0380000000608010167519,SA4420000001234567891234\n" +
+                                  "E1,Iqama No,2098765432,2098765433\n",
+        };
+        db.MigrationImportBatches.AddRange(
+            new MigrationImportBatch
+            {
+                TenantId = tenantId, PackageType = "MigrationPackage", PackageChecksum = "raw",
+                PayloadJson = System.Text.Json.JsonSerializer.Serialize(new MigrationPackageRequest("raw", sections)),
+            },
+            new MigrationImportBatch
+            {
+                TenantId = tenantId, PackageType = "MigrationPackage", PackageChecksum = "masked",
+                PayloadJson = Zayra.Api.Application.Common.MigrationPackageAuditCopy.Serialize("masked", sections),
+            });
+        await db.SaveChangesAsync();
+
+        await db.Database.OpenConnectionAsync();
+        await using var cmd = db.Database.GetDbConnection().CreateCommand();
+        // The runbook's third query ("Stored full IBANs"), narrowed to this tenant. Keep in sync.
+        cmd.CommandText = """
+            SELECT count(*)::int FROM migration_import_batches
+            WHERE tenant_id = @tenant AND package_type = 'MigrationPackage'
+              AND (payload_json ->> 'policy') IS DISTINCT FROM 'masked-v1'
+              AND (payload_json::text ~ '\m[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\M'
+                   OR payload_json::text ~ '(^|[^0-9])[12][0-9]{9}([^0-9]|$)')
+            """;
+        var p = cmd.CreateParameter(); p.ParameterName = "tenant"; p.Value = tenantId; cmd.Parameters.Add(p);
+        ((int)(await cmd.ExecuteScalarAsync())!).Should().Be(1, "the raw legacy batch, not the masked one");
+    }
+
+    [Fact]
     public async Task EvidenceHashReuseCheck_NeverSearchesFileContentInSql_AndStillRejectsReuse()
     {
         Guid tenant, company, batchA, batchB;

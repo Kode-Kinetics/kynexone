@@ -129,7 +129,7 @@ public sealed partial class MigrationImportController : ControllerBase
             ReconciliationJson = JsonSerializer.Serialize(plan.SectionCounts),
             ErrorJson = JsonSerializer.Serialize(plan.Errors),
             ResultJson = JsonSerializer.Serialize(plan.ToLedger()),
-            PayloadJson = JsonSerializer.Serialize(request),
+            PayloadJson = MigrationPackageAuditCopy.Serialize(PackageChecksum(request), request.Sections),
             CreatedBy = UserId()
         };
         _db.MigrationImportBatches.Add(batch);
@@ -212,7 +212,7 @@ public sealed partial class MigrationImportController : ControllerBase
         if (existing is null) _db.MigrationImportBatches.Add(batch);
         batch.Status = "Processing";
         batch.PackageType = "MigrationPackage";
-        batch.PayloadJson = JsonSerializer.Serialize(request);
+        batch.PayloadJson = MigrationPackageAuditCopy.Serialize(checksum, request.Sections); // masked; Resume re-sends the package
         batch.DryRun = request.DryRun;
         batch.ReceivedRows = 0;
         batch.CreatedRows = 0;
