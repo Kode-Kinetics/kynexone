@@ -1,6 +1,7 @@
 import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
+import { essWorkspace } from './essWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1247,6 +1248,9 @@ const en: Dict = {
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.',
 
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.en,
+
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
 };
@@ -2484,6 +2488,9 @@ const ar: Dict = {
   'Row {row}: {problem}': 'الصف {row}: {problem}',
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'لم يُستورد أي شيء. شغّل هذا الفحص عملية الاستيراد نفسها ثم تراجع عنها، لذلك يعرض بالضبط ما سيفعله الاستيراد.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'صفوف يجب تصحيحها: {count}. راجع الصفوف المعلّمة «مرفوض». الاستيراد يتم كاملاً أو لا يتم، فلن يُستورد شيء حتى يُصحَّح الملف.',
+
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.ar,
 
   ...releaseA.ar,
 };

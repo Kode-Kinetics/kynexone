@@ -19,7 +19,7 @@ import { usersApi } from '../api/identity';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { LocaleProvider } from '../contexts/LocaleContext';
-import { navigationItems } from '../routes/navigation';
+import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
 
 const HISTORY_KEY = 'kynexone-search-history';
@@ -77,7 +77,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   const commandItems = useMemo(() => {
-    const base = navigationItems
+    const base = commandNavigationItems
       .filter((item): item is typeof item & { path: string } => Boolean(item.path))
       .map((item) => ({
         label: item.label,
@@ -100,7 +100,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const visibleModules = useMemo(
     () => commandItems.filter((item) => {
       if (item.path === '/ai-assistant') return mayUseAssistant;
-      const navMatch = navigationItems.find((nav) => nav.path === item.path);
+      const navMatch = commandNavigationItems.find((nav) => nav.path === item.path);
       // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
       if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
