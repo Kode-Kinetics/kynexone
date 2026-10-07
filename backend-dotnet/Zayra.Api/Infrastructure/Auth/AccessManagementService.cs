@@ -758,7 +758,11 @@ public class AccessManagementService : IAccessManagementService
         var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user));
         if (above is not null)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, above.MessageEn);
-        return Status(null, matching, EmployeeLoginNextActions.LinkExisting, null);
+        // The same decision the write makes: a handled login is linked by resetting its credential. Say so first.
+        return Status(null, matching, EmployeeLoginNextActions.LinkExisting, null) with
+        {
+            WillResetCredential = await HasCredentialHandlersAsync(tenantId, user.Id, cancellationToken)
+        };
     }
 
     /// <inheritdoc />
@@ -1021,6 +1025,16 @@ public class AccessManagementService : IAccessManagementService
                 user.FailedLoginCount = 0;
                 user.LastPasswordChangedAt = linkedAtUtc;
                 user.UpdatedAtUtc = linkedAtUtc;
+                // A handler may have enrolled the authenticator too: the MFA enrolment goes with the password. The
+                // person enrols their own where the MFA policy requires it. Pending MFA challenges are retired with
+                // the sessions (InvalidateAuthorizationSessionsAsync below).
+                var mfaCleared = user.MFAEnabled || user.MfaSecretEncrypted is not null;
+                user.MFAEnabled = false;
+                user.MfaSecretEncrypted = null;
+                user.MfaConfiguredAtUtc = null;
+                user.MfaLastVerifiedAtUtc = null;
+                user.MfaLastTotpStep = null;
+                user.MfaFailedCount = 0;
 
                 // Every reset link minted under the old credential dies with it.
                 foreach (var reset in await _db.PasswordResetTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
@@ -1040,6 +1054,7 @@ public class AccessManagementService : IAccessManagementService
                     {
                         employeeId = employee.Id,
                         invitationExpiresAtUtc = rotationExpiresAtUtc,
+                        mfaCleared,
                         reason = "credential_handled_by_administrator"
                     })));
             }

@@ -86,6 +86,9 @@ public record EmployeeLoginStatusDto(
     public string? ReasonCode { get; init; }
     /// <summary>The name a coded refusal cites: the company (<c>login_other_company</c>) or employee (<c>login_pointer_conflict</c>).</summary>
     public string? ReasonSubject { get; init; }
+    /// <summary>For <c>link_existing</c>: someone other than the person has held a credential for this login, so the
+    /// link will make its password unusable and invite the person to set their own.</summary>
+    public bool WillResetCredential { get; init; }
 }
 
 public static class EmployeeLoginNextActions

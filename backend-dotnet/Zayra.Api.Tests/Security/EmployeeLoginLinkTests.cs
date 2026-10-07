@@ -73,6 +73,7 @@ public sealed class EmployeeLoginLinkTests
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
             status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            status.WillResetCredential.Should().BeFalse("nobody but Noah has held a credential for his login");
             status.LinkedLogin.Should().BeNull();
             status.MatchingLogin!.UserId.Should().Be(noah);
             status.WorkEmail.Should().Be(noahEmail);
@@ -899,14 +900,50 @@ public sealed class EmployeeLoginLinkTests
         (await SignInAsync(w, email)).Should().NotBeNull("the creator knows the password they chose");
         var refreshTokenId = await AddRefreshTokenAsync(login);
 
+        // ...and, signed in as it, the creator enrolled their own authenticator on it.
+        Guid challengeId;
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var u = await db.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == login);
+            u.MFAEnabled = true;
+            u.MfaSecretEncrypted = "creator-enrolled-secret";
+            u.MfaConfiguredAtUtc = DateTime.UtcNow.AddMinutes(-10);
+            u.MfaLastVerifiedAtUtc = DateTime.UtcNow.AddMinutes(-5);
+            u.MfaLastTotpStep = 123456;
+            u.MfaFailedCount = 1;
+            var challenge = new MfaChallengeToken
+            {
+                UserId = login, TenantId = w.TenantId, TokenHash = Guid.NewGuid().ToString("N"), ExpiresAtUtc = DateTime.UtcNow.AddMinutes(5),
+            };
+            db.MfaChallengeTokens.Add(challenge);
+            await db.SaveChangesAsync();
+            challengeId = challenge.Id;
+        }
+
         EmployeeLoginLinkResultDto linked;
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
             status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            status.WillResetCredential.Should().BeTrue("the screen says the password will be reset before anyone links");
             linked = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
                 new LinkExistingLoginRequest(employeeId, login, "Linked by a second administrator"), default)).Result);
         }
+        await using (var verify = _fixture.CreateRetryingDb())
+        {
+            // The creator's authenticator went with the password.
+            var u = await verify.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == login);
+            u.MFAEnabled.Should().BeFalse();
+            u.MfaSecretEncrypted.Should().BeNull();
+            u.MfaConfiguredAtUtc.Should().BeNull();
+            u.MfaLastVerifiedAtUtc.Should().BeNull();
+            u.MfaLastTotpStep.Should().BeNull();
+            u.MfaFailedCount.Should().Be(0);
+            (await verify.MfaChallengeTokens.IgnoreQueryFilters().SingleAsync(x => x.Id == challengeId)).UsedAtUtc.Should().NotBeNull();
+            (await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.LinkCredentialResetAction
+                && x.EntityId == login.ToString())).Metadata.Should().Contain("\"mfaCleared\":true");
+        }
+        // Accepting the invitation, the person signs straight in with their own password: no prompt for the old TOTP.
         await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: Password, linker: w.AdminId, accessMode: AccessModes.FullPortal);
     }
 

@@ -50,6 +50,8 @@ export interface EmployeeLoginStatus {
   reasonCode?: string | null;
   /** The name a coded refusal cites: a company (login_other_company) or an employee (login_pointer_conflict). */
   reasonSubject?: string | null;
+  /** link_existing only: linking will reset the login's password (someone other than the person has handled it). */
+  willResetCredential?: boolean;
 }
 
 export interface EmployeeLoginLinkResult {
