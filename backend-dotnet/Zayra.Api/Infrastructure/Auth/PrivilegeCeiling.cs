@@ -74,7 +74,11 @@ public static class PrivilegeCeiling
     /// employee gets (<c>PrivilegeCeilingGraph.LoadBaselineAsync</c>); it never makes another user "above" the
     /// caller, so a security-only administrator can still manage ordinary staff. It is NOT grantable by them.
     /// </summary>
-    public sealed record Caller(Guid UserId, bool IsAdmin, IReadOnlySet<string> Held, IReadOnlySet<Guid> RoleIds, IReadOnlySet<string> Baseline);
+    /// <paramref name="ApproverRoutes"/> are the (normalised) role names this tenant routes approval work to
+    /// (<c>PrivilegeCeilingGraph.LoadApproverRouteNamesAsync</c>): reserved like the names in code, whenever the
+    /// role was created.
+    public sealed record Caller(Guid UserId, bool IsAdmin, IReadOnlySet<string> Held, IReadOnlySet<Guid> RoleIds, IReadOnlySet<string> Baseline,
+        IReadOnlySet<string> ApproverRoutes);
 
     /// <summary>What the ceiling needs to know about a role.</summary>
     public sealed record RoleFacts(
@@ -89,9 +93,11 @@ public static class PrivilegeCeiling
     /// <summary>One refusal: a stable code, the sentence in English and Arabic, and the permissions at issue.</summary>
     public sealed record Refusal(string Code, string MessageEn, string MessageAr, string? Role, IReadOnlyList<string> MissingPermissions);
 
-    public static Caller ForCaller(Guid userId, bool isAdmin, IEnumerable<string> held, IEnumerable<Guid> roleIds, IEnumerable<string>? baseline = null) =>
+    public static Caller ForCaller(Guid userId, bool isAdmin, IEnumerable<string> held, IEnumerable<Guid> roleIds,
+        IEnumerable<string>? baseline = null, IEnumerable<string>? approverRoutes = null) =>
         new(userId, isAdmin, held.ToHashSet(StringComparer.OrdinalIgnoreCase), roleIds.ToHashSet(),
-            (baseline ?? Array.Empty<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            (baseline ?? Array.Empty<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            (approverRoutes ?? Array.Empty<string>()).ToHashSet(StringComparer.Ordinal));
 
     /// <summary>The permissions in <paramref name="required"/> that <paramref name="held"/> lacks, sorted.</summary>
     public static IReadOnlyList<string> Missing(IReadOnlySet<string> held, IEnumerable<string> required) =>
@@ -106,16 +112,16 @@ public static class PrivilegeCeiling
     /// CUSTOM (non-seeded) role carrying a reserved name. Seeded roles with reserved names (Employee, Manager,
     /// HR Manager…) are assigned through the ordinary subset ceiling.
     /// </summary>
-    public static bool IsAdminOnlyRole(RoleFacts role) =>
-        IsProtectedRole(role) || (!role.IsSystem && IsReservedName(role.NormalizedName));
+    public static bool IsAdminOnlyRole(RoleFacts role, IReadOnlySet<string>? approverRoutes = null) =>
+        IsProtectedRole(role) || (!role.IsSystem && IsReservedName(role.NormalizedName, approverRoutes));
 
     /// <summary>Never edited by anyone: the Admin role, a platform-wide role, or a role marked non-editable.</summary>
     public static bool IsProtectedRole(RoleFacts role) =>
         role.TenantId is null || !role.IsEditable || role.NormalizedName == AdminRoleNormalizedName;
 
     /// <summary>Why the caller may not create a role with, or rename a role to, <paramref name="name"/>. Null = allowed.</summary>
-    public static Refusal? NameRefusal(Caller caller, string name, IReadOnlySet<string>? approverRouteNames) =>
-        !caller.IsAdmin && IsReservedName(AuthService.Normalize(name), approverRouteNames)
+    public static Refusal? NameRefusal(Caller caller, string name) =>
+        !caller.IsAdmin && IsReservedName(AuthService.Normalize(name), caller.ApproverRoutes)
             ? Refuse(Codes.ReservedRoleName, name.Trim())
             : null;
 
@@ -141,7 +147,7 @@ public static class PrivilegeCeiling
     /// <summary>Why the caller may not give <paramref name="role"/> to someone, or take it away. Null = allowed.</summary>
     public static Refusal? AssignRefusal(Caller caller, RoleFacts role)
     {
-        if (IsAdminOnlyRole(role) && !caller.IsAdmin)
+        if (IsAdminOnlyRole(role, caller.ApproverRoutes) && !caller.IsAdmin)
             return Refuse(Codes.AdminOnlyRole, role.Name);
         // The baseline every employee gets is always within reach: the Employee role can be given by anyone who
         // may manage access, whether or not they hold self-service permissions themselves.
@@ -158,7 +164,7 @@ public static class PrivilegeCeiling
         if (IsProtectedRole(role)) return Refuse(Codes.ProtectedRole, role.Name);
         if (caller.RoleIds.Contains(role.Id)) return Refuse(Codes.OwnRole, role.Name);
         if (role.IsSystem && !caller.IsAdmin) return Refuse(Codes.BuiltInRoleAdminOnly, role.Name);
-        if (IsReservedName(role.NormalizedName) && !caller.IsAdmin) return Refuse(Codes.ReservedRoleName, role.Name);
+        if (IsReservedName(role.NormalizedName, caller.ApproverRoutes) && !caller.IsAdmin) return Refuse(Codes.ReservedRoleName, role.Name);
         var above = Missing(caller.Held, role.Permissions);
         if (above.Count > 0) return Refuse(Codes.RoleAboveCeiling, role.Name, above);
         return newPermissions is null ? null : GrantRefusal(caller, newPermissions);

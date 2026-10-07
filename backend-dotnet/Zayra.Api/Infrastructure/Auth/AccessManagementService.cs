@@ -2396,8 +2396,7 @@ public class AccessManagementService : IAccessManagementService
             // PRIVILEGE CEILING: a new role may carry only permissions its creator holds, and never a name the
             // product grants authority to by itself (reserved in code, or an approval route in this tenant).
             var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
-            ThrowIfRefused(PrivilegeCeiling.NameRefusal(caller, request.Name,
-                await PrivilegeCeilingGraph.LoadApproverRouteNamesAsync(_db, tenantId, ct)));
+            ThrowIfRefused(PrivilegeCeiling.NameRefusal(caller, request.Name));
             ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, permissions.Select(x => x.Key)));
 
             var role = new Role
@@ -2467,8 +2466,7 @@ public class AccessManagementService : IAccessManagementService
             await EnsureMayEditRoleAsync(tenantId, caller, await RoleFactsAsync(role, ct), null, ct);
             if (!string.IsNullOrWhiteSpace(request.Name)
                 && AuthService.Normalize(request.Name) != role.NormalizedName)
-                ThrowIfRefused(PrivilegeCeiling.NameRefusal(caller, request.Name,
-                    await PrivilegeCeilingGraph.LoadApproverRouteNamesAsync(_db, tenantId, ct)));
+                ThrowIfRefused(PrivilegeCeiling.NameRefusal(caller, request.Name));
             if (!role.IsEditable) throw new InvalidOperationException("This role is not editable.");
             var previousName = role.Name;
 

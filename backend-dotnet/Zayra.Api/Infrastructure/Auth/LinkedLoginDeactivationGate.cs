@@ -37,6 +37,11 @@ public static class LinkedLoginDeactivationGate
         public const string AdminMustDeactivate = "linked_login_admin_must_deactivate";
         public const string LastAdmin = "linked_login_last_admin";
         public const string AboveActor = "linked_login_above_actor";
+        // Rescind: the login would be switched back ON. Held back, it stays OFF.
+        public const string AdminMustReactivate = "linked_login_admin_must_reactivate";
+        public const string AboveActorReactivate = "linked_login_above_actor_reactivate";
+
+        public static bool IsRestore(string code) => code is AdminMustReactivate or AboveActorReactivate;
     }
 
     /// <summary>A linked login that was NOT deactivated, and why.</summary>
@@ -73,13 +78,13 @@ public static class LinkedLoginDeactivationGate
             var isAdmin = PrivilegeCeilingGraph.HoldsAdmin(target, tenantId);
             if (isAdmin && actor is not { IsAdmin: true })
             {
-                held.Add(Hold(target, Codes.AdminMustDeactivate, Array.Empty<string>()));
+                held.Add(Hold(target, restoring ? Codes.AdminMustReactivate : Codes.AdminMustDeactivate, Array.Empty<string>()));
                 continue;
             }
             if (actor is not null && actor.UserId != target.Id
                 && PrivilegeCeiling.AboveCallerRefusal(actor, isAdmin, AuthService.GetPermissions(target)) is { } refusal)
             {
-                held.Add(Hold(target, Codes.AboveActor, refusal.MissingPermissions));
+                held.Add(Hold(target, restoring ? Codes.AboveActorReactivate : Codes.AboveActor, refusal.MissingPermissions));
                 continue;
             }
             deactivate.Add(target.Id);
@@ -151,7 +156,9 @@ public static class LinkedLoginDeactivationGate
                 {
                     TenantId = tenantId,
                     UserId = recipient,
-                    Title = "A leaver's login is still active",
+                    Title = Codes.IsRestore(login.Code)
+                        ? "A reinstated employee's login is still switched off"
+                        : "A leaver's login is still active",
                     Message = $"{login.MessageEn} ({login.Email})",
                     EntityName = "User",
                     EntityId = login.UserId.ToString(),
@@ -172,8 +179,14 @@ public static class LinkedLoginDeactivationGate
                 "The linked login is the workspace's last operational Admin, so it was left active. Add another Admin, then deactivate it from Access.",
                 "الحساب المرتبط هو آخر مسؤول نظام فعّال في مساحة العمل، لذلك بقي نشطاً. أضف مسؤولاً آخر ثم عطّله من شاشة الوصول."),
             Codes.AboveActor => (
-                $"The linked login holds access you do not have ({list}); an administrator with that access must deactivate it. The employment change was recorded; the login was left active.",
-                $"يملك الحساب المرتبط صلاحيات لا تملكها ({list})؛ يجب أن يعطّله مسؤول يملك هذه الصلاحيات. تم تسجيل تغيير التوظيف، وبقي الحساب نشطاً."),
+                $"The linked login holds access you do not have ({list}); someone with at least this access must deactivate it. The employment change was recorded; the login was left active.",
+                $"يملك الحساب المرتبط صلاحيات لا تملكها ({list})؛ يجب أن يعطّله شخص يملك هذه الصلاحيات على الأقل. تم تسجيل تغيير التوظيف، وبقي الحساب نشطاً."),
+            Codes.AdminMustReactivate => (
+                "The linked login belongs to an Admin; it stays switched OFF until an Admin reactivates it. The offboarding was rescinded.",
+                "الحساب المرتبط يخص مسؤول نظام (Admin)؛ يبقى معطّلاً حتى يعيد مسؤول نظام تفعيله. تم إلغاء إنهاء الخدمة."),
+            Codes.AboveActorReactivate => (
+                $"The linked login holds access you do not have ({list}); it stays switched OFF until someone with at least this access reactivates it. The offboarding was rescinded.",
+                $"يملك الحساب المرتبط صلاحيات لا تملكها ({list})؛ يبقى معطّلاً حتى يعيد تفعيله شخص يملك هذه الصلاحيات على الأقل. تم إلغاء إنهاء الخدمة."),
             _ => throw new ArgumentOutOfRangeException(nameof(code)),
         };
         return new HeldLogin(user.Id, user.Email, code, en, ar, missing);
@@ -206,7 +219,8 @@ public static class PrivilegeCeilingGraph
             activeRoles.Any(x => x.NormalizedName == PrivilegeCeiling.AdminRoleNormalizedName),
             AuthService.GetPermissions(caller),
             activeRoles.Select(x => x.Id),
-            await LoadBaselineAsync(db, tenantId, ct));
+            await LoadBaselineAsync(db, tenantId, ct),
+            await LoadApproverRouteNamesAsync(db, tenantId, ct));
     }
 
     /// <summary>

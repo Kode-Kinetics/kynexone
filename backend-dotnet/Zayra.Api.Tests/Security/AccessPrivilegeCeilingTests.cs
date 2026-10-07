@@ -455,6 +455,45 @@ public sealed class AccessPrivilegeCeilingTests
     }
 
     [Fact]
+    public async Task Probe2_RouteNamedCustomRole_CreatedBeforeTheRoute_IsAssignableByConsoleAdmin()
+    {
+        // A Console Admin creates "Treasury Desk" (no reserved name yet, so allowed); an approval step is then
+        // routed to it. From that moment the NAME carries authority (IsInRole(step.ApproverRole)), so assigning
+        // or editing the role is an Admin's call, whenever it was created.
+        var w = await SeedAsync();
+        Guid treasuryId;
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var created = await Controller(db, w, w.ConsoleId).CreateRole(new CreateRoleRequest("Treasury Desk", null, 50, ["employees.read"]), CancellationToken.None);
+            treasuryId = Assert.IsType<RoleDto>(Assert.IsType<CreatedAtActionResult>(created.Result).Value).Id;
+        }
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var workflow = new ApprovalWorkflow { TenantId = w.TenantId, Code = $"WF-{Guid.NewGuid():N}"[..12], Name = "Payments", EntityName = "PaymentBatch" };
+            seed.ApprovalWorkflows.Add(workflow);
+            seed.ApprovalWorkflowSteps.Add(new ApprovalWorkflowStep { TenantId = w.TenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "Treasury", ApproverRole = "Treasury Desk", IsFinalStep = true });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertRefused((await Controller(db, w, w.ConsoleId).AssignRoles(
+                w.StaffId, new AssignRolesRequest(["Employee", "Treasury Desk"]), CancellationToken.None)).Result, PrivilegeCeiling.Codes.AdminOnlyRole);
+        await using (var db = _fixture.CreateRetryingDb())
+            AssertRefused((await Controller(db, w, w.ConsoleId).SetRolePermissions(
+                treasuryId, new BulkRolePermissionsRequest(["employees.read", "profile.read"]), CancellationToken.None)).Result, PrivilegeCeiling.Codes.ReservedRoleName);
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var ceiling = Assert.IsType<AccessCeilingDto>(Assert.IsType<OkObjectResult>((await Controller(db, w, w.ConsoleId).Ceiling(CancellationToken.None)).Result).Value);
+            var treasury = ceiling.Roles.Single(r => r.RoleId == treasuryId);
+            Assert.False(treasury.CanAssign);
+            Assert.False(treasury.CanEdit);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<OkObjectResult>((await Controller(db, w, w.AdminId).AssignRoles(
+                w.StaffId, new AssignRolesRequest(["Employee", "Treasury Desk"]), CancellationToken.None)).Result);
+    }
+
+    [Fact]
     public async Task InvitingWithAnAccessModeThatCarriesPermissionsYouLack_IsRefused()
     {
         var w = await SeedAsync();

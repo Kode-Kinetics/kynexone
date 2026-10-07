@@ -10,8 +10,10 @@ namespace Zayra.Api.Tests.Security;
 /// (<see cref="PrivilegeCeiling.ReservedRoleNames"/>), so nobody but an Admin can create, rename to, assign or
 /// edit a role carrying it.
 ///
-/// <para>Sources scanned: <c>IsInRole("…")</c> literals, <c>[Authorize(Roles = "…")]</c> lists, and the report data
-/// domains' role lists. A name used in any of them but not reserved fails the build. <c>IsInRole(expr)</c> with a
+/// <para>Sources scanned: <c>IsInRole("…")</c> literals; every <c>[Authorize(Roles = …)]</c> on a controller or action,
+/// read by reflection so constants (<c>Roles = HrRoles</c>) are resolved; role pattern checks in source
+/// (<c>role is "X" or "Y"</c>, e.g. JawazatConstants.IsHrRole and the AI governance checks); OfferRules'
+/// approver role names; and the report data domains' role lists. A name used in any of them but not reserved fails the build. <c>IsInRole(expr)</c> with a
 /// non-literal argument is allowed only at the sites listed below, each of which reads an approval step's
 /// ApproverRole; those names are reserved at run time per tenant
 /// (<see cref="PrivilegeCeilingGraph.LoadApproverRouteNamesAsync"/>). Replacing name checks with permissions is
@@ -32,22 +34,36 @@ public sealed class ReservedRoleNamesRatchetTests
 
     private static readonly Regex LiteralIsInRole = new(@"IsInRole\(\s*""([^""]+)""\s*\)", RegexOptions.Compiled);
     private static readonly Regex DynamicIsInRole = new(@"IsInRole\(\s*([^""\s)][^)]*)\)", RegexOptions.Compiled);
-    private static readonly Regex AuthorizeRoles = new(@"Authorize\([^)]*Roles\s*=\s*""([^""]+)""", RegexOptions.Compiled);
+    // "<something>Role(s)… is "X" or "Y"" and the "r => r is "X"" lambda over a role list.
+    private static readonly Regex RolePattern = new(
+        @"(?:\b\w*[Rr]ole\w*\)?|[Rr]oles\w*\??\.Any\(\s*(?<v>\w+)\s*=>\s*\k<v>)\s+is\s+(?<names>(?:""[^""]+""(?:\s+or\s+)?)+)",
+        RegexOptions.Compiled);
+    private static readonly Regex Quoted = new(@"""([^""]+)""", RegexOptions.Compiled);
 
     [Fact]
     public void EveryRoleNameTheCodeGrantsAuthorityTo_IsReserved()
     {
         var root = SourceRoot();
-        if (root is null) return; // binaries outside the repo layout: nothing to scan (same rule as BypassLintTests)
+        Assert.True(root is not null, "Zayra.Api source not found next to the test binaries: the ratchet cannot run, so it fails.");
 
         var used = new SortedDictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (file, line) in CodeLines(root))
+        foreach (var (file, line) in CodeLines(root!))
         {
             foreach (Match m in LiteralIsInRole.Matches(line)) used.TryAdd(AuthService.Normalize(m.Groups[1].Value), file);
-            foreach (Match m in AuthorizeRoles.Matches(line))
-                foreach (var name in m.Groups[1].Value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    used.TryAdd(AuthService.Normalize(name), file);
+            foreach (Match m in RolePattern.Matches(line))
+                foreach (Match q in Quoted.Matches(m.Groups["names"].Value)) used.TryAdd(AuthService.Normalize(q.Groups[1].Value), file);
         }
+        // [Authorize(Roles = …)] by reflection: constants are already resolved in the attribute.
+        var api = typeof(Zayra.Api.Controllers.AccessController).Assembly;
+        foreach (var type in api.GetTypes().Where(t => typeof(Microsoft.AspNetCore.Mvc.ControllerBase).IsAssignableFrom(t)))
+        {
+            var members = new MemberInfo[] { type }.Concat(type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
+            foreach (var attribute in members.SelectMany(m => m.GetCustomAttributes<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>(inherit: true)))
+                foreach (var name in (attribute.Roles ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    used.TryAdd(AuthService.Normalize(name), $"[Authorize] on {type.Name}");
+        }
+        foreach (var name in Zayra.Api.Infrastructure.Recruitment.OfferRules.ApproverRoleNames)
+            used.TryAdd(AuthService.Normalize(name), "OfferRules.ApproverRoleNames");
         foreach (var domain in typeof(DataDomains).GetFields(BindingFlags.Public | BindingFlags.Static)
                      .Where(f => f.FieldType == typeof(DataDomain)).Select(f => (DataDomain)f.GetValue(null)!))
             foreach (var name in domain.Roles) used.TryAdd(AuthService.Normalize(name), "ReportAccessPolicy.DataDomains");
@@ -64,10 +80,10 @@ public sealed class ReservedRoleNamesRatchetTests
     public void NonLiteralIsInRole_OnlyAtTheKnownApprovalStepSites()
     {
         var root = SourceRoot();
-        if (root is null) return;
+        Assert.True(root is not null, "Zayra.Api source not found next to the test binaries: the ratchet cannot run, so it fails.");
 
         var sites = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var (file, line) in CodeLines(root))
+        foreach (var (file, line) in CodeLines(root!))
             foreach (Match m in DynamicIsInRole.Matches(line))
                 sites.Add($"{file}|{m.Groups[1].Value.Trim()}");
 
@@ -87,8 +103,8 @@ public sealed class ReservedRoleNamesRatchetTests
         var admin = PrivilegeCeiling.ForCaller(Guid.NewGuid(), true, ["security.manage"], []);
         foreach (var name in PrivilegeCeiling.ReservedRoleNames)
         {
-            Assert.Equal(PrivilegeCeiling.Codes.ReservedRoleName, PrivilegeCeiling.NameRefusal(consoleAdmin, name.ToLowerInvariant(), null)?.Code);
-            Assert.Null(PrivilegeCeiling.NameRefusal(admin, name, null));
+            Assert.Equal(PrivilegeCeiling.Codes.ReservedRoleName, PrivilegeCeiling.NameRefusal(consoleAdmin, name.ToLowerInvariant())?.Code);
+            Assert.Null(PrivilegeCeiling.NameRefusal(admin, name));
             // A custom role an Admin gave this name grants the name's authority: Admin-only to assign.
             Assert.True(PrivilegeCeiling.IsAdminOnlyRole(new PrivilegeCeiling.RoleFacts(
                 Guid.NewGuid(), name, name, Guid.NewGuid(), IsSystem: false, IsEditable: true, Array.Empty<string>())), name);
