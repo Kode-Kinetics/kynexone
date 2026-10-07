@@ -71,6 +71,11 @@ export interface StatutoryRateRow {
   reviewBy: string | null;
   /** True when the platform default changed after this override was created. */
   defaultDriftedSinceOverride: boolean;
+  /** GOSI rate or ceiling: statutory, applied from the GOSI-published platform value; cannot be overridden. */
+  statutoryLocked?: boolean;
+  /** An override exists for a statutory GOSI key: it was saved but payroll never applied it. */
+  neverApplied?: boolean;
+  notice?: string | null;
 }
 
 export interface StatutoryOverrideRequest {

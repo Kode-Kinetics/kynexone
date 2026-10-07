@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -492,7 +493,10 @@ public class OrganizationStructureImportController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        foreach (var row in parsed.GradePayComponents)
+        // Release A (R1): the legacy grade pay scale is frozen for a release_a tenant — grade benefits are set in Benefits
+        // by grade. Validation marks these rows Skipped with the reason, so the commit writes none of them.
+        var gradePayRows = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct) ? [] : parsed.GradePayComponents;
+        foreach (var row in gradePayRows)
         {
             var grade = grades[Val(row, "GradeCode").ToUpperInvariant()];
             var code = Val(row, "ComponentCode");
@@ -705,10 +709,24 @@ public class OrganizationStructureImportController : ControllerBase
             refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", parentCandidates, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
         AddDepartmentCompanyConsistencyRows(parsed.Departments, parsed.Branches, parsed.CostCenters, rows);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
-        AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
-            // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
-            refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
-        AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            // Release A (R1): one fact in one place. These rows are not imported for a release_a tenant, and each says why.
+            for (var i = 0; i < parsed.GradePayComponents.Count; i++)
+            {
+                var row = parsed.GradePayComponents[i];
+                rows.Add(new ImportRowResult(i + 2, $"gradePayComponents:{Val(row, "GradeCode")}:{Val(row, "ComponentCode")}", Val(row, "ComponentName"),
+                    ImportRowStatus.Skipped, [],
+                    ["Not imported: grade allowances and benefits are set in Benefits by grade for this workspace (reason: moved_to_benefits_by_grade). Set this value there."]));
+            }
+        }
+        else
+        {
+            AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
+                // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
+                refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
+            AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
+        }
         AddRows("designations", parsed.Designations, "Code", "TitleEn", required: ["Code", "TitleEn"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("DepartmentCode", departmentCodes, "Department"), ("GradeCode", gradeCodes, "Grade")]);
         Merge(designationCodes, parsed.Designations.Select(x => Val(x, "Code")));

@@ -1820,26 +1820,14 @@ public class PayrollController : ControllerBase
             .GroupBy(b => b.EmployeeIntId!.Value)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        // COMPLIANCE: YTD — sum of all locked runs in the same year (before this month).
-        // POD-B2: `r.Month < run.Month` alone made two runs in the SAME month invisible to each other, so
-        // the payslip's YTD under-reported by the whole earlier run. Now: everything earlier in the year,
-        // PLUS any other locked run in this same month. Zero effect on existing data — a second Locked
-        // run in one month was impossible before B2.
-        var ytdSlips = await _db.PayrollSlips.AsNoTracking()
-            .Where(s => s.TenantId == tenantId)
-            .Join(_db.PayrollRuns.AsNoTracking().Where(r => r.TenantId == tenantId && r.CompanyId == company.Id && r.Year == run.Year
-                    && (r.Month < run.Month || (r.Month == run.Month && r.Id != run.Id))
-                    && r.Status == "Locked"),
-                  s => s.RunId, r => r.Id, (s, r) => s)
-            .ToListAsync(cancellationToken);
-
-        var openingBalancesByEmployee = await _db.PayrollOpeningBalances.AsNoTracking()
-            .Where(x => x.TenantId == tenantId
-                && x.Year == run.Year
-                && employeeIdsForRun.Contains(x.EmployeeId)
-                && (x.CompanyId == company.Id || x.CompanyId == null))
-            .GroupBy(x => x.EmployeeId)
-            .ToDictionaryAsync(x => x.Key, x => x.ToList(), cancellationToken);
+        // COMPLIANCE: YTD — locked runs earlier in the year (POD-B2: plus any other locked run in this same
+        // month) and the carried opening balances, PARTITIONED at the legal entity's cutover month so no
+        // period is counted twice: before the cutover the opening balance already contains every month,
+        // including any month this product also ran. See PayrollYtdBasis.
+        var ytdSources = await PayrollYtdBasis.LoadAsync(
+            _db, tenantId, company.Id, run, employeeIdsForRun, cancellationToken);
+        var ytdSlips = ytdSources.PriorSlips;
+        var openingBalancesByEmployee = ytdSources.OpeningBalancesByEmployee;
 
         // COMPLIANCE: Load payroll profiles for MolId / RoutingCode (keyed by Employee.Id)
         var payrollProfiles = await _db.EmployeePayrollProfiles.AsNoTracking()
@@ -2698,9 +2686,9 @@ public class PayrollController : ControllerBase
             // COMPLIANCE: YTD — sum all locked slips for this employee earlier in the same year
             var empYtdSlips = ytdSlips.Where(s => s.EmployeeId == e.Id).ToList();
             openingBalancesByEmployee.TryGetValue(e.Id, out var openingBalances);
-            var ytdGross    = empYtdSlips.Sum(s => s.GrossSalary) + SumOpeningBalance(openingBalances, "YTD_GROSS", "GROSS", "EARNINGS");
-            var ytdDeduct   = empYtdSlips.Sum(s => s.Deductions) + SumOpeningBalance(openingBalances, "YTD_DEDUCTIONS", "YTD_DEDUCTION", "DEDUCTIONS", "DEDUCTION");
-            var ytdNet      = empYtdSlips.Sum(s => s.NetSalary) + SumOpeningBalance(openingBalances, "YTD_NET", "NET");
+            var ytdGross    = empYtdSlips.Sum(s => s.GrossSalary) + SumOpeningBalance(openingBalances, PayrollYtdBasis.YtdGrossTypes);
+            var ytdDeduct   = empYtdSlips.Sum(s => s.Deductions) + SumOpeningBalance(openingBalances, PayrollYtdBasis.YtdDeductionTypes);
+            var ytdNet      = empYtdSlips.Sum(s => s.NetSalary) + SumOpeningBalance(openingBalances, PayrollYtdBasis.YtdNetTypes);
 
             var slip = new PayrollSlip
             {
@@ -3101,19 +3089,7 @@ public class PayrollController : ControllerBase
 
         // GOSI staleness check: look up the most-recent system-default GOSI effective date
         // for this company's country pack so validation engine can warn if rates are stale.
-        DateOnly? gosiRatesEffectiveFrom = null;
-        if (string.Equals(company?.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
-         || string.Equals(company?.CountryCode, "SA",  StringComparison.OrdinalIgnoreCase))
-        {
-            // IgnoreQueryFilters is intentional: GosiContributionRules platform defaults use TenantId == Guid.Empty
-            // which is excluded by the per-tenant global query filter. This query reads system-wide default
-            // rates (not tenant data), so bypassing the tenant filter is correct and safe here.
-            var latestGosiRule = await _db.GosiContributionRules.IgnoreQueryFilters()
-                .Where(r => r.TenantId == Guid.Empty && r.CountryCode == "SA")
-                .OrderByDescending(r => r.EffectiveFrom)
-                .FirstOrDefaultAsync(cancellationToken);
-            gosiRatesEffectiveFrom = latestGosiRule?.EffectiveFrom;
-        }
+        DateOnly? gosiRatesEffectiveFrom = await GosiRatesEffectiveFromAsync(company?.CountryCode, cancellationToken);
 
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
@@ -3126,6 +3102,10 @@ public class PayrollController : ControllerBase
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
             EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,
+            // Mid-year cutover — the same partition decision the YTD figures above were computed from.
+            YtdUnresolvedOverlapEmployeeIds         = ytdSources.UnresolvedOverlapEmployeeIds,
+            YtdPreCutoverExcludedEmployeeIds        = ytdSources.PreCutoverSlipsExcludedEmployeeIds,
+            YtdSuggestedCutover                     = ytdSources.SuggestedCutover,
             Exclusions                              = runPopulation.Exclusions,
             NotEligibleSelections                   = runPopulation.NotEligible,
             SiblingRunCount                         = siblingRuns.Count,
@@ -4005,13 +3985,22 @@ public class PayrollController : ControllerBase
             }
         }
 
+        var valYtdSources = await PayrollYtdBasis.LoadAsync(
+            _db, tenantId, company.Id, run, slips.Select(s => s.EmployeeId).Distinct().ToList(), cancellationToken);
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
             UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
+            // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
+            GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
+            // Mid-year cutover — re-derived with the SAME loader Process used; /validate replaces the
+            // stored results wholesale, so omitting it would silently drop Rule 14b.
+            YtdUnresolvedOverlapEmployeeIds         = valYtdSources.UnresolvedOverlapEmployeeIds,
+            YtdPreCutoverExcludedEmployeeIds        = valYtdSources.PreCutoverSlipsExcludedEmployeeIds,
+            YtdSuggestedCutover                     = valYtdSources.SuggestedCutover,
             Exclusions                              = validationPopulation.Exclusions,
             NotEligibleSelections                   = validationPopulation.NotEligible,
             SiblingRunCount                         = valSiblingRuns.Count,
@@ -7895,6 +7884,23 @@ public class PayrollController : ControllerBase
     /// later AsAtDate). The most recently struck row wins, and among rows struck on the same date, the
     /// earliest prior-service claim — the one most favourable to the employee, and the one an employer
     /// cannot quietly walk back by re-importing.</para>
+    ///
+    /// <para><b>LEGAL BASIS.</b> Saudi Labour Law (Royal Decree M/51) Art. 84 measures the award on the
+    /// worker's "period of service", and the period is the worker's continuous service with the employer,
+    /// not the life of a database record. Two cases carry service in: (1) a system migration by the SAME
+    /// employer — the carried date is simply the real joining date, and nothing about the service changed;
+    /// (2) a transfer of the establishment (sale, merger, division, transfer of ownership) — Art. 18 keeps
+    /// the contract in force with the successor, the service continuous, and the successor liable for the
+    /// worker's accrued rights, end-of-service included. Either way the award is measured from the earlier
+    /// date, once.</para>
+    ///
+    /// <para>[COUNSEL] Prior service at a DIFFERENT legal entity that is NOT an Art. 18 transfer — an
+    /// intra-group move between two commercial registrations under a fresh contract, or a re-hire after a
+    /// settled exit — is honoured here exactly as carried, because the importer cannot tell the cases apart.
+    /// If the earlier employer already paid an end-of-service award for that period, counting it again
+    /// double-pays it. Counsel to confirm: (a) whether intra-group service without an Art. 18 transfer
+    /// counts toward Art. 84 absent a contractual undertaking, and (b) whether the carried row needs a
+    /// "prior award settled through" date that the calculation must start after.</para>
     /// </summary>
     private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
         Guid tenantId, Employee employee, CancellationToken ct)
@@ -11288,6 +11294,31 @@ public class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// The effective date of the newest platform GOSI rate row — what the staleness warning
+    /// (WARN_GOSI_RATES_REQUIRE_SIGNOFF) ages. Read from statutory_rules, the store the payslip computes
+    /// from, not from the retired gosi_contribution_rules. Null outside KSA.
+    /// </summary>
+    private async Task<DateOnly?> GosiRatesEffectiveFromAsync(string? countryCode, CancellationToken ct)
+    {
+        if (!string.Equals(countryCode, "SAU", StringComparison.OrdinalIgnoreCase)
+         && !string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase)) return null;
+        var keys = new[]
+        {
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSaudiEmployeeRate, Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSaudiEmployerRate,
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiSanedRate, Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiExpOhRate,
+        };
+        // IgnoreQueryFilters is intentional: platform statutory rules carry TenantId == null and are read
+        // here as system-wide reference data (never tenant data); the WHERE re-applies the platform scope.
+        var latest = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
+            .Where(r => r.TenantId == null && r.CountryCode == CountryCodes.Saudi
+                     && r.Jurisdiction == Jurisdictions.KsaMainland && keys.Contains(r.RuleKey))
+            .OrderByDescending(r => r.EffectiveFrom)
+            .Select(r => (DateTime?)r.EffectiveFrom)
+            .FirstOrDefaultAsync(ct);
+        return latest is DateTime d ? DateOnly.FromDateTime(d) : null;
+    }
+
     private static decimal SumOpeningBalance(IEnumerable<PayrollOpeningBalance>? balances, params string[] balanceTypes)
     {
         if (balances is null) return 0m;

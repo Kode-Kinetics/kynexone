@@ -54,6 +54,47 @@ public static class CutoverStatuses
     public const string Closed = "Closed";
 
     public static readonly string[] All = { Planned, Active, Closed };
+
+    /// <summary>
+    /// Whether a cutover in <paramref name="status"/> GOVERNS its legal entity — splits the year into
+    /// carried-in and earned-here. Anything except Planned does: closing a cutover once the migration is
+    /// done does not make the carried opening balances stop being "as at the day before cutover", so a
+    /// Closed cutover must keep partitioning year-to-date exactly as an Active one did.
+    /// </summary>
+    public static bool Governs(string? status) =>
+        !string.IsNullOrWhiteSpace(status) && !string.Equals(status.Trim(), Planned, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Coded reason: a cutover change that would move a boundary a locked payroll run already used.</summary>
+    public const string ChangeAfterLockedRunCode = "CUTOVER_CHANGE_AFTER_LOCKED_RUN";
+
+    /// <summary>Coded reason: an opening-balance import into a period with a locked payroll run.</summary>
+    public const string BalanceIntoLockedPeriodCode = "OPENING_BALANCE_INTO_LOCKED_PERIOD";
+
+    /// <summary>Coded reason: payslip YTD opening balances with no cutover in force or declared alongside them.</summary>
+    public const string BalanceNeedsCutoverCode = "OPENING_BALANCE_NEEDS_CUTOVER";
+
+    /// <summary>Coded reason: a FIRST cutover declared for a month later than a run this product already locked.</summary>
+    public const string FirstDeclarationTooLateCode = "CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN";
+
+    /// <summary>Coded reason: a cutover date that is not the first day of a month.</summary>
+    public const string NotFirstOfMonthCode = "CUTOVER_NOT_FIRST_OF_MONTH";
+
+    /// <summary>
+    /// Refusal text for a cutover date that is not the 1st. Payroll, the YTD partition and the importer's
+    /// locked-period rule all work in whole months, so a mid-month cutover would put one month on both
+    /// sides of the boundary. The refusal names the month the operator most likely meant.
+    /// </summary>
+    public static string? FirstOfMonthRefusal(DateOnly date)
+    {
+        if (date.Day == 1) return null;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var first = new DateOnly(date.Year, date.Month, 1);
+        var month = date.ToString("MMMM yyyy", inv);
+        return $"[{NotFirstOfMonthCode}] The cutover date must be the 1st of a month; {date.ToString("yyyy-MM-dd", inv)} is not. "
+             + $"Payroll is run by whole month, so use {first.ToString("yyyy-MM-dd", inv)} (this product owns {month}) or "
+             + $"{first.AddMonths(1).ToString("yyyy-MM-dd", inv)} (the previous system owns {month}). "
+             + $"/ يجب أن يكون تاريخ الانتقال أول يوم في الشهر؛ التاريخ {date.ToString("yyyy-MM-dd", inv)} ليس كذلك.";
+    }
 }
 
 /// <summary>
