@@ -199,14 +199,32 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     {
         Guid tenantId;
         Guid existingUserId;
+        Guid callerId;
         await using (var seed = _fx.CreateDirectDb())
         {
             tenantId = await PostgresFixture.SeedMinimalTenant(seed);
-            seed.Roles.Add(new Role
+            var adminRole = new Role
             {
                 TenantId = tenantId, Name = "Admin", NormalizedName = "ADMIN", Description = "Admin",
                 IsActive = true, IsEditable = true
-            });
+            };
+            seed.Roles.Add(adminRole);
+            // The acting administrator: the privilege ceiling lets only an Admin give the Admin role.
+            var caller = new User
+            {
+                TenantId = tenantId,
+                Email = $"caller-{Guid.NewGuid():N}@example.test",
+                FullName = "Acting Admin",
+                PasswordHash = "hash",
+                AccessMode = AccessModes.FullPortal,
+                Status = "Active",
+                IsActive = true,
+                IsEmailConfirmed = true
+            };
+            caller.NormalizedEmail = AuthService.Normalize(caller.Email);
+            seed.Users.Add(caller);
+            seed.UserRoles.Add(new UserRole { User = caller, Role = adminRole });
+            callerId = caller.Id;
             var user = new User
             {
                 TenantId = tenantId,
@@ -245,7 +263,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
         {
             await using var db = _fx.CreatePooledDb(hook);
             var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
-            var context = new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+            var context = new RequestContext("127.0.0.1", "tests", callerId, tenantId);
             if (operation == "create-admin")
             {
                 var email = $"admin-{Guid.NewGuid():N}@example.test";
@@ -312,41 +330,53 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
     [Fact]
     public async Task MigrationImportLease_KeepaliveOutlivesAShortIdleCeiling_AndHoldsNoXminHorizon()
     {
-        // The property under test is "outlives the ceiling", so the wait only needs to pass it.
-        // The ceiling is wide against the ping interval (25x) because the pings ride the shared
-        // thread pool: on a loaded runner a 2 s ceiling with 300 ms pings left only 1.7 s of slack
-        // and failed on a harness stall, not on the lease. Production runs 30 min / 30 s.
-        var ceiling = TimeSpan.FromSeconds(5);
+        // What proves the renewals is the SERVER: Postgres ends a transaction that sits idle for the
+        // ceiling, so a lock still granted well past one ceiling after acquisition exists only because
+        // the keepalive kept re-issuing the SET LOCAL. The test waits for that condition (a renewal
+        // stamped past the ceiling) instead of sleeping a fixed time, and it does not assert on the
+        // client-side gaps between renewals: those measure how promptly the test host schedules a
+        // timer, not the lease. Under the full suite the host stalled this process's timers for 1.3 to
+        // 5.4 s at a time, which a 5 s ceiling could not absorb. 12 s against 200 ms pings is the
+        // production ratio (30 min / 30 s = 60x) and over twice the worst stall seen.
+        var ceiling = TimeSpan.FromSeconds(12);
         var key = Random.Shared.NextInt64();
-        // Monotonic stamps of each renewal; the diagnosis below reads them, the wall clock can jump.
         var pings = new System.Collections.Concurrent.ConcurrentQueue<long>();
-        var start = Stopwatch.GetTimestamp();
+        long acquired = 0;
+        var renewedPastCeiling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var db = _fx.CreatePooledDb();
         var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
             db, key,
             new TransactionHeldAdvisoryLease.LeaseOptions(ceiling, TimeSpan.FromMilliseconds(200))
             {
-                BeforeKeepalive = () => { pings.Enqueue(Stopwatch.GetTimestamp()); return Task.CompletedTask; },
+                BeforeKeepalive = () =>
+                {
+                    var now = Stopwatch.GetTimestamp();
+                    pings.Enqueue(now);
+                    var since = Interlocked.Read(ref acquired);
+                    if (since != 0 && Stopwatch.GetElapsedTime(since, now) > ceiling + TimeSpan.FromSeconds(1))
+                        renewedPastCeiling.TrySetResult();
+                    return Task.CompletedTask;
+                },
             },
             CancellationToken.None))!;
-        var acquired = Stopwatch.GetTimestamp();
+        Interlocked.Exchange(ref acquired, Stopwatch.GetTimestamp());
         await using (lease)
         {
-            // A "section" two ceilings long, doing no work on the lease connection. The wait gives
-            // the after-the-ceiling check the same slack the lease itself has (one full ceiling):
-            // a shorter wait re-creates the flake this test was widened to remove.
-            await Task.Delay(ceiling * 2);
+            // Condition, not clock: done as soon as a renewal lands past the ceiling, or the lease is lost.
+            var cap = Stopwatch.GetTimestamp();
+            while (!renewedPastCeiling.Task.IsCompleted && !lease.IsLost && Stopwatch.GetElapsedTime(cap) < ceiling * 4)
+                await Task.Delay(100);
+
             var stamps = pings.ToArray();
             var because = $"pings: {stamps.Length}, lease lost: {lease.IsLost}, largest gap between renewals: "
-                + $"{LargestGapMs(start, stamps):N0} ms against a {ceiling.TotalMilliseconds:N0} ms ceiling. "
-                + "No pings or a lost lease means the keepalive is broken; one gap near the ceiling with "
-                + "steady pings either side means the test harness stalled";
+                + $"{LargestGapMs(acquired, stamps):N0} ms against a {ceiling.TotalMilliseconds:N0} ms ceiling. "
+                + "No pings, or pings that stop, mean the keepalive is broken; a single gap of the whole ceiling "
+                + "with steady pings either side means the test host stalled this process";
 
-            // The renewals themselves, not only the end state: the lease must still be renewing
-            // after the first ceiling window has passed, and no gap may reach the ceiling.
-            stamps.Should().Contain(t => Stopwatch.GetElapsedTime(acquired, t) > ceiling, because);
-            LargestGapMs(start, stamps).Should().BeLessThan(ceiling.TotalMilliseconds, because);
-            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1, because);
+            renewedPastCeiling.Task.IsCompleted.Should().BeTrue(because);
+            lease.IsLost.Should().BeFalse(because);
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(1,
+                "more than a full idle ceiling after acquisition the server still holds the lock, so it was renewed. " + because);
             await lease.EnsureHeldAsync(CancellationToken.None);
 
             var (xid, xmin) = await _fx.LockHolderXidAndXminAsync(key);
@@ -354,6 +384,44 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
             xmin.Should().BeNull("between keepalives a READ COMMITTED lease holds no snapshot, so vacuum is not held back");
         }
         (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MigrationImportLease_WhoseKeepaliveStalls_LosesTheLock_AndSaysSo()
+    {
+        // The other half of the guarantee: a holder whose renewals stop (a hung process) does not keep the
+        // lock. The keepalive renews a few times, then the seam blocks it; the server's idle ceiling must end
+        // the lease. Load can only make this direction happen sooner, so a short ceiling is safe here.
+        var key = Random.Shared.NextInt64();
+        var renewals = 0;
+        var stall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var db = _fx.CreatePooledDb();
+        var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
+            db, key,
+            new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100))
+            {
+                // One renewal, then the stall: needing several inside a short ceiling let a host pause end the lease first.
+                BeforeKeepalive = () => Interlocked.Increment(ref renewals) <= 1 ? Task.CompletedTask : stall.Task,
+            },
+            CancellationToken.None))!;
+        try
+        {
+            var cap = Stopwatch.GetTimestamp();
+            while (await _fx.GrantedAdvisoryLocksAsync(key) > 0 && Stopwatch.GetElapsedTime(cap) < TimeSpan.FromSeconds(60))
+                await Task.Delay(100);
+
+            Volatile.Read(ref renewals).Should().BeGreaterThan(1, "the keepalive renewed once, then stalled");
+            (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "a stalled holder's lease is ended by the idle ceiling");
+            var lost = async () => await lease.EnsureHeldAsync(CancellationToken.None);
+            await lost.Should().ThrowAsync<InvalidOperationException>("the holder must find out before doing more work");
+            lease.IsLost.Should().BeTrue();
+            (await TryTakeInOtherPooledTransactionAsync(key)).Should().BeTrue("another import can now take the package lock");
+        }
+        finally
+        {
+            stall.TrySetResult(); // let the keepalive loop finish so dispose does not wait on it
+            await lease.DisposeAsync();
+        }
     }
 
     [Fact]

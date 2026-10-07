@@ -7,6 +7,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -30,7 +31,8 @@ public class GosiController : ControllerBase
     // ── Contribution Rules ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Lists all active GOSI contribution rules for the tenant (including system defaults).
+    /// RETIRED listing of gosi_contribution_rules (tenant rows + system defaults). Every row is marked
+    /// retired / not applied to payroll and names the statutory rule payroll actually reads.
     /// </summary>
     [HttpGet("contribution-rules")]
     public async Task<IActionResult> GetContributionRules(CancellationToken ct)
@@ -49,8 +51,16 @@ public class GosiController : ControllerBase
             .ThenByDescending(r => r.EffectiveFrom)
             .ToListAsync(ct);
 
+        // RETIRED as a rate source: nothing computes GOSI from these rows. Each row says so and names the
+        // statutory rule that holds the rate payroll applies; the response is also marked deprecated.
+        Response.Headers["Deprecation"] = "true";
+        Response.Headers["X-Retired-Code"] = GosiRateStoreRetiredCode;
         return Ok(rules.Select(r => new
         {
+            retired          = true,
+            appliedToPayroll = false,
+            retiredCode      = GosiRateStoreRetiredCode,
+            statutoryRuleKey = GosiRuleSeeder.StatutoryRuleKeyFor.TryGetValue((r.Branch, r.Payer), out var key) ? key : null,
             r.Id,
             r.TenantId,
             isDefault       = r.TenantId == Guid.Empty,
@@ -70,55 +80,37 @@ public class GosiController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a tenant-specific GOSI contribution rule override.
-    /// Requires payroll.rates.statutory_override.
+    /// Formerly created a tenant-specific GOSI contribution rule override. Now refuses with
+    /// <see cref="GosiRateStoreRetiredCode"/>: this store is no longer a rate source for anything.
+    /// Still requires payroll.rates.statutory_override, so the refusal does not disclose more than before.
     /// </summary>
     [HttpPost("contribution-rules")]
-    public async Task<IActionResult> CreateContributionRule(
+    public Task<IActionResult> CreateContributionRule(
         [FromBody] CreateGosiRuleRequest req,
         CancellationToken ct)
     {
-        // HARDENED (compliance boundary): GOSI contribution rates are the flagship statutory rate and
-        // the actual computation source (GosiCalculationService), so overriding one is a bounded
-        // statutory action — it requires the higher-trust payroll.rates.statutory_override permission
-        // (not ordinary payroll.manage) and a non-empty reason. Every write is audited below.
-        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
-        if (string.IsNullOrWhiteSpace(req.SourceReference) && string.IsNullOrWhiteSpace(req.Notes))
-            return BadRequest(new { error = "A reason (SourceReference or Notes) is required to override a GOSI contribution rate." });
+        // The permission gate is kept ahead of the refusal so an unprivileged caller learns nothing new.
+        if (!HasPermission("payroll.rates.statutory_override")) return Task.FromResult<IActionResult>(Forbid());
 
-        // UNIT GATE. Rate is a decimal FRACTION of the contributory wage (0.09 = 9%) — the same
-        // unit StatutoryRule.RuleValue holds for gosi.saudi_employee_rate, which is what the
-        // payslip and the GOSI filing read. An operator who types "9" here means 9% and would
-        // otherwise have nine times the wage deducted, so the write is refused with the form
-        // named rather than interpreted. See Infrastructure/Payroll/StatutoryValueUnits.cs.
-        if (StatutoryValueUnits.ValidateGosiBranchRate(req.Rate, req.Branch, req.Payer) is { } rateError)
-            return BadRequest(new { error = rateError });
-
-        var tenantId = GetTenantId();
-        var rule = new GosiContributionRule
+        // RETIRED AS A RATE SOURCE. No surface computes GOSI from gosi_contribution_rules any more:
+        // the payslip, the GOSI filing, the per-employee preview and the readiness report all read
+        // the effective-dated statutory_rules through KsaDeductionCalculator. A row written here would
+        // be accepted, audited and then ignored by every number the customer sees, which is worse than
+        // a refusal. The refusal names the statutory key that holds the same fact.
+        GosiRuleSeeder.StatutoryRuleKeyFor.TryGetValue((req.Branch, req.Payer), out var statutoryKey);
+        return Task.FromResult<IActionResult>(StatusCode(StatusCodes.Status410Gone, new
         {
-            TenantId           = tenantId,
-            CountryCode        = req.CountryCode ?? "SA",
-            Classification     = req.Classification,
-            Branch             = req.Branch,
-            Payer              = req.Payer,
-            Rate               = req.Rate,
-            MinContributoryWage = req.MinContributoryWage,
-            MaxContributoryWage = req.MaxContributoryWage,
-            EffectiveFrom      = req.EffectiveFrom,
-            EffectiveTo        = req.EffectiveTo,
-            SourceReference    = req.SourceReference,
-            Notes              = req.Notes,
-            CreatedBy          = GetUserId(),
-        };
-
-        _db.GosiContributionRules.Add(rule);
-        await GosiAudit("gosi.rule.created", rule.Id.ToString(),
-            new { rule.Classification, rule.Branch, rule.Payer, rule.Rate, rule.EffectiveFrom }, ct);
-        await _db.SaveChangesAsync(ct);
-
-        return CreatedAtAction(nameof(GetContributionRules), new { }, rule);
+            code  = GosiRateStoreRetiredCode,
+            error = "GOSI contribution rates are no longer edited here. Every GOSI figure — payslip, filing, "
+                  + "preview and readiness report — is computed from the effective-dated statutory rules, so a "
+                  + "rate saved in this list would change nothing. Nothing has been saved."
+                  + (statutoryKey is null ? string.Empty : $" The statutory rule that holds this rate is '{statutoryKey}'."),
+            statutoryRuleKey = statutoryKey,
+        }));
     }
+
+    /// <summary>Coded reason returned when a caller tries to write to the retired GOSI rate store.</summary>
+    public const string GosiRateStoreRetiredCode = "GOSI_RATE_STORE_RETIRED";
 
     /// <summary>
     /// Deactivates a tenant-specific GOSI contribution rule.
@@ -170,22 +162,13 @@ public class GosiController : ControllerBase
             .Where(s => s.TenantId == tenantId && s.IsActive)
             .ToListAsync(ct);
 
-        var rules = await LoadRulesAsync(tenantId, ct);
+        // Readiness is the payroll run's own verdict — the payslip engine's result judged with the run's
+        // codes, on the salary the run would use (effective by the period END). See GosiReadinessValidator.
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-
-        var reports = employees.Select(e =>
-        {
-            var salary = salaries
-                .Where(s => s.EmployeeId == e.Id && s.EffectiveDate <= periodDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefault();
-
-            var applicable = GosiCalculationService.SelectActiveRules(
-                GosiCalculationService.DeriveClassification(e.Nationality),
-                rules, periodDate, tenantId);
-
-            return GosiReadinessValidator.Validate(e, salary?.BasicSalary, applicable);
-        }).ToList();
+        var reports = new List<GosiReadinessReport>(employees.Count);
+        foreach (var e in employees)
+            reports.Add((await GosiReadinessValidator.AssessAsync(
+                _rules, e, GosiReadinessValidator.SalaryForPeriod(salaries, e.Id, periodDate), periodDate, ct)).Readiness);
 
         return Ok(new
         {
@@ -219,30 +202,18 @@ public class GosiController : ControllerBase
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == employeeId, ct);
         if (employee is null) return NotFound();
 
-        var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId && s.IsActive && s.EffectiveDate <= DateOnly.FromDateTime(DateTime.UtcNow))
-            .OrderByDescending(s => s.EffectiveDate)
-            .FirstOrDefaultAsync(ct);
-
-        var rules      = await LoadRulesAsync(tenantId, ct);
+        // The salary the RUN would use for this month: active and effective by the period END (not
+        // today), so a raise dated later this month is previewed exactly as payroll will pay it.
         var periodDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        var applicable = GosiCalculationService.SelectActiveRules(
-            GosiCalculationService.DeriveClassification(employee.Nationality),
-            rules, periodDate, tenantId);
+        var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.EmployeeId == employeeId && s.IsActive)
+            .ToListAsync(ct);
+        var salary = GosiReadinessValidator.SalaryForPeriod(salaries, employeeId, periodDate);
 
-        var report = GosiReadinessValidator.Validate(employee, salary?.BasicSalary, applicable);
-
-        GosiContributionResult? preview = null;
-        if (report.IsReady && salary?.BasicSalary > 0)
-        {
-            // S1/A2(b) — the contributory wage is basic + housing, matching the payroll run's pack.
-            // The MONTHLY ceiling comes from the same statutory rule the pack reads, so this preview
-            // and the payslip cannot disagree. Previously unbounded here: SAR 5,850 previewed against
-            // SAR 4,387.50 deducted on a SAR 60,000 covered wage.
-            var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, periodDate, null, ct);
-            preview = GosiCalculationService.Calculate(
-                employee.Nationality, salary.BasicSalary + salary.HousingAllowance, rules, periodDate, tenantId, bounds);
-        }
+        // ONE ENGINE, ONE STORE, ONE VERDICT: the preview is the payslip engine's own result (cohort,
+        // ceiling and GCC home scheme included) and readiness is judged from it with the run's codes.
+        var (report, calc) = await GosiReadinessValidator.AssessAsync(_rules, employee, salary, periodDate, ct);
+        var preview = report.IsReady ? calc : null;
 
         return Ok(new
         {
@@ -252,10 +223,15 @@ public class GosiController : ControllerBase
             report.IsReady,
             blockingIssues = report.BlockingIssues.Select(i => new { i.Code, i.Message, i.IsBlocking }),
             warnings       = report.Warnings.Select(i => new { i.Code, i.Message }),
+            // The cohort and the engine's plain-language basis, so a blocked new entrant reads WHY.
+            cohort = report.Cohort,
+            basis  = report.Basis,
             contributionPreview = preview is null ? null : new
             {
                 preview.EmployeeTotal,
                 preview.EmployerTotal,
+                preview.Cohort,
+                preview.Basis,
                 lines = preview.Lines.Select(l => new
                 {
                     l.Branch,
@@ -484,16 +460,6 @@ public class GosiController : ControllerBase
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    // IgnoreQueryFilters is intentional: same reasoning as GetContributionRules.
-    // Platform defaults (TenantId==Guid.Empty) are excluded by the global filter, so we bypass
-    // it and re-apply explicit scope: own tenant rows + Guid.Empty defaults only.
-    private async Task<IReadOnlyList<GosiContributionRule>> LoadRulesAsync(Guid tenantId, CancellationToken ct) =>
-        await _db.GosiContributionRules
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(r => (r.TenantId == Guid.Empty || r.TenantId == tenantId) && r.IsActive)
-            .ToListAsync(ct);
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId()  => Guid.TryParse(

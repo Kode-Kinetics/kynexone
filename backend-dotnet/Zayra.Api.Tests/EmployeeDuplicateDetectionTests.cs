@@ -29,8 +29,15 @@ namespace Zayra.Api.Tests;
 /// NEVER auto-merge (human resolution only). Plus the GCC guards: sentinel-DOB skip, passport-only = probable,
 /// transliteration-variance (Mohammed/Muhammad/Mohamed) = probable, cross-company scope masking.
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeDuplicateDetectionTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeDuplicateDetectionTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -491,7 +498,7 @@ public class EmployeeDuplicateDetectionTests
     [Fact]
     public async Task ImportPreview_ProjectsDuplicateWarning()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
         await SeedEmployee(db, t, "EXIST-1", "Original", iqama: "5150");

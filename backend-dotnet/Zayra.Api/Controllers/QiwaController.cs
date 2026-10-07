@@ -426,8 +426,8 @@ public class QiwaController : ControllerBase
                 Simulated = simulated,
                 FiledWithQiwa = !simulated && l.Status == QiwaSyncLogStatuses.Success,
                 l.TriggerSource,
-                l.RequestPayloadJson,
-                l.ResponsePayloadJson,
+                // Never the stored request/response bodies: rows written before the scrubber hold the
+                // employee's record as Qiwa echoed it. Status, label and error below are what a reader needs.
                 l.HttpStatusCode,
                 l.ErrorMessage,
                 l.TriggeredBy,

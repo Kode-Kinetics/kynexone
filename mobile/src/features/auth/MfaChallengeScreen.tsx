@@ -1,15 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
+import { formatCountdown, MFA_CODE_LENGTH, secondsLeft } from '@/auth/mfaFlow';
 import {
   GlassSurface,
   LiquidBackdrop,
@@ -20,42 +21,30 @@ import {
 import { useTheme } from '@/theme/ThemeProvider';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '@/navigation/authTypes';
+import { MfaCodeError, MfaCodeInput, useCodeEntry } from './mfaCodeEntry';
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'MfaChallenge'>;
 
+/** Step 2 of sign-in for an enrolled user: the 6-digit code from the authenticator app. */
 export default function MfaChallengeScreen({ navigation, route }: Props) {
-  const { challengeToken, tenantId, email, expiresInSeconds } = route.params;
-  const { completeMfa, isLoading, error, clearError } = useAuthStore();
+  const { t } = useTranslation();
   const { theme } = useTheme();
+  const { challengeToken, tenantId, email, expiresInSeconds, justEnrolled } = route.params;
+  const completeMfa = useAuthStore((s) => s.completeMfa);
   const [code, setCode] = useState('');
-  const [remaining, setRemaining] = useState(Math.max(0, expiresInSeconds || 300));
+  const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds, { justEnrolled });
 
-  useEffect(() => {
-    const timer = setInterval(
-      () => setRemaining((value) => Math.max(0, value - 1)),
-      1000,
-    );
-    return () => clearInterval(timer);
-  }, []);
+  const finished = state.phase === 'locked' || state.phase === 'expired';
+  const submitting = state.phase === 'submitting' || state.phase === 'succeeded';
+  const canSubmit = state.phase === 'ready' && code.length === MFA_CODE_LENGTH;
 
-  useEffect(() => () => clearError(), [clearError]);
-
-  const timeLabel = useMemo(() => {
-    const minutes = Math.floor(remaining / 60);
-    const seconds = remaining % 60;
-    return minutes + ':' + String(seconds).padStart(2, '0');
-  }, [remaining]);
-
-  const submit = async () => {
-    if (code.length !== 6 || remaining <= 0) return;
-    try {
-      await completeMfa(challengeToken, code, tenantId);
-    } catch {
-      // The auth store exposes the user-facing error.
-    }
+  const submit = () => {
+    if (!canSubmit) return;
+    const entered = code;
+    // Cleared up front so a rejected code never lingers and the next one can be autofilled.
+    setCode('');
+    void run(() => completeMfa(challengeToken, entered, tenantId));
   };
-
-  const expired = remaining <= 0;
 
   return (
     <KeyboardAvoidingView
@@ -71,11 +60,10 @@ export default function MfaChallengeScreen({ navigation, route }: Props) {
         showsVerticalScrollIndicator={false}
       >
         <ScreenHero
-          eyebrow="Multi-factor authentication"
-          title="Verify it’s you"
-          subtitle="Enter the current 6-digit code from your authenticator app."
+          title={t('mfa.challengeTitle')}
+          subtitle={t('mfa.challengeBody', { email })}
           onBack={() => navigation.goBack()}
-          backLabel="Back to sign in"
+          backLabel={t('mfa.backToSignIn')}
         />
 
         <View style={styles.content}>
@@ -84,83 +72,61 @@ export default function MfaChallengeScreen({ navigation, route }: Props) {
               <Ionicons name="shield-checkmark-outline" size={30} color={theme.colors.cyan} />
             </View>
 
-            <Text style={[theme.typography.bodyStrong, styles.email, { color: theme.colors.text }]}>
-              {email}
-            </Text>
-            <Text style={[theme.typography.caption, styles.codeLabel, { color: theme.colors.textSecondary }]}>
-              Authentication code
-            </Text>
-
-            <View
-              style={[
-                styles.codeFrame,
-                {
-                  borderColor: error ? theme.colors.danger : theme.colors.glassBorder,
-                  backgroundColor: theme.colors.surfaceSoft,
-                },
-              ]}
-            >
-              <TextInput
-                value={code}
-                onChangeText={(value) => {
-                  clearError();
-                  setCode(value.replace(/\D/g, '').slice(0, 6));
-                }}
-                style={[styles.codeInput, { color: theme.colors.text }]}
-                keyboardType="number-pad"
-                textContentType="oneTimeCode"
-                autoComplete="one-time-code"
-                maxLength={6}
-                autoFocus
-                editable={!isLoading && !expired}
-                accessibilityLabel="Authentication code"
-                selectionColor={theme.colors.primary}
-              />
-            </View>
-
-            {error ? (
-              <View
-                accessibilityRole="alert"
-                accessibilityLiveRegion="assertive"
-                style={[styles.errorBox, { backgroundColor: theme.colors.danger + '12' }]}
-              >
-                <Ionicons name="alert-circle-outline" size={17} color={theme.colors.danger} />
-                <Text style={[theme.typography.caption, styles.errorText, { color: theme.colors.danger }]}>
-                  {error}
-                </Text>
-              </View>
-            ) : null}
-
-            <Text
-              style={[
-                theme.typography.caption,
-                styles.timer,
-                { color: expired ? theme.colors.danger : theme.colors.textMuted },
-              ]}
-            >
-              {expired ? 'This challenge has expired. Return to sign in.' : 'Code expires in ' + timeLabel}
-            </Text>
-
-            <LiquidButton
-              label="Verify and sign in"
-              icon="log-in-outline"
-              onPress={() => void submit()}
-              loading={isLoading}
-              disabled={code.length !== 6 || isLoading || expired}
+            <View style={styles.inputGap} />
+            <MfaCodeInput
+              value={code}
+              onChange={(value) => {
+                edited();
+                setCode(value);
+              }}
+              editable={!finished && !submitting}
+              autoFocus
+              onSubmit={submit}
+              tone={{
+                text: theme.colors.text,
+                placeholder: theme.colors.textMuted,
+                background: theme.colors.surfaceSoft,
+                border: state.error ? theme.colors.danger : theme.colors.glassBorder,
+              }}
             />
 
-            <MotionPressable
-              accessibilityRole="button"
-              accessibilityLabel="Use a different account"
-              onPress={() => navigation.goBack()}
-              haptic="selection"
-              contentStyle={styles.secondary}
-            >
-              <Ionicons name="people-outline" size={17} color={theme.colors.primary} />
-              <Text style={[theme.typography.caption, styles.secondaryText, { color: theme.colors.primary }]}>
-                Use a different account
+            <MfaCodeError state={state} color={theme.colors.danger} />
+            {!finished ? (
+              <Text style={[theme.typography.caption, styles.timer, { color: theme.colors.textMuted }]}>
+                {t('mfa.expiresIn', { time: formatCountdown(secondsLeft(state, nowMs)) })}
               </Text>
-            </MotionPressable>
+            ) : null}
+
+            {finished ? (
+              <LiquidButton
+                label={t('mfa.backToSignIn')}
+                icon="arrow-back-outline"
+                onPress={() => navigation.goBack()}
+                style={styles.button}
+              />
+            ) : (
+              <>
+                <LiquidButton
+                  label={t('mfa.verify')}
+                  icon="log-in-outline"
+                  onPress={submit}
+                  loading={submitting}
+                  disabled={!canSubmit}
+                  style={styles.button}
+                />
+                <MotionPressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('mfa.backToSignIn')}
+                  onPress={() => navigation.goBack()}
+                  haptic="selection"
+                  contentStyle={styles.secondary}
+                >
+                  <Text style={[theme.typography.caption, styles.secondaryText, { color: theme.colors.primary }]}>
+                    {t('mfa.backToSignIn')}
+                  </Text>
+                </MotionPressable>
+              </>
+            )}
           </GlassSurface>
         </View>
       </ScrollView>
@@ -181,28 +147,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  email: { textAlign: 'center', marginTop: 12 },
-  codeLabel: { textAlign: 'center', marginTop: 24, marginBottom: 8, fontWeight: '700' },
-  codeFrame: { borderWidth: 1, borderRadius: 18, overflow: 'hidden' },
-  codeInput: {
-    minHeight: 64,
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: '800',
-    letterSpacing: 8,
-    textAlign: 'center',
-    paddingHorizontal: 12,
-  },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 7,
-    borderRadius: 14,
-    padding: 11,
-    marginTop: 12,
-  },
-  errorText: { flex: 1, lineHeight: 18 },
-  timer: { textAlign: 'center', marginVertical: 14 },
+  inputGap: { height: 22 },
+  timer: { textAlign: 'center', marginTop: 14 },
+  button: { marginTop: 18 },
   secondary: {
     minHeight: 44,
     flexDirection: 'row',

@@ -21,10 +21,12 @@ import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult,
+  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult, AccessCeiling,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
+import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
+import { useLocale } from '../contexts/LocaleContext';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -131,6 +133,8 @@ function UsersTab() {
   const [editLoading, setEditLoading] = useState(false);
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [allPermissions, setAllPermissions] = useState<PermissionItem[]>([]);
+  // What the server will let THIS caller assign (privilege ceiling); roles above it are greyed out.
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
 
   const pageSize = 20;
 
@@ -169,6 +173,7 @@ function UsersTab() {
   useEffect(() => {
     rolesApi.list().then(setRoles).catch(() => {});
     rolesApi.permissions().then(setAllPermissions).catch(() => {});
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
   }, []);
 
   // Opening any action dialog starts from a clean slate: a link issued for one user must never be
@@ -354,10 +359,10 @@ function UsersTab() {
       )}
 
       {/* User Access Detail Modal */}
-      {selected && <UserAccessModal user={selected} roles={roles} allPermissions={allPermissions} onClose={() => { setSelected(null); load(); }} />}
+      {selected && <UserAccessModal user={selected} roles={roles} allPermissions={allPermissions} ceiling={ceiling} onClose={() => { setSelected(null); load(); }} />}
 
       {/* Create User Modal */}
-      {showCreate && <CreateUserModal roles={roles} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreateUserModal roles={roles} ceiling={ceiling} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
 
       {/* Action confirmation modal */}
       {showAction && (
@@ -475,12 +480,15 @@ function UsersTab() {
   );
 }
 
-function UserAccessModal({ user, roles, allPermissions, onClose }: {
+function UserAccessModal({ user, roles, allPermissions, ceiling, onClose }: {
   user: UserListItem;
   roles: RoleItem[];
   allPermissions: PermissionItem[];
+  ceiling: AccessCeiling | null;
   onClose: () => void;
 }) {
+  const { t, locale } = useLocale();
+  const ownAccount = isSelf(ceiling, user.id);
   const [access, setAccess] = useState<UserAccess | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'info' | 'roles' | 'company-access' | 'access-mode' | 'overrides'>('info');
@@ -519,8 +527,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
 
   const saveRoles = async () => {
     setSaving(true); setSaveErr(''); setSaveOk('');
-    try { await usersApi.assignRoles(user.id, selectedRoles); setSaveOk('Roles updated.'); }
-    catch { setSaveErr('Failed to update roles.'); }
+    try { await usersApi.assignRoles(user.id, selectedRoles); setSaveOk(t('Roles updated.')); }
+    catch (e: unknown) { setSaveErr(localizedRefusal(e, locale) ?? t('Roles could not be updated.')); }
     setSaving(false);
   };
 
@@ -727,17 +735,34 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
               {tab === 'roles' && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-500">Select roles to assign to this user. This replaces all current roles.</p>
+                  {ownAccount ? (
+                    <p data-testid="access-self-change" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                      {t('You cannot change your own roles. Another administrator must do it.')}
+                    </p>
+                  ) : ceiling && ceiling.roles.some(rc => !rc.canAssign) && (
+                    <p className="text-xs text-slate-500">{t('Roles above your own access are greyed out, with the reason.')}</p>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
-                    {roles.map(r => (
-                      <label key={r.id} className="flex items-center gap-2 rounded-lg border border-slate-200 p-2.5 cursor-pointer hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
-                        <input type="checkbox" checked={selectedRoles.includes(r.name)}
-                          onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
-                        <div>
-                          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{r.name}</p>
-                          <p className="text-xs text-slate-500">{r.description}</p>
-                        </div>
-                      </label>
-                    ))}
+                    {roles.map(r => {
+                      const blocked = assignBlock(ceiling, r.id, locale);
+                      const disabled = ownAccount || !!blocked;
+                      return (
+                        <label key={r.id} data-testid={`role-option-${r.name}`} data-blocked={blocked ? 'true' : 'false'} title={blocked ?? undefined}
+                          className={`flex items-start gap-2 rounded-lg border border-slate-200 p-2.5 dark:border-slate-700 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                          <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={disabled}
+                            onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{r.name}</p>
+                            <p className="text-xs text-slate-500">{r.description}</p>
+                            {blocked && (
+                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                                <span className="font-medium">{t('Above your access')}</span> · {blocked}
+                              </p>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -944,7 +969,7 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
         <div className="border-t border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Close</button>
           {tab === 'roles' && (
-            <button onClick={saveRoles} disabled={saving} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+            <button onClick={saveRoles} disabled={saving || ownAccount} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Roles'}
             </button>
           )}
@@ -964,7 +989,8 @@ function UserAccessModal({ user, roles, allPermissions, onClose }: {
   );
 }
 
-function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onClose: () => void; onCreated: () => void }) {
+function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleItem[]; ceiling: AccessCeiling | null; onClose: () => void; onCreated: () => void }) {
+  const { t, locale } = useLocale();
   const passwordId = useId();
   const requirementsId = `${passwordId}-requirements`;
   const [email, setEmail] = useState('');
@@ -1008,7 +1034,7 @@ function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onC
       } else if (status === 422 && data?.error === 'user_limit_reached') {
         setErr(data.message ?? `User limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
-        setErr(data?.message ?? 'Failed to create user.');
+        setErr(localizedRefusal(e, locale) ?? 'Failed to create user.');
       }
     }
     setLoading(false);
@@ -1073,13 +1099,20 @@ function CreateUserModal({ roles, onClose, onCreated }: { roles: RoleItem[]; onC
         </FormField>
         <FormField label="Roles">
           <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
-            {roles.map(r => (
-              <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                <input type="checkbox" checked={selectedRoles.includes(r.name)}
-                  onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
-                {r.name}
-              </label>
-            ))}
+            {roles.map(r => {
+              const blocked = assignBlock(ceiling, r.id, locale);
+              return (
+                <label key={r.id} title={blocked ?? undefined} data-testid={`create-role-option-${r.name}`} data-blocked={blocked ? 'true' : 'false'}
+                  className={`flex items-start gap-2 text-sm ${blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                  <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={!!blocked}
+                    onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
+                  <span className="min-w-0">
+                    {r.name}
+                    {blocked && <span className="block text-xs text-amber-700 dark:text-amber-400">{t('Above your access')}</span>}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </FormField>
         {err && <ErrMsg msg={err} />}
@@ -1109,6 +1142,8 @@ function RolesTab() {
   const [createForm, setCreateForm] = useState({ name: '', description: '', authorityLevel: 99 });
   const [editForm, setEditForm] = useState({ name: '', description: '', authorityLevel: 99 });
   const [editPerms, setEditPerms] = useState<string[]>([]);
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  const { t, locale } = useLocale();
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -1116,6 +1151,7 @@ function RolesTab() {
       .then(([r, p]) => { setRoles(r); setAllPermissions(p); })
       .catch(() => {})
       .finally(() => setLoading(false));
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
@@ -1146,7 +1182,7 @@ function RolesTab() {
       await rolesApi.setPermissions(editRole.id, editPerms);
       setEditRole(null);
       reload();
-    } catch (e: any) { setErr(e?.response?.data?.message ?? 'Failed to update role'); }
+    } catch (e: unknown) { setErr(localizedRefusal(e, locale) ?? 'Failed to update role'); }
     finally { setSaving(false); }
   };
 
@@ -1155,7 +1191,7 @@ function RolesTab() {
       if (r.isActive) await rolesApi.deactivate(r.id);
       else await rolesApi.activate(r.id);
       reload();
-    } catch (e: any) { alert(e?.response?.data?.message ?? 'Failed'); }
+    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed'); }
   };
 
   const togglePermInEdit = (key: string) => {
@@ -1280,13 +1316,17 @@ function RolesTab() {
                   <div key={module}>
                     <p className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">{module}</p>
                     <div className="grid grid-cols-2 gap-1">
-                      {perms.map(p => (
-                        <label key={p.id} className="flex items-center gap-2 cursor-pointer text-xs">
-                          <input type="checkbox" checked={editPerms.includes(p.key)} onChange={() => togglePermInEdit(p.key)}
-                            className="rounded border-slate-300 text-violet-600 focus:ring-violet-500" />
-                          <span className="font-mono text-violet-700 dark:text-violet-400 truncate" title={p.description}>{p.key}</span>
-                        </label>
-                      ))}
+                      {perms.map(p => {
+                        const notHeld = !canGrantPermission(ceiling, p.key) && !editPerms.includes(p.key);
+                        return (
+                          <label key={p.id} title={notHeld ? t('You do not hold this permission, so you cannot grant it.') : p.description}
+                            className={`flex items-center gap-2 text-xs ${notHeld ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+                            <input type="checkbox" checked={editPerms.includes(p.key)} disabled={notHeld} onChange={() => togglePermInEdit(p.key)}
+                              className="rounded border-slate-300 text-violet-600 focus:ring-violet-500" />
+                            <span className="font-mono text-violet-700 dark:text-violet-400 truncate">{p.key}</span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -1321,13 +1361,19 @@ function RolesTab() {
                 </button>
                 <span className="text-xs text-violet-600 font-medium shrink-0">{r.permissions.length} perms</span>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button type="button" title="Edit role" onClick={() => openEdit(r)}
-                    className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700">
+                  {editBlock(ceiling, r.id, locale) && (
+                    <span data-testid={`role-locked-${r.name}`} title={editBlock(ceiling, r.id, locale) ?? undefined}
+                      className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      {t('Not editable by you')}
+                    </span>
+                  )}
+                  <button type="button" title={editBlock(ceiling, r.id, locale) ?? 'Edit role'} onClick={() => openEdit(r)} disabled={!!editBlock(ceiling, r.id, locale)}
+                    className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-slate-700">
                     <Edit2 className="h-3.5 w-3.5" />
                   </button>
                   {!r.isSystem && (
-                    <button type="button" title={r.isActive ? 'Deactivate' : 'Activate'} onClick={() => toggleRoleActive(r)}
-                      className={`h-7 w-7 flex items-center justify-center rounded-lg ${r.isActive ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'}`}>
+                    <button type="button" title={editBlock(ceiling, r.id, locale) ?? (r.isActive ? 'Deactivate' : 'Activate')} onClick={() => toggleRoleActive(r)} disabled={!!editBlock(ceiling, r.id, locale)}
+                      className={`h-7 w-7 flex items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-40 ${r.isActive ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'}`}>
                       {r.isActive ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
                     </button>
                   )}
@@ -1406,9 +1452,12 @@ function PermissionMatrixTab() {
   const [dirty, setDirty] = useState(false);
   const [moduleFilter, setModuleFilter] = useState('');
   const [overrides, setOverrides] = useState<Record<string, Record<string, boolean>>>({});
+  const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  const { t, locale } = useLocale();
 
   const load = useCallback(() => {
     setLoading(true);
+    rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
     rolesApi.getMatrix()
       .then(m => {
         setMatrix(m);
@@ -1444,7 +1493,7 @@ function PermissionMatrixTab() {
       await rolesApi.saveMatrix(rolePermissions);
       setDirty(false);
       load();
-    } catch (e: any) { alert(e?.response?.data?.message ?? 'Failed to save'); }
+    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed to save'); }
     finally { setSaving(false); }
   };
 
@@ -1477,12 +1526,17 @@ function PermissionMatrixTab() {
                 <th className="sticky start-0 z-10 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-start font-semibold text-slate-600 dark:text-slate-400 min-w-[200px] border-b border-e border-slate-200 dark:border-slate-700">
                   Permission
                 </th>
-                {matrix.roles.map(role => (
-                  <th key={role.id} className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
-                    <span title={role.description} className="block truncate max-w-[76px]">{role.name}</span>
-                    <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
-                  </th>
-                ))}
+                {matrix.roles.map(role => {
+                  const locked = editBlock(ceiling, role.id, locale);
+                  return (
+                    <th key={role.id} data-testid={`matrix-role-${role.name}`} data-locked={locked ? 'true' : 'false'} title={locked ?? role.description}
+                      className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
+                      <span className="block truncate max-w-[76px]">{role.name}</span>
+                      <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
+                      {locked && <span className="block text-[10px] font-normal text-amber-700 dark:text-amber-400">{t('Not editable by you')}</span>}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -1494,14 +1548,17 @@ function PermissionMatrixTab() {
                   </td>
                   {matrix.roles.map(role => {
                     const checked = overrides[row.permissionKey]?.[role.id] ?? row.roles[role.id] ?? false;
+                    const locked = editBlock(ceiling, role.id, locale)
+                      ?? (!checked && !canGrantPermission(ceiling, row.permissionKey) ? t('You do not hold this permission, so you cannot grant it.') : null);
                     return (
                       <td key={role.id} className="text-center px-2 py-1.5 border-b border-slate-100 dark:border-slate-800/50">
                         <input
                           type="checkbox"
-                          title={`${role.name} — ${row.permissionKey}`}
+                          title={locked ?? `${role.name} — ${row.permissionKey}`}
                           checked={checked}
+                          disabled={!!locked}
                           onChange={() => toggle(row.permissionKey, role.id)}
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                          className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
                         />
                       </td>
                     );

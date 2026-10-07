@@ -31,6 +31,7 @@ async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; fa
       : json(options.policy ?? policy);
     if (pathname === '/api/access/roles') return json(['Admin', 'HR Manager', 'Payroll Manager', 'HR Officer', 'Payroll Officer', 'Finance Approver', 'Compliance Officer', 'Manager', 'Supervisor', 'Recruiter', 'HR Assistant', 'Auditor', 'Kiosk Operator', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
     if (pathname === '/api/features/disabled-keys' || pathname === '/api/features/modules' || pathname === '/api/notifications' || pathname === '/api/access/permissions' || pathname.includes('help-text')) return json([]);
+    if (pathname === '/api/access/ceiling') return json({ userId: 'u1', isAdmin: true, heldPermissions: ['users.manage', 'roles.manage', 'security.manage'], roles: [] });
     if (pathname === '/api/tenant-admin/usage') return json({ activeUsers: 1, maxUsers: 20 });
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'America/New_York', currencyCode: 'USD', countryCode: 'US' });
     return json({ items: [], total: 0 });

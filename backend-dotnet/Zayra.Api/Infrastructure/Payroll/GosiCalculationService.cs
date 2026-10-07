@@ -1,3 +1,4 @@
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Models;
 
@@ -109,7 +110,96 @@ public static class GosiCalculationService
     }
 
     /// <summary>
-    /// Calculates GOSI contributions for a single employee for one pay period.
+    /// THE GOSI figure for one employee and one period, computed by the payslip's own engine
+    /// (<see cref="KsaDeductionCalculator"/>) from the payslip's own rate store (effective-dated
+    /// <c>statutory_rules</c>, through <paramref name="rules"/>). Every non-payroll surface that shows
+    /// a GOSI amount — the per-employee preview and the readiness report — calls this, so the number
+    /// a finance team reads before the run is, by construction, the number the run deducts.
+    ///
+    /// <para><b>Why this replaced <see cref="Calculate"/> for those surfaces.</b> They used to compute
+    /// from <c>gosi_contribution_rules</c>, a second store for the same statutory fact. After
+    /// migration <c>GosiContributionRuleRateToFraction</c> the two stores shared a unit, but they were
+    /// still two rows: a tenant override written to one moved the preview and not the payslip, the
+    /// preview ignored the person's GOSI cohort, and a GCC national was previewed at a flat Saudi rate
+    /// the payslip deliberately refuses to apply. One engine and one store closes all three.</para>
+    /// </summary>
+    /// <param name="basic">Monthly basic salary.</param>
+    /// <param name="housing">Monthly housing allowance (the other half of the KSA covered wage).</param>
+    /// <param name="periodDate">Any date in the pay period; the engine resolves rules at the first of the month.</param>
+    /// <param name="firstRegisteredOn">Employee.GosiFirstRegisteredOn — selects the annuities cohort exactly as the run does.</param>
+    public static async Task<GosiContributionResult> CalculateAsync(
+        IStatutoryRuleReader rules,
+        string?              nationality,
+        decimal              basic,
+        decimal              housing,
+        DateOnly             periodDate,
+        DateOnly?            firstRegisteredOn,
+        CancellationToken    ct = default)
+    {
+        var result = await new KsaDeductionCalculator(rules).CalculateAsync(
+            new StatutoryDeductionInput(
+                EmployeeId:   Guid.Empty,
+                CompanyId:    Guid.Empty,
+                Salary:       new SalaryBreakdown(basic, housing, 0m, 0m),
+                Nationality:  nationality ?? string.Empty,
+                ContractType: "Indefinite",
+                PeriodYear:   periodDate.Year,
+                PeriodMonth:  periodDate.Month)
+            {
+                SocialInsuranceFirstRegisteredOn = firstRegisteredOn,
+            }, ct);
+
+        var lines = new List<GosiContributionLine>();
+        foreach (var line in result.Lines)
+        {
+            var (branch, payer) = BranchAndPayerFor(line.Code);
+            var amount = payer == GosiPayers.Employee ? line.EmployeeAmount : line.EmployerAmount;
+            if (amount <= 0m) continue;
+            lines.Add(new GosiContributionLine(
+                Branch:           branch,
+                Payer:            payer,
+                Rate:             line.Rate ?? 0m,
+                ContributoryWage: line.ContributoryWage ?? 0m,
+                Amount:           amount,
+                RuleId:           line.Code));
+        }
+
+        return new GosiContributionResult(
+            Classification: DeriveClassification(nationality),
+            EmployeeTotal:  result.TotalEmployeeDeduction,
+            EmployerTotal:  result.TotalEmployerContribution,
+            Lines:          lines)
+        {
+            Basis  = result.Basis,
+            Cohort = result.SocialInsuranceCohort,
+        };
+    }
+
+    /// <summary>
+    /// Maps a payslip deduction code (<see cref="KsaDeductionCalculator"/>) to the (branch, payer)
+    /// vocabulary the GOSI screens group by. A GCC national's home-state scheme line keeps its own
+    /// branch name ("GCC-BH"), because it is not a Saudi annuities contribution.
+    /// </summary>
+    internal static (string Branch, string Payer) BranchAndPayerFor(string code)
+    {
+        var payer = code.EndsWith("-EE", StringComparison.Ordinal) ? GosiPayers.Employee : GosiPayers.Employer;
+        if (code.StartsWith("GOSI-ANN-", StringComparison.Ordinal))   return (GosiBranches.Annuities, payer);
+        if (code.StartsWith("GOSI-SANED-", StringComparison.Ordinal)) return (GosiBranches.SANED, payer);
+        if (code.StartsWith("GOSI-OH-", StringComparison.Ordinal))    return (GosiBranches.OccupationalHazards, payer);
+        if (code.StartsWith("GOSI-GCC-", StringComparison.Ordinal))
+        {
+            var home = code["GOSI-GCC-".Length..].Split('-')[0];
+            return ($"GCC-{home}", payer);
+        }
+        return (code, payer);
+    }
+
+    /// <summary>
+    /// Calculates GOSI contributions for a single employee for one pay period from a supplied rule list.
+    ///
+    /// <para><b>Not a source of GOSI figures for any screen or filing.</b> The preview and the readiness
+    /// report use <see cref="CalculateAsync"/>, which runs the payslip's engine on the payslip's rate
+    /// store. This overload remains as the pure per-branch arithmetic over an explicit rule list.</para>
     /// </summary>
     /// <param name="nationality">Raw nationality string from the Employee record.</param>
     /// <param name="contributoryWage">
@@ -233,7 +323,14 @@ public record GosiContributionResult(
     decimal                         EmployeeTotal,
     decimal                         EmployerTotal,
     IReadOnlyList<GosiContributionLine> Lines
-);
+)
+{
+    /// <summary>The payslip engine's plain-language basis (cohort, rates, period), when computed by it.</summary>
+    public string? Basis { get; init; }
+
+    /// <summary>The GOSI cohort the payslip engine computed on (<see cref="GosiCohorts"/>), or null when none applies.</summary>
+    public string? Cohort { get; init; }
+}
 
 public record GosiContributionLine(
     string  Branch,

@@ -15,6 +15,7 @@ import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
 import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
+import type { MfaPrompt } from './mfaFlow';
 
 interface AuthState {
   user: AuthUser | null;
@@ -24,10 +25,19 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   sessionExpired: boolean;
+  /** Mandatory two-step sign-in standing for the signed-in user (null = unknown / not asked yet). */
+  mfaPrompt: MfaPrompt | null;
+  mfaPromptDismissed: boolean;
+  /** Set after a signed-in enrolment ended the session, so the sign-in screen can explain why. */
+  mfaEnrolledNotice: { email: string; tenantId: string } | null;
 
   initialize: () => Promise<void>;
   login: (username: string, password: string, tenantId: string) => Promise<LoginOutcome>;
   completeMfa: (challengeToken: string, totpCode: string, tenantId: string) => Promise<void>;
+  refreshMfaStatus: () => Promise<void>;
+  dismissMfaPrompt: () => void;
+  endSessionAfterMfaEnrollment: () => Promise<void>;
+  consumeMfaEnrolledNotice: () => void;
   finishLogin: (user: AuthUser, tokens: AuthTokens, tenantId: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -45,6 +55,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isInitialized: false,
   error: null,
   sessionExpired: false,
+  mfaPrompt: null,
+  mfaPromptDismissed: false,
+  mfaEnrolledNotice: null,
 
   initialize: async () => {
     set({ isLoading: true });
@@ -85,6 +98,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isLoading: false,
           sessionExpired: false,
         });
+        void get().refreshMfaStatus();
       } catch {
         // /auth/me is the authoritative role/access graph. Cached permissions
         // cannot reopen MainTabs when that graph is unavailable or rejected;
@@ -142,7 +156,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isLoading: false,
       error: null,
       sessionExpired: false,
+      mfaPrompt: null,
+      mfaPromptDismissed: false,
+      mfaEnrolledNotice: null,
     });
+    // Grace-period standing is not in the login reply; ask once the session exists.
+    void get().refreshMfaStatus();
   },
 
   login: async (username, password, tenantId) => {
@@ -164,17 +183,49 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  // The code screen owns its own submitting/error state (see mfaFlow.codeEntryReducer).
+  // Touching the shared isLoading/error here would raise the sign-in screen's alert
+  // underneath the code screen for every wrong code.
   completeMfa: async (challengeToken, totpCode, tenantId) => {
-    set({ isLoading: true, error: null });
+    const workspace = requireWorkspace(tenantId);
+    const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, workspace);
+    await get().finishLogin(session.user, session.tokens, workspace);
+  },
+
+  refreshMfaStatus: async () => {
+    const requestedFor = get().user?.id;
+    if (!requestedFor) return;
     try {
-      const workspace = requireWorkspace(tenantId);
-      const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, workspace);
-      await get().finishLogin(session.user, session.tokens, workspace);
-    } catch (error: unknown) {
-      set({ isLoading: false, error: extractAuthError(error, 'Invalid or expired authentication code.') });
-      throw error;
+      const mfaPrompt = await authApi.getMfaStatus();
+      // A reply that lands after sign-out or an account switch belongs to someone else.
+      const { isAuthenticated, user } = get();
+      if (isAuthenticated && user?.id === requestedFor) set({ mfaPrompt });
+    } catch {
+      // Advisory only: a missing status must never block or end a valid session.
+      // The error is not logged because it carries request headers.
     }
   },
+
+  dismissMfaPrompt: () => set({ mfaPromptDismissed: true }),
+
+  endSessionAfterMfaEnrollment: async () => {
+    // Turning the factor on rotates the server-side session stamp, so this
+    // session's tokens are already dead; calling /auth/logout would only 401.
+    const { user, tenantId } = get();
+    await clearAllAuthData();
+    set({
+      user: null,
+      tenantId: null,
+      isAuthenticated: false,
+      isLoading: false,
+      sessionExpired: false,
+      mfaPrompt: null,
+      mfaPromptDismissed: false,
+      mfaEnrolledNotice: user && tenantId ? { email: user.email, tenantId } : null,
+    });
+  },
+
+  consumeMfaEnrolledNotice: () => set({ mfaEnrolledNotice: null }),
 
   logout: async () => {
     set({ isLoading: true });
@@ -193,6 +244,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isAuthenticated: false,
         isLoading: false,
         sessionExpired: false,
+        mfaPrompt: null,
+        mfaPromptDismissed: false,
       });
     }
   },
@@ -216,6 +269,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       tenantId: null,
       isAuthenticated: false,
       sessionExpired: true,
+      mfaPrompt: null,
+      mfaPromptDismissed: false,
     });
   },
 

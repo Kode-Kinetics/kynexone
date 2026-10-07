@@ -207,4 +207,80 @@ public sealed class MigrationImportPrivilegeEscalationTests
         Assert.Contains(audits, a => a.Action == "access.role_created" && a.EntityId == role.Id.ToString() && a.Metadata!.Contains("migration_import"));
         Assert.Contains(audits, a => a.Action == "access.user_created" && a.EntityId == clerk.Id.ToString() && a.Metadata!.Contains("Migrated Clerks"));
     }
+
+    // ── Follow-up: a row that fails part-way, the last operational Admin ────────────────────────────
+
+    private static async Task<User> AddUserAsync(ZayraDbContext db, Seeded s, string email, bool active, params Guid[] roles)
+    {
+        var user = new User
+        {
+            TenantId = s.Tenant, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = email, PasswordHash = "x",
+            Status = active ? "Active" : "Suspended", IsActive = active, IsEmailConfirmed = true,
+        };
+        db.Users.Add(user);
+        foreach (var role in roles) db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role });
+        await db.SaveChangesAsync();
+        return user;
+    }
+
+    [Fact]
+    public async Task ADisabledAccount_IsNeverReactivatedByARowThatFails_AndNeverWithoutAnAuditRow()
+    {
+        await using var db = Db();
+        var s = await SeedAsync(db);
+        var dormant = await AddUserAsync(db, s, "dormant@example.com", active: false);
+        var controller = Controller(db, s, "Admin", AdminPermissions);
+        // The package creates "Temp" INACTIVE, then assigns it. The role write used to resolve only active roles,
+        // so the row threw — AFTER it had already set the account Active, which the section save then persisted,
+        // with no audit row (the audit is written after the roles resolve).
+        var request = Package("esc-dormant-001",
+            ("roles", RolesHeader + "Temp,Temporary,50,false\n"),
+            ("users", UsersHeader + "dormant@example.com,Dormant,,en,UTC,Active,Temp,false\n"));
+
+        var result = await controller.Commit(request, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var after = await db.Users.SingleAsync(u => u.Id == dormant.Id);
+        var audited = await db.AuditLogs.AnyAsync(a => a.TenantId == s.Tenant && a.EntityId == dormant.Id.ToString() && a.Action.StartsWith("access.user"));
+        Assert.True(!after.IsActive || audited, "a disabled account was reactivated with no audit row");
+        Assert.False(after.IsActive);
+        Assert.Contains("inactive", RefusalBody(result).GetProperty("refusedRows")[0].GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task ReactivatingAnAccount_ThroughTheImport_IsAudited()
+    {
+        await using var db = Db();
+        var s = await SeedAsync(db);
+        var dormant = await AddUserAsync(db, s, "dormant@example.com", active: false);
+        var controller = Controller(db, s, "Admin", AdminPermissions.Concat(HrManagerPermissions));
+        var request = Package("esc-dormant-002", ("users", UsersHeader + "dormant@example.com,Dormant,,en,UTC,Active,HR Manager,false\n"));
+
+        Assert.IsType<OkObjectResult>((await controller.Commit(request, CancellationToken.None)).Result);
+
+        Assert.True((await db.Users.SingleAsync(u => u.Id == dormant.Id)).IsActive);
+        Assert.Contains(await db.AuditLogs.Where(a => a.EntityId == dormant.Id.ToString()).ToListAsync(),
+            a => a.Action == "access.user_updated" && a.Metadata!.Contains("\"Status\":\"Active\""));
+    }
+
+    [Theory]
+    [InlineData("HR Manager", "Active")]   // demoted: the row's roles drop Admin
+    [InlineData("", "Suspended")]          // deactivated: the row's status is not Active
+    public async Task TheLastOperationalAdmin_CannotBeDemotedOrDeactivated_ByAnImport(string roleNames, string status)
+    {
+        await using var db = Db();
+        var s = await SeedAsync(db);
+        var onlyAdmin = await AddUserAsync(db, s, "only.admin@example.com", active: true, s.AdminRole);
+        // A custom role holding everything Admin holds, so the privilege ceiling allows the row: only the
+        // last-admin rule (the Access screen's EnsureAnotherOperationalAdmin) stands in the way.
+        var controller = Controller(db, s, "Console Admin", AdminPermissions.Concat(HrManagerPermissions));
+        var request = Package($"esc-lastadmin-{status}", ("users", UsersHeader + $"only.admin@example.com,Only Admin,,en,UTC,{status},{roleNames},false\n"));
+
+        var result = await controller.Commit(request, CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var after = await db.Users.Include(u => u.UserRoles).SingleAsync(u => u.Id == onlyAdmin.Id);
+        Assert.True(after.IsActive && after.UserRoles.Any(r => r.RoleId == s.AdminRole), "the tenant's last operational Admin was removed by an import");
+        Assert.Contains("last administrator", RefusalBody(result).GetProperty("refusedRows")[0].GetProperty("problem").GetString());
+    }
 }

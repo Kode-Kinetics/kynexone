@@ -7,9 +7,10 @@ import { MainTabs } from './MainTabs';
 import { navigationRef } from './routes';
 import { GlassSurface, LiquidBackdrop } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
+import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 
 export function RootNavigator() {
-  const { isAuthenticated, isLoading, initialize } = useAuthStore();
+  const { isAuthenticated, isInitialized, initialize } = useAuthStore();
   const { theme } = useTheme();
 
   useEffect(() => {
@@ -28,7 +29,10 @@ export function RootNavigator() {
     },
   }), [theme]);
 
-  if (isLoading) {
+  // Only the cold-start session restore may replace the navigator. Sign-in,
+  // MFA and sign-out also toggle isLoading; unmounting the tree for those
+  // threw away the screen that was about to navigate to the MFA step.
+  if (!isInitialized) {
     return (
       <View style={[styles.loading, { backgroundColor: theme.colors.canvas }]}>
         <LiquidBackdrop />
@@ -48,6 +52,7 @@ export function RootNavigator() {
   return (
     <NavigationContainer ref={navigationRef} theme={navigationTheme}>
       {isAuthenticated ? <MainTabs /> : <AuthStack />}
+      {isAuthenticated ? <MfaSetupBanner /> : null}
     </NavigationContainer>
   );
 }

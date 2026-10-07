@@ -628,9 +628,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
     {
         "SAU" => new()
         {
-            new("gosi.employee_rate", "0.0975", "decimal", "GOSI employee contribution (Saudi nationals)"),
-            new("gosi.employer_rate", "0.1175", "decimal", "GOSI employer contribution (Saudi nationals)"),
-            new("gosi.expat_employer_rate", "0.02", "decimal", "GOSI occupational hazard (non-Saudis), employer"),
+            // No GOSI rows: GOSI rates are statutory and applied from the platform's effective-dated
+            // rules; a tenant copy is refused (GOSI_RATE_IS_STATUTORY) and was never read by payroll.
             new("wps.enabled", "true", "bool", "Wage Protection System filing required"),
             new("eosb.enabled", "true", "bool", "End-of-service benefit applies"),
         },

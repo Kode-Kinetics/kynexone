@@ -8,6 +8,10 @@ const fs = require('fs');
 const path = require('path');
 
 function readDotEnv() {
+  // EXPO_NO_DOTENV is Expo's switch for "no .env files"; the OTA publish and the
+  // runtime-version check set it so a developer's local .env can never reach a
+  // production update. This reader honours it too.
+  if (process.env.EXPO_NO_DOTENV) return {};
   const envPath = path.join(__dirname, '.env');
   if (!fs.existsSync(envPath)) return {};
 
@@ -67,13 +71,58 @@ function assertSafeReleaseConfig() {
 
 assertSafeReleaseConfig();
 
-module.exports = ({ config }) => ({
-  ...config,
-  extra: {
-    ...(config.extra || {}),
-    apiBaseUrl,
-    releaseChannel: appEnvironment,
-    appEnvironment,
-    ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
-  },
-});
+// OTA updates (expo-updates). The update URL is derived from the SAME project ID
+// the build is linked to, so an env override can never point a binary at another
+// project's updates. The fingerprint runtime version changes whenever native code
+// or native config changes, so an OTA update can only reach binaries it fits.
+// fallbackToCacheTimeout 0: launch from the cached bundle immediately and apply a
+// downloaded update on the next launch; startup never waits on the network.
+// Optional code signing (see README "Code signing"). Only the PUBLIC certificate
+// path is configured here; the private key never enters the repo or the app.
+// Unset = unsigned updates. Turning it on changes the runtime version, so decide
+// before the first store build.
+const codeSigningCertificate = value('EXPO_UPDATES_CODE_SIGNING_CERT');
+
+function codeSigningConfig() {
+  if (!codeSigningCertificate) return {};
+  if (!fs.existsSync(path.resolve(__dirname, codeSigningCertificate))) {
+    throw new Error(`EXPO_UPDATES_CODE_SIGNING_CERT points to a missing file: ${codeSigningCertificate}`);
+  }
+  return {
+    codeSigningCertificate,
+    codeSigningMetadata: { keyid: 'main', alg: 'rsa-v1_5-sha256' },
+  };
+}
+
+function updatesConfig(projectId) {
+  if (!projectId) {
+    if (appEnvironment === 'production') {
+      throw new Error('Production mobile builds need an EAS project ID for the OTA update URL.');
+    }
+    return {};
+  }
+  return {
+    runtimeVersion: { policy: 'fingerprint' },
+    updates: {
+      url: `https://u.expo.dev/${projectId}`,
+      checkAutomatically: 'ON_LOAD',
+      fallbackToCacheTimeout: 0,
+      ...codeSigningConfig(),
+    },
+  };
+}
+
+module.exports = ({ config }) => {
+  const projectId = easProjectId || config.extra?.eas?.projectId;
+  return {
+    ...config,
+    ...updatesConfig(projectId),
+    extra: {
+      ...(config.extra || {}),
+      apiBaseUrl,
+      releaseChannel: appEnvironment,
+      appEnvironment,
+      ...(projectId ? { eas: { ...(config.extra?.eas || {}), projectId } } : {}),
+    },
+  };
+};

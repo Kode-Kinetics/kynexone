@@ -59,6 +59,9 @@ export default function LoginScreen({ navigation, route }: Props) {
   const compactLayout = height < 920 || width < 390 || fontScale > 1.1;
   const narrowLayout = width < 370;
   const { login, isLoading, error, clearError } = useAuthStore();
+  const mfaEnrolledNotice = useAuthStore((s) => s.mfaEnrolledNotice);
+  const consumeMfaEnrolledNotice = useAuthStore((s) => s.consumeMfaEnrolledNotice);
+  const [mfaJustEnabled, setMfaJustEnabled] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState<keyof LoginFormData | null>(null);
   const [loginSucceeded, setLoginSucceeded] = useState(false);
@@ -92,10 +95,17 @@ export default function LoginScreen({ navigation, route }: Props) {
   useEffect(() => {
     if (route?.params?.tenantId) setValue('tenantId', normalizeWorkspace(route.params.tenantId));
     if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
-    if (route?.params?.enrollmentComplete) {
-      Alert.alert('MFA enabled', 'Enter your password and new authentication code to sign in.');
-    }
-  }, [route.params, setValue]);
+    if (route?.params?.enrollmentComplete) setMfaJustEnabled(true);
+  }, [route?.params, setValue]);
+
+  // Signed-in enrolment ends the session; say why and keep the account filled in.
+  useEffect(() => {
+    if (!mfaEnrolledNotice) return;
+    setValue('tenantId', normalizeWorkspace(mfaEnrolledNotice.tenantId));
+    setValue('username', normalizeEmail(mfaEnrolledNotice.email));
+    setMfaJustEnabled(true);
+    consumeMfaEnrolledNotice();
+  }, [consumeMfaEnrolledNotice, mfaEnrolledNotice, setValue]);
 
   useEffect(() => {
     if (error) Alert.alert('Sign-in failed', error, [{ text: 'OK', onPress: clearError }]);
@@ -213,7 +223,7 @@ export default function LoginScreen({ navigation, route }: Props) {
       try {
         const outcome = await login(normalizeEmail(data.username), data.password, normalizeWorkspace(data.tenantId));
         if (outcome.kind === 'mfaChallenge') {
-          navigation.navigate('MfaChallenge', outcome);
+          navigation.navigate('MfaChallenge', { ...outcome, justEnrolled: mfaJustEnabled });
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
         } else {
@@ -223,7 +233,7 @@ export default function LoginScreen({ navigation, route }: Props) {
         // The auth store owns the user-facing error state.
       }
     },
-    [login, navigation],
+    [login, mfaJustEnabled, navigation],
   );
 
   return (
@@ -309,6 +319,24 @@ export default function LoginScreen({ navigation, route }: Props) {
               Attendance, leave, payroll and approvals in one place.
             </Text>
           </View>
+
+          {mfaJustEnabled ? (
+            <View
+              style={[
+                styles.mfaNotice,
+                { backgroundColor: theme.colors.cyan + '14', borderColor: theme.colors.cyan + '40' },
+              ]}
+              accessibilityRole="alert"
+            >
+              <Ionicons name="shield-checkmark-outline" size={18} color={theme.colors.cyan} />
+              <View style={styles.mfaNoticeText}>
+                <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{t('mfa.doneTitle')}</Text>
+                <Text style={[theme.typography.caption, styles.mfaNoticeBody, { color: theme.colors.textSecondary }]}>
+                  {t('mfa.doneSignInAgain')}
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           <AnimatedLoginField active={focusedField === 'tenantId'} delay={260}>
           <Controller
@@ -522,6 +550,17 @@ function TrustItem({ icon, label }: { icon: React.ComponentProps<typeof Ionicons
 }
 
 const styles = StyleSheet.create({
+  mfaNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+  },
+  mfaNoticeText: { flex: 1 },
+  mfaNoticeBody: { marginTop: 2, lineHeight: 18 },
   root: { flex: 1 },
   foreground: { zIndex: 1 },
   scroll: {
