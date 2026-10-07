@@ -125,11 +125,15 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new DuplicatePersonException(strongDuplicates);   // → controller maps to advisory 409
         // Any detected-but-proceeding case is audited AFTER creation (with the real employee id) — never silent.
 
-        var code = request.ManualEmployeeCode ? Clean(request.EmployeeCode) : await GenerateEmployeeCode(tenantId, request, context, cancellationToken);
-        if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Employee code is required.");
-        if (await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, cancellationToken))
+        // A MANUAL code is checked here. A GENERATED one is taken inside the save's transaction, under the ID-rule lock
+        // the import also takes (EmployeeIdRuleLock) — it used to be read here, before any transaction, so a hire saved
+        // during an import reused a code the import had dispensed and wrote the sequence back over the import's.
+        var code = request.ManualEmployeeCode ? Clean(request.EmployeeCode) : string.Empty;
+        if (request.ManualEmployeeCode)
         {
-            throw new InvalidOperationException("Employee code already exists in this tenant.");
+            if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Employee code is required.");
+            if (await _db.Employees.AnyAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, cancellationToken))
+                throw new InvalidOperationException("Employee code already exists in this tenant.");
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
@@ -160,9 +164,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         // session. The authoritative consume re-check happens at the occupying transition
         // (ChangeStatusAsync). Lock + enforce + persist run atomically under the execution
         // strategy; over-budget throws EstablishmentBudgetExceededException → structured 409.
-        await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+        async Task<bool> PersistAsync() => await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
             excludeEmployeeId: null, path: "create", context, async () =>
             {
+                if (!request.ManualEmployeeCode)
+                    employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
                 await _db.SaveChangesAsync(cancellationToken);
                 await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
@@ -175,6 +181,22 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
             }, cancellationToken);
+        if (!request.ManualEmployeeCode && _db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+        {
+            // The generated code and the employee land in ONE transaction, so the ID-rule lock is held until the code
+            // is committed (the establishment guard joins this transaction on its lockable path).
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+                await PersistAsync();
+                await tx.CommitAsync(cancellationToken);
+            });
+        }
+        else
+        {
+            await PersistAsync();
+        }
         // Stamp the readiness badge now that the employee + payroll/compliance rows are persisted.
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -1504,14 +1526,18 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _audit.WriteAsync("employee.work_email_renamed", "Employee", id, context, audit.RenamedJson, ct);
     }
 
-    private async Task<string> GenerateEmployeeCode(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
+    /// <summary>A generated employee code, taken under the shared ID-rule lock (<see cref="EmployeeIdRuleLock"/>) inside the
+    /// caller's transaction; codes already in use anywhere in the tenant are skipped. Nothing is saved here — the
+    /// sequence bump rides on the employee's own save.</summary>
+    private async Task<string> AllocateEmployeeCodeAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var rule = await _db.EmployeeIdRules.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted && (x.CompanyId == request.CompanyId || x.CompanyId == null), cancellationToken);
+        var rules = await EmployeeIdRuleLock.LockAsync(_db, tenantId, cancellationToken);
+        var rule = rules.FirstOrDefault(x => x.CompanyId != null && x.CompanyId == request.CompanyId)
+                   ?? rules.FirstOrDefault(x => x.CompanyId == null);
         if (rule is null)
         {
             rule = new EmployeeIdRule { TenantId = tenantId, CompanyId = request.CompanyId, CreatedBy = context.UserId };
             _db.EmployeeIdRules.Add(rule);
-            await _db.SaveChangesAsync(cancellationToken);
         }
         var parts = new List<string> { Clean(rule.CompanyPrefix) };
         var country = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? "";
@@ -1527,8 +1553,14 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (!string.IsNullOrWhiteSpace(deptCode)) parts.Add(deptCode);
         }
         if (rule.UseYear) parts.Add(DateTime.UtcNow.Year.ToString());
-        var code = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x))) + "-" + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
-        rule.NextSequence += 1;
+        var prefix = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x))) + "-";
+        string code;
+        do
+        {
+            code = prefix + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
+            rule.NextSequence += 1;
+        }
+        while (await EmployeeIdRuleLock.CodeTakenAsync(_db, tenantId, code, cancellationToken));
         rule.UpdatedAtUtc = DateTime.UtcNow;
         rule.UpdatedBy = context.UserId;
         return code;
@@ -1575,27 +1607,28 @@ public class EmployeeManagementService : IEmployeeManagementService
             var position = await _db.Positions.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employee.PositionId && !x.IsDeleted, cancellationToken);
             if (position is null) throw new InvalidOperationException("Selected position was not found.");
-            if (position.Status is PositionStatuses.Frozen or PositionStatuses.Closed)
-                throw new InvalidOperationException($"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.");
-            if (position.EffectiveFrom > DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' is not effective on the employee joining date.");
-            if (position.EffectiveTo is not null && position.EffectiveTo < DateOnly.FromDateTime(employee.JoiningDate))
-                throw new InvalidOperationException($"Position '{position.Code}' expired before the employee joining date.");
-            if (position.IncumbentEmployeeId is not null && position.IncumbentEmployeeId != employee.Id)
-                throw new InvalidOperationException($"Position '{position.Code}' is already occupied by another employee.");
-
-            void RequireMatch(Guid? expected, Guid? actual, string label)
+            // The SAME decision the CSV import makes (EmployeeAssignmentRules); only the answer differs — the
+            // form refuses the save, the import leaves the position unassigned with a review gap.
+            var refusal = EmployeeAssignmentRules.CheckPosition(position, employee.Id == 0 ? null : employee.Id,
+                DateOnly.FromDateTime(employee.JoiningDate), employee.CompanyId, employee.BranchId, employee.DepartmentId,
+                employee.CostCenterId, employee.DesignationId, employee.GradeId);
+            string Requires(Guid? expected, string label) => $"Position '{position.Code}' requires {label} '{expected}'.";
+            var message = refusal switch
             {
-                if (expected is not null && actual != expected)
-                    throw new InvalidOperationException($"Position '{position.Code}' requires {label} '{expected}'.");
-            }
-
-            RequireMatch(position.CompanyId, employee.CompanyId, "its configured legal entity");
-            RequireMatch(position.BranchId, employee.BranchId, "its configured branch");
-            RequireMatch(position.DepartmentId, employee.DepartmentId, "its configured department");
-            RequireMatch(position.CostCenterId, employee.CostCenterId, "its configured cost center");
-            RequireMatch(position.DesignationId, employee.DesignationId, "its configured designation");
-            RequireMatch(position.GradeId, employee.GradeId, "its configured grade");
+                PositionRefusal.None => null,
+                PositionRefusal.FrozenOrClosed => $"Position '{position.Code}' is {position.Status.ToLowerInvariant()} and cannot receive an employee.",
+                PositionRefusal.NotYetEffective or PositionRefusal.JoiningDateUnknown => $"Position '{position.Code}' is not effective on the employee joining date.",
+                PositionRefusal.Expired => $"Position '{position.Code}' expired before the employee joining date.",
+                PositionRefusal.Occupied => $"Position '{position.Code}' is already occupied by another employee.",
+                PositionRefusal.CompanyMismatch => Requires(position.CompanyId, "its configured legal entity"),
+                PositionRefusal.BranchMismatch => Requires(position.BranchId, "its configured branch"),
+                PositionRefusal.DepartmentMismatch => Requires(position.DepartmentId, "its configured department"),
+                PositionRefusal.CostCenterMismatch => Requires(position.CostCenterId, "its configured cost center"),
+                PositionRefusal.DesignationMismatch => Requires(position.DesignationId, "its configured designation"),
+                PositionRefusal.GradeMismatch => Requires(position.GradeId, "its configured grade"),
+                _ => $"Position '{position.Code}' cannot receive this employee.",
+            };
+            if (message is not null) throw new InvalidOperationException(message);
         }
 
         if (employee.DesignationId is not null)
@@ -1922,7 +1955,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(c => (Guid?)c.Id)
             .Take(2)
             .ToListAsync(cancellationToken);
-        return ids.Count == 1 ? ids[0] : null;
+        // The same rule the CSV import uses: the only active company, never the oldest of several.
+        return EmployeeAssignmentRules.DefaultCompany(ids);
     }
 
     private void TrackChange(Employee employee, string field, string oldValue, string newValue, DateTime? effectiveDate, string reason, RequestContext context)

@@ -1241,6 +1241,12 @@ const en: Dict = {
   'Name (Arabic, optional)': 'Name (Arabic, optional)',
   'Details are visible to HR and to the employee who raised this request.': 'Details are visible to HR and to the employee who raised this request.',
 
+  // Employee import — the commit's own verdict in the preview (pilot import safety).
+  'This file will not be imported.': 'This file will not be imported.',
+  'Row {row}: {problem}': 'Row {row}: {problem}',
+  'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.',
+  'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.',
+
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
 };
@@ -2473,6 +2479,12 @@ const ar: Dict = {
   'Details are visible to HR and to the employee who raised this request.': 'التفاصيل مرئية لفريق الموارد البشرية وللموظف الذي قدّم هذا الطلب.',
 
   // Release A — see ./releaseA.
+  // Employee import — the commit's own verdict in the preview (pilot import safety).
+  'This file will not be imported.': 'لن يتم استيراد هذا الملف.',
+  'Row {row}: {problem}': 'الصف {row}: {problem}',
+  'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'لم يُستورد أي شيء. شغّل هذا الفحص عملية الاستيراد نفسها ثم تراجع عنها، لذلك يعرض بالضبط ما سيفعله الاستيراد.',
+  'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'صفوف يجب تصحيحها: {count}. راجع الصفوف المعلّمة «مرفوض». الاستيراد يتم كاملاً أو لا يتم، فلن يُستورد شيء حتى يُصحَّح الملف.',
+
   ...releaseA.ar,
 };
 

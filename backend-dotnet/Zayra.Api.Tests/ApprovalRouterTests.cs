@@ -15,8 +15,15 @@ namespace Zayra.Api.Tests;
 /// the explicit no-configuration error, and approver resolution per approver type. Replaces the
 /// ApprovalPolicyService tests (that service and its model are retired).
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class ApprovalRouterTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public ApprovalRouterTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private const string Leave = nameof(LeaveRequest);
 
     private static ZayraDbContext CreateDb() =>
@@ -396,7 +403,7 @@ public class ApprovalRouterTests
     [Fact]
     public async Task ImportPreview_DetectsCircularHierarchyInBatch()
     {
-        var db = CreateDb();
+        var db = PgDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Test", Slug = "prev-circ" });
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenantId, MaxEmployees = 100, Plan = "Pro", Status = "Active" });
@@ -434,7 +441,7 @@ public class ApprovalRouterTests
     [Fact]
     public async Task ImportPreview_DoesNotCommitToDatabase()
     {
-        var db = CreateDb();
+        var db = PgDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Test", Slug = "prev-nocommit" });
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenantId, MaxEmployees = 100, Plan = "Pro", Status = "Active" });
@@ -454,7 +461,7 @@ public class ApprovalRouterTests
     [Fact]
     public async Task ImportPreview_FlagsUnknownManagerCode()
     {
-        var db = CreateDb();
+        var db = PgDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Test", Slug = "prev-mgr" });
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenantId, MaxEmployees = 100, Plan = "Pro", Status = "Active" });
