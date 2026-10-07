@@ -125,6 +125,11 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
+        // Filing for yourself is self-service (ess.write); filing for anyone else is overtime administration
+        // (overtime.write). Data scope alone used to decide, so an ess.read-only login (an HR Assistant, an
+        // Auditor) could file overtime for itself, and an org-scoped login for anyone, with no write key.
+        var forSelf = scope.CallerEmployeeId == req.EmployeeId;
+        if (!(User.HasPermission("overtime.write") || (forSelf && User.HasPermission("ess.write")))) return Forbid();
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, ct);
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         if (req.EndTimeUtc <= req.StartTimeUtc) return BadRequest(new { message = "End time must be after start time." });
@@ -463,6 +468,10 @@ public class OvertimeController : ControllerBase
 
     [HttpPost("comp-off-conversions")]
     [Authorize(Roles = "Admin,HR Manager")]
+    // Converting approved overtime into time off is overtime administration for the HR-manager tier, not
+    // filing. Without an explicit key the gate resolved to overtime.write, which HR Officer now holds to file
+    // overtime on an employee's behalf.
+    [HasPermission("overtime.policy_manage")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: OvertimeRequestId, EmployeeId, OvertimeHours, CompOffDays, Status, CreatedAtUtc. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<OvertimeCompOffConversion>> CreateCompOffConversion(CompOffConversionRequest req, CancellationToken ct)
     {

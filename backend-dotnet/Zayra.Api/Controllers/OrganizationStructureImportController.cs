@@ -7,7 +7,12 @@ using System.Text.Json;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -269,13 +274,8 @@ public class OrganizationStructureImportController : ControllerBase
             });
         }
 
-        await _audit.WriteAsync(
-            "setup.organization_structure_import_committed",
-            "OrganizationStructureImport",
-            "bulk",
-            BuildContext(tenantId),
-            JsonSerializer.Serialize(new { received = validation.Received, warnings = validation.Warnings, applied = counts }),
-            ct);
+        // The audit rows (one per entity, then the bulk marker) are written inside ApplyStructureAsync, in the
+        // same transaction as the data: there is no committed import without its trail.
         return Ok(validation with { Applied = counts, Committed = true });
     }
 
@@ -292,6 +292,10 @@ public class OrganizationStructureImportController : ControllerBase
         CancellationToken ct)
     {
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
+        // One audit row per entity, with the Setup forms' own action names, written in THIS transaction (see Commit).
+        var audited = new List<(string Action, string Entity, Guid Id, string Key)>();
+        void Audit(string action, string entity, Guid id, string key) => audited.Add((action, entity, id, key));
+        var pendingCompanyCreates = 0;
 
         var companies = SavedIndex.Of(await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.LegalNameEn, "company");
         foreach (var row in parsed.Companies)
@@ -305,36 +309,49 @@ public class OrganizationStructureImportController : ControllerBase
                         "Organization-structure import cannot change an existing company's activation state. Use the controlled company lifecycle workflow.");
                 company.LegalNameAr = Val(row, "LegalNameAr");
                 company.TradeName = Val(row, "TradeName");
-                company.CountryCode = Val(row, "CountryCode");
+                company.CountryCode = Val(row, "CountryCode").ToUpperInvariant();
                 company.Jurisdiction = Val(row, "Jurisdiction");
                 company.RegistrationNumber = Val(row, "RegistrationNumber");
                 company.TaxNumber = Val(row, "TaxNumber");
                 company.WpsEmployerId = Val(row, "WpsEmployerId");
                 company.GosiEmployerId = Val(row, "GosiEmployerId");
                 company.QiwaEstablishmentId = Val(row, "QiwaEstablishmentId");
-                company.DefaultCurrency = Val(row, "DefaultCurrency", "SAR");
+                company.DefaultCurrency = Val(row, "DefaultCurrency", "SAR").ToUpperInvariant();
                 company.UpdatedAtUtc = DateTime.UtcNow;
+                Audit("organization.company_updated", nameof(Company), company.Id, name);
             }
             else
             {
+                // Last line of defence behind validation (a concurrent create between preview and commit): the
+                // form's gate, re-asked inside the transaction; a refusal rolls back the whole package.
+                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCompanyCreates);
+                if (!gate.Allowed) throw new InvalidOperationException(gate.Message);
+                pendingCompanyCreates++;
                 company = new Company
                 {
                     TenantId = tenantId,
                     LegalNameEn = name,
                     LegalNameAr = Val(row, "LegalNameAr"),
                     TradeName = Val(row, "TradeName"),
-                    CountryCode = Val(row, "CountryCode"),
+                    CountryCode = Val(row, "CountryCode").ToUpperInvariant(),
                     Jurisdiction = Val(row, "Jurisdiction"),
                     RegistrationNumber = Val(row, "RegistrationNumber"),
                     TaxNumber = Val(row, "TaxNumber"),
                     WpsEmployerId = Val(row, "WpsEmployerId"),
                     GosiEmployerId = Val(row, "GosiEmployerId"),
                     QiwaEstablishmentId = Val(row, "QiwaEstablishmentId"),
-                    DefaultCurrency = Val(row, "DefaultCurrency", "SAR"),
+                    DefaultCurrency = Val(row, "DefaultCurrency", "SAR").ToUpperInvariant(),
                     IsActive = active,
                     CreatedBy = GetUserId()
                 };
+                if (gate.AsDraft)
+                {
+                    // Draft-approval tenants: created inactive, awaiting platform approval — exactly as the form does.
+                    company.ApprovalStatus = CompanyApprovalStatuses.Draft;
+                    company.IsActive = false;
+                }
                 _db.Companies.Add(company);
+                Audit("organization.company_created", nameof(Company), company.Id, name);
                 companies[name.ToUpperInvariant()] = company;
                 Bump("companies");
             }
@@ -347,7 +364,9 @@ public class OrganizationStructureImportController : ControllerBase
             var company = companies[Val(row, "CompanyLegalName").ToUpperInvariant()];
             if (branches.TryGetValue(code.ToUpperInvariant(), out var branch))
             {
-                branch.CompanyId = company.Id;
+                // The Branches importer's rule: a branch stays in its company (validation reports it; this backs it up).
+                if (branch.CompanyId != company.Id)
+                    throw new InvalidOperationException($"Branch '{code}' belongs to another company and cannot be moved to another company by import.");
                 branch.NameEn = Val(row, "NameEn");
                 branch.NameAr = Val(row, "NameAr");
                 branch.CountryCode = Val(row, "CountryCode", company.CountryCode);
@@ -359,6 +378,7 @@ public class OrganizationStructureImportController : ControllerBase
                 branch.IsHeadOffice = Bool(row, "IsHeadOffice", false);
                 branch.IsActive = Bool(row, "IsActive", true);
                 branch.UpdatedAtUtc = DateTime.UtcNow;
+                Audit("organization.branch_updated", nameof(Branch), branch.Id, code);
             }
             else
             {
@@ -366,7 +386,7 @@ public class OrganizationStructureImportController : ControllerBase
                 {
                     TenantId = tenantId,
                     CompanyId = company.Id,
-                    Code = code,
+                    Code = OrgCodes.Normalize(code),
                     NameEn = Val(row, "NameEn"),
                     NameAr = Val(row, "NameAr"),
                     CountryCode = Val(row, "CountryCode", company.CountryCode),
@@ -380,6 +400,7 @@ public class OrganizationStructureImportController : ControllerBase
                     CreatedBy = GetUserId()
                 };
                 _db.Branches.Add(branch);
+                Audit("organization.branch_created", nameof(Branch), branch.Id, code);
                 branches[code.ToUpperInvariant()] = branch;
                 Bump("branches");
             }
@@ -396,11 +417,13 @@ public class OrganizationStructureImportController : ControllerBase
                 cc.Name = Val(row, "Name");
                 cc.IsActive = Bool(row, "IsActive", true);
                 cc.UpdatedAtUtc = DateTime.UtcNow;
+                Audit("organization.cost_center_updated", nameof(CostCenter), cc.Id, code);
             }
             else
             {
-                cc = new CostCenter { TenantId = tenantId, CompanyId = company.Id, Code = code, Name = Val(row, "Name"), IsActive = Bool(row, "IsActive", true), CreatedBy = GetUserId() };
+                cc = new CostCenter { TenantId = tenantId, CompanyId = company.Id, Code = OrgCodes.Normalize(code), Name = Val(row, "Name"), IsActive = Bool(row, "IsActive", true), CreatedBy = GetUserId() };
                 _db.CostCenters.Add(cc);
+                Audit("organization.cost_center_created", nameof(CostCenter), cc.Id, code);
                 costCenters[code.ToUpperInvariant()] = cc;
                 Bump("costCenters");
             }
@@ -412,8 +435,9 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, "Code");
             if (!grades.TryGetValue(code.ToUpperInvariant(), out var grade))
             {
-                grade = new Grade { TenantId = tenantId, Code = code, CreatedBy = GetUserId() };
+                grade = new Grade { TenantId = tenantId, Code = OrgCodes.Normalize(code), CreatedBy = GetUserId() };
                 _db.Grades.Add(grade);
+                Audit("organization.grade_created", nameof(Grade), grade.Id, code);
                 grades[code.ToUpperInvariant()] = grade;
                 Bump("grades");
             }
@@ -426,6 +450,7 @@ public class OrganizationStructureImportController : ControllerBase
             grade.Currency = Val(row, "Currency", "SAR");
             grade.IsActive = Bool(row, "IsActive", true);
             grade.UpdatedAtUtc = DateTime.UtcNow;
+            if (_db.Entry(grade).State != EntityState.Added) Audit("organization.grade_updated", nameof(Grade), grade.Id, code);
         }
 
         var departments = SavedIndex.Of(await _db.Departments.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "department");
@@ -435,8 +460,9 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, "Code");
             if (!departments.TryGetValue(code.ToUpperInvariant(), out var department))
             {
-                department = new Department { TenantId = tenantId, Code = code, CreatedBy = GetUserId() };
+                department = new Department { TenantId = tenantId, Code = OrgCodes.Normalize(code), CreatedBy = GetUserId() };
                 _db.Departments.Add(department);
+                Audit("organization.department_created", nameof(Department), department.Id, code);
                 departments[code.ToUpperInvariant()] = department;
                 Bump("departments");
             }
@@ -456,6 +482,7 @@ public class OrganizationStructureImportController : ControllerBase
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
             department.IsActive = Bool(row, "IsActive", true);
             department.UpdatedAtUtc = DateTime.UtcNow;
+            if (_db.Entry(department).State != EntityState.Added) Audit("organization.department_updated", nameof(Department), department.Id, code);
         }
         foreach (var row in parsed.Departments)
         {
@@ -466,13 +493,16 @@ public class OrganizationStructureImportController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        foreach (var row in parsed.GradePayComponents)
+        // Release A (R1): the legacy grade pay scale is frozen for a release_a tenant — grade benefits are set in Benefits
+        // by grade. Validation marks these rows Skipped with the reason, so the commit writes none of them.
+        var gradePayRows = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct) ? [] : parsed.GradePayComponents;
+        foreach (var row in gradePayRows)
         {
             var grade = grades[Val(row, "GradeCode").ToUpperInvariant()];
             var code = Val(row, "ComponentCode");
             var exists = await _db.GradePayScaleComponents.AnyAsync(x => x.TenantId == tenantId && x.GradeId == grade.Id && x.ComponentCode == code, ct);
             if (exists) continue;
-            _db.GradePayScaleComponents.Add(new GradePayScaleComponent
+            var component = new GradePayScaleComponent
             {
                 TenantId = tenantId,
                 GradeId = grade.Id,
@@ -485,7 +515,9 @@ public class OrganizationStructureImportController : ControllerBase
                 Frequency = Val(row, "Frequency", "Monthly"),
                 IsTaxable = Bool(row, "IsTaxable", false),
                 IsActive = Bool(row, "IsActive", true)
-            });
+            };
+            _db.GradePayScaleComponents.Add(component);
+            Audit("organization.grade_pay_component_created", nameof(GradePayScaleComponent), component.Id, $"{grade.Code}/{code}");
             Bump("gradePayComponents");
         }
 
@@ -495,8 +527,9 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, "Code");
             if (!designations.TryGetValue(code.ToUpperInvariant(), out var designation))
             {
-                designation = new Designation { TenantId = tenantId, Code = code, CreatedBy = GetUserId() };
+                designation = new Designation { TenantId = tenantId, Code = OrgCodes.Normalize(code), CreatedBy = GetUserId() };
                 _db.Designations.Add(designation);
+                Audit("organization.designation_created", nameof(Designation), designation.Id, code);
                 designations[code.ToUpperInvariant()] = designation;
                 Bump("designations");
             }
@@ -512,6 +545,7 @@ public class OrganizationStructureImportController : ControllerBase
             designation.LevelRank = Int(row, "LevelRank", 1);
             designation.IsActive = Bool(row, "IsActive", true);
             designation.UpdatedAtUtc = DateTime.UtcNow;
+            if (_db.Entry(designation).State != EntityState.Added) Audit("organization.designation_updated", nameof(Designation), designation.Id, code);
         }
 
         await _db.SaveChangesAsync(ct);
@@ -524,6 +558,7 @@ public class OrganizationStructureImportController : ControllerBase
             {
                 position = new Position { TenantId = tenantId, Code = code, CreatedBy = GetUserId() };
                 _db.Positions.Add(position);
+                Audit("position.created", nameof(Position), position.Id, code);
                 positions[code.ToUpperInvariant()] = position;
                 Bump("positions");
             }
@@ -542,8 +577,23 @@ public class OrganizationStructureImportController : ControllerBase
             position.EffectiveTo = DateOrNull(row, "EffectiveTo");
             position.UpdatedAtUtc = DateTime.UtcNow;
             position.UpdatedBy = GetUserId();
+            if (_db.Entry(position).State != EntityState.Added) Audit("position.updated", nameof(Position), position.Id, code);
         }
 
+        await _db.SaveChangesAsync(ct);
+
+        // ── AUDIT, ONE ROW PER ENTITY, IN THE SAME TRANSACTION ─────────────────────────────────────────
+        // It used to be ONE bulk row written after the commit — so who created which company or grade could not
+        // be told from the trail, and a failure writing it left the import unaudited. Same action names as the
+        // Setup forms, tagged with the import as the source.
+        var context = BuildContext(tenantId);
+        var at = DateTime.UtcNow;
+        foreach (var (action, entity, id, key) in audited.DistinctBy(a => (a.Action, a.Id)))
+            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
+                JsonSerializer.Serialize(new { source = "organization_structure_import", key })));
+        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, "setup.organization_structure_import_committed",
+            "OrganizationStructureImport", "bulk", context,
+            JsonSerializer.Serialize(new { received = parsed.TotalRows, applied = counts, entities = audited.Count })));
         await _db.SaveChangesAsync(ct);
     }
 
@@ -659,16 +709,31 @@ public class OrganizationStructureImportController : ControllerBase
             refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("CostCenterCode", costCenterCodes, "Cost center"), ("ParentDepartmentCode", parentCandidates, "Parent department"), ("ManagerEmployeeCode", employeeCodes, "Manager employee")]);
         AddDepartmentCompanyConsistencyRows(parsed.Departments, parsed.Branches, parsed.CostCenters, rows);
         Merge(departmentCodes, parsed.Departments.Select(x => Val(x, "Code")));
-        AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
-            // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
-            refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
-        AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            // Release A (R1): one fact in one place. These rows are not imported for a release_a tenant, and each says why.
+            for (var i = 0; i < parsed.GradePayComponents.Count; i++)
+            {
+                var row = parsed.GradePayComponents[i];
+                rows.Add(new ImportRowResult(i + 2, $"gradePayComponents:{Val(row, "GradeCode")}:{Val(row, "ComponentCode")}", Val(row, "ComponentName"),
+                    ImportRowStatus.Skipped, [],
+                    ["Not imported: grade allowances and benefits are set in Benefits by grade for this workspace (reason: moved_to_benefits_by_grade). Set this value there."]));
+            }
+        }
+        else
+        {
+            AddRows("gradePayComponents", parsed.GradePayComponents, "ComponentCode", "ComponentName", required: ["GradeCode", "ComponentCode", "ComponentName"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
+                // BASIC under G1 and BASIC under G2 are two components. Commit keys them by (grade, code).
+                refs: [("GradeCode", gradeCodes, "Grade")], duplicateScopeKey: "GradeCode");
+            AddGradePayComponentSanityRows(parsed.GradePayComponents, rows);
+        }
         AddRows("designations", parsed.Designations, "Code", "TitleEn", required: ["Code", "TitleEn"], known: new HashSet<string>(StringComparer.OrdinalIgnoreCase), rows,
             refs: [("DepartmentCode", departmentCodes, "Department"), ("GradeCode", gradeCodes, "Grade")]);
         Merge(designationCodes, parsed.Designations.Select(x => Val(x, "Code")));
         AddRows("positions", parsed.Positions, "Code", "Title", required: ["Code", "Title"], known: positionCodes, rows,
             refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("DepartmentCode", departmentCodes, "Department"), ("CostCenterCode", costCenterCodes, "Cost center"), ("DesignationCode", designationCodes, "Designation"), ("GradeCode", gradeCodes, "Grade")]);
         AddPositionSanityRows(parsed.Positions, rows);
+        await AddFormGateRowsAsync(tenantId, parsed, rows, ct);
 
         var parentMap = parsed.Departments
             .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")) && !string.IsNullOrWhiteSpace(Val(x, "ParentDepartmentCode")))
@@ -699,6 +764,78 @@ public class OrganizationStructureImportController : ControllerBase
             HasBlockingErrors: errors > 0,
             Committed: false,
             Applied: new Dictionary<string, int>());
+    }
+
+    /// <summary>
+    /// THE SETUP FORMS' GATES, applied to the bulk import (P0). The import used to write companies and branches
+    /// straight to the database: a single-company account could add a second legal entity, a platform-controlled
+    /// tenant could create companies itself, the plan's company limit was never counted, a draft-approval tenant
+    /// got an ACTIVE company, a registration number could be duplicated, "Saudi" was stored as a country code, and
+    /// a branch could be moved to another company. Each is now a blocking row error, so the preview names it and
+    /// the commit refuses the WHOLE package — nothing is written. The rules are the forms' own:
+    /// <see cref="CompanyCreationGate"/>, <see cref="OrganizationSetupService.CountryCodeProblem"/>, the company
+    /// registration-number uniqueness check, and the Branches importer's no-move rule.
+    /// </summary>
+    private async Task AddFormGateRowsAsync(Guid tenantId, ParsedOrgPackage parsed, List<ImportRowResult> rows, CancellationToken ct)
+    {
+        var saved = await _db.Companies.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.LegalNameEn, x.RegistrationNumber })
+            .ToListAsync(ct);
+        var savedByName = saved.GroupBy(x => x.LegalNameEn.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var registrationOwner = saved.Where(x => !string.IsNullOrWhiteSpace(x.RegistrationNumber))
+            .GroupBy(x => x.RegistrationNumber.Trim(), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.Ordinal);
+
+        var pendingCreates = 0;
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < parsed.Companies.Count; i++)
+        {
+            var row = parsed.Companies[i];
+            var name = Val(row, "LegalNameEn");
+            var errors = new List<string>();
+            if (OrganizationSetupService.CountryCodeProblem(Val(row, "CountryCode")) is { } countryProblem) errors.Add(countryProblem);
+
+            savedByName.TryGetValue(name, out var existingId);
+            var registration = Val(row, "RegistrationNumber");
+            // Non-blank numbers only: many legacy extracts carry none, and a blank is not an identity.
+            if (registration.Length > 0 && registrationOwner.TryGetValue(registration, out var owner) && owner != existingId)
+                errors.Add("Company registration number already exists in this tenant.");
+            else if (registration.Length > 0 && existingId == Guid.Empty)
+                registrationOwner[registration] = Guid.NewGuid(); // claimed by this new row; a later row repeating it is a duplicate
+
+            if (existingId == Guid.Empty && name.Length > 0 && seenNames.Add(name))
+            {
+                // Counts the companies this file has already created, so "creates 4" cannot become "created 1, refused 3".
+                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCreates);
+                if (gate.Allowed) pendingCreates++;
+                else errors.Add(gate.Message);
+            }
+
+            if (errors.Count > 0)
+                rows.Add(new ImportRowResult(i + 2, $"companies:{name}", name, ImportRowStatus.Error, errors, []));
+        }
+
+        var savedBranches = await _db.Branches.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => new { x.Code, x.CompanyId })
+            .ToListAsync(ct);
+        var branchCompany = savedBranches.GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < parsed.Branches.Count; i++)
+        {
+            var row = parsed.Branches[i];
+            var code = Val(row, "Code");
+            var errors = new List<string>();
+            if (OrganizationSetupService.CountryCodeProblem(Val(row, "CountryCode")) is { } countryProblem) errors.Add(countryProblem);
+            if (branchCompany.TryGetValue(code, out var currentCompany)
+                && savedByName.TryGetValue(Val(row, "CompanyLegalName"), out var rowCompany)
+                && rowCompany != currentCompany)
+                errors.Add($"Branch '{code}' belongs to another company and cannot be moved to another company by import.");
+            if (errors.Count > 0)
+                rows.Add(new ImportRowResult(i + 2, $"branches:{code}", Val(row, "NameEn"), ImportRowStatus.Error, errors, []));
+        }
     }
 
     private static void AddScopeRows(

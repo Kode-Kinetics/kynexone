@@ -1,0 +1,10 @@
+{
+  "expectedCode": "iban_length_invalid",
+  "patch": {
+    "rows": {
+      "0": {
+        "iban": "SA038000000060801016751"
+      }
+    }
+  }
+}

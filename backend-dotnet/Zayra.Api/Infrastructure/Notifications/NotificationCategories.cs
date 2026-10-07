@@ -38,6 +38,17 @@ public static class NotificationCategories
     public const string SmsKey = "sms";
     public static readonly string[] ChannelKeys = [PushKey, EmailKey, SmsKey];
 
+    /// <summary>
+    /// Event-code prefix of the account-security notices (sign-in, lockout, MFA) the platform itself
+    /// emits. Only these bypass the employee's email master switch: a notice that someone is using
+    /// your password must reach you even if you turned email off. Classify's broader keyword match
+    /// (which also catches "PASSWORD_RESET", "LOGIN_…") is deliberately NOT used for that exemption.
+    /// </summary>
+    public const string SecurityEventPrefix = "security.";
+
+    public static bool IsSecurityEvent(string? eventCode) =>
+        eventCode is not null && eventCode.StartsWith(SecurityEventPrefix, StringComparison.Ordinal);
+
     public static bool IsCategory(string? value) => value is not null && All.Contains(value, StringComparer.Ordinal);
     public static bool IsChannelKey(string? value) => value is not null && ChannelKeys.Contains(value, StringComparer.Ordinal);
     public static bool IsMandatory(string? category) => category is not null && Mandatory.Contains(category);

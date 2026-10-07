@@ -28,9 +28,16 @@ public class AuthService : IAuthService
     private readonly TotpService _totp;
     private readonly ILogger<AuthService> _log;
     private readonly string _appUrl;
+    private readonly IConfiguration? _configuration;
+    private readonly PasswordVerificationGate? _passwordGate;
+    private readonly LoginAbuseGuard? _abuse;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null, Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
+        _abuse = abuse;
+        _notifications = notifications;
+        _passwordGate = passwordGate;
         _db = db;
         _passwordHasher = passwordHasher;
         _tokenService = tokenService;
@@ -40,6 +47,7 @@ public class AuthService : IAuthService
         _mfaService = mfaService;
         _totp = totp;
         _log = log;
+        _configuration = configuration;
         _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
             configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
@@ -57,8 +65,22 @@ public class AuthService : IAuthService
             ? null
             : entryEligibility.Reason;
 
+        // Known device: the browser holds a cookie issued to THIS account at a previous successful
+        // sign-in, for its current password and MFA state, and has not been guessing since. It lifts
+        // the account-wide attempt cap and the database lockout (below) — never the per-address limit.
+        var attemptAtUtc = DateTime.UtcNow;
+        var cookieDevice = user is null ? null : ReadKnownDevice(user, tenantSlug, request.Email, context);
+        var knownDevice = cookieDevice is { } device
+            && _abuse!.KnownDeviceStillTrusted("tenant", tenantSlug, request.Email, device, attemptAtUtc);
+        if (_abuse?.TryBeginAccountWide("tenant", tenantSlug, request.Email, knownDevice, attemptAtUtc) is { } refusal)
+            throw new LoginRefusedException(refusal,
+                _abuse.RetryAfterSeconds(refusal, "tenant", tenantSlug, request.Email, null, attemptAtUtc));
+
         if (failReason is not null)
         {
+            // Same PBKDF2 work as a real check, so an unknown or ineligible account is not
+            // distinguishable by response time from a wrong password.
+            await VerifyDummyAsync(request.Password, cancellationToken);
             // No email in logs (personal data): the user id when the account exists, otherwise nothing.
             _log.LogWarning("Login failed for user {UserId} / tenant={Slug}: {Reason}", user?.Id, LogSafe.Text(request.TenantSlug), failReason);
             _db.LoginActivities.Add(new LoginActivity
@@ -73,7 +95,9 @@ public class AuthService : IAuthService
             });
             await _auditService.WriteAsync("auth.login_failed", "User", null, context,
                 $"{{\"email\":\"{request.Email}\",\"reason\":\"{failReason}\"}}", cancellationToken);
-            throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            var refused = new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            if (failReason == "user_not_found") LoginFailureKind.MarkUnknownAccount(refused);
+            throw refused;
         }
 
         // Phase 2 — load per-tenant lockout policy; fall back to safe defaults when no policy is configured
@@ -83,10 +107,13 @@ public class AuthService : IAuthService
         int maxAttempts    = sec?.MaxFailedLoginAttempts  ?? 5;
         int lockoutMinutes = sec?.LockoutDurationMinutes  ?? 15;
 
-        // Phase 3 — check existing lockout before attempting password verification
-        if ((user!.IsLocked && (!user.LockoutEnd.HasValue || user.LockoutEnd > DateTime.UtcNow))
-            || (user.LockoutEnd.HasValue && user.LockoutEnd > DateTime.UtcNow))
+        // Phase 3 — check existing lockout before attempting password verification. A trusted known
+        // device goes on to the password check: the lockout exists to stop strangers guessing, and
+        // letting it lock the owner out of their own browser made it a weapon against them.
+        var lockoutActive = AuthCurrentEligibility.IsFailureLockoutActive(user!, DateTime.UtcNow);
+        if (lockoutActive && !knownDevice)
         {
+            await VerifyDummyAsync(request.Password, cancellationToken);
             _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for user {UserId}", user.LockoutEnd, user.Id);
             _db.LoginActivities.Add(new LoginActivity
             {
@@ -105,8 +132,39 @@ public class AuthService : IAuthService
         }
 
         // Phase 4 — password verification; increment failure counter on mismatch and lock if threshold reached
-        if (!_passwordHasher.Verify(request.Password, user.PasswordHash))
+        var storedHash = user.PasswordHash;
+        if (!await PasswordVerificationGate.RunAsync(_passwordGate,
+                () => _passwordHasher.Verify(request.Password, storedHash), cancellationToken))
         {
+            if (knownDevice)
+            {
+                // Counted against the device (it stops being trusted after repeated misses), but never
+                // toward the lockout that applies to unknown devices.
+                var distrusted = _abuse!.RecordKnownDeviceFailure("tenant", tenantSlug, request.Email, cookieDevice!.Value, DateTime.UtcNow);
+                _db.LoginActivities.Add(new LoginActivity
+                {
+                    TenantId = user.TenantId, UserId = user.Id, EmailAttempted = request.Email,
+                    EventType = LoginEventTypes.LoginFailed, FailureReason = "password_mismatch_known_device",
+                    IpAddress = context.IpAddress, UserAgent = context.UserAgent,
+                });
+                await _db.SaveChangesAsync(cancellationToken);
+                await _auditService.WriteAsync("auth.login_failed", "User", user.Id.ToString(),
+                    context with { UserId = user.Id, TenantId = user.TenantId },
+                    $"{{\"email\":\"{request.Email}\",\"reason\":\"password_mismatch_known_device\"}}", cancellationToken);
+                if (distrusted)
+                {
+                    await _auditService.WriteAsync("auth.known_device_distrusted", "User", user.Id.ToString(),
+                        context with { UserId = user.Id, TenantId = user.TenantId },
+                        $"{{\"failures\":{LoginAbuseGuard.KnownDeviceFailureLimit}}}", cancellationToken);
+                    await NotifyAccountOwnerAsync(user, "security.known_device_distrusted",
+                        $"{user.Id:N}:{cookieDevice!.Value:N}:{DateTime.UtcNow:yyyyMMddHH}",
+                        "Repeated wrong passwords on your KynexOne account",
+                        $"{LoginAbuseGuard.KnownDeviceFailureLimit} wrong passwords were entered for your account from a "
+                        + "browser you had signed in with before. That browser is no longer trusted to get past a lockout.",
+                        cancellationToken);
+                }
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+            }
             user.FailedLoginCount++;
 
             bool nowLocked = user.FailedLoginCount >= maxAttempts;
@@ -138,6 +196,32 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
 
+        // Phase 4a — transparent rehash. The plaintext was proven a moment ago, so a hash written
+        // under an older work factor is upgraded now (Pbkdf2PasswordHasher.NeedsRehash). Done before
+        // any challenge or session is minted, so both see the stored hash this login verified.
+        var verifiedPasswordHash = user.PasswordHash;
+        if (_passwordHasher.NeedsRehash(verifiedPasswordHash))
+            verifiedPasswordHash = await UpgradePasswordHashAsync(user, request.Password, cancellationToken);
+
+        // Phase 4a' — the owner proved the password from a trusted known device during a lockout.
+        // They get through it; the lockout itself and the shared failure counter are left exactly as
+        // they are, so an attacker on an unknown device stays locked out until it expires.
+        var bypassingLockout = knownDevice && lockoutActive;
+        if (bypassingLockout)
+        {
+            await _auditService.WriteAsync("auth.lockout_bypassed_known_device", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                $"{{\"lockoutEnd\":\"{user.LockoutEnd:O}\"}}", cancellationToken);
+            // One notice per lockout: the lockout's end time is part of the event's identity.
+            await NotifyAccountOwnerAsync(user, "security.lockout_bypassed_known_device",
+                $"{user.Id:N}:{user.LockoutEnd?.Ticks ?? 0}",
+                "Your KynexOne account is locked by failed sign-ins",
+                "Your account was locked after repeated wrong passwords from a device you have not used before. "
+                + "You signed in from a browser you had used before, so you were let through; the lock stays in place "
+                + "for everyone else until it expires. If the failed attempts were not you, change your password.",
+                cancellationToken);
+        }
+
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
         // is verified via POST /api/auth/mfa/challenge/verify.
@@ -163,17 +247,85 @@ public class AuthService : IAuthService
             return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
         }
 
+        // Phase 4d — mandatory MFA for privileged roles (PrivilegedMfaPolicy). From the enforcement
+        // date an un-enrolled Admin/HR/Payroll/Finance user gets the same setup-only enrolment
+        // challenge as 4c instead of a session. Before it, sign-in proceeds and the client prompts
+        // (GET /api/auth/mfa/status), so nobody is locked out on deploy day.
+        var privilegedMfa = await PrivilegedMfaPolicy.ForTenantUserAsync(
+            _db, _configuration, user, sec, DateTime.UtcNow, cancellationToken);
+        if (privilegedMfa.BlocksSession)
+        {
+            var enrollmentToken = await _mfaService.CreateEnrollmentChallengeAsync(
+                user.Id, user.TenantId, context.IpAddress ?? string.Empty, cancellationToken);
+            await _auditService.WriteAsync("auth.mfa_enrollment_required", "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                $"{{\"reason\":\"privileged_role\",\"enforceFromUtc\":\"{privilegedMfa.EnforceFromUtc:O}\"}}",
+                cancellationToken);
+            return new AuthLoginResult(null, null, RequiresMfaEnrollment: true, EnrollmentChallenge: new MfaChallengeDto(enrollmentToken, 300));
+        }
+        if (privilegedMfa.BreakGlassActive)
+            _log.LogWarning(
+                "[MFA-BREAK-GLASS] Privileged user {UserId} (tenant {TenantId}) signed in without MFA because "
+                + "{Key} is suspending enforcement.", user.Id, user.TenantId, PrivilegedMfaPolicy.BreakGlassConfigKey);
+
         // Phase 5 — successful password-only issuance is re-authorized under the same tenant/user
         // serialization anchors used by MFA completion and refresh. The refresh row, activity and
         // central audit commit together; the pre-lock read above is never issuance authority.
-        return new AuthLoginResult(
-            await CompletePasswordOnlyLoginAsync(
-                user.Id,
-                tenantSlug,
-                request.Password,
-                context,
-                cancellationToken),
-            null);
+        var issued = await CompletePasswordOnlyLoginAsync(
+            user.Id,
+            tenantSlug,
+            verifiedPasswordHash,
+            context,
+            cancellationToken,
+            bypassLockout: bypassingLockout);
+        return new AuthLoginResult(issued with
+        {
+            KnownDeviceToken = _abuse?.IssueKnownDeviceToken("tenant", tenantSlug, user.Email, user.Id,
+                LoginAbuseGuard.CredentialVersion(verifiedPasswordHash, false, null), cookieDevice ?? Guid.NewGuid(), DateTime.UtcNow),
+        }, null);
+    }
+
+    /// <summary>
+    /// The device id of a known-device cookie that is valid for <paramref name="user"/>'s current
+    /// credentials, or null. Trust (recent misses) is checked separately.
+    /// </summary>
+    private Guid? ReadKnownDevice(User user, string tenantSlug, string email, RequestContext context)
+        => _abuse is not null
+           && _abuse.TryReadKnownDevice(context.KnownDeviceToken, "tenant", tenantSlug, email, user.Id,
+               LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc), out var device)
+            ? device
+            : null;
+
+    /// <summary>Attaches the known-device token for a just-completed sign-in of <paramref name="user"/>.</summary>
+    private AuthResponse WithKnownDevice(AuthResponse response, User user, Guid? existingDevice) => response with
+    {
+        KnownDeviceToken = user.Tenant is null ? null : _abuse?.IssueKnownDeviceToken("tenant", user.Tenant.Slug, user.Email, user.Id,
+            LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc),
+            existingDevice ?? Guid.NewGuid(), DateTime.UtcNow),
+    };
+
+    /// <summary>
+    /// Security notice to the account owner through the tenant notification OUTBOX: this only writes
+    /// the delivery rows (no network I/O), NotificationDeliveryWorker sends them, so sign-in never waits
+    /// on SMTP. <paramref name="dedupeId"/> is the business identity of the event (e.g. this lockout):
+    /// the outbox's (tenant, dedupe key) index and an in-process first-notice check both keep it to
+    /// one email. Logs ids only.
+    /// </summary>
+    private async Task NotifyAccountOwnerAsync(User user, string eventCode, string dedupeId, string subject, string text, CancellationToken ct)
+    {
+        if (_notifications is null) return;
+        if (_abuse is not null && !_abuse.FirstNotice($"tenant|{eventCode}|{dedupeId}", TimeSpan.FromDays(1))) return;
+        var queued = await _notifications.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
+        {
+            TenantId = user.TenantId,
+            UserId = user.Id,
+            EventCode = eventCode,
+            EntityName = "User",
+            EntityId = dedupeId,
+            Title = subject,
+            Message = text,
+        }, ct);
+        _log.LogInformation("Security notice {EventCode} for user {UserId}: {Count} delivery row(s) queued.", eventCode, user.Id, queued.Count);
     }
 
     public async Task<AuthResponse> RefreshAsync(
@@ -302,7 +454,13 @@ public class AuthService : IAuthService
                 policy,
                 decidedAtUtc);
             var sessionTimeoutMinutes = Math.Clamp(policy?.SessionTimeoutMinutes ?? 480, 15, 1440);
+            // Past the enforcement date an un-enrolled privileged user's refresh tokens stop
+            // rotating, so a session started during the grace period ends within one access-token
+            // lifetime and the next sign-in goes through enrolment.
+            var privilegedMfaBlocks = (await PrivilegedMfaPolicy.ForTenantUserAsync(
+                _db, _configuration, token.User, policy, decidedAtUtc, ct)).BlocksSession;
             if (!eligibility.Allowed
+                || privilegedMfaBlocks
                 || token.CreatedAtUtc.AddMinutes(sessionTimeoutMinutes) <= decidedAtUtc)
             {
                 token.RevokedAtUtc = decidedAtUtc;
@@ -938,6 +1096,10 @@ public class AuthService : IAuthService
         var activityId = Guid.NewGuid();
         var auditId = Guid.NewGuid();
         var expectedSessionStamp = envelope.SessionStamp;
+        // Known device (validated against the user once loaded): lets the code step through an
+        // active failed-password lockout the password step already bypassed, without clearing it.
+        Guid? mfaDevice = null;
+        var mfaKnownDevice = false;
         var loginAuditMetadata =
             $"{{\"via\":\"mfa\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
         AuthResponse? preparedResponse = null;
@@ -973,6 +1135,9 @@ public class AuthService : IAuthService
                 throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
 
             var user = await LoadUserGraph(userAnchor.Id, ct);
+            mfaDevice = user?.Tenant is null ? null : ReadKnownDevice(user, user.Tenant.Slug, user.Email, context);
+            mfaKnownDevice = mfaDevice is { } device
+                && _abuse!.KnownDeviceStillTrusted("tenant", user!.Tenant!.Slug, user.Email, device, completedAtUtc);
             if (user?.Tenant is null || !await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
                 throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
 
@@ -984,7 +1149,8 @@ public class AuthService : IAuthService
                 user,
                 AuthCurrentEligibility.IsSsoOnly(user, identity),
                 policy,
-                completedAtUtc);
+                completedAtUtc,
+                ignoreFailureLockout: mfaKnownDevice);
             if (!eligibility.Allowed
                 || !user.MFAEnabled
                 || string.IsNullOrWhiteSpace(user.MfaSecretEncrypted))
@@ -1044,7 +1210,9 @@ public class AuthService : IAuthService
             }
 
             var auditContext = context with { UserId = user.Id, TenantId = user.TenantId };
-            if (!_totp.Verify(plainSecret, totpCode))
+            // A replayed code (its time-step already accepted) is a failed attempt.
+            var matchedStep = _totp.MatchStep(plainSecret, totpCode);
+            if (!TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep))
             {
                 challenge.FailedAttempts++;
                 user.MfaFailedCount++;
@@ -1101,8 +1269,10 @@ public class AuthService : IAuthService
 
             challenge.UsedAtUtc = completedAtUtc;
             user.MfaLastVerifiedAtUtc = completedAtUtc;
+            user.MfaLastTotpStep = matchedStep;
             user.MfaFailedCount = 0;
-            user.FailedLoginCount = 0;
+            if (!(mfaKnownDevice && AuthCurrentEligibility.IsFailureLockoutActive(user, completedAtUtc)))
+                user.FailedLoginCount = 0; // a bypass of an active lockout leaves the shared counter alone
             user.LastLoginAtUtc = completedAtUtc;
             var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
             _db.RefreshTokens.Add(new RefreshToken
@@ -1135,7 +1305,7 @@ public class AuthService : IAuthService
                 auditContext,
                 loginAuditMetadata));
             await _db.SaveChangesAsync(ct);
-            preparedResponse = BuildAuthResponse(user, refreshRaw);
+            preparedResponse = WithKnownDevice(BuildAuthResponse(user, refreshRaw), user, mfaDevice);
             succeeded = true;
             return true;
         }
@@ -1229,19 +1399,91 @@ public class AuthService : IAuthService
                 committedUser,
                 AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
                 committedPolicy,
-                DateTime.UtcNow).Allowed
+                DateTime.UtcNow,
+                ignoreFailureLockout: mfaKnownDevice).Allowed
             || !committedUser.MFAEnabled
             || string.IsNullOrWhiteSpace(committedUser.MfaSecretEncrypted))
             throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
-        return BuildAuthResponse(committedUser, refreshRaw);
+        return WithKnownDevice(BuildAuthResponse(committedUser, refreshRaw), committedUser, mfaDevice);
+    }
+
+    /// <summary>
+    /// Re-hashes a just-verified password at today's work factor and stores it only if the stored hash
+    /// is still the one that was verified (compare-and-swap), so a concurrent password change always
+    /// wins. Returns the hash now stored. On a relational database the write is a single
+    /// <c>UPDATE … WHERE password_hash = @verified</c> that bypasses SaveChanges on purpose: an
+    /// encoding upgrade of the SAME password must not rotate the session stamp (User.UpdatedAtUtc)
+    /// and sign the user out of every other device. A failure here never fails the login.
+    /// </summary>
+    private Task<bool> VerifyDummyAsync(string password, CancellationToken ct)
+        => PasswordVerificationGate.RunAsync(_passwordGate,
+            () => _passwordHasher.Verify(password, Pbkdf2PasswordHasher.DummyHash), ct);
+
+    private async Task<string> UpgradePasswordHashAsync(User user, string password, CancellationToken ct)
+    {
+        var verified = user.PasswordHash;
+        try
+        {
+            var upgraded = await PasswordVerificationGate.RunAsync(_passwordGate, () => _passwordHasher.Hash(password), ct);
+            if (_db.Database.IsRelational())
+            {
+                var rows = await _db.Users
+                    .Where(x => x.Id == user.Id && x.TenantId == user.TenantId && x.PasswordHash == verified)
+                    .ExecuteUpdateAsync(set => set.SetProperty(x => x.PasswordHash, upgraded), ct);
+                if (rows != 1)
+                {
+                    // Lost the compare-and-set. Usually a simultaneous first login of the SAME user
+                    // already upgraded it; accept the stored hash if this password verifies against
+                    // it, so both logins succeed. A real password change will not verify, and the
+                    // locked issuance check then refuses as before.
+                    var current = await _db.Users.AsNoTracking()
+                        .Where(x => x.Id == user.Id && x.TenantId == user.TenantId)
+                        .Select(x => x.PasswordHash)
+                        .SingleOrDefaultAsync(ct);
+                    if (current is not null && await PasswordVerificationGate.RunAsync(_passwordGate,
+                            () => _passwordHasher.Verify(password, current), ct))
+                    {
+                        var stored = _db.Entry(user).Property(x => x.PasswordHash);
+                        stored.CurrentValue = current;
+                        stored.OriginalValue = current;
+                        stored.IsModified = false;
+                        return current;
+                    }
+                    return verified;
+                }
+                // Mirror the row without marking the property dirty: a later SaveChanges must not
+                // see a "password change" and rotate the session stamp.
+                var property = _db.Entry(user).Property(x => x.PasswordHash);
+                property.CurrentValue = upgraded;
+                property.OriginalValue = upgraded;
+                property.IsModified = false;
+            }
+            else
+            {
+                user.PasswordHash = upgraded;
+                await _db.SaveChangesAsync(ct);
+            }
+            await _auditService.WriteAsync("auth.password_rehashed", "User", user.Id.ToString(),
+                new RequestContext(null, null, user.Id, user.TenantId), null, ct);
+            return upgraded;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not PasswordVerificationBusyException)
+        {
+            // A busy hashing gate is NOT swallowed: after a lost compare-and-set, returning the
+            // superseded hash would make the locked issuance check reject a correct password (401).
+            // Letting it surface gives the client a 429 and a retry instead.
+            _log.LogWarning(ex, "Password rehash for user {UserId} failed; the existing hash stays valid.", user.Id);
+            return verified;
+        }
     }
 
     private async Task<AuthResponse> CompletePasswordOnlyLoginAsync(
         Guid userId,
         string tenantSlug,
-        string presentedPassword,
+        string verifiedPasswordHash,
         RequestContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool bypassLockout = false)
     {
         var issuedAtUtc = DateTime.UtcNow;
         var refreshRaw = _tokenService.CreateSecureToken();
@@ -1284,11 +1526,17 @@ public class AuthService : IAuthService
                 user,
                 AuthCurrentEligibility.IsSsoOnly(user, identity),
                 policy,
-                issuedAtUtc);
+                issuedAtUtc,
+                ignoreFailureLockout: bypassLockout);
             if (!eligibility.Allowed
                 || user.MFAEnabled
                 || policy?.MfaRequired == true
-                || !_passwordHasher.Verify(presentedPassword, user.PasswordHash))
+                || (await PrivilegedMfaPolicy.ForTenantUserAsync(_db, _configuration, user, policy, issuedAtUtc, ct)).BlocksSession
+                // The presented password was verified against this exact stored hash before the
+                // lock. Ordinal equality under the lock proves it is still the credential — the
+                // same guard ChangePasswordAsync uses — without paying a second 600k-iteration
+                // PBKDF2 inside the transaction.
+                || !string.Equals(user.PasswordHash, verifiedPasswordHash, StringComparison.Ordinal))
                 throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
 
             issuedTenantId = user.TenantId;
@@ -1324,9 +1572,14 @@ public class AuthService : IAuthService
                 }
             }
 
-            user.FailedLoginCount = 0;
-            user.IsLocked = false;
-            user.LockoutEnd = null;
+            // A normal success resets the shared failure counter. A known-device bypass of an ACTIVE
+            // lockout leaves it — and the lockout — alone, so unknown devices stay locked out.
+            if (!(bypassLockout && AuthCurrentEligibility.IsFailureLockoutActive(user, issuedAtUtc)))
+            {
+                user.FailedLoginCount = 0;
+                user.IsLocked = false;
+                user.LockoutEnd = null;
+            }
             user.LastLoginAtUtc = issuedAtUtc;
             var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
             _db.RefreshTokens.Add(new RefreshToken
@@ -1433,9 +1686,12 @@ public class AuthService : IAuthService
                 committedUser,
                 AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
                 committedPolicy,
-                DateTime.UtcNow).Allowed
+                DateTime.UtcNow,
+                ignoreFailureLockout: bypassLockout).Allowed
             || committedUser.MFAEnabled
-            || committedPolicy?.MfaRequired == true)
+            || committedPolicy?.MfaRequired == true
+            || (await PrivilegedMfaPolicy.ForTenantUserAsync(
+                _db, _configuration, committedUser, committedPolicy, DateTime.UtcNow, cancellationToken)).BlocksSession)
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         return BuildAuthResponse(committedUser, refreshRaw);
     }

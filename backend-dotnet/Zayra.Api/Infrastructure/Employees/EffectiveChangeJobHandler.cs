@@ -726,7 +726,9 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.LogWarning(ex, "Notification for employee change {ChangeId} failed after it was recorded.", result.ChangeId);
+            // Type only: a notification failure's message can carry the recipient's address or number.
+            _log.LogWarning("Notification for employee change {ChangeId} failed after it was recorded ({ErrorType}).",
+                result.ChangeId, ex.GetType().Name);
         }
     }
 

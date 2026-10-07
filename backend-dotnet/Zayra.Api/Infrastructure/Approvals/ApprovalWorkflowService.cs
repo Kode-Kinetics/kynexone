@@ -15,6 +15,8 @@ using Zayra.Api.Models;
 using Zayra.Api.Application.Jawazat;
 using Zayra.Api.Infrastructure.Jawazat;
 
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Infrastructure.Approvals;
 
 public class ApprovalWorkflowService : IApprovalWorkflowService
@@ -523,6 +525,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
             await TimesheetApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
@@ -538,6 +542,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             // Requisitions: the shared row and the requisition's own status are now one write. Before
             // this the module stamped its status and left this row Pending for ever.
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
+            await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
         }
         else
         {
@@ -786,8 +792,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (context.UserId is not Guid userId) return DecisionBar.None;
         if (approval.RequestedByUserId == userId) return DecisionBar.Requester;
         var subject = approval.RequestedForEmployeeId ?? await ResolveSubjectEmployeeIdAsync(approval, cancellationToken);
-        if (subject is int subjectId && (await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
-            return DecisionBar.Subject;
+        if (subject is int subjectId)
+        {
+            if ((await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)).Contains(userId))
+                return DecisionBar.Subject;
+            // EITHER link marks the subject: the login rows above (Employee.UserAccountId and the account
+            // links), OR the employee the caller's own token is linked to (CallerEmployeeResolver, the lookup
+            // every other surface uses). This bar only ever gets stricter; neither lookup can clear it.
+            if (_http?.HttpContext?.User is { Identity.IsAuthenticated: true } principal
+                && await CallerEmployeeResolver.ResolveAsync(_db, principal, approval.TenantId, cancellationToken) == subjectId)
+                return DecisionBar.Subject;
+        }
         // Every load of a request for a decision or a listing includes its decision ledger.
         if (approval.Decisions.Any(x => x.DecidedByUserId == userId)) return DecisionBar.DecidedEarlierStep;
         return DecisionBar.None;

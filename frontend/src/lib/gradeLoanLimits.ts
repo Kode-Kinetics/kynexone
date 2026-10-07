@@ -2,9 +2,21 @@ import type {
   CompanyWithoutPolicy, GradeLimitReasonCode, GradeLoanLimitInput, GradeLoanLimitRow, GradeMissingLimit,
   LoanBindingLimit, LoanEligibility, LoanLimitBreakdown,
 } from '../api/loanGovernance';
+import { createFormatter } from './format';
 
 /** Limit basis the admin picks per grade. "No per-loan cap" is an empty per-loan figure, not a basis. */
-export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross';
+export type GradeLimitBasis = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing';
+
+/** The Facility code a loan type's grade limits are keyed by — the server's GradeLoanLimitResolver.FacilityCodeFor. */
+export const facilityCodeFor = (loanTypeCode: string | null | undefined) => {
+  const cleaned = (loanTypeCode ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/^_+|_+$/g, '');
+  return ('LOAN_' + (cleaned || 'TYPE')).slice(0, 64);
+};
+
+/** Release A (R2): × housing allowance is allowed only for the housing-advance facility (EntitlementComponentRules), keyed on
+ * the loan type's entitlement component code like the server, never on its display code. */
+export const allowsHousingMultiple = (loanType: { code?: string | null; entitlementComponentCode?: string | null } | null | undefined) =>
+  !!loanType && (loanType.entitlementComponentCode || facilityCodeFor(loanType.code)).toUpperCase() === 'LOAN_HOUSING_ADVANCE';
 
 /** Eligibility as edited: 'unset' only exists for a grade with no limit in force yet. */
 export type GradeEligibilityChoice = 'unset' | 'yes' | 'no';
@@ -39,6 +51,7 @@ export const gradeReasonKeys: Record<GradeLimitReasonCode, string> = {
   GradeLimitNotConfigured: "Your loan limit hasn't been set up yet — HR has been notified.",
   GradeSalaryMissing: "Your limit is a multiple of your salary, and no current salary is on file. HR needs to complete it before you can apply.",
   GradeLimitCurrencyAmbiguous: "Your grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. HR needs to set your company's own limit before you can apply.",
+  GradeHousingInKind: "Your housing is provided in kind (accommodation), so there is no housing allowance to advance against.",
 };
 
 /** The same refusals, worded for HR applying on an employee's behalf. */
@@ -50,6 +63,7 @@ export const gradeReasonKeysForEmployee: Record<GradeLimitReasonCode, string> = 
   GradeLimitNotConfigured: "No loan limit is set for this employee's grade yet. Set it in Loan Policies → Limits by grade.",
   GradeSalaryMissing: "This employee's limit is a multiple of salary, and no current salary is on file. Complete it before applying.",
   GradeLimitCurrencyAmbiguous: "This grade's loan limit is a fixed amount set for all companies, but the companies pay in different currencies. Set this employee's company's own limit in Loan Policies \u2192 Limits by grade.",
+  GradeHousingInKind: "This employee's housing is provided in kind, so there is no housing allowance to advance against.",
 };
 export const gradeReasonFallbackKey = "This request is outside the loan limit for your grade.";
 export const gradeReasonFallbackKeyForEmployee = "This request is outside the loan limit for this employee's grade.";
@@ -133,7 +147,7 @@ export function fillTemplate(template: string, values: Record<string, string | n
 export function draftFromRow(row: GradeLoanLimitRow): GradeLimitDraft {
   // Arabic grade names are display-only: callers pick gradeNameAr via localName().
   const hasCell = !!row.cellId;
-  const basis: GradeLimitBasis = row.valueType === 'MultipleOfBasic' || row.valueType === 'MultipleOfGross' ? row.valueType : 'Amount';
+  const basis: GradeLimitBasis = row.valueType === 'MultipleOfBasic' || row.valueType === 'MultipleOfGross' || row.valueType === 'MultipleOfHousing' ? row.valueType : 'Amount';
   const perLoanValue = row.valueType === 'Amount' ? row.amount : basis !== 'Amount' ? row.rate : null;
   return {
     gradeId: row.gradeId, gradeCode: row.gradeCode, gradeName: row.gradeName, gradeNameAr: row.gradeNameAr ?? null, level: row.level,
@@ -244,6 +258,13 @@ export function breakdownExplanation(breakdown: LoanLimitBreakdown, money: (n: n
       values,
     };
   }
+  if (breakdown.basis === 'MultipleOfHousing' && breakdown.multiple != null && breakdown.salaryBasisAmount != null) {
+    values.multiple = String(breakdown.multiple);
+    values.salary = money(breakdown.salaryBasisAmount);
+    return { key: hasOutstanding
+      ? 'Eligible up to {available} = {multiple} × housing allowance {salary} − outstanding {outstanding}'
+      : 'Eligible up to {available} = {multiple} × housing allowance {salary}', values };
+  }
   if ((breakdown.basis === 'MultipleOfBasic' || breakdown.basis === 'MultipleOfGross') && breakdown.multiple != null && breakdown.salaryBasisAmount != null) {
     values.multiple = String(breakdown.multiple);
     values.salary = money(breakdown.salaryBasisAmount);
@@ -302,9 +323,11 @@ export function companiesWithoutPolicyFromError(error: unknown): CompanyWithoutP
     : [];
 }
 
-/** Formats an amount in the response's own currency. With no currency, a plain number — never a guessed one. */
-export function moneyFormatter(currency: string | null | undefined): (n: number) => string {
-  return currency
-    ? (n: number) => n.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 2 })
-    : (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/**
+ * Formats an amount in the response's own currency, in the viewer's language (lib/format.ts: Latin
+ * digits, the currency's symbol). With no currency, a plain number — never a guessed one.
+ */
+export function moneyFormatter(currency: string | null | undefined, locale: string = 'en'): (n: number) => string {
+  const f = createFormatter({ locale });
+  return (n: number) => f.money(n, currency || null);
 }

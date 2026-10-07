@@ -131,7 +131,8 @@ public class AuthSeeder : IAuthSeeder
         // Level 1 — Admin: all permissions
         var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access", permissions, 1, false, cancellationToken);
 
-        // Level 2 — HR Director: full HR + payroll visibility + reports + compliance
+        // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
+        // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
@@ -139,10 +140,12 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
-            "qiwa.read" or "qiwa.sync"
+            "qiwa.read" or "qiwa.sync" ||
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
         ).ToList(), 2, true, cancellationToken);
 
-        // Level 3 — HR Manager: operational HR management
+        // Level 3 — HR Manager: operational HR management.
+        // Release A: entitlements.* and contracts.renewal.* (prepares packages and runs renewal cases).
         // NOTE: the explicit payroll.* / loans.write grants below are RECONCILIATION for the
         // [HasPermission] conversion, not new reach. HR Manager already reaches all PayrollController /
         // GosiController operator+approve endpoints and Bonuses/Loans-type creation today via the
@@ -158,7 +161,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage"
+            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -180,7 +184,9 @@ public class AuthSeeder : IAuthSeeder
             // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
             "employees.bulk_import",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
-            "leave.read", "leave.write", "attendance.read", "overtime.read", "profile.read"
+            // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
+            // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
+            "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
@@ -346,6 +352,11 @@ public class AuthSeeder : IAuthSeeder
             ("loans.write", "Loans", "Create loan and advance applications"),
             ("loans.approve", "Loans", "Approve or reject loans and advances"),
             ("loans.policy_manage", "Loans", "Manage loan types and policies"),
+            // Release A — benefits by grade and contract renewals (Admin via backfill; HR Director and HR Manager below)
+            ("entitlements.read", "Entitlements", "Read benefits by grade and employee packages"),
+            ("entitlements.manage", "Entitlements", "Set benefits by grade and freeze employee packages"),
+            ("contracts.renewal.read", "Contracts", "Read contract renewal cases and contract chains"),
+            ("contracts.renewal.manage", "Contracts", "Run contract renewals: offers, Qiwa evidence and apply"),
             // Recruitment
             ("recruitment.read", "Recruitment", "Read job openings and applications"),
             ("recruitment.write", "Recruitment", "Manage recruitment pipeline"),

@@ -99,7 +99,10 @@ public sealed record WpsConformanceStatement(
     string SpecificationCheckedOn,
     // The exact next step, and whose job it is.
     string RemediationOwner,
-    string Remediation);
+    string Remediation,
+    // Plain-language name for the artefact, safe for a button, a file list or a badge. For every Saudi
+    // format this is "Payroll register (internal — not a bank/WPS file)" — never "WPS" or "Mudad".
+    string FormatLabel = "");
 
 public static class WpsConformance
 {
@@ -122,6 +125,27 @@ public static class WpsConformance
     /// break content addressing and every determinism test that depends on it.
     /// </summary>
     public const string DownloadHeader = "X-Wps-Conformance";
+
+    /// <summary>Format id the KSA exporter writes. Replaces the invented <c>mudad-xml</c>.</summary>
+    public const string KsaPayrollRegisterFormat = "ksa-payroll-register-v1";
+
+    /// <summary>The ONE name every surface uses for the Saudi register artefact.</summary>
+    public const string KsaPayrollRegisterLabel = "Payroll register (internal \u2014 not a bank/WPS file)";
+
+    /// <summary>Format ids that are the Saudi internal register, including the two legacy ids still stored
+    /// on WPSFileBatch rows generated before the relabel.</summary>
+    public static readonly IReadOnlySet<string> KsaRegisterFormats = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        KsaPayrollRegisterFormat, "mudad-xml", SifFileGenerator.FormatVersion,
+    };
+
+    public static bool IsKsaRegister(string? formatVersion) =>
+        string.IsNullOrWhiteSpace(formatVersion) || KsaRegisterFormats.Contains(formatVersion);
+
+    /// <summary>Display label for a stored or generated format id. Never says "Mudad" or "WPS" for KSA.</summary>
+    public static string LabelFor(string? formatVersion) => IsKsaRegister(formatVersion)
+        ? KsaPayrollRegisterLabel
+        : $"Wage file ({formatVersion}) \u2014 not verified with any gateway";
 
     public const string SpecTitle =
         "MHRSD 'Wages Protection System — WPS Wages File Specification' (21pp, PDF created 2015-09-07; "
@@ -196,7 +220,7 @@ public static class WpsConformance
             ? SifFileGenerator.FormatVersion
             : formatVersion,
         Level: Levels.ProprietaryExportNotWpsConformant,
-        Headline:
+        Headline: (IsKsaRegister(formatVersion) ? KsaPayrollRegisterLabel + ". " : string.Empty) +
             "Proprietary payroll export — NOT a Saudi WPS file. Its contents have been checked "
             + "against the payroll run, and its layout has been checked against the published MHRSD "
             + "WPS specification and does not conform. In Saudi Arabia the WPS file is generated and "
@@ -223,14 +247,19 @@ public static class WpsConformance
             + "integration partner. There is no public Mudad API specification or sandbox; access "
             + "is gated on a Mudad subscription, an authorised signatory, a Mudad-connected bank "
             + "channel and GOSI name matching. Until one of these exists, the product must say "
-            + "'payroll export', never 'WPS submission'.");
+            + "'payroll export', never 'WPS submission'. For Saudi payroll, use the ANB Connect bank "
+            + "payroll file (validated against the WPS field rules before it is built) and record the "
+            + "bank's signed output or a Mudad compliance screenshot as evidence before marking Accepted.",
+        FormatLabel: LabelFor(formatVersion));
 
     /// <summary>
     /// One-line form for the download response header, which cannot carry structured JSON legibly.
     /// Deliberately blunt: this is the last thing a customer sees before the bytes.
     /// </summary>
     public static string HeaderValue(string? formatVersion) =>
-        $"level={Levels.ProprietaryExportNotWpsConformant}; "
+        $"kind={(IsKsaRegister(formatVersion) ? "internal-payroll-register" : "internal-wage-export")}; "
+        + "not-a-bank-or-wps-file=true; "
+        + $"level={Levels.ProprietaryExportNotWpsConformant}; "
         + $"format={(string.IsNullOrWhiteSpace(formatVersion) ? SifFileGenerator.FormatVersion : formatVersion)}; "
         + "accepted-by-live-gateway=false; wps-conformant=false; "
         + $"checked-against-spec={SpecCheckedOn}; "

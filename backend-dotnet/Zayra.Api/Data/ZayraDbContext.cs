@@ -185,7 +185,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                             nameof(PlatformUser.FailedLoginCount) or
                             nameof(PlatformUser.LockoutEndUtc) or
                             nameof(PlatformUser.LastLoginAtUtc) or
-                            nameof(PlatformUser.LastLoginIp));
+                            nameof(PlatformUser.LastLoginIp) or
+                            // Consuming or regenerating recovery codes changes no identity, role or
+                            // factor; rotating the stamp would sign the operator out mid-session.
+                            nameof(PlatformUser.MfaRecoveryCodeHashes) or
+                            // Replay-protection bookkeeping on every MFA sign-in, likewise.
+                            nameof(PlatformUser.MfaLastTotpStep));
                 // User.UpdatedAtUtc is likewise the tenant access-token security stamp. Routine
                 // login telemetry must allow multiple legitimate device/browser sessions and a
                 // sub-threshold bad-password attempt must not revoke an existing session. Lockout,
@@ -1072,6 +1077,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<LoanType> LoanTypes => Set<LoanType>();
     public DbSet<LoanPolicy> LoanPolicies => Set<LoanPolicy>();
     public DbSet<GradeEntitlement> GradeEntitlements => Set<GradeEntitlement>();
+    // Release A (rev 8.3.2): the contract-year package and the renewal case. Mapped in ReleaseAModelConfiguration.
+    public DbSet<EmployeeEntitlement> EmployeeEntitlements => Set<EmployeeEntitlement>();
+    public DbSet<ContractRenewalCase> ContractRenewalCases => Set<ContractRenewalCase>();
     public DbSet<LoanChangeRequest> LoanChangeRequests => Set<LoanChangeRequest>();
     public DbSet<EmployeeLoan> EmployeeLoans => Set<EmployeeLoan>();
     public DbSet<LoanDisbursementBatch> LoanDisbursementBatches => Set<LoanDisbursementBatch>();
@@ -3194,6 +3202,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Role).HasMaxLength(40);
             entity.Property(x => x.LastLoginIp).HasMaxLength(64);
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
+            entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(2000);
             entity.HasIndex(x => x.Email).IsUnique();
             entity.Property(x => x.IsActive).HasDefaultValue(true);
         });
@@ -3884,14 +3893,27 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             {
                 t.HasCheckConstraint("ck_grade_entitlements__entitlement_class",
                     "entitlement_class IN ('QiwaWage','Contractual','Facility')");
-                t.HasCheckConstraint("ck_grade_entitlements__value_type",
-                    "value_type IN ('Amount','MultipleOfBasic','MultipleOfGross','EligibilityOnly')");
-                t.HasCheckConstraint("ck_grade_entitlements__value_shape",
-                    "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL)"
-                    + " OR (value_type IN ('MultipleOfBasic','MultipleOfGross') AND rate IS NOT NULL AND rate > 0 AND amount IS NULL)"
-                    + " OR (value_type = 'EligibilityOnly' AND amount IS NULL AND rate IS NULL)");
+                // Release A widened the value types and the shape (ReleaseAModelConfiguration.ValueShapeSql, shared
+                // with employee_entitlements); every L1 loan cell keeps its shape under the wider rule.
+                t.HasCheckConstraint("ck_grade_entitlements__value_type", "value_type IN " + ReleaseAModelConfiguration.ValueTypesIn);
+                t.HasCheckConstraint("ck_grade_entitlements__value_shape", ReleaseAModelConfiguration.ValueShapeSql);
                 t.HasCheckConstraint("ck_grade_entitlements__ineligible_has_no_values",
-                    "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL)");
+                    "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL AND coverage_tier IS NULL"
+                    + " AND quantity IS NULL AND max_dependants IS NULL AND dependant_scope = 'None')");
+                t.HasCheckConstraint("ck_grade_entitlements__coverage_tier",
+                    "coverage_tier IS NULL OR coverage_tier IN " + ReleaseAModelConfiguration.CoverageTiersIn);
+                t.HasCheckConstraint("ck_grade_entitlements__quantity", "quantity IS NULL OR quantity > 0");
+                t.HasCheckConstraint("ck_grade_entitlements__dependant_scope", "dependant_scope IN " + ReleaseAModelConfiguration.DependantScopesIn);
+                t.HasCheckConstraint("ck_grade_entitlements__max_dependants",
+                    "max_dependants IS NULL OR (max_dependants >= 0 AND dependant_scope <> 'None')");
+                t.HasCheckConstraint("ck_grade_entitlements__limit_period",
+                    "limit_period IS NULL OR limit_period IN " + ReleaseAModelConfiguration.LimitPeriodsIn);
+                t.HasCheckConstraint("ck_grade_entitlements__min_service_months", "min_service_months IS NULL OR min_service_months >= 0");
+                t.HasCheckConstraint("ck_grade_entitlements__nationality_scope",
+                    "nationality_scope IN " + ReleaseAModelConfiguration.NationalityScopesIn);
+                // Non-discrimination (Art. 61(4)): a nationality criterion must carry its recorded legal basis.
+                t.HasCheckConstraint("ck_grade_entitlements__nationality_has_basis",
+                    "nationality_scope = 'Any' OR (nationality_basis IS NOT NULL AND trim(nationality_basis) <> '')");
                 t.HasCheckConstraint("ck_grade_entitlements__outstanding_is_facility",
                     "max_outstanding_amount IS NULL OR (entitlement_class = 'Facility' AND max_outstanding_amount >= 0)");
                 t.HasCheckConstraint("ck_grade_entitlements__dates",
@@ -3899,6 +3921,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             });
             entity.HasKey(x => x.Id);
             entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            // FK target for employee_entitlements.grade_entitlement_id: the FK carries the component code, so a
+            // frozen row can only cite a cell of its own component.
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id, x.PayComponentCode });
+            entity.Property(x => x.CoverageTier).HasMaxLength(20);
+            entity.Property(x => x.DependantScope).HasMaxLength(10).HasDefaultValue(DependantScopes.None);
+            entity.Property(x => x.LimitPeriod).HasMaxLength(10);
+            entity.Property(x => x.NationalityScope).HasMaxLength(10).HasDefaultValue(NationalityScopes.Any);
+            entity.Property(x => x.NationalityBasis).HasMaxLength(300);
             entity.Property(x => x.CompanyKey)
                 .HasComputedColumnSql("COALESCE(company_id, '00000000-0000-0000-0000-000000000000')", stored: true);
             entity.Property(x => x.PayComponentCode).HasMaxLength(64);
@@ -4345,6 +4375,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // Timesheets keep their fluent configuration next to their model so this file stays
         // append-only for the module (the convention Models/Timesheets.cs documents).
         TimesheetModelConfiguration.Configure(modelBuilder);
+
+        // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
+        ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

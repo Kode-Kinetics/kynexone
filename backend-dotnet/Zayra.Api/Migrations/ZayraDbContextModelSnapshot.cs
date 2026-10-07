@@ -699,6 +699,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("mfa_failed_count");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
                     b.Property<DateTime?>("MfaLastVerifiedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
@@ -2550,6 +2554,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_routed_at_utc");
 
+                    b.Property<string>("Payload")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("PayloadSha256")
+                        .HasColumnType("character(64)")
+                        .HasColumnName("payload_sha256");
+
                     b.Property<string>("Priority")
                         .IsRequired()
                         .HasMaxLength(40)
@@ -2602,7 +2614,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EntityName", "EntityId", "Status");
 
-                    b.ToTable("approval_requests", (string)null);
+                    b.ToTable("approval_requests", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_approval_requests__payload_pair", "(payload IS NULL) = (payload_sha256 IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.ApprovalWorkflow", b =>
@@ -6885,6 +6900,340 @@ namespace Zayra.Api.Migrations
                     b.ToTable("continuous_feedback", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.ContractRenewalCase", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string[]>("AllowedActions")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("allowed_actions");
+
+                    b.Property<DateTime?>("AppliedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("applied_at");
+
+                    b.Property<Guid?>("AppliedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("applied_by");
+
+                    b.Property<string>("ApplyIdempotencyKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("apply_idempotency_key");
+
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closed_at");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContractAction")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("contract_action");
+
+                    b.Property<Guid?>("CurrentApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_approval_request_id");
+
+                    b.Property<bool>("EmployeeAcceptanceRequired")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("employee_acceptance_required");
+
+                    b.Property<Guid>("EmployeeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateTime?>("EmployeeRespondedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("employee_responded_at");
+
+                    b.Property<Guid?>("EmployeeRespondedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_responded_by_user_id");
+
+                    b.Property<string>("EmployeeResponse")
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasColumnName("employee_response");
+
+                    b.Property<Guid?>("EmployeeResponseConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_response_confirmed_by");
+
+                    b.Property<Guid?>("EmployeeResponseDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_response_document_id");
+
+                    b.Property<Guid>("ExpiringContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("expiring_contract_id");
+
+                    b.Property<DateOnly>("ExpiringEndDate")
+                        .HasColumnType("date")
+                        .HasColumnName("expiring_end_date");
+
+                    b.Property<string>("FallbackIfRejected")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("fallback_if_rejected");
+
+                    b.Property<string>("HeldFromState")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("held_from_state");
+
+                    b.Property<string>("HoldReason")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("hold_reason");
+
+                    b.Property<DateOnly?>("ManagerDueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("manager_due_on");
+
+                    b.Property<DateOnly?>("NextHardDeadline")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("date")
+                        .HasColumnName("next_hard_deadline")
+                        .HasComputedColumnSql("CASE WHEN state IN ('Applied','NonRenewed','Cancelled') THEN NULL WHEN state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval') THEN offer_due_on WHEN state IN ('OfferSent','Accepted') THEN qiwa_submit_due_on WHEN state = 'QiwaPending' THEN CASE WHEN qiwa_respond_by_on IS NULL THEN qiwa_gate_due_on WHEN qiwa_gate_due_on IS NULL OR qiwa_respond_by_on < qiwa_gate_due_on THEN qiwa_respond_by_on ELSE qiwa_gate_due_on END WHEN state = 'ReadyToApply' THEN expiring_end_date ELSE notice_due_on END", true);
+
+                    b.Property<string>("NonRenewalNoticeBy")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("non_renewal_notice_by");
+
+                    b.Property<string>("NonRenewalNoticeChannel")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("non_renewal_notice_channel");
+
+                    b.Property<Guid?>("NonRenewalNoticeDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("non_renewal_notice_document_id");
+
+                    b.Property<DateOnly?>("NonRenewalNoticeServedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("non_renewal_notice_served_on");
+
+                    b.Property<DateOnly?>("NoticeDueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("notice_due_on");
+
+                    b.Property<decimal?>("OfferCostDeltaMonthly")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("offer_cost_delta_monthly");
+
+                    b.Property<DateOnly?>("OfferDueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("offer_due_on");
+
+                    b.Property<string>("OfferSha256")
+                        .HasColumnType("character(64)")
+                        .HasColumnName("offer_sha256");
+
+                    b.Property<short>("OfferVersion")
+                        .HasColumnType("smallint")
+                        .HasColumnName("offer_version");
+
+                    b.Property<DateTime>("OpenedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("opened_at");
+
+                    b.Property<short>("QiwaAttempts")
+                        .HasColumnType("smallint")
+                        .HasColumnName("qiwa_attempts");
+
+                    b.Property<Guid?>("QiwaEvidenceDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qiwa_evidence_document_id");
+
+                    b.Property<string>("QiwaEvidenceOutcome")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("qiwa_evidence_outcome");
+
+                    b.Property<Guid?>("QiwaEvidenceRecordedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qiwa_evidence_recorded_by");
+
+                    b.Property<Guid?>("QiwaEvidenceVerifiedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qiwa_evidence_verified_by");
+
+                    b.Property<DateOnly?>("QiwaGateDueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("qiwa_gate_due_on");
+
+                    b.Property<string>("QiwaRequestNo")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("qiwa_request_no");
+
+                    b.Property<bool>("QiwaRequired")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("qiwa_required");
+
+                    b.Property<DateOnly?>("QiwaRespondByOn")
+                        .HasColumnType("date")
+                        .HasColumnName("qiwa_respond_by_on");
+
+                    b.Property<Guid?>("QiwaRuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qiwa_rule_id");
+
+                    b.Property<DateOnly?>("QiwaSentOn")
+                        .HasColumnType("date")
+                        .HasColumnName("qiwa_sent_on");
+
+                    b.Property<DateOnly?>("QiwaSubmitDueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("qiwa_submit_due_on");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("RecommendedAction")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("recommended_action");
+
+                    b.Property<Guid?>("RecommendedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recommended_by_user_id");
+
+                    b.Property<Guid?>("RenewalBatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewal_batch_id");
+
+                    b.Property<string>("ResponseChannel")
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasColumnName("response_channel");
+
+                    b.Property<Guid?>("ResultingContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resulting_contract_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("state");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<short?>("TermMonths")
+                        .HasColumnType("smallint")
+                        .HasColumnName("term_months");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<string>("WorkerNationalityClass")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("worker_nationality_class");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("QiwaRuleId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CurrentApprovalRequestId");
+
+                    b.HasIndex("TenantId", "EmployeeResponseDocumentId");
+
+                    b.HasIndex("TenantId", "ExpiringContractId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_contract_renewal_cases__expiring_contract");
+
+                    b.HasIndex("TenantId", "NonRenewalNoticeDocumentId");
+
+                    b.HasIndex("TenantId", "QiwaEvidenceDocumentId");
+
+                    b.HasIndex("TenantId", "RenewalBatchId");
+
+                    b.HasIndex("TenantId", "CompanyId", "NextHardDeadline")
+                        .HasDatabaseName("ix_contract_renewal_cases__deadline");
+
+                    b.HasIndex("TenantId", "EmployeeId", "ExpiringContractId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "ResultingContractId");
+
+                    b.ToTable("contract_renewal_cases", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_contract_renewal_cases__applied_has_result", "state <> 'Applied' OR (resulting_contract_id IS NOT NULL AND applied_at IS NOT NULL AND applied_by IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__closed_iff_terminal", "(closed_at IS NULL) = (state NOT IN ('Applied','NonRenewed','Cancelled'))");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__deadlines_once_confirmed", "state IN ('NeedsConfirmation','OnHold','Cancelled') OR notice_due_on IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__employee_response", "employee_response IS NULL OR (employee_response IN ('Accepted','Declined','NoResponse') AND employee_responded_at IS NOT NULL AND response_channel IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__fallback_if_rejected", "fallback_if_rejected IS NULL OR fallback_if_rejected IN ('RenewAsIs','NonRenew')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__held_from_state", "held_from_state IS NULL OR held_from_state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_held_from", "(state = 'OnHold') = (held_from_state IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__hold_iff_reason", "(state = 'OnHold') = (hold_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__hold_reason", "hold_reason IS NULL OR hold_reason IN ('Resignation','UnpaidLeave','Abroad','Transfer','LabourDispute')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__non_renewed_on_time", "state <> 'NonRenewed' OR (non_renewal_notice_served_on IS NOT NULL AND notice_due_on IS NOT NULL AND non_renewal_notice_served_on <= notice_due_on)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__notice_by", "non_renewal_notice_by IS NULL OR non_renewal_notice_by IN ('Employer','Employee')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__notice_channel", "non_renewal_notice_channel IS NULL OR non_renewal_notice_channel IN ('Qiwa','Written')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__offer_before_notice", "offer_due_on IS NULL OR notice_due_on IS NULL OR offer_due_on < notice_due_on");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__offer_version", "offer_version >= 0");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__paper_response_two_people", "response_channel IS NULL OR response_channel <> 'PaperUpload' OR employee_response_confirmed_by IS NULL OR (employee_responded_by_user_id IS NOT NULL AND employee_response_confirmed_by <> employee_responded_by_user_id)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__qiwa_attempts", "qiwa_attempts >= 0");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__qiwa_evidence_outcome", "qiwa_evidence_outcome IS NULL OR qiwa_evidence_outcome IN ('Approved','Rejected','ChangesRequested','NoResponse')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__qiwa_evidence_two_people", "qiwa_evidence_verified_by IS NULL OR (qiwa_evidence_recorded_by IS NOT NULL AND qiwa_evidence_verified_by <> qiwa_evidence_recorded_by)");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__recommended_action", "recommended_action IS NULL OR recommended_action IN ('RenewAsIs','RenewWithChanges','ConvertIndefinite','NonRenew')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__response_channel", "response_channel IS NULL OR response_channel IN ('ESS','PaperUpload')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__response_document_is_paper", "employee_response_document_id IS NULL OR (response_channel IS NOT NULL AND response_channel = 'PaperUpload')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__state", "state IN ('NeedsConfirmation','Open','AwaitingManager','OfferInPreparation','InApproval','OfferSent','Accepted','QiwaPending','ReadyToApply','Applied','NonRenewed','Cancelled','OnHold')");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__term_months", "term_months IS NULL OR term_months > 0");
+
+                            t.HasCheckConstraint("ck_contract_renewal_cases__worker_nationality_class", "worker_nationality_class IN ('Saudi','NonSaudi')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.ContractTemplate", b =>
                 {
                     b.Property<Guid>("Id")
@@ -8608,10 +8957,24 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("approval_request_id");
 
+                    b.Property<bool>("AutoRenew")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("auto_renew");
+
                     b.Property<decimal>("BasicSalary")
                         .HasPrecision(14, 2)
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("basic_salary");
+
+                    b.Property<string>("ChainSource")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("chain_source");
+
+                    b.Property<DateOnly?>("ChainStartedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("chain_started_on");
 
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
@@ -8677,9 +9040,26 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("language");
 
+                    b.Property<short?>("NonRenewalNoticeDays")
+                        .HasColumnType("smallint")
+                        .HasColumnName("non_renewal_notice_days");
+
                     b.Property<Guid?>("PreviousVersionId")
                         .HasColumnType("uuid")
                         .HasColumnName("previous_version_id");
+
+                    b.Property<string>("ProvisionalBasis")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("provisional_basis");
+
+                    b.Property<short?>("RenewalNumber")
+                        .HasColumnType("smallint")
+                        .HasColumnName("renewal_number");
+
+                    b.Property<Guid?>("RenewedFromContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewed_from_contract_id");
 
                     b.Property<DateTime?>("SignedByEmployeeAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -8724,6 +9104,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("version");
 
+                    b.Property<string>("WorkerNationalityClass")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("worker_nationality_class");
+
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "CompanyId");
@@ -8731,11 +9116,42 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "ContractNumber")
                         .IsUnique();
 
+                    b.HasIndex("TenantId", "EndDate")
+                        .HasDatabaseName("ix_employee_contracts__end_date")
+                        .HasFilter("end_date IS NOT NULL AND NOT is_deleted");
+
                     b.HasIndex("TenantId", "IsDeleted");
+
+                    b.HasIndex("TenantId", "RenewedFromContractId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_employee_contracts__renewed_from");
+
+                    b.HasIndex("TenantId", "EmployeeId", "RenewedFromContractId");
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
-                    b.ToTable("employee_contracts", (string)null);
+                    b.ToTable("employee_contracts", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_contracts__chain_pair", "(renewal_number IS NULL) = (chain_started_on IS NULL)");
+
+                            t.HasCheckConstraint("ck_employee_contracts__chain_source", "chain_source IS NULL OR chain_source IN ('Derived','Recorded')");
+
+                            t.HasCheckConstraint("ck_employee_contracts__chain_starts_by_term_start", "chain_started_on IS NULL OR chain_started_on <= start_date");
+
+                            t.HasCheckConstraint("ck_employee_contracts__non_renewal_notice_days", "non_renewal_notice_days IS NULL OR non_renewal_notice_days >= 0");
+
+                            t.HasCheckConstraint("ck_employee_contracts__not_renewed_from_itself", "renewed_from_contract_id IS NULL OR renewed_from_contract_id <> id");
+
+                            t.HasCheckConstraint("ck_employee_contracts__provisional_basis", "provisional_basis IS NULL OR provisional_basis IN ('DeemedRenewal','Art55Indefinite')");
+
+                            t.HasCheckConstraint("ck_employee_contracts__provisional_has_no_renewal_number", "provisional_basis IS NULL OR renewal_number IS NULL");
+
+                            t.HasCheckConstraint("ck_employee_contracts__renewal_number", "renewal_number IS NULL OR renewal_number >= 0");
+
+                            t.HasCheckConstraint("ck_employee_contracts__renewed_from_counts", "renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_employee_contracts__worker_nationality_class", "worker_nationality_class IS NULL OR worker_nationality_class IN ('Saudi','NonSaudi')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeDependent", b =>
@@ -8749,6 +9165,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("date_of_birth");
 
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<Guid?>("DeletedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("deleted_by");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
@@ -8757,6 +9181,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("full_name");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
 
                     b.Property<string>("NationalId")
                         .IsRequired()
@@ -9347,6 +9775,217 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "Status");
 
                     b.ToTable("employee_drafts", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeEntitlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid?>("CarriedFromEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("carried_from_entitlement_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contract_id");
+
+                    b.Property<Guid?>("CorrectionBasisDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("correction_basis_document_id");
+
+                    b.Property<string>("CoverageTier")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("coverage_tier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("DependantScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("None")
+                        .HasColumnName("dependant_scope");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<DateOnly?>("EffectiveTo")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_to");
+
+                    b.Property<Guid>("EmployeeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("EntitlementClass")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("entitlement_class");
+
+                    b.Property<Guid?>("GradeEntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_entitlement_id");
+
+                    b.Property<string>("LimitPeriod")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("limit_period");
+
+                    b.Property<short?>("MaxDependants")
+                        .HasColumnType("smallint")
+                        .HasColumnName("max_dependants");
+
+                    b.Property<decimal?>("MaxOutstandingAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("max_outstanding_amount");
+
+                    b.Property<string>("PayComponentCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("pay_component_code");
+
+                    b.Property<short?>("Quantity")
+                        .HasColumnType("smallint")
+                        .HasColumnName("quantity");
+
+                    b.Property<decimal?>("Rate")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("rate");
+
+                    b.Property<Guid?>("RenewalCaseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewal_case_id");
+
+                    b.Property<decimal?>("ResolvedAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("resolved_amount");
+
+                    b.Property<Guid?>("ResolvedBasisSalaryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolved_basis_salary_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("source");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ValueType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("value_type");
+
+                    b.Property<string>("VerificationState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasDefaultValue("Verified")
+                        .HasColumnName("verification_state");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("TenantId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CorrectionBasisDocumentId");
+
+                    b.HasIndex("TenantId", "RenewalCaseId");
+
+                    b.HasIndex("TenantId", "ResolvedBasisSalaryId");
+
+                    b.HasIndex("TenantId", "ApprovalRequestId", "PayComponentCode")
+                        .IsUnique()
+                        .HasDatabaseName("ux_employee_entitlements__approval_component")
+                        .HasFilter("carried_from_entitlement_id IS NULL");
+
+                    b.HasIndex("TenantId", "EmployeeId", "CarriedFromEntitlementId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "ContractId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "EffectiveFrom")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_employee_entitlements__as_of");
+
+                    b.HasIndex("TenantId", "GradeEntitlementId", "PayComponentCode");
+
+                    b.ToTable("employee_entitlements", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_entitlements__approval_iff_exception", "(source IN ('Exception','Correction')) = (approval_request_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__carried_iff_origin", "(source = 'Carried') = (carried_from_entitlement_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__correction_iff_document", "(source = 'Correction') = (correction_basis_document_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__coverage_tier", "coverage_tier IS NULL OR coverage_tier IN ('CchiBasic','C','B','A','VIP','Economy','Business')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__dates", "effective_to IS NULL OR effective_to >= effective_from");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__dependant_scope", "dependant_scope IN ('None','Spouse','Children','Family')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__entitlement_class", "entitlement_class IN ('Contractual','Facility')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__grade_default_cites_cell", "source <> 'GradeDefault' OR grade_entitlement_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__limit_period", "limit_period IS NULL OR limit_period IN ('PerTerm','Monthly','Annual','PerDay','Lifetime')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__max_dependants", "max_dependants IS NULL OR (max_dependants >= 0 AND dependant_scope <> 'None')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__outstanding_is_facility", "max_outstanding_amount IS NULL OR (entitlement_class = 'Facility' AND max_outstanding_amount >= 0)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__percent_has_basis", "(value_type = 'PercentOfBasic') = (resolved_basis_salary_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__quantity", "quantity IS NULL OR quantity > 0");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__resolved_amount", "resolved_amount IS NULL OR resolved_amount >= 0");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__source", "source IN ('GradeDefault','Exception','Correction','Migrated','Carried')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__value_shape", "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL) OR (value_type = 'PercentOfBasic' AND rate IS NOT NULL AND rate > 0 AND rate <= 1 AND amount IS NULL) OR (value_type IN ('MultipleOfBasic','MultipleOfGross','MultipleOfHousing') AND rate IS NOT NULL AND rate > 0 AND amount IS NULL) OR (value_type IN ('InKind','EligibilityOnly') AND amount IS NULL AND rate IS NULL) OR (value_type = 'CoverageTier' AND coverage_tier IS NOT NULL AND amount IS NULL AND rate IS NULL) OR (value_type = 'Quantity' AND quantity IS NOT NULL AND amount IS NULL AND rate IS NULL)");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__value_type", "value_type IN ('Amount','PercentOfBasic','MultipleOfBasic','MultipleOfGross','MultipleOfHousing','InKind','CoverageTier','Quantity','EligibilityOnly')");
+
+                            t.HasCheckConstraint("ck_employee_entitlements__verification_state", "verification_state IN ('Unverified','Verified')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeEosbOpeningBalance", b =>
@@ -10237,6 +10876,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("approved_installments");
 
+                    b.Property<decimal?>("CapBaseWage")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("cap_base_wage");
+
                     b.Property<string>("CollectionStatus")
                         .IsRequired()
                         .HasColumnType("text")
@@ -10245,6 +10889,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
+
+                    b.Property<Guid?>("ConsentDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("consent_document_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -10419,6 +11067,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
+                    b.HasIndex("TenantId", "ConsentDocumentId");
+
                     b.HasIndex("TenantId", "GradeEntitlementId");
 
                     b.HasIndex("TenantId", "LoanNumber")
@@ -10428,7 +11078,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeIntId", "Status");
 
-                    b.ToTable("employee_loans", (string)null);
+                    b.ToTable("employee_loans", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_loans__cap_base_wage", "cap_base_wage IS NULL OR cap_base_wage >= 0");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeMobileDevice", b =>
@@ -11145,6 +11798,19 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("housing_allowance");
 
+                    b.Property<string>("HousingBasis")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(14)
+                        .HasColumnType("character varying(14)")
+                        .HasDefaultValue("Amount")
+                        .HasColumnName("housing_basis");
+
+                    b.Property<decimal?>("HousingRate")
+                        .HasPrecision(9, 6)
+                        .HasColumnType("numeric(9,6)")
+                        .HasColumnName("housing_rate");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -11159,6 +11825,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("other_allowance");
 
+                    b.Property<DateOnly?>("QiwaConfirmedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("qiwa_confirmed_on");
+
+                    b.Property<Guid?>("QiwaEvidenceDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("qiwa_evidence_document_id");
+
+                    b.Property<Guid?>("RenewalCaseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewal_case_id");
+
                     b.Property<Guid>("SalaryStructureId")
                         .HasColumnType("uuid")
                         .HasColumnName("salary_structure_id");
@@ -11172,11 +11850,47 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("transport_allowance");
 
+                    b.Property<string>("TransportBasis")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(14)
+                        .HasColumnType("character varying(14)")
+                        .HasDefaultValue("Amount")
+                        .HasColumnName("transport_basis");
+
+                    b.Property<decimal?>("TransportRate")
+                        .HasPrecision(9, 6)
+                        .HasColumnType("numeric(9,6)")
+                        .HasColumnName("transport_rate");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "QiwaEvidenceDocumentId");
+
+                    b.HasIndex("TenantId", "RenewalCaseId");
 
                     b.HasIndex("TenantId", "EmployeeId", "IsActive");
 
-                    b.ToTable("employee_salary_structures", (string)null);
+                    b.ToTable("employee_salary_structures", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_salary_structures__housing_amount_matches_basis", "(housing_basis <> 'PercentOfBasic' OR housing_allowance = round(basic_salary * housing_rate, 2)) AND (housing_basis <> 'InKind' OR housing_allowance = 0)");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__housing_basis", "housing_basis IN ('Amount','PercentOfBasic','InKind')");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__housing_rate_pair", "(housing_basis = 'PercentOfBasic') = (housing_rate IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__housing_rate_range", "housing_rate IS NULL OR (housing_rate > 0 AND housing_rate <= 1)");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__qiwa_evidence_dated", "qiwa_evidence_document_id IS NULL OR qiwa_confirmed_on IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__transport_amount_matches_basis", "(transport_basis <> 'PercentOfBasic' OR transport_allowance = round(basic_salary * transport_rate, 2)) AND (transport_basis <> 'InKind' OR transport_allowance = 0)");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__transport_basis", "transport_basis IN ('Amount','PercentOfBasic','InKind')");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__transport_rate_pair", "(transport_basis = 'PercentOfBasic') = (transport_rate IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_salary_structures__transport_rate_range", "transport_rate IS NULL OR (transport_rate > 0 AND transport_rate <= 1)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeSelfServiceAuditLog", b =>
@@ -12810,6 +13524,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<bool>("AfterProbation")
+                        .HasColumnType("boolean")
+                        .HasColumnName("after_probation");
+
                     b.Property<decimal?>("Amount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)")
@@ -12825,6 +13543,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("company_key")
                         .HasComputedColumnSql("COALESCE(company_id, '00000000-0000-0000-0000-000000000000')", true);
 
+                    b.Property<string>("CoverageTier")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("coverage_tier");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -12832,6 +13555,14 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
+
+                    b.Property<string>("DependantScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("None")
+                        .HasColumnName("dependant_scope");
 
                     b.Property<DateOnly>("EffectiveFrom")
                         .HasColumnType("date")
@@ -12855,10 +13586,36 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
+                    b.Property<string>("LimitPeriod")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("limit_period");
+
+                    b.Property<short?>("MaxDependants")
+                        .HasColumnType("smallint")
+                        .HasColumnName("max_dependants");
+
                     b.Property<decimal?>("MaxOutstandingAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)")
                         .HasColumnName("max_outstanding_amount");
+
+                    b.Property<short?>("MinServiceMonths")
+                        .HasColumnType("smallint")
+                        .HasColumnName("min_service_months");
+
+                    b.Property<string>("NationalityBasis")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("nationality_basis");
+
+                    b.Property<string>("NationalityScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("Any")
+                        .HasColumnName("nationality_scope");
 
                     b.Property<string>("Note")
                         .HasMaxLength(500)
@@ -12870,6 +13627,10 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("pay_component_code");
+
+                    b.Property<short?>("Quantity")
+                        .HasColumnType("smallint")
+                        .HasColumnName("quantity");
 
                     b.Property<decimal?>("Rate")
                         .HasPrecision(9, 4)
@@ -12902,17 +13663,33 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("grade_entitlements", null, t =>
                         {
+                            t.HasCheckConstraint("ck_grade_entitlements__coverage_tier", "coverage_tier IS NULL OR coverage_tier IN ('CchiBasic','C','B','A','VIP','Economy','Business')");
+
                             t.HasCheckConstraint("ck_grade_entitlements__dates", "effective_to IS NULL OR effective_to >= effective_from");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__dependant_scope", "dependant_scope IN ('None','Spouse','Children','Family')");
 
                             t.HasCheckConstraint("ck_grade_entitlements__entitlement_class", "entitlement_class IN ('QiwaWage','Contractual','Facility')");
 
-                            t.HasCheckConstraint("ck_grade_entitlements__ineligible_has_no_values", "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL)");
+                            t.HasCheckConstraint("ck_grade_entitlements__ineligible_has_no_values", "eligible OR (amount IS NULL AND rate IS NULL AND max_outstanding_amount IS NULL AND coverage_tier IS NULL AND quantity IS NULL AND max_dependants IS NULL AND dependant_scope = 'None')");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__limit_period", "limit_period IS NULL OR limit_period IN ('PerTerm','Monthly','Annual','PerDay','Lifetime')");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__max_dependants", "max_dependants IS NULL OR (max_dependants >= 0 AND dependant_scope <> 'None')");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__min_service_months", "min_service_months IS NULL OR min_service_months >= 0");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__nationality_has_basis", "nationality_scope = 'Any' OR (nationality_basis IS NOT NULL AND trim(nationality_basis) <> '')");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__nationality_scope", "nationality_scope IN ('Any','Saudi','NonSaudi')");
 
                             t.HasCheckConstraint("ck_grade_entitlements__outstanding_is_facility", "max_outstanding_amount IS NULL OR (entitlement_class = 'Facility' AND max_outstanding_amount >= 0)");
 
-                            t.HasCheckConstraint("ck_grade_entitlements__value_shape", "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL) OR (value_type IN ('MultipleOfBasic','MultipleOfGross') AND rate IS NOT NULL AND rate > 0 AND amount IS NULL) OR (value_type = 'EligibilityOnly' AND amount IS NULL AND rate IS NULL)");
+                            t.HasCheckConstraint("ck_grade_entitlements__quantity", "quantity IS NULL OR quantity > 0");
 
-                            t.HasCheckConstraint("ck_grade_entitlements__value_type", "value_type IN ('Amount','MultipleOfBasic','MultipleOfGross','EligibilityOnly')");
+                            t.HasCheckConstraint("ck_grade_entitlements__value_shape", "(value_type = 'Amount' AND amount IS NOT NULL AND amount >= 0 AND rate IS NULL) OR (value_type = 'PercentOfBasic' AND rate IS NOT NULL AND rate > 0 AND rate <= 1 AND amount IS NULL) OR (value_type IN ('MultipleOfBasic','MultipleOfGross','MultipleOfHousing') AND rate IS NOT NULL AND rate > 0 AND amount IS NULL) OR (value_type IN ('InKind','EligibilityOnly') AND amount IS NULL AND rate IS NULL) OR (value_type = 'CoverageTier' AND coverage_tier IS NOT NULL AND amount IS NULL AND rate IS NULL) OR (value_type = 'Quantity' AND quantity IS NOT NULL AND amount IS NULL AND rate IS NULL)");
+
+                            t.HasCheckConstraint("ck_grade_entitlements__value_type", "value_type IN ('Amount','PercentOfBasic','MultipleOfBasic','MultipleOfGross','MultipleOfHousing','InKind','CoverageTier','Quantity','EligibilityOnly')");
                         });
                 });
 
@@ -15083,10 +15860,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reason");
 
-                    b.Property<string>("SeparateEventReason")
-                        .HasColumnType("text")
-                        .HasColumnName("separate_event_reason");
-
                     b.Property<string>("RejectionReason")
                         .IsRequired()
                         .HasColumnType("text")
@@ -15095,6 +15868,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateOnly?>("ReturnDate")
                         .HasColumnType("date")
                         .HasColumnName("return_date");
+
+                    b.Property<string>("SeparateEventReason")
+                        .HasColumnType("text")
+                        .HasColumnName("separate_event_reason");
 
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
@@ -19152,6 +19929,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_family");
 
+                    b.Property<bool>("IsOffered")
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_offered");
+
                     b.Property<bool>("IsStatutory")
                         .HasColumnType("boolean")
                         .HasColumnName("is_statutory");
@@ -19226,6 +20008,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("pay_components", null, t =>
                         {
                             t.HasCheckConstraint("ck_pay_components__entitlement_class", "entitlement_class IN ('None','QiwaWage','Contractual','Facility')");
+
+                            t.HasCheckConstraint("ck_pay_components__floor_always_offered", "statutory_floor = 'None' OR is_offered");
 
                             t.HasCheckConstraint("ck_pay_components__statutory_floor", "statutory_floor IN ('None','Housing','Transport','Medical','Art40')");
                         });
@@ -21976,6 +22760,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_enabled");
 
+                    b.Property<long?>("MfaLastTotpStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_totp_step");
+
+                    b.Property<string>("MfaRecoveryCodeHashes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("mfa_recovery_code_hashes");
+
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
@@ -23781,6 +24574,10 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("PasswordRequireUppercase")
                         .HasColumnType("boolean")
                         .HasColumnName("password_require_uppercase");
+
+                    b.Property<DateTime?>("PrivilegedMfaEnforceFromUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("privileged_mfa_enforce_from_utc");
 
                     b.Property<int>("RefreshTokenExpiryDays")
                         .HasColumnType("integer")
@@ -25803,11 +26600,151 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.ContractRenewalCase", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.StatutoryRule", null)
+                        .WithMany()
+                        .HasForeignKey("QiwaRuleId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CurrentApprovalRequestId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeResponseDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "NonRenewalNoticeDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "QiwaEvidenceDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "RenewalBatchId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeContract", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeId", "ExpiringContractId")
+                        .HasPrincipalKey("TenantId", "EmployeeId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EmployeeContract", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeId", "ResultingContractId")
+                        .HasPrincipalKey("TenantId", "EmployeeId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_contract_renewal_cases_employee_contracts_tenant_id_employ~1");
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeContract", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeContract", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeId", "RenewedFromContractId")
+                        .HasPrincipalKey("TenantId", "EmployeeId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeEntitlement", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ApprovalRequestId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CorrectionBasisDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.ContractRenewalCase", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "RenewalCaseId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeSalaryStructure", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ResolvedBasisSalaryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeId", "CarriedFromEntitlementId")
+                        .HasPrincipalKey("TenantId", "EmployeeId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.EmployeeContract", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EmployeeId", "ContractId")
+                        .HasPrincipalKey("TenantId", "EmployeeId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.GradeEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "GradeEntitlementId", "PayComponentCode")
+                        .HasPrincipalKey("TenantId", "Id", "PayComponentCode")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.EmployeeLoan", b =>
                 {
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ConsentDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("Zayra.Api.Models.GradeEntitlement", null)
                         .WithMany()
                         .HasForeignKey("TenantId", "GradeEntitlementId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryStructure", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "QiwaEvidenceDocumentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.ContractRenewalCase", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "RenewalCaseId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
                 });

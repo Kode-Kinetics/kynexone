@@ -10,8 +10,13 @@
  *
  * Callers supply the whole clause per form, not a bare suffix, so verb agreement travels with the
  * noun ("1 urgent action requires" vs "2 urgent actions require"). Use `{count}` as the placeholder
- * — it is substituted with the count formatted for the locale (Arabic-Indic digits under `ar`).
+ * — it is substituted with the count formatted for the locale, in Latin digits in every language
+ * (CTO decision 2026-10-05; see lib/format.ts).
+ *
+ * Translated copy should prefer an ICU plural inside the dictionary entry instead
+ * (`{count, plural, one {# day} other {# days}}`, i18n/message.ts), so the translator owns every form.
  */
+import { numberLocale } from './format';
 
 export type PluralCategory = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other';
 
@@ -40,10 +45,10 @@ export function pluralCategory(count: number, locale = 'en'): PluralCategory {
   }
 }
 
-/** Formats `count` for the locale — grouping separators, and Arabic-Indic digits under `ar`. */
+/** Formats `count` for the locale — grouping separators, Latin digits. */
 export function formatCount(count: number, locale = 'en'): string {
   try {
-    return count.toLocaleString(locale);
+    return count.toLocaleString(numberLocale(locale));
   } catch {
     return String(count);
   }

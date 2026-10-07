@@ -54,6 +54,9 @@ export interface EmployeeContract {
   fileUrl: string;
   createdAtUtc: string;
   updatedAtUtc: string | null;
+  /** Release A chain (stamped by the R4 census / activation): renewals before this term, NULL when not confirmed. */
+  renewalNumber?: number | null;
+  chainStartedOn?: string | null;
 }
 
 export interface VisaRecord {

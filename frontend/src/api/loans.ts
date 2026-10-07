@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList, requirePage } from '../lib/listResponse';
 
 // ── Loan Types ────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ export interface EmployeeLoan {
   reviewRequired?: boolean;
   reviewReason?: string;
   collectionStatus?: string;
+  /** Release A (Art. 92): the employee's signed consent to an instalment above 10% of the wage is on the loan. */
+  consentOnFile?: boolean;
 }
 
 export interface LoanApproval {
@@ -256,20 +259,27 @@ export interface AuditLogEntry {
 
 export const loanTypesApi = {
   list: () =>
-    client.get<LoanType[]>('/api/finance/loans/types').then(r => r.data),
+    client.get<LoanType[]>('/api/finance/loans/types').then(r => requireList<LoanType>(r.data, 'loan types')),
   create: (body: { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean }) =>
     client.post<LoanType>('/api/finance/loans/types', body).then(r => r.data),
 };
 
 export const loansApi = {
   list: (params: { employeeId?: string; mine?: boolean; status?: string; page?: number; pageSize?: number } = {}) =>
-    client.get<{ total: number; items: EmployeeLoan[] }>('/api/finance/loans', { params }).then(r => r.data),
+    client.get<{ total: number; items: EmployeeLoan[] }>('/api/finance/loans', { params }).then(r => requirePage<{ total: number; items: EmployeeLoan[] }>(r.data, 'loans')),
 
   get: (id: string) =>
     client.get<LoanDetail>(`/api/finance/loans/${id}`).then(r => r.data),
 
-  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; repaymentMethod: LoanRepaymentMethod; requestPolicyException?: boolean; notes?: string; employeeIntId?: number }) =>
+  create: (body: { employeeId?: string; employeeName: string; loanTypeId: string; requestedAmount: number; requestedInstallments: number; repaymentMethod: LoanRepaymentMethod; requestPolicyException?: boolean; notes?: string; employeeIntId?: number; consentDocumentId?: string }) =>
     client.post<EmployeeLoan>('/api/finance/loans', body).then(r => r.data),
+
+  /** Release A (Art. 92): attach the employee's signed consent to a pending loan (the borrower or HR uploads it). */
+  attachConsent: (id: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post<EmployeeLoan>(`/api/finance/loans/${id}/consent`, form).then(r => r.data);
+  },
 
   settle: (id: string, body: { settlementType: string; settlementAmount: number; settlementDate: string; notes?: string }) =>
     client.patch<{ loan: EmployeeLoan }>(`/api/finance/loans/${id}/settle`, body).then(r => r.data),

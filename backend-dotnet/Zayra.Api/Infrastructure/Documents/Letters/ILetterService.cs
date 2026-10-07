@@ -72,6 +72,51 @@ public record TemplateLetterData(
 
 public record PayslipLineItem(string Name, decimal Amount, string Type);
 
+/// <summary>
+/// The line types a payslip carries (<see cref="PayslipLineItem.Type"/> and the stored
+/// <c>PayslipComponent.ComponentType</c>). An employer contribution (the employer's GOSI annuities,
+/// SANED and occupational-hazard shares, or a tenant-configured employer-funded component) is an
+/// employer COST: it is shown in its own section and never counted in the employee's deductions, so on
+/// every payslip gross − deductions = net.
+/// </summary>
+public static class PayslipLineTypes
+{
+    public const string Earning = "Earning";
+    public const string Deduction = "Deduction";
+    public const string EmployerContribution = "EmployerContribution";
+    public const string Net = "Net";
+
+    /// <summary>
+    /// Payslips generated before employer lines had their own type stored them as "Deduction". The
+    /// authoritative flag is <c>PayrollDeduction.IsEmployerContribution</c> on the run's own lines, so a
+    /// stored Deduction line that matches an employer line of the same run (same name and amount) is
+    /// re-typed as an employer contribution — one stored line per employer line, never more. Amounts are
+    /// untouched; only the section the line belongs to changes.
+    /// </summary>
+    public static List<PayslipLineItem> ReclassifyLegacyEmployerLines(
+        IEnumerable<PayslipLineItem> items, IEnumerable<(string Name, decimal Amount)> employerLines)
+    {
+        var remaining = employerLines
+            .GroupBy(l => (l.Name, l.Amount))
+            .ToDictionary(g => g.Key, g => g.Count());
+        var result = new List<PayslipLineItem>();
+        foreach (var item in items)
+        {
+            if (item.Type == Deduction
+                && remaining.TryGetValue((item.Name, item.Amount), out var left) && left > 0)
+            {
+                remaining[(item.Name, item.Amount)] = left - 1;
+                result.Add(item with { Type = EmployerContribution });
+            }
+            else
+            {
+                result.Add(item);
+            }
+        }
+        return result;
+    }
+}
+
 public record PayslipData(
     string PayslipNumber,
     string EmployeeCode,

@@ -1,0 +1,10 @@
+{
+  "expectedCode": "name_mixed_script",
+  "patch": {
+    "rows": {
+      "1": {
+        "name": "Sara أحمد"
+      }
+    }
+  }
+}

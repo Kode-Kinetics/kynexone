@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
@@ -11,6 +11,8 @@ import dynamic from 'next/dynamic';
 // The drawer's code loads the first time someone opens it, not on every page load.
 const AssistantDrawer = dynamic(() => import('./AssistantDrawer').then((m) => m.AssistantDrawer), { ssr: false });
 import { MobileBottomNav } from './MobileBottomNav';
+import { MfaEnrollmentPrompt } from '../components/MfaEnrollmentPrompt';
+import { authApi } from '../api/auth';
 import { employeesApi } from '../api/employees';
 import { reportsApi } from '../api/reports';
 import { usersApi } from '../api/identity';
@@ -53,7 +55,11 @@ interface PaletteItem {
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { hasPermission } = useAuth();
+  const { hasPermission, beginMfaEnrollment } = useAuth();
+  const startMfaEnrollment = useCallback(async () => {
+    await beginMfaEnrollment();
+    router.replace('/login');
+  }, [beginMfaEnrollment, router]);
   const { isFeatureEnabled } = useFeatureFlags();
   const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view'));
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -95,10 +101,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     () => commandItems.filter((item) => {
       if (item.path === '/ai-assistant') return mayUseAssistant;
       const navMatch = navigationItems.find((nav) => nav.path === item.path);
+      // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
+      if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
       return navMatch.requiredPermissions.every((permission) => hasPermission(permission));
     }),
-    [commandItems, hasPermission, mayUseAssistant],
+    [commandItems, hasPermission, mayUseAssistant, isFeatureEnabled],
   );
 
   const filteredCommands = useMemo(() => {
@@ -370,6 +378,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             onToggleTheme={onToggleTheme}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSearch={openCommandPalette}
+          />
+          <MfaEnrollmentPrompt
+            loadStatus={authApi.mfaStatus}
+            onStart={startMfaEnrollment}
+            dismissKey="kynexone-mfa-prompt-later"
+            className="mx-4 mt-4 sm:mx-6 lg:mx-8"
           />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
           <main key={pathname} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>

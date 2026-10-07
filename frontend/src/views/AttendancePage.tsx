@@ -45,6 +45,7 @@ import type {
 import { employeesApi } from '../api/employees';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
+import { useAuth } from '../contexts/AuthContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import {
   attendanceErrorSummary,
@@ -154,6 +155,12 @@ const statusTone = (status: string): 'emerald' | 'rose' | 'amber' | 'blue' | 'sl
 
 
 export function AttendancePage() {
+  // Devices and CSV import are `attendance.bulk_import`; processing is `attendance.write`
+  // (AttendanceController). Read-only attendance roles (HR Assistant, payroll, managers, auditors)
+  // used to be offered these and only ever got a 403.
+  const { hasPermission } = useAuth();
+  const canManageSources = hasPermission('attendance.bulk_import');
+  const canProcess = hasPermission('attendance.write');
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [summary, setSummary] = useState<AttendanceDashboardSummary | null>(null);
   const [daily, setDaily] = useState<AttendanceDailyRecord[]>([]);
@@ -541,9 +548,9 @@ export function AttendancePage() {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               Connect any attendance source — biometric, RFID, face recognition, REST API, SFTP, or manual CSV.
             </p>
-            <button type="button" onClick={() => { setDeviceForm(emptyDeviceForm); setShowAddDevice(true); }} className="btn-primary shrink-0" disabled={!!loadErrors.devices}>
+            {canManageSources && <button type="button" onClick={() => { setDeviceForm(emptyDeviceForm); setShowAddDevice(true); }} className="btn-primary shrink-0" disabled={!!loadErrors.devices}>
               <Fingerprint className="h-4 w-4" />Add Device
-            </button>
+            </button>}
           </div>
           <Panel title="Configured Devices" action={devicesUnavailable ? 'Unavailable' : `${devices.length} sources`}>
             {devicesUnavailable ? <DomainUnavailable message={devicesUnavailable} /> : <DeviceTable
@@ -579,7 +586,7 @@ export function AttendancePage() {
                 <button type="submit" disabled={saving || (!rawForm.employeeId && !rawForm.employeeCode)} className="btn-primary justify-center">Save Raw Event</button>
               </div>
             </form>
-            <form onSubmit={submitImport} className="surface p-4">
+            {canManageSources && <form onSubmit={submitImport} className="surface p-4">
               <SectionTitle icon={Upload} title="CSV Attendance Import" subtitle="Columns: employeeCode, punchTimestamp (ISO 8601), punchDirection, location (opt), method (opt)" />
               <div className="mt-4 flex items-center gap-2">
                 <label className="btn-secondary flex cursor-pointer items-center gap-1.5 text-sm">
@@ -594,7 +601,7 @@ export function AttendancePage() {
               <button type="submit" disabled={saving || !csvContent.trim()} className="btn-primary mt-3 w-full justify-center">
                 {saving ? 'Importing…' : 'Import CSV'}
               </button>
-            </form>
+            </form>}
           </div>
           <Panel title="Raw Punch Logs" action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
             {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} />}
@@ -605,7 +612,7 @@ export function AttendancePage() {
       {activeTab === 'processing' && (
         <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
           {dailyUnavailable && <DomainUnavailable message={dailyUnavailable} />}
-          <form onSubmit={submitProcessing} className="surface p-4">
+          {canProcess && <form onSubmit={submitProcessing} className="surface p-4">
             <SectionTitle icon={RefreshCw} title="Process Attendance" subtitle="Transforms raw punches into daily attendance, exceptions, and payroll impacts." />
             <div className="mt-4 space-y-3">
               <input type="date" className="input w-full" value={processForm.fromDate} onChange={(e) => setProcessForm({ ...processForm, fromDate: e.target.value })} aria-label="From date" />
@@ -613,7 +620,7 @@ export function AttendancePage() {
               <EmployeeSelect value={processForm.employeeId} employees={employees} onChange={(value) => setProcessForm({ ...processForm, employeeId: value })} includeAll />
               <button type="submit" disabled={saving || !!loadErrors.daily || !!loadErrors.employees} className="btn-primary w-full justify-center">Process Records</button>
             </div>
-          </form>
+          </form>}
           <div className="grid gap-5 md:grid-cols-3">
             <Kpi label="Worked Today" value={dailyUnavailable ? 'Unavailable' : minutes(totalWorked)} icon={Timer} tone="blue" />
             <Kpi label="Overtime Cases" value={dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)} icon={Clock} tone="amber" />

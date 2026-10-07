@@ -6,6 +6,7 @@ import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatCalendarDate } from '../lib/calendarDate';
+import { apiErrorReason, notifyApiError } from '../api/client';
 import { canOpenPerformanceTab, landingPerformanceTab, performanceCapabilities } from '../lib/performanceAccess';
 import type { PerformanceTab } from '../lib/performanceAccess';
 import { useEffect, useState } from 'react';
@@ -290,7 +291,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
         notes: form.notes || undefined,
       });
       onSaved();
-    } catch { setError('Failed to create cycle.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to create cycle.')); setSaving(false); }
   };
 
   return (
@@ -344,12 +345,12 @@ function CyclesTab() {
 
   const launch = async (id: string) => {
     setLaunching(id);
-    try { await cyclesApi.launch(id); load(); } catch { alert('Launch failed. Ensure a default scorecard template is assigned.'); }
+    try { await cyclesApi.launch(id); load(); } catch (e) { notifyApiError(e, 'Launch failed. Ensure a default scorecard template is assigned.'); }
     setLaunching(null);
   };
 
   const advance = async (id: string) => {
-    try { await cyclesApi.advance(id); load(); } catch { alert('Could not advance cycle.'); }
+    try { await cyclesApi.advance(id); load(); } catch (e) { notifyApiError(e, 'Could not advance cycle.'); }
   };
 
   return (
@@ -411,7 +412,7 @@ function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalRe
     try {
       await reviewsApi.submitSelfAssessment(review.id, { notes: form.notes, kpiScore: kpi, competencyScore: comp, productivityScore: prod });
       onSaved();
-    } catch { setError('Submission failed.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Submission failed.')); setSaving(false); }
   };
 
   return (
@@ -446,7 +447,7 @@ function MyReviewsTab() {
   const reviewCount = list.total ?? reviews.length;
 
   const acknowledge = async (id: string) => {
-    try { await reviewsApi.acknowledge(id); load(); } catch { alert('Failed to acknowledge.'); }
+    try { await reviewsApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, 'Failed to acknowledge.'); }
   };
 
   return (
@@ -512,12 +513,12 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
         managerNotes: form.managerNotes,
       });
       onSaved();
-    } catch { setError('Review submission failed.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Review submission failed.')); setSaving(false); }
   };
 
   const autoAttendance = async () => {
     try { const r = await reviewsApi.computeAttendance(review.id); set('attendanceScore', String(r.attendanceScore)); }
-    catch { alert('Could not compute attendance — check attendance records.'); }
+    catch (e) { notifyApiError(e, 'Could not compute attendance — check attendance records.'); }
   };
 
   return (
@@ -577,7 +578,7 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
       const r = await reviewsApi.respondToAppeal(deciding.appeal.id, deciding.decision, response.trim());
       setDeciding(null); setResponse(''); load(); onResolved();
       alert(`Appeal ${deciding.decision.toLowerCase()}. Review is now ${r.reviewStatus}. ${r.nextStep}`);
-    } catch { setError('The decision could not be recorded.'); }
+    } catch (e) { setError(apiErrorReason(e, 'The decision could not be recorded.')); }
     finally { setSaving(false); }
   };
 
@@ -664,7 +665,7 @@ function TeamReviewsTab() {
   const reviewCount = list.total ?? reviews.length;
 
   const publish = async (id: string) => {
-    try { await reviewsApi.publish(id); load(); } catch { alert('Publish failed.'); }
+    try { await reviewsApi.publish(id); load(); } catch (e) { notifyApiError(e, 'Publish failed.'); }
   };
 
   return (
@@ -849,7 +850,7 @@ function GoalsTab() {
     if (!deleteId) return;
     setDeleting(true);
     try { await goalsApi.delete(deleteId); setDeleteId(null); load(); }
-    catch { alert('Delete failed. Goal may be approved.'); }
+    catch (e) { notifyApiError(e, 'Delete failed. Goal may be approved.'); }
     setDeleting(false);
   };
 
@@ -974,7 +975,7 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
       if (tpl) await templatesApi.update(tpl.id, form);
       else await templatesApi.create(form);
       onSaved();
-    } catch { setError('Save failed.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   const weights: [keyof typeof form, string][] = [
@@ -1038,7 +1039,7 @@ function TemplatesTab() {
 
   const del = async (id: string) => {
     if (!confirm('Deactivate this template?')) return;
-    try { await templatesApi.delete(id); load(); } catch { alert('Delete failed.'); }
+    try { await templatesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'Delete failed.'); }
   };
 
   return (
@@ -1113,7 +1114,7 @@ function CalibrationTab() {
       await calibrationApi.adjust(selectedCycle, adjustModal.reviewId, Number(adjustment), adjustReason);
       setAdjustModal(null); setAdjustment(''); setAdjustReason('');
       calibrationApi.getBoard(selectedCycle).then(setBoard).catch(() => {});
-    } catch { alert('Calibration adjustment failed.'); }
+    } catch (e) { notifyApiError(e, 'Calibration adjustment failed.'); }
   };
 
   const reviews = (board?.reviews ?? []) as AppraisalReview[];
@@ -1224,7 +1225,7 @@ function RecommendationsTab() {
       else if (decideModal.type === 'promotion') await recommendationsApi.approvePromotion(decideModal.id, decision, notes);
       else await recommendationsApi.approveBonus(decideModal.id, decision);
       setDecideModal(null); setNotes(''); load();
-    } catch { alert('Decision failed.'); }
+    } catch (e) { notifyApiError(e, 'Decision failed.'); }
   };
 
   return (
@@ -1311,7 +1312,7 @@ function CreatePIPModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     try {
       await pipApi.create({ employeeId: selectedEmployee.intId, employeeName: selectedEmployee.fullName, departmentName: selectedEmployee.department, performanceGaps: form.performanceGaps, improvementGoals: form.improvementGoals, supportPlan: form.supportPlan, startDate: form.startDate, endDate: form.endDate, hrNotes: form.hrNotes });
       onSaved();
-    } catch { setError('Failed to create PIP.'); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to create PIP.')); setSaving(false); }
   };
 
   return (
@@ -1726,7 +1727,7 @@ function FeedbackTab() {
       setSelectedEmployee(null);
       load();
     }
-    catch { alert('Failed to submit feedback.'); }
+    catch (e) { notifyApiError(e, 'Failed to submit feedback.'); }
     setSaving(false);
   };
 

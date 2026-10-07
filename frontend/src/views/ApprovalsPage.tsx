@@ -10,6 +10,7 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { leaveRequestsApi } from '../api/leave';
 import type { StatutoryLeaveContext } from '../api/leave';
 
@@ -297,7 +298,8 @@ export function ApprovalsPage() {
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading && <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-              {!loading && requests.length === 0 && (
+              {/* A failed load shows the error above, never "No approvals found": an empty queue it is not. */}
+              {!loading && !error && requests.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-16 text-center">
                     <ShieldCheck className="mx-auto mb-3 h-10 w-10 text-slate-200 dark:text-slate-700" />
@@ -424,6 +426,11 @@ export function ApprovalsPage() {
               </div>
             </div>
             <StatutoryLeaveHistory context={statutoryContext} />
+            {(() => {
+              // Entity-specific detail (e.g. a renewal offer's before → after), registered per entityName.
+              const Detail = approvalDetailRenderers[selected.entityName];
+              return Detail ? <Detail request={selected} /> : null;
+            })()}
             {selected.decisions.length > 0 && (
               <div>
                 <p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">Decision History</p>
