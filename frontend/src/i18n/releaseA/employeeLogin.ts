@@ -77,6 +77,8 @@ export const employeeLogin: ReleaseADict = {
       "Someone other than {name} had handled this login's password, so the old password no longer works.",
     "Linking will reset this login's password. {name} will set a new one from an invitation.":
       "Linking will reset this login's password. {name} will set a new one from an invitation.",
+    "I confirmed this email address with {name}.":
+      "I confirmed this email address with {name}.",
   },
   ar: {
     'Link to employee record': 'ربط بسجل موظف',
@@ -150,5 +152,7 @@ export const employeeLogin: ReleaseADict = {
       "تعامل شخص غير {name} مع كلمة مرور حساب الدخول هذا، لذا لم تعد كلمة المرور القديمة صالحة.",
     "Linking will reset this login's password. {name} will set a new one from an invitation.":
       "سيؤدي الربط إلى إعادة تعيين كلمة مرور حساب الدخول هذا. سيعيّن {name} كلمة مرور جديدة من خلال دعوة.",
+    "I confirmed this email address with {name}.":
+      "تأكدتُ من هذا البريد الإلكتروني مع {name}.",
   },
 };

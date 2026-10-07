@@ -3145,6 +3145,12 @@ public class EmployeesController : ControllerBase
         _db.EmployeeDrafts.Add(draft);
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.draft_created", "EmployeeDraft", draft.Id.ToString(), cancellationToken);
+        // The drafter set the hire's work email (WorkEmailSetterRule).
+        if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
+        {
+            _db.AuditLogs.Add(DraftWorkEmailSetAudit(draft, null));
+            await _db.SaveChangesAsync(cancellationToken);
+        }
         return Created($"/api/employees/drafts/{draft.Id}", EmployeeDraftDto.Project(draft, CanViewSensitive()));
     }
 
@@ -3159,7 +3165,12 @@ public class EmployeesController : ControllerBase
             if (request.ManagerEmployeeId is { } managerId && managerId != draft.ManagerEmployeeId
                 && await DraftManagerRefusalAsync(tenantId, managerId, ct) is { } managerRefusal)
                 return managerRefusal;
+            var priorDraftWorkEmail = draft.WorkEmail;
             ApplyDraft(draft, request);
+            // Every editor who sets the draft's work email is a setter of the hire's address (WorkEmailSetterRule).
+            if (!string.IsNullOrWhiteSpace(draft.WorkEmail)
+                && !string.Equals(AuthService.Normalize(draft.WorkEmail), AuthService.Normalize(priorDraftWorkEmail ?? string.Empty), StringComparison.Ordinal))
+                _db.AuditLogs.Add(DraftWorkEmailSetAudit(draft, priorDraftWorkEmail));
             var docs = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
                     "A draft's documents carry no company until activation; the draft's visibility was checked under its lock.")
                 .CountAsync(x => x.DraftId == draftId && !x.IsDeleted, ct);
@@ -3523,7 +3534,8 @@ public class EmployeesController : ControllerBase
                     // The initial work email: set by the approver's decision; the drafter who typed it is recorded too.
                     if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
                         _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(
-                            employee, tenantId, requestContext, approvedAtUtc, "draft_approval", draft.CreatedByUserId));
+                            employee, tenantId, requestContext, approvedAtUtc, "draft_approval", draft.CreatedByUserId,
+                            await WorkEmailSetterRule.DraftWorkEmailSettersAsync(_db, tenantId, draftId, ct)));
                     await _db.SaveChangesAsync(ct);
                     return true;
                 }, ct);
@@ -5653,6 +5665,15 @@ public class EmployeesController : ControllerBase
 
         return new EmployeeDraftActivationCheck(problems.Count == 0, companyName, problems, advisories);
     }
+
+    private AuditLog DraftWorkEmailSetAudit(EmployeeDraft draft, string? priorWorkEmail) => AuthAuditEntry.Create(
+        Guid.NewGuid(),
+        DateTime.UtcNow,
+        WorkEmailSetterRule.DraftWorkEmailSetAction,
+        "EmployeeDraft",
+        draft.Id.ToString(),
+        Context() with { TenantId = draft.TenantId },
+        JsonSerializer.Serialize(new { oldWorkEmail = priorWorkEmail, newWorkEmail = draft.WorkEmail.Trim() }));
 
     private EmployeeDraft ApplyDraft(EmployeeDraft draft, EmployeeDraftRequest request)
     {

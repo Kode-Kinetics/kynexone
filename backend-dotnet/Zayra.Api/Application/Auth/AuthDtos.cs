@@ -47,7 +47,10 @@ public record InviteEmployeeLoginRequest(
     string? Email,
     [Required] string AccessMode,
     IReadOnlyCollection<string>? Roles,
-    int InvitationHours = 72);
+    int InvitationHours = 72,
+    // Required (400 confirm_work_email) when the work email was changed after the record was created and the
+    // employee has no activated login: the caller confirms they checked the address with the person.
+    bool ConfirmedWorkEmail = false);
 
 public record EmployeeLoginInvitationDto(
     Guid UserId,
@@ -92,6 +95,9 @@ public record EmployeeLoginStatusDto(
     /// <summary>Who last set the employee's work email — the address every credential is sent to — and when. Null when not recorded.</summary>
     public string? WorkEmailSetBy { get; init; }
     public DateTime? WorkEmailSetAtUtc { get; init; }
+    /// <summary>The work email was changed after the record was created and there is no activated login: an
+    /// invitation or link must carry <c>confirmedWorkEmail: true</c>.</summary>
+    public bool WorkEmailChangedAfterCreation { get; init; }
 }
 
 public static class EmployeeLoginNextActions
@@ -106,7 +112,8 @@ public static class EmployeeLoginNextActions
 public record LinkExistingLoginRequest(
     [Required] int EmployeeId,
     [Required] Guid UserId,
-    [Required, MaxLength(500)] string Reason);
+    [Required, MaxLength(500)] string Reason,
+    bool ConfirmedWorkEmail = false);
 
 public record EmployeeLoginLinkResultDto(
     int EmployeeId,

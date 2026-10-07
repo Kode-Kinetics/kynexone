@@ -1232,6 +1232,126 @@ public sealed class EmployeeLoginLinkTests
         status.WorkEmailSetAtUtc.Should().BeCloseTo(at, TimeSpan.FromSeconds(1));
     }
 
+    /// <summary>
+    /// The setter check is read UNDER the employee row lock that work-email edits take: while the row is held, the
+    /// setter's work-email change commits; the invitation, released, must see it and refuse.
+    /// </summary>
+    [Fact]
+    public async Task TheInvitationReadsTheWorkEmailSetter_UnderTheEmployeeRowLock()
+    {
+        var w = await SeedAsync();
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("interleaved"));
+
+        await using var lockConnection = new Npgsql.NpgsqlConnection(_fixture.ConnectionString);
+        await lockConnection.OpenAsync();
+        await using var lockTransaction = await lockConnection.BeginTransactionAsync();
+        await using (var lockCommand = new Npgsql.NpgsqlCommand("SELECT 1 FROM employees WHERE id = @id FOR UPDATE", lockConnection, lockTransaction))
+        {
+            lockCommand.Parameters.AddWithValue("id", employeeId);
+            await lockCommand.ExecuteScalarAsync();
+        }
+
+        await using var inviteDb = _fixture.CreateRetryingDb();
+        var invite = Controller(inviteDb, w, w.AdminId).InviteEmployeeLogin(
+            new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default);
+
+        // Wait until the invitation is blocked on the employee row.
+        await using (var observer = new Npgsql.NpgsqlConnection(_fixture.ConnectionString))
+        {
+            await observer.OpenAsync();
+            var waiting = 0L;
+            for (var attempt = 0; attempt < 600 && waiting < 1 && !invite.IsCompleted; attempt++)
+            {
+                await using var wait = new Npgsql.NpgsqlCommand(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%for-update%'", observer);
+                waiting = (long)(await wait.ExecuteScalarAsync())!;
+                if (waiting < 1) await Task.Delay(50);
+            }
+            if (invite.IsCompleted) await invite; // surface the reason it did not block
+            waiting.Should().BeGreaterThan(0, "the invitation must be waiting on the employee row (the only row held)");
+        }
+        invite.IsCompleted.Should().BeFalse();
+
+        // The caller's own work-email change commits while the invitation waits — in the same transaction that holds
+        // the row, exactly as an edit does (employee UPDATE + its audit row, one commit).
+        await using (var change = new Npgsql.NpgsqlCommand(
+            "INSERT INTO audit_logs (id, tenant_id, user_id, action, entity_name, entity_id, previous_hash, entry_hash, hash_algorithm, created_at_utc) "
+            + "VALUES (@id, @tenant, @user, @action, 'Employee', @entity, '', '', 'SHA-256', now())", lockConnection, lockTransaction))
+        {
+            change.Parameters.AddWithValue("id", Guid.NewGuid());
+            change.Parameters.AddWithValue("tenant", w.TenantId);
+            change.Parameters.AddWithValue("user", w.AdminId);
+            change.Parameters.AddWithValue("action", AccessManagementService.WorkEmailChangedAction);
+            change.Parameters.AddWithValue("entity", employeeId.ToString());
+            await change.ExecuteNonQueryAsync();
+        }
+        await lockTransaction.CommitAsync();
+
+        // ...and the invitation, once it holds the row, sees it.
+        AssertSetterRefused((await invite).Result);
+    }
+
+    [Fact]
+    public async Task AWorkEmailChangedAfterCreation_MustBeConfirmed_BeforeAnInvitationOrALink()
+    {
+        var w = await SeedAsync();
+        var hr = await AddUserAsync(w, Email("hr"), ["Admin"], groupScope: true);
+
+        // Invitation.
+        var inviteeId = await AddEmployeeAsync(w, w.CompanyA, Email("changed-invitee"));
+        await AddWorkEmailSetterAsync(w, inviteeId, hr, oldWorkEmail: "old.address@kkdemo.test");
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(inviteeId, default)).Result)
+                .WorkEmailChangedAfterCreation.Should().BeTrue();
+            var refused = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(inviteeId, null, AccessModes.EssOnly, null), default)).Result);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.ConfirmWorkEmailCode);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(inviteeId, null, AccessModes.EssOnly, null, ConfirmedWorkEmail: true), default)).Result);
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_invited"))
+                .Metadata.Should().Contain("\"workEmailConfirmed\":true");
+
+        // Link.
+        var email = Email("changed-link");
+        var login = await AddUserAsync(w, email, ["Reporting"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await AddWorkEmailSetterAsync(w, employeeId, hr, oldWorkEmail: string.Empty);
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            status.WorkEmailChangedAfterCreation.Should().BeTrue();
+            var refused = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.ConfirmWorkEmailCode);
+        }
+        await AssertNotLinkedAsync(login, employeeId);
+        await using (var db = _fixture.CreateRetryingDb())
+            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "link", ConfirmedWorkEmail: true), default)).Result).UserId.Should().Be(login);
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_linked"))
+                .Metadata.Should().Contain("\"workEmailConfirmed\":true").And.Contain("\"workEmailConfirmationRequired\":true");
+    }
+
+    [Fact]
+    public async Task AWorkEmailSetAtCreation_NeedsNoConfirmation()
+    {
+        var w = await SeedAsync();
+        var hr = await AddUserAsync(w, Email("hr"), ["Admin"], groupScope: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("initial"));
+        await AddWorkEmailSetterAsync(w, employeeId, hr);
+        await using var db = _fixture.CreateRetryingDb();
+        Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
+            .WorkEmailChangedAfterCreation.Should().BeFalse();
+        Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+            new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+    }
+
     private static void AssertSetterRefused(IActionResult? result)
     {
         var refused = Assert.IsType<ObjectResult>(result);
@@ -1241,7 +1361,7 @@ public sealed class EmployeeLoginLinkTests
         body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
     }
 
-    private async Task<DateTime> AddWorkEmailSetterAsync(World w, int employeeId, Guid actor, Guid? draftedBy = null)
+    private async Task<DateTime> AddWorkEmailSetterAsync(World w, int employeeId, Guid actor, Guid? draftedBy = null, string? oldWorkEmail = null)
     {
         await using var db = _fixture.CreateRetryingDb();
         var at = DateTime.UtcNow;
@@ -1249,7 +1369,7 @@ public sealed class EmployeeLoginLinkTests
         {
             TenantId = w.TenantId, UserId = actor, Action = AccessManagementService.WorkEmailChangedAction,
             EntityName = "Employee", EntityId = employeeId.ToString(), CreatedAtUtc = at,
-            Metadata = JsonSerializer.Serialize(new { oldWorkEmail = (string?)null, newWorkEmail = "x", source = draftedBy is null ? "edit" : "draft_approval", draftedBy }),
+            Metadata = JsonSerializer.Serialize(new { oldWorkEmail, newWorkEmail = "x", source = draftedBy is null ? "edit" : "draft_approval", draftedBy }),
         });
         await db.SaveChangesAsync();
         return at;
