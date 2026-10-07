@@ -142,6 +142,34 @@ harmful.
   benefit, a stamped contract chain, a salary basis or Qiwa confirmation, an approval payload, a loan consent, or a
   grade cell using a Release A value type or criterion) — take a Neon branch and fix forward instead. Order: image →
   flag → schema `Down`.
+- **Release A R2 dependants soft delete (`20261008000200_ReleaseAR2DependantsSoftDelete`).** Expand-only: adds
+  `employee_dependents.is_deleted` (default false), `deleted_at_utc` and `deleted_by`. Roll it back before R0's migration.
+  Its `Down()` refuses (`R2_DEPENDANTS_SOFT_DELETED`) while any removed dependant exists, because dropping the column would
+  make every removed dependant covered again. Restore or purge those rows deliberately (with HR sign-off), or fix forward.
+
+- **Release A R0b (`20261007000200_ReleaseAContractChainSource`).** Additive: `employee_contracts.chain_source` (nullable)
+  and four CHECKs added **NOT VALID** (`chain_source`, `chain_pair`, `renewed_from_counts`, `chain_starts_by_term_start`):
+  no table scan at deploy, every new or changed row is checked. **Before the later VALIDATE migration**, run this
+  read-only pre-check on each environment; every count must be 0 (a non-zero row is fixed through chain confirm, never by
+  hand):
+  ```sql
+  SELECT tenant_id,
+         count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded')))            AS bad_chain_source,
+         count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL)))                    AS bad_chain_pair,
+         count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1
+                                     OR provisional_basis IS NOT NULL))                                         AS bad_renewed_from,
+         count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date))               AS bad_chain_start
+  FROM employee_contracts GROUP BY tenant_id
+  HAVING count(*) FILTER (WHERE NOT ((renewal_number IS NULL) = (chain_started_on IS NULL))) > 0
+      OR count(*) FILTER (WHERE NOT (renewed_from_contract_id IS NULL OR renewal_number >= 1 OR provisional_basis IS NOT NULL)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_started_on IS NULL OR chain_started_on <= start_date)) > 0
+      OR count(*) FILTER (WHERE NOT (chain_source IS NULL OR chain_source IN ('Derived','Recorded'))) > 0;
+  ```
+  Rollback: `Down()` refuses while any term carries HR-recorded history (`chain_source = 'Recorded'`); otherwise it drops
+  the four CHECKs and the column. Order: image → schema `Down` (R0b before R0).
+  Re-applying R0b after a Down marks every term that still carries a stamped chain (`renewal_number` and
+  `chain_started_on` set, `chain_source` dropped with the column) as `Derived` again — they can only have come from
+  the census, because recorded history blocks the Down.
 
 ### 3. Re-verify before restoring traffic
 - `/health/ready` must read `ready` with `pendingMigrations: 0`.

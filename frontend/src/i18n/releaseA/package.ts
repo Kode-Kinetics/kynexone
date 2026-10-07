@@ -1,13 +1,189 @@
 import type { ReleaseADict } from './types';
 
-/** Employee package strings, HR panel and employee app (R2). Owned by slice R2; R0 seeded it. Add keys here, never in translations.ts. */
+/**
+ * Employee package strings, HR panel and employee app (R2). Owned by slice R2; R0 seeded it. Add keys here, never in
+ * translations.ts. {placeholders} are filled after translation (packageFormat.fill), so each language orders its own words.
+ * Component names (Housing allowance, Medical insurance…) are NOT here: they come from the server catalogue in EN and AR.
+ */
+const pairs: Array<[string, string]> = [
+  ['The employee’s package for the current contract year appears here.', 'تظهر هنا باقة الموظف للسنة التعاقدية الحالية.'],
+  ['Your pay, your contract benefits for this contract year, and the facilities your grade offers.', 'راتبك ومزايا عقدك لهذه السنة التعاقدية والتسهيلات التي توفرها درجتك.'],
+
+  // Groups and headers
+  ['Pay (in the Qiwa contract)', 'الأجر (كما في عقد قوى)'],
+  ['Pay (in your Qiwa contract)', 'الأجر (كما في عقدك على قوى)'],
+  ['Contract benefits — fixed until {date}', 'مزايا العقد — ثابتة حتى {date}'],
+  ['Contract benefits — fixed for this contract', 'مزايا العقد — ثابتة لهذا العقد'],
+  ['Contract benefits — not yet fixed for this contract year', 'مزايا العقد — لم تُثبَّت بعد لهذه السنة التعاقدية'],
+  ['Facilities — current policy', 'التسهيلات — حسب السياسة الحالية'],
+  ['Package for this contract year', 'الباقة لهذه السنة التعاقدية'],
+  ['Grade {grade}', 'الدرجة {grade}'],
+  ['Contract {number}: {from} to {to}', 'العقد {number}: من {from} إلى {to}'],
+  ['As of {date}', 'بتاريخ {date}'],
+  ['Dependants on file: {n}', 'المعالون المسجلون: {n}'],
+  ['Your contract renewal review opens on {date}.', 'تبدأ مراجعة تجديد عقدك في {date}.'],
+
+  // Values
+  ['Provided in kind', 'يُقدَّم عيناً'],
+  ['{rate}% of basic = {amount} a month', '{rate}% من الراتب الأساسي = {amount} شهرياً'],
+  ['{rate}% of basic salary', '{rate}% من الراتب الأساسي'],
+  ['{amount} a month', '{amount} شهرياً'],
+  ['{amount} a day', '{amount} يومياً'],
+  ['{amount} a year', '{amount} سنوياً'],
+  ['{amount} a child a year', '{amount} لكل طفل سنوياً'],
+  ['Up to {amount}', 'حتى {amount}'],
+  ['Up to {amount} ({formula})', 'حتى {amount} ({formula})'],
+  ['Economy class', 'الدرجة السياحية'],
+  ['Business class', 'درجة رجال الأعمال'],
+  ['CCHI basic class', 'الفئة الأساسية لمجلس الضمان الصحي'],
+  ['VIP class', 'فئة كبار الشخصيات (VIP)'],
+  ['Class {tier}', 'الفئة {tier}'],
+  ['Included', 'مشمولة'],
+  ['Not included', 'غير مشمولة'],
+  ['Employee only', 'للموظف فقط'],
+  ['Employee + 1 dependant', 'الموظف + معال واحد'],
+  ['Employee + {n} dependants', 'الموظف + {n} من المعالين'],
+  ['Employee (no dependants on file in scope)', 'الموظف (لا يوجد معالون مسجلون مشمولون)'],
+  ['Reviewed at renewal', 'يُراجَع عند التجديد'],
+
+  // Reasons
+  ['Your company does not offer this benefit.', 'لا تقدّم شركتك هذه الميزة.'],
+  ['Not included for this grade.', 'غير مشمولة في هذه الدرجة.'],
+  ['Applies once the required months of service are completed.', 'تُطبَّق بعد إكمال مدة الخدمة المطلوبة.'],
+  ['Applies once probation ends.', 'تُطبَّق بعد انتهاء فترة التجربة.'],
+  ['Limited to another nationality group, under a recorded legal basis.', 'مقصورة على فئة جنسية أخرى وفق أساس نظامي مسجّل.'],
+  ['Housing is provided in kind, so there is no housing allowance to advance against.', 'السكن مقدَّم عيناً، فلا يوجد بدل سكن تُصرف السلفة على أساسه.'],
+  ['No salary is on file yet.', 'لا يوجد راتب مسجّل بعد.'],
+  ['Not set for this grade yet. HR has a gap to fill in the grade table.', 'لم تُحدَّد لهذه الدرجة بعد، وعلى الموارد البشرية استكمالها في جدول الدرجات.'],
+  ['No grade is recorded, so the grade standard cannot be shown.', 'لا توجد درجة مسجّلة، لذلك لا يمكن عرض معيار الدرجة.'],
+  ['The salary gives neither a housing allowance nor housing in kind (Article 61).', 'لا يتضمن الراتب بدل سكن ولا سكناً عينياً (المادة 61).'],
+  ['The salary gives neither a transport allowance nor transport in kind (Article 61).', 'لا يتضمن الراتب بدل نقل ولا نقلاً عينياً (المادة 61).'],
+  ['This item is not available right now.', 'هذا البند غير متاح حالياً.'],
+
+  // Why this value?
+  ['Why this value?', 'لماذا هذه القيمة؟'],
+  ['Paid with your salary from {date}, as in your Qiwa contract.', 'يُصرف مع راتبك منذ {date} كما في عقدك على قوى.'],
+  ['Fixed in your contract from {from} to {to}. Changes to the grade table do not alter it.', 'مثبتة في عقدك من {from} إلى {to}، ولا تغيّرها التعديلات على جدول الدرجات.'],
+  ['The standard for your grade ({grade}), in force since {date}. Not yet fixed in your contract.', 'معيار درجتك ({grade}) الساري منذ {date}، ولم يُثبَّت في عقدك بعد.'],
+  ['Current company policy for your grade ({grade}), in force since {date}. It can change.', 'سياسة الشركة الحالية لدرجتك ({grade}) السارية منذ {date}، وقد تتغير.'],
+  ['Your company sets its own value for this grade.', 'تحدد شركتك قيمة خاصة بها لهذه الدرجة.'],
+  ['The same for every company in the group.', 'القيمة نفسها لجميع شركات المجموعة.'],
+  ['From the salary row in force since {date} (the Qiwa contract wage).', 'من سجل الراتب الساري منذ {date} (أجر عقد قوى).'],
+  ['Grade standard for {grade}: {value}.', 'معيار الدرجة {grade}: {value}.'],
+  ['Fixed for contract {number} from {from} to {to}.', 'مثبتة للعقد {number} من {from} إلى {to}.'],
+  ['Copied from the grade cell for {grade}, in force since {date}.', 'منسوخة من خانة الدرجة {grade} السارية منذ {date}.'],
+  ['Loaded from the grade table and not yet confirmed against the signed contract.', 'حُمِّلت من جدول الدرجات ولم تُطابَق بعد مع العقد الموقّع.'],
+  ['Grade cell for {grade}, in force since {date}. Not yet fixed for this contract year.', 'خانة الدرجة {grade} السارية منذ {date}، ولم تُثبَّت بعد لهذه السنة التعاقدية.'],
+  ['Current policy: the grade cell for {grade}, in force since {date}.', 'السياسة الحالية: خانة الدرجة {grade} السارية منذ {date}.'],
+  ['{company} sets its own value for this grade.', 'تحدد {company} قيمة خاصة بها لهذه الدرجة.'],
+  ['Applies after {n} months of service.', 'تُطبَّق بعد {n} شهراً من الخدمة.'],
+  ['Limited to Saudi employees. Legal basis: {basis}', 'مقصورة على الموظفين السعوديين. الأساس النظامي: {basis}'],
+  ['Limited to non-Saudi employees. Legal basis: {basis}', 'مقصورة على الموظفين غير السعوديين. الأساس النظامي: {basis}'],
+  ['The grade standard is different now. This is reviewed at renewal; nothing changes mid-year.', 'تغيّر معيار الدرجة، ويُراجَع ذلك عند التجديد دون أي تغيير خلال السنة.'],
+
+  // HR actions and states
+  ['Fix the package for this contract year', 'تثبيت الباقة لهذه السنة التعاقدية'],
+  ['Fixing…', 'جارٍ التثبيت…'],
+  ['Later changes to the grade table will not alter this year’s benefits.', 'لن تغيّر التعديلات اللاحقة على جدول الدرجات مزايا هذه السنة.'],
+  ['Confirm it matches the signed contract', 'تأكيد مطابقتها للعقد الموقّع'],
+  ['No active contract term, so nothing is fixed yet. The grade standard is shown.', 'لا يوجد عقد ساري، لذلك لم يُثبَّت شيء بعد ويظهر معيار الدرجة.'],
+  ['This contract year was already fixed.', 'هذه السنة التعاقدية مثبتة مسبقاً.'],
+  ['The package is fixed for this contract year.', 'تم تثبيت الباقة لهذه السنة التعاقدية.'],
+  ['Nothing to fix: the grade has no contract benefits yet.', 'لا شيء لتثبيته: لا توجد مزايا عقد لهذه الدرجة بعد.'],
+  ['The package could not be changed.', 'تعذّر تعديل الباقة.'],
+  ['The package could not be loaded.', 'تعذّر تحميل الباقة.'],
+  ['Load the package again', 'إعادة تحميل الباقة'],
+  ['Loading the package', 'جارٍ تحميل الباقة'],
+  ['You do not have access to this employee’s package.', 'لا تملك صلاحية الاطلاع على باقة هذا الموظف.'],
+
+  // Loans: the housing advance as a multiple of the housing allowance (L1 grid and eligibility card)
+  ['× housing allowance', '× بدل السكن'],
+  ['Eligible up to {available} = {multiple} × housing allowance {salary}', 'مؤهل حتى {available} = {multiple} × بدل السكن {salary}'],
+  ['Eligible up to {available} = {multiple} × housing allowance {salary} − outstanding {outstanding}', 'مؤهل حتى {available} = {multiple} × بدل السكن {salary} − المستحق {outstanding}'],
+
+  ['Your housing is provided in kind (accommodation), so there is no housing allowance to advance against.', 'سكنك مقدَّم عيناً (سكن)، فلا يوجد بدل سكن تُصرف السلفة على أساسه.'],
+  ["This employee's housing is provided in kind, so there is no housing allowance to advance against.", 'سكن هذا الموظف مقدَّم عيناً، فلا يوجد بدل سكن تُصرف السلفة على أساسه.'],
+
+  // Review round 1: reasons, proposals, dependants
+  ['Employee — no dependants on file', 'الموظف — لا يوجد معالون مسجلون'],
+  ['Applies from {date}, once the required months of service are completed.', 'تُطبَّق من {date} بعد إكمال مدة الخدمة المطلوبة.'],
+  ['Applies from {date}, once probation ends.', 'تُطبَّق من {date} بعد انتهاء فترة التجربة.'],
+  ['Not eligible yet.', 'غير مؤهل بعد.'],
+  ['Needs confirmation: the contract does not record the nationality class yet.', 'بحاجة إلى تأكيد: لم يُسجَّل في العقد فئة الجنسية بعد.'],
+  ['The loan policy does not allow it right now. The loan form gives the exact reason.', 'سياسة القروض لا تسمح بها حالياً، ويوضح نموذج القرض السبب الدقيق.'],
+  ['Already fixed under another contract term that overlaps this one.', 'مثبتة بالفعل في عقد آخر يتداخل مع هذا العقد.'],
+  ['The earlier term has this benefit fixed from a later date.', 'للعقد السابق هذه الميزة مثبتة من تاريخ لاحق.'],
+  ['Dependants', 'المعالون'],
+  ['Add a dependant', 'إضافة معال'],
+  ['No dependants on file.', 'لا يوجد معالون مسجلون.'],
+  ['Full name', 'الاسم الكامل'],
+  ['Relationship', 'صلة القرابة'],
+  ['Date of birth', 'تاريخ الميلاد'],
+  ['Iqama or ID number (optional)', 'رقم الإقامة أو الهوية (اختياري)'],
+  ['Save dependant', 'حفظ المعال'],
+  ['Spouse', 'زوج/زوجة'],
+  ['Child', 'ابن/ابنة'],
+  ['Parent', 'أحد الوالدين'],
+  ['Other', 'أخرى'],
+  ['The dependants could not be loaded.', 'تعذّر تحميل المعالين.'],
+  ['The dependant could not be saved.', 'تعذّر حفظ المعال.'],
+  ['The dependant could not be removed.', 'تعذّر حذف المعال.'],
+  ['Remove this dependant from the employee’s file?', 'حذف هذا المعال من ملف الموظف؟'],
+  ['Proposed package', 'الباقة المقترحة'],
+  ['Proposed package — not fixed yet', 'الباقة المقترحة — لم تُثبَّت بعد'],
+  ['Proposed from the grade table for {from} to {to}. Check it against the signed contract before confirming.', 'مقترحة من جدول الدرجات للفترة من {from} إلى {to}. راجعها مقابل العقد الموقّع قبل التأكيد.'],
+  ['You asked for these proposals, so another HR user must confirm or reject them.', 'أنت من طلب هذه المقترحات، لذلك يجب أن يؤكدها أو يرفضها مستخدم آخر في الموارد البشرية.'],
+  ['Signed contract on file', 'العقد الموقّع في الملف'],
+  ['Choose the signed contract', 'اختر العقد الموقّع'],
+  ['Why it does not match', 'سبب عدم المطابقة'],
+  ['Reject the proposal', 'رفض المقترح'],
+  ['The proposed package was rejected.', 'تم رفض الباقة المقترحة.'],
+
+  // Review round 2
+  ['A fixed benefit has not started yet. The contract stays as it is until the date shown.', 'توجد ميزة مثبتة لم تبدأ بعد، ويبقى العقد كما هو حتى التاريخ الظاهر.'],
+  ['The previous contract’s benefits were never confirmed: propose these, and another HR user confirms them.', 'لم تُؤكَّد مزايا العقد السابق: اقترح هذه المزايا ويؤكدها مستخدم آخر في الموارد البشرية.'],
+  ['The employee joined before this contract and no confirmed benefits are on file: propose these, and another HR user confirms them.', 'التحق الموظف قبل هذا العقد ولا توجد مزايا مؤكدة: اقترح هذه المزايا ويؤكدها مستخدم آخر في الموارد البشرية.'],
+  ['The term has started: propose the package, and another HR user confirms it.', 'بدأ العقد: اقترح الباقة ويؤكدها مستخدم آخر في الموارد البشرية.'],
+  ['Proposed — waiting for another HR user to confirm it.', 'مقترحة — بانتظار تأكيد مستخدم آخر في الموارد البشرية.'],
+  ['Already decided.', 'تم البت فيها.'],
+  ['The package is being proposed. Another HR user confirms it here when it is ready.', 'جارٍ اقتراح الباقة، ويؤكدها مستخدم آخر في الموارد البشرية هنا عند جاهزيتها.'],
+  ['Contract benefits — {n} of {m} fixed for this contract year', 'مزايا العقد — {n} من {m} مثبتة لهذه السنة التعاقدية'],
+  ['Can be fixed now.', 'يمكن تثبيتها الآن.'],
+  ['Possible from {date}.', 'ممكن اعتباراً من {date}.'],
+  ['No signed contract is on file. Upload it to the employee’s documents first.', 'لا يوجد عقد موقّع في الملف. ارفعه إلى مستندات الموظف أولاً.'],
+
+  // Whole sentences (i18n ratchet: no fragments)
+  ['Contract {number}: from {from}, with no end date', 'العقد {number}: من {from} دون تاريخ انتهاء'],
+  ['{n} × {class} ticket a year', '{n} × تذكرة {class} سنوياً'],
+  ['{n} × {class} ticket per contract year', '{n} × تذكرة {class} لكل سنة تعاقدية'],
+  ['Up to {amount} ({rate} × housing allowance)', 'حتى {amount} ({rate} × بدل السكن)'],
+  ['Up to {amount} ({rate} × basic salary)', 'حتى {amount} ({rate} × الراتب الأساسي)'],
+  ['Up to {amount} ({rate} × gross salary)', 'حتى {amount} ({rate} × إجمالي الراتب)'],
+  ['{rate} × housing allowance', '{rate} × بدل السكن'],
+  ['{rate} × basic salary', '{rate} × الراتب الأساسي'],
+  ['{rate} × gross salary', '{rate} × إجمالي الراتب'],
+  ['{amount} a child a year, for up to {n} children', '{amount} لكل طفل سنوياً، بحد أقصى {n} أطفال'],
+  ['Fixed in your contract from {from}, with no end date. Changes to the grade table do not alter it.', 'مثبتة في عقدك من {from} دون تاريخ انتهاء، ولا تغيّرها التعديلات على جدول الدرجات.'],
+  ['Fixed for contract {number} from {from}, with no end date.', 'مثبتة للعقد {number} من {from} دون تاريخ انتهاء.'],
+  ['Proposed from the grade table from {from}, with no end date. Check it against the signed contract before confirming.', 'مقترحة من جدول الدرجات من {from} دون تاريخ انتهاء. راجعها مقابل العقد الموقّع قبل التأكيد.'],
+  ['{n} of {m} contract benefits are fixed. The rest are listed below with the reason.', '{n} من {m} من مزايا العقد مثبتة، والباقي مدرج أدناه مع السبب.'],
+  ['{benefit} — {reason}', '{benefit} — السبب: {reason}'],
+  ['These were not fixed: {list}', 'لم يُثبَّت ما يلي: {list}'],
+  ['These benefits are not in the proposal, for the reason shown.', 'هذه المزايا غير مشمولة في المقترح للسبب الظاهر.'],
+  ['Months of housing allowance', 'أشهر من بدل السكن'],
+
+  // Back-dated activation: one next action (contract register and package panel)
+  ['Benefits for this contract are waiting for a second person to confirm.', 'مزايا هذا العقد بانتظار تأكيد شخص آخر.'],
+  ['Propose benefits', 'اقتراح المزايا'],
+  ['Review proposal', 'مراجعة المقترح'],
+
+  // Employee app
+  ['Your package could not be loaded.', 'تعذّر تحميل باقتك.'],
+  ['Load my package again', 'إعادة تحميل باقتي'],
+  ['Your login is not linked to an employee record yet. Ask HR to link it.', 'حسابك غير مرتبط بسجل موظف بعد. اطلب من الموارد البشرية ربطه.'],
+];
+
 export const packageStrings: ReleaseADict = {
-  en: {
-    'The employee’s package for the current contract year appears here.': 'The employee’s package for the current contract year appears here.',
-    'Your pay, your contract benefits for this contract year, and the facilities your grade offers.': 'Your pay, your contract benefits for this contract year, and the facilities your grade offers.',
-  },
-  ar: {
-    'The employee’s package for the current contract year appears here.': 'تظهر هنا باقة الموظف للسنة التعاقدية الحالية.',
-    'Your pay, your contract benefits for this contract year, and the facilities your grade offers.': 'راتبك ومزايا عقدك لهذه السنة التعاقدية والتسهيلات التي توفرها درجتك.',
-  },
+  en: Object.fromEntries(pairs.map(([en]) => [en, en])),
+  ar: Object.fromEntries(pairs),
 };

@@ -82,6 +82,12 @@ public partial class LoansController
                 var grade = grades.FirstOrDefault(g => g.Id == row.GradeId);
                 if (grade == null) { errors.Add(new { gradeId = row.GradeId, message = "This grade doesn't exist or is no longer in use." }); continue; }
                 if (ValidateGradeLimitRow(row) is { } problem) errors.Add(new { gradeId = row.GradeId, gradeName = grade.Name, message = problem });
+                // Release A (R2): × housing allowance exists only for the housing advance (EntitlementComponentRules).
+                else if (row.ValueType == GradeEntitlementValueTypes.MultipleOfHousing
+                    && Infrastructure.Entitlements.EntitlementComponentRules.For(type.EntitlementComponentCode ?? GradeLoanLimitResolver.FacilityCodeFor(type.Code))
+                        ?.AllowedValueTypes.Contains(GradeEntitlementValueTypes.MultipleOfHousing) != true)
+                    errors.Add(new { gradeId = row.GradeId, gradeName = grade.Name,
+                        message = "A multiple of the housing allowance is only available for the housing advance." });
             }
             if (errors.Count > 0)
                 return BadRequest(new { error = "invalid_grade_limits", message = "Some limits need correcting before they can be published.", rows = errors });
@@ -493,9 +499,9 @@ public partial class LoansController
         {
             GradeEntitlementValueTypes.Amount when row.Amount is decimal a && Money(a) && row.Rate is null => null,
             GradeEntitlementValueTypes.Amount => "Enter the per-loan maximum as a positive amount with at most two decimals.",
-            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross
+            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross or GradeEntitlementValueTypes.MultipleOfHousing
                 when row.Rate is decimal m && m > 0 && m <= 120 && decimal.Round(m, 4) == m && row.Amount is null => null,
-            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross =>
+            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross or GradeEntitlementValueTypes.MultipleOfHousing =>
                 "Enter how many months of salary (more than 0, at most 120).",
             _ when row.Amount is null && row.Rate is null => null,
             _ => "With no per-loan maximum, leave the amount and multiple empty.",
