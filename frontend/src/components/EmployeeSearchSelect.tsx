@@ -53,12 +53,8 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
   const search = useCallback(async (q: string) => {
     if (q.trim().length < 1) { searchGate.invalidate(); setResults([]); setSearching(false); return; }
     setSearching(true);
-    await runLatest(searchGate, async () => {
-      const pages = await Promise.all(statusKey.split('|').map(status => employeesApi.list({ search: q, pageSize: 8, status })));
-      const byId = new Map(pages.flatMap(p => p.items ?? []).map(e => [e.id, e] as const));
-      return [...byId.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)).slice(0, 8);
-    }, {
-      onResult: (items) => setResults(items),
+    await runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: statusKey.split('|') }), {
+      onResult: (r) => setResults(r.items ?? []),
       onError: () => setResults([]),
       onSettled: () => setSearching(false),
     });
