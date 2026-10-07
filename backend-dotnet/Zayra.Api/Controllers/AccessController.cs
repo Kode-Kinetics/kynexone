@@ -514,6 +514,33 @@ public class AccessController : ControllerBase
             // with no SMTP (the production default) nothing ever did. The invitation is now actually
             // emailed when a transport exists, and the response states plainly which happened.
             invite = await AttachInvitationDeliveryAsync(tenantId.Value, invite, cancellationToken);
+
+            // The raw token never leaves the server; the link is handed back ONLY when nothing reached the
+            // invitee, and then the inviter has held a credential for this login — recorded, so the two-person
+            // rule (AccessManagementService.TwoPersonRefusalAsync) never lets them link it to an employee.
+            var disclosed = !invite.EmailSent && !string.IsNullOrEmpty(invite.InvitationUrl);
+            if (disclosed)
+            {
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(),
+                    DateTime.UtcNow,
+                    AccessManagementService.InvitationLinkDisclosedAction,
+                    "User",
+                    invite.UserId.ToString(),
+                    GetContext() with { TenantId = tenantId.Value },
+                    System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        employeeId = invite.EmployeeId,
+                        emailDeliveryConfigured = invite.EmailDeliveryConfigured,
+                        expiresAtUtc = invite.InvitationExpiresAtUtc
+                    })));
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+            invite = invite with
+            {
+                InvitationToken = string.Empty,
+                InvitationUrl = disclosed ? invite.InvitationUrl : string.Empty
+            };
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }

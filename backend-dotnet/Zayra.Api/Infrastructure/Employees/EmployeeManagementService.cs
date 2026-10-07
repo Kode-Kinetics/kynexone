@@ -147,7 +147,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // AUTO-DERIVE WORK EMAIL (server-authoritative) — runs AFTER CompanyId is finalized so it uses the
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
-        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, cancellationToken);
+        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, context, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
@@ -244,7 +244,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // AUTO-DERIVE / VALIDATE WORK EMAIL against the (possibly reassigned) EMPLOYING company's domain, and
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
-        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, cancellationToken);
+        var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -1493,7 +1493,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// User.(TenantId, NormalizedEmail) index uses, so two addresses differing only by case are one login.
     /// </summary>
     private async Task<WorkEmailAudit> ResolveWorkEmailAsync(
-        Employee employee, EmployeeCreateRequest request, Guid tenantId, string priorWorkEmail, bool isUpdate, CancellationToken ct)
+        Employee employee, EmployeeCreateRequest request, Guid tenantId, string priorWorkEmail, bool isUpdate, RequestContext context, CancellationToken ct)
     {
         var audit = new WorkEmailAudit();
         var company = employee.CompanyId is Guid cid
@@ -1526,7 +1526,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // login is never renamed by an employee edit — see WorkEmailLoginGuard.
         if (isUpdate)
         {
-            var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, DateTime.UtcNow, ct);
+            var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, context, DateTime.UtcNow, ct);
             audit.RenamedJson = login.RenamedJson;
             audit.LoginHeldJson = login.HeldJson;
             audit.LoginUsernameDiffers = login.LoginUsernameDiffers;

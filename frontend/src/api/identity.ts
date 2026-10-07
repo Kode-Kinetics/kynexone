@@ -312,7 +312,7 @@ export const usersApi = {
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),
 
-  inviteEmployee: (body: { employeeId: number; email?: string; accessMode: string; roles?: string[]; invitationHours?: number }) =>
+  inviteEmployee: (body: { employeeId: number; accessMode: string; roles?: string[]; invitationHours?: number }) =>
     client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
 
   /** Where one employee record stands on the way to Self-Service, and the one next step. */

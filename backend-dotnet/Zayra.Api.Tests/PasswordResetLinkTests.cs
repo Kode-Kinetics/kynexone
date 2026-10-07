@@ -278,8 +278,43 @@ public sealed class PasswordResetLinkTests
         invite.EmailDeliveryConfigured.Should().BeFalse();
         invite.EmailSent.Should().BeFalse();
         invite.DeliveryMessage.Should().Contain("No email delivery is configured");
-        // The link is still returned, so the administrator has something to pass on.
+        // The link is still returned, so the administrator has something to pass on...
         invite.InvitationUrl.Should().Contain("/accept-invitation");
+        // ...but never the raw token, and the disclosure makes the inviter a credential handler of the login.
+        invite.InvitationToken.Should().BeEmpty();
+        var disclosed = await db.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction);
+        disclosed.EntityName.Should().Be("User");
+        disclosed.EntityId.Should().Be(invite.UserId.ToString());
+        disclosed.UserId.Should().NotBeNull().And.NotBe(Guid.Empty);
+        disclosed.UserId.Should().Be(db.Users.IgnoreQueryFilters().Single(u => u.TenantId == tenant.Id && u.Email == ActingAdminEmail).Id);
+    }
+
+    [Theory]
+    [InlineData("someone.else@attacker.test", false)]
+    [InlineData("INVITED.PERSON@example.test", true)]
+    public async Task InviteEmployeeLogin_IsPinnedToTheEmployeesWorkEmail(string requested, bool allowed)
+    {
+        await using var db = CreateDb();
+        var (tenant, _) = await SeedActiveUserAsync(db);
+        var employee = new Employee
+        {
+            TenantId = tenant.Id, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-PIN", FullName = "Invited Person",
+            EnglishName = "Invited Person", WorkEmail = "invited.person@example.test", Status = EmployeeStatuses.Active,
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false))
+            .InviteEmployeeLogin(new InviteEmployeeLoginRequest(employee.Id, requested, AccessModes.EssOnly, null), default);
+
+        if (allowed)
+            ((EmployeeLoginInvitationDto)result.Result.Should().BeOfType<CreatedResult>().Subject.Value!).Email
+                .Should().Be("invited.person@example.test");
+        else
+        {
+            result.Result.Should().BeOfType<BadRequestObjectResult>();
+            (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.NormalizedEmail == AuthService.Normalize(requested))).Should().BeFalse();
+        }
     }
 
     [Fact]
@@ -311,6 +346,10 @@ public sealed class PasswordResetLinkTests
         invite.DeliveryMessage.Should().Contain("Invitation accepted by the mail server for");
         email.Sent.Should().ContainSingle();
         email.Sent[0].Html.Should().Contain("/accept-invitation");
+        // Delivered to the invitee: the inviter is handed neither the token nor the link, and held no credential.
+        invite.InvitationToken.Should().BeEmpty();
+        invite.InvitationUrl.Should().BeEmpty();
+        (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction)).Should().BeFalse();
     }
 
     // ── Harness ───────────────────────────────────────────────────────────────

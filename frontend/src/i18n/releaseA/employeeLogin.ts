@@ -61,10 +61,10 @@ export const employeeLogin: ReleaseADict = {
       "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.",
     'This login works in a different company. Give it access to {company} first, or link it from that company.':
       'This login works in a different company. Give it access to {company} first, or link it from that company.',
-    "This login's password was set by an administrator. Send the person a password-reset link from User Management; once they set their own password, the login can be linked.":
-      "This login's password was set by an administrator. Send the person a password-reset link from User Management; once they set their own password, the login can be linked.",
-    'You created this login, so you cannot link it to an employee record. Another administrator must link it.':
-      'You created this login, so you cannot link it to an employee record. Another administrator must link it.',
+    "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.":
+      "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.",
+    'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
+      'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.',
   },
   ar: {
     'Link to employee record': 'ربط بسجل موظف',
@@ -122,9 +122,9 @@ export const employeeLogin: ReleaseADict = {
       "يستخدم حساب دخول هذا البريد الإلكتروني للعمل بالفعل، لكنه خارج نطاق صلاحياتك. يجب أن يربطه مسؤول يدير ذلك الحساب.",
     'This login works in a different company. Give it access to {company} first, or link it from that company.':
       'يعمل حساب الدخول هذا في شركة أخرى. امنحه صلاحية الوصول إلى {company} أولاً، أو اربطه من تلك الشركة.',
-    "This login's password was set by an administrator. Send the person a password-reset link from User Management; once they set their own password, the login can be linked.":
-      'كلمة مرور حساب الدخول هذا عيّنها مسؤول. أرسل إلى الشخص رابط إعادة تعيين كلمة المرور من إدارة المستخدمين؛ وبعد أن يعيّن كلمة المرور الخاصة به يمكن ربط الحساب.',
-    'You created this login, so you cannot link it to an employee record. Another administrator must link it.':
-      'أنت من أنشأ حساب الدخول هذا، لذا لا يمكنك ربطه بسجل موظف. يجب أن يربطه مسؤول آخر.',
+    "You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.":
+      'لقد تعاملت مع بيانات اعتماد حساب الدخول هذا (أنشأته، أو عيّنت كلمة مروره، أو عُرض عليك رابط إعادة تعيين أو دعوة له)، لذا لا يمكنك ربطه بسجل موظف. يجب أن يربطه مسؤول آخر.',
+    'The work email on this employee record was last changed by you or by this login, so the link needs a different administrator.':
+      'آخر من غيّر البريد الإلكتروني للعمل في سجل هذا الموظف هو أنت أو صاحب حساب الدخول هذا، لذا يجب أن يربطه مسؤول آخر.',
   },
 };

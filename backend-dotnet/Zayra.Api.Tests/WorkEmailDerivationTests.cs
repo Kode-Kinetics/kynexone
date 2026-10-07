@@ -265,7 +265,13 @@ public class WorkEmailDerivationTests
     private static User StagedLogin(Guid tenantId, string email, string name) => new()
     {
         TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = name, PasswordHash = "x",
-        Status = "PendingPasswordSetup", AccessMode = AccessModes.NoLogin, IsActive = false,
+        Status = "PendingPasswordSetup", AccessMode = AccessModes.NoLogin, IsActive = false, IsEmailConfirmed = false,
+    };
+
+    /// <summary>The staged login's live link, still awaiting its first password.</summary>
+    private static EmployeeUserAccount AwaitingLink(Guid tenantId, int employeeId, Guid userId) => new()
+    {
+        TenantId = tenantId, EmployeeId = employeeId, UserId = userId, Status = "PendingPasswordSetup", RequiresPasswordSetup = true,
     };
 
     [Fact]
@@ -280,6 +286,7 @@ public class WorkEmailDerivationTests
         // Provision a linked, still-STAGED login on the derived address.
         var user = StagedLogin(tenantId, "john.smith@acme.sa", "John Smith");
         db.Users.Add(user);
+        db.EmployeeUserAccounts.Add(AwaitingLink(tenantId, created.Id, user.Id));
         var emp = await db.Employees.FirstAsync(e => e.Id == created.Id);
         emp.UserAccountId = user.Id;
         await db.SaveChangesAsync();
@@ -333,6 +340,7 @@ public class WorkEmailDerivationTests
         var user = StagedLogin(tenantId, "john.smith@acme.sa", "John Smith");
         var other = new User { TenantId = tenantId, Email = "john.smithers@acme.sa", NormalizedEmail = "JOHN.SMITHERS@ACME.SA", FullName = "Other", PasswordHash = "x" };
         db.Users.AddRange(user, other);
+        db.EmployeeUserAccounts.Add(AwaitingLink(tenantId, created.Id, user.Id));
         var emp = await db.Employees.FirstAsync(e => e.Id == created.Id);
         emp.UserAccountId = user.Id;
         await db.SaveChangesAsync();

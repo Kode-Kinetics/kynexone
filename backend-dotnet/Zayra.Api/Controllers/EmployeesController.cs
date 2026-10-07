@@ -5893,7 +5893,7 @@ public class EmployeesController : ControllerBase
         }
 
         // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
-        var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, DateTime.UtcNow, ct);
+        var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, Context(), DateTime.UtcNow, ct);
         if (login.RenamedJson is not null)
             await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(), login.RenamedJson, ct);
         if (login.HeldJson is not null)

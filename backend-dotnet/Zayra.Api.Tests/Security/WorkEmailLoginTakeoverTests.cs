@@ -17,6 +17,7 @@ using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 using Zayra.Api.Tests.Platform;
 
@@ -58,7 +59,8 @@ public sealed class WorkEmailLoginTakeoverTests
         await using var db = CreateDb();
         var world = await SeedAsync(db, staged: false, legacyPointer);
 
-        var result = await Controller(db, world.TenantId, role).UpdateEmployee(world.EmployeeId, WorkEmailEdit(NewEmail), default);
+        var editor = Guid.NewGuid();
+        var result = await Controller(db, world.TenantId, role, editor).UpdateEmployee(world.EmployeeId, WorkEmailEdit(NewEmail), default);
 
         var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
         dto.WorkEmail.Should().Be(NewEmail, "the employee record keeps what HR typed");
@@ -73,6 +75,11 @@ public sealed class WorkEmailLoginTakeoverTests
         var actions = await db.AuditLogs.IgnoreQueryFilters().Where(x => x.EntityId == world.EmployeeId.ToString()).Select(x => x.Action).ToListAsync();
         actions.Should().Contain("employee.work_email_login_held");
         actions.Should().NotContain("employee.work_email_renamed");
+        // Who changed the work email, and from what to what — the two-person rule for linking reads it.
+        var change = await db.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.WorkEmailChangedAction);
+        change.UserId.Should().Be(editor);
+        change.EntityId.Should().Be(world.EmployeeId.ToString());
+        change.Metadata.Should().Contain(OldEmail).And.Contain(NewEmail);
 
         // The attacker's address reaches nothing; the owner's own address still does.
         await ForgotPasswordAsync(db, world, NewEmail);
@@ -127,19 +134,78 @@ public sealed class WorkEmailLoginTakeoverTests
         (await db.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == world.UserId)).Email.Should().Be(OldEmail);
     }
 
+    /// <summary>
+    /// THE REVIEWER'S SEQUENCE. A login that was activated (invitation accepted) but never signed in, then had its
+    /// access revoked by offboarding — which puts it back in PendingPasswordSetup and clears its link — and even
+    /// re-invited afterwards, so its link once again awaits a password. It was activated once: an employee edit
+    /// must never repoint it.
+    /// </summary>
     [Theory]
-    [InlineData("Active", true, true)]          // signed in
-    [InlineData("Active", true, false)]         // active, never signed in (Create User)
-    [InlineData("Suspended", false, true)]      // was live
-    [InlineData("Invited", false, true)]        // re-invited after having signed in
-    public void OnlyANeverActivatedLogin_IsStaged(string status, bool isActive, bool signedIn)
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnActivatedLogin_RevokedByOffboarding_NeverLooksStaged(bool reinvitedAfterRevocation)
     {
-        var user = new User { Status = status, IsActive = isActive, LastLoginAtUtc = signedIn ? DateTime.UtcNow : null };
-        Zayra.Api.Infrastructure.Employees.WorkEmailLoginGuard.IsStaged(user).Should().BeFalse();
-        Zayra.Api.Infrastructure.Employees.WorkEmailLoginGuard.IsStaged(
-            new User { Status = "PendingPasswordSetup", IsActive = false }).Should().BeTrue();
-        Zayra.Api.Infrastructure.Employees.WorkEmailLoginGuard.IsStaged(
-            new User { Status = "Invited", IsActive = false }).Should().BeTrue();
+        await using var db = CreateDb();
+        var world = await SeedAsync(db, staged: false, legacyPointer: true);
+        var acceptedAt = DateTime.UtcNow.AddDays(-3);
+        var user = await db.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == world.UserId);
+        var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.UserId == world.UserId);
+        user.LastLoginAtUtc = null; // activated, never signed in
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = world.TenantId, UserId = user.Id, Action = "auth.invitation_accepted", EntityName = "User",
+            EntityId = user.Id.ToString(), CreatedAtUtc = acceptedAt,
+        });
+        // OffboardingController.StageAccessRevocation, field for field.
+        user.IsActive = false;
+        user.IsEmailConfirmed = false;
+        user.Status = "PendingPasswordSetup";
+        user.AccessMode = AccessModes.NoLogin;
+        user.PasswordHash = $"OFFBOARDED${user.Id:N}";
+        link.AccessMode = AccessModes.NoLogin;
+        link.Status = "NoLogin";
+        link.RequiresPasswordSetup = false;
+        link.InvitationTokenHash = string.Empty;
+        link.InvitationExpiresAtUtc = null;
+        link.InvitationAcceptedAtUtc = null;
+        if (reinvitedAfterRevocation)
+        {
+            // InviteEmployeeLoginAsync on the same login: the link awaits a password again.
+            user.Status = "Invited";
+            link.Status = "Invited";
+            link.RequiresPasswordSetup = true;
+            link.InvitationTokenHash = "reissued-invitation-hash";
+            link.InvitationExpiresAtUtc = DateTime.UtcNow.AddDays(3);
+        }
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var result = await Controller(db, world.TenantId, "HR Officer").UpdateEmployee(world.EmployeeId, WorkEmailEdit(NewEmail), default);
+
+        Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value).LoginUsernameDiffers.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        (await db.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == world.UserId)).Email.Should().Be(OldEmail,
+            "a login that was ever activated never follows a work-email edit");
+    }
+
+    [Fact]
+    public void Staged_RequiresALinkAwaitingItsFirstPassword_AndNoSignOfActivation()
+    {
+        static User Fresh() => new() { Status = "Invited", IsActive = false, IsEmailConfirmed = false };
+        static EmployeeUserAccount Awaiting() => new() { RequiresPasswordSetup = true };
+        WorkEmailLoginGuard.IsStaged(Fresh(), Awaiting(), hasActivationEvidence: false).Should().BeTrue();
+        WorkEmailLoginGuard.IsStaged(new User { Status = "PendingPasswordSetup", IsActive = false, IsEmailConfirmed = false }, Awaiting(), false)
+            .Should().BeTrue();
+
+        WorkEmailLoginGuard.IsStaged(Fresh(), null, false).Should().BeFalse("no live link");
+        WorkEmailLoginGuard.IsStaged(Fresh(), new EmployeeUserAccount { RequiresPasswordSetup = false }, false).Should().BeFalse("not awaiting a password");
+        WorkEmailLoginGuard.IsStaged(Fresh(), new EmployeeUserAccount { RequiresPasswordSetup = true, InvitationAcceptedAtUtc = DateTime.UtcNow }, false).Should().BeFalse("accepted");
+        WorkEmailLoginGuard.IsStaged(Fresh(), new EmployeeUserAccount { RequiresPasswordSetup = true, IsDeleted = true }, false).Should().BeFalse("deleted link");
+        WorkEmailLoginGuard.IsStaged(Fresh(), Awaiting(), hasActivationEvidence: true).Should().BeFalse("was activated once");
+        WorkEmailLoginGuard.IsStaged(new User { Status = "Invited", IsActive = false, IsEmailConfirmed = false, LastLoginAtUtc = DateTime.UtcNow }, Awaiting(), false).Should().BeFalse("signed in");
+        WorkEmailLoginGuard.IsStaged(new User { Status = "Active", IsActive = true, IsEmailConfirmed = true }, Awaiting(), false).Should().BeFalse("active");
+        WorkEmailLoginGuard.IsStaged(new User { Status = "Invited", IsActive = false, IsEmailConfirmed = true }, Awaiting(), false).Should().BeFalse("email confirmed");
+        WorkEmailLoginGuard.IsStaged(new User { Status = "Suspended", IsActive = false, IsEmailConfirmed = false }, Awaiting(), false).Should().BeFalse("suspended");
     }
 
     // ── Harness ─────────────────────────────────────────────────────────────────────────────────
@@ -166,6 +232,7 @@ public sealed class WorkEmailLoginTakeoverTests
             Status = staged ? "Invited" : "Active",
             AccessMode = staged ? AccessModes.NoLogin : AccessModes.EssOnly,
             IsActive = !staged,
+            IsEmailConfirmed = !staged,
             LastLoginAtUtc = staged ? null : DateTime.UtcNow.AddDays(-1),
         };
         db.Users.Add(user);
@@ -188,7 +255,9 @@ public sealed class WorkEmailLoginTakeoverTests
     private static EmployeeUpdateRequest WorkEmailEdit(string email) =>
         new(DateOnly.FromDateTime(DateTime.UtcNow.Date), new() { ["workEmail"] = JsonSerializer.SerializeToElement(email) });
 
-    private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, string role)
+    private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, string role) => Controller(db, tenantId, role, Guid.NewGuid());
+
+    private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, string role, Guid callerId)
     {
         var audit = new AuditService(db);
         return new EmployeesController(
@@ -202,7 +271,7 @@ public sealed class WorkEmailLoginTakeoverTests
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
                         new Claim("tenant_id", tenantId.ToString()),
-                        new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, callerId.ToString()),
                         new Claim(ClaimTypes.Role, role),
                         new Claim("permission", "employees.read"),
                         new Claim("permission", "employees.write"),
