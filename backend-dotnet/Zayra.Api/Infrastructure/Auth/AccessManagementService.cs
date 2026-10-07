@@ -771,6 +771,16 @@ public class AccessManagementService : IAccessManagementService
             var disablesLogin = accessMode == AccessModes.NoLogin;
             if (disablesLogin && user.Id == context.UserId)
                 throw new InvalidOperationException("You cannot disable your own account.");
+            // PRIVILEGE CEILING: an access mode carries permissions of its own (AuthService.AccessModePermissions),
+            // so changing it is a grant: never on yourself, never on someone above you, and only a mode whose
+            // permissions you hold. Platform callers (no user) are outside the tenant ceiling.
+            if (context.UserId is not null)
+            {
+                var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+                ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
+                ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, AuthService.AccessModePermissions(accessMode)));
+            }
+            var accessModeBefore = user.AccessMode;
             if (disablesLogin && IsOperationalAdmin(user, changedAtUtc))
                 EnsureAnotherOperationalAdmin(adminCohort, user.Id, changedAtUtc);
             if (accessMode != AccessModes.NoLogin
@@ -829,7 +839,7 @@ public class AccessManagementService : IAccessManagementService
                 "User",
                 user.Id.ToString(),
                 context with { TenantId = tenantId },
-                $"{{\"accessMode\":\"{accessMode}\",\"reason\":\"{request.Reason ?? string.Empty}\"}}"));
+                System.Text.Json.JsonSerializer.Serialize(new { accessMode, accessModeBefore, reason = request.Reason ?? string.Empty })));
             await _db.SaveChangesAsync(ct);
             result = ToAccessDto(user);
             return true;
@@ -1080,13 +1090,22 @@ public class AccessManagementService : IAccessManagementService
             .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken);
         if (user is null) return null;
+        var target = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken)
+            ?? throw new InvalidOperationException("User not found.");
+        await EnsureMayManageAccountAsync(tenantId, context, target, cancellationToken);
+        var before = new { user.FullName, user.PhoneNumber, user.PreferredLanguage, user.Timezone };
         if (!string.IsNullOrWhiteSpace(request.FullName)) user.FullName = request.FullName.Trim();
         if (request.PhoneNumber is not null) user.PhoneNumber = request.PhoneNumber.Trim();
         if (!string.IsNullOrWhiteSpace(request.PreferredLanguage)) user.PreferredLanguage = request.PreferredLanguage.Trim();
         if (!string.IsNullOrWhiteSpace(request.Timezone)) user.Timezone = request.Timezone.Trim();
         user.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.user_updated", "User", user.Id.ToString(), context, null, cancellationToken);
+        await _auditService.WriteAsync("access.user_updated", "User", user.Id.ToString(), context,
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                before,
+                after = new { user.FullName, user.PhoneNumber, user.PreferredLanguage, user.Timezone }
+            }), cancellationToken);
         return ToUserListDto(user);
     }
 
@@ -1175,6 +1194,10 @@ public class AccessManagementService : IAccessManagementService
             .ApplyEntityScope(_db, tenantId, entityScope)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+        // The endpoint is disabled (AccessController answers 409), but the method must not be a ceiling bypass.
+        await EnsureMayManageAccountAsync(tenantId, context,
+            await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
+            cancellationToken);
         user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
         user.MustChangePassword = request.MustChangePassword;
         user.LastPasswordChangedAt = DateTime.UtcNow;
@@ -1227,6 +1250,12 @@ public class AccessManagementService : IAccessManagementService
         if (user.Status is "Deactivated" or "Suspended")
             throw new InvalidOperationException(
                 $"This account is {user.Status.ToLowerInvariant()}. Restore access first, then send a reset link.");
+
+        // PRIVILEGE CEILING: with no mail transport the link comes back to the caller, so a reset link for a user
+        // above you is a takeover of their account.
+        await EnsureMayManageAccountAsync(tenantId, context,
+            await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
+            cancellationToken);
 
         var issuedAtUtc = DateTime.UtcNow;
         var expiresAtUtc = issuedAtUtc.AddHours(AdminResetLinkLifetimeHours);
@@ -1300,6 +1329,7 @@ public class AccessManagementService : IAccessManagementService
                 ?? throw new InvalidOperationException("User not found.");
             if (user.Id == context.UserId)
                 throw new InvalidOperationException("You cannot delete your own account.");
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
 
             if (IsOperationalAdmin(user, changedAtUtc))
                 EnsureAnotherOperationalAdmin(adminCohort, user.Id, changedAtUtc);
@@ -1546,6 +1576,13 @@ public class AccessManagementService : IAccessManagementService
                 }
             }
 
+            // PRIVILEGE CEILING: a grantor record is authority to grant, so delegating a scope is granting every
+            // permission it covers. Never to yourself, never to someone above you, and only a scope whose every
+            // catalogue permission you hold ("all" therefore needs all of them). Fails closed without a caller.
+            var catalogue = await _db.Permissions.AsNoTracking().Select(x => x.Key).ToListAsync(ct);
+            await EnsureGrantWithinCeilingAsync(tenantId, EntityScopeContext.GroupLevel, context, request.GrantorUserId,
+                catalogue.Where(k => PermissionMatchesScope(k, request.PermissionScope.Trim())).ToList(), ct);
+
             var record = new Models.PermissionGrantorRecord
             {
                 Id = recordId,
@@ -1625,6 +1662,10 @@ public class AccessManagementService : IAccessManagementService
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == recordId, ct)
                 ?? throw new InvalidOperationException("Permission grantor record not found.");
+            // PRIVILEGE CEILING: nobody changes the grantor records of a user above them.
+            await EnsureMayManageAccountAsync(tenantId, context,
+                await LoadAccessUser(tenantId, user.Id, EntityScopeContext.GroupLevel, ct) ?? throw new InvalidOperationException("User not found."),
+                ct);
             record.IsActive = false;
             await InvalidateAuthorizationSessionsAsync(new[] { user }, changedAtUtc, context, ct);
             _db.AuditLogs.Add(AuthAuditEntry.Create(
@@ -1633,7 +1674,8 @@ public class AccessManagementService : IAccessManagementService
                 "access.grantor_revoked",
                 "PermissionGrantorRecord",
                 recordId.ToString(),
-                context with { TenantId = tenant.Id }));
+                context with { TenantId = tenant.Id },
+                System.Text.Json.JsonSerializer.Serialize(new { grantorUserId = user.Id, scope = record.PermissionScope })));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -1699,6 +1741,16 @@ public class AccessManagementService : IAccessManagementService
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId
                     && x.UserId == targetUserId
                     && x.PermissionKey == request.PermissionKey, ct);
+
+            // PRIVILEGE CEILING, on top of the grantor scope: a grantor (or an Admin) never acts on themselves or on
+            // someone above them, and an Allow — or removing a Deny, which gives the permission back — needs the
+            // permission held. Fails closed without a caller.
+            await EnsureGrantWithinCeilingAsync(tenantId, entityScope, mutationContext, targetUserId,
+                request.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase)
+                    ? (existing is { IsActive: true } && existing.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase) ? new[] { request.PermissionKey } : Array.Empty<string>())
+                    : request.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase) ? Array.Empty<string>() : new[] { request.PermissionKey },
+                ct);
+            var previousEffect = existing is { IsActive: true } ? existing.Effect : null;
             if (request.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase))
             {
                 if (existing is not null)
@@ -1738,7 +1790,8 @@ public class AccessManagementService : IAccessManagementService
             var metadata = System.Text.Json.JsonSerializer.Serialize(new
             {
                 permission = request.PermissionKey,
-                effect = request.Effect
+                effect = request.Effect,
+                previousEffect
             });
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
@@ -1850,6 +1903,20 @@ public class AccessManagementService : IAccessManagementService
             var existingOverrides = await _db.UserPermissionOverrides.IgnoreQueryFilters()
                 .Where(x => x.TenantId == tenantId && x.UserId == targetUserId)
                 .ToListAsync(ct);
+
+            // PRIVILEGE CEILING for the whole batch, before any row changes: what the batch would give (every Allow,
+            // and every Remove of an active Deny) must all be held by the caller; never on yourself or someone above you.
+            var activeDenies = existingOverrides
+                .Where(x => x.IsActive && x.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.PermissionKey)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            await EnsureGrantWithinCeilingAsync(tenantId, entityScope, mutationContext, targetUserId,
+                items.Where(i => i.Effect.Equals("Remove", StringComparison.OrdinalIgnoreCase)
+                        ? activeDenies.Contains(i.PermissionKey)
+                        : !i.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
+                    .Select(i => i.PermissionKey)
+                    .ToList(),
+                ct);
             var changed = new List<(string Key, string Effect)>();
             var allowed = 0;
             var denied = 0;
@@ -2005,6 +2072,60 @@ public class AccessManagementService : IAccessManagementService
             .Select(x => x.Permission!.Key)
             .ToListAsync(cancellationToken);
         return new PrivilegeCeiling.RoleFacts(role.Id, role.Name, role.NormalizedName, role.TenantId, role.IsSystem, role.IsEditable, keys);
+    }
+
+    /// <summary>
+    /// The ceiling for permission grants made outside a role (overrides, grantor paths, grantor records): the
+    /// subject never decides, nobody reaches up, and <paramref name="granted"/> must all be held by the caller.
+    /// </summary>
+    private async Task EnsureGrantWithinCeilingAsync(
+        Guid tenantId,
+        EntityScopeContext entityScope,
+        RequestContext context,
+        Guid targetUserId,
+        IReadOnlyCollection<string> granted,
+        CancellationToken cancellationToken)
+    {
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        var target = await LoadAccessUser(tenantId, targetUserId, entityScope, cancellationToken)
+            ?? throw new InvalidOperationException("User not found.");
+        ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
+        ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, granted));
+    }
+
+    private static bool HoldsAdmin(User user) =>
+        user.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false });
+
+    /// <summary>
+    /// Account actions on another user (suspend, lock, unlock, activate, delete, password-reset link, profile):
+    /// refused when the target is an Admin and the caller is not, or holds access the caller lacks.
+    /// <paramref name="target"/> must carry its roles, role permissions, overrides and employee links
+    /// (<see cref="LoadAccessUser"/>). Self is left to each action's own rule.
+    ///
+    /// <para>A context with NO user is the platform operator path: PlatformController calls Delete and Unlock
+    /// with <c>UserId: null</c> behind <c>RequirePlatformRole</c>, outside any tenant's ceiling. The tenant Access
+    /// API never does: AccessController answers 401 before calling an account action without a user.</para>
+    /// </summary>
+    private async Task EnsureMayManageAccountAsync(Guid tenantId, RequestContext context, User target, CancellationToken cancellationToken)
+    {
+        if (context.UserId is null) return;
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        if (target.Id == caller.UserId) return;
+        ThrowIfRefused(PrivilegeCeiling.AboveCallerRefusal(caller, HoldsAdmin(target), AuthService.GetPermissions(target)));
+    }
+
+    /// <inheritdoc />
+    public async Task AssertMayChangeUserAccessAsync(Guid tenantId, Guid targetUserId, RequestContext context, CancellationToken cancellationToken)
+    {
+        var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
+        var target = await LoadAccessUser(tenantId, targetUserId, EntityScopeContext.GroupLevel, cancellationToken);
+        // A user who no longer exists holds nothing to protect; the self rule still applies by id.
+        if (target is null)
+        {
+            if (targetUserId == caller.UserId) ThrowIfRefused(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.SelfChange, null));
+            return;
+        }
+        ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
     }
 
     private static PrivilegeCeiling.RoleFacts Facts(Role role) =>
@@ -2884,7 +3005,9 @@ public class AccessManagementService : IAccessManagementService
             var blocksLogin = auditAction is "access.user_suspended" or "access.user_locked";
             if (blocksLogin && user.Id == context.UserId)
                 throw new InvalidOperationException("You cannot suspend or lock your own account.");
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
             var wasOperationalAdmin = IsOperationalAdmin(user, changedAtUtc);
+            var statusBefore = user.Status;
 
             mutate(user, changedAtUtc);
             if (wasOperationalAdmin && !IsOperationalAdmin(user, changedAtUtc))
@@ -2928,7 +3051,7 @@ public class AccessManagementService : IAccessManagementService
                 "User",
                 user.Id.ToString(),
                 context with { TenantId = tenantId },
-                auditMetadata));
+                AddStatusChange(auditMetadata, statusBefore, user.Status)));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -2947,6 +3070,17 @@ public class AccessManagementService : IAccessManagementService
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct),
             IsolationLevel.ReadCommitted,
             cancellationToken);
+    }
+
+    /// <summary>Adds the before/after account status to an eligibility audit row's metadata.</summary>
+    private static string AddStatusChange(string? metadata, string before, string after)
+    {
+        var node = string.IsNullOrWhiteSpace(metadata)
+            ? new System.Text.Json.Nodes.JsonObject()
+            : System.Text.Json.Nodes.JsonNode.Parse(metadata) as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+        node["statusBefore"] = before;
+        node["statusAfter"] = after;
+        return node.ToJsonString();
     }
 
     private async Task RevokeActiveRefreshTokensForRoleAsync(Guid roleId, RequestContext context, CancellationToken cancellationToken)

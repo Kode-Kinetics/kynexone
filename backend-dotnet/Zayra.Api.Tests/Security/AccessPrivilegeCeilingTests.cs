@@ -199,13 +199,13 @@ public sealed class AccessPrivilegeCeilingTests
         {
             var strip = await Controller(db, w, w.ConsoleId).AssignRoles(
                 w.AdminId, new AssignRolesRequest(["Employee"]), CancellationToken.None);
-            AssertRefused(strip.Result, PrivilegeCeiling.Codes.AdminOnlyRole);
+            AssertRefused(strip.Result, PrivilegeCeiling.Codes.AdminTarget);
         }
         await using (var db = _fixture.CreateRetryingDb())
         {
             var deny = await Controller(db, w, w.ConsoleId).SetPermissionOverride(
                 w.AdminId, new PermissionOverrideRequest("security.manage", "Deny", "lock them out", null), CancellationToken.None);
-            AssertRefused(deny.Result, PrivilegeCeiling.Codes.AdminOnlyRole);
+            AssertRefused(deny.Result, PrivilegeCeiling.Codes.AdminTarget);
         }
         Assert.Contains("Admin", await RoleNamesAsync(w.AdminId));
     }
@@ -257,6 +257,152 @@ public sealed class AccessPrivilegeCeilingTests
         AssertRefused(result.Result, PrivilegeCeiling.Codes.RoleAboveCeiling);
         await using var verify = _fixture.CreateRetryingDb();
         Assert.False(await verify.Users.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.FullName == "Minted"));
+    }
+
+    // ── Accounts above you: suspend, lock, unlock, delete, reset link, access mode, profile ─────────
+
+    [Fact]
+    public async Task ConsoleAdmin_CannotSuspendLockDeleteResetOrDisableAnAdmin()
+    {
+        var w = await SeedAsync();
+        var reason = new ReasonRequest("take over");
+
+        async Task<IActionResult> Run(Func<AccessController, Task<IActionResult>> act)
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            return await act(Controller(db, w, w.ConsoleId));
+        }
+
+        AssertRefused(await Run(c => c.SuspendUser(w.AdminId, reason, CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(c => c.LockUser(w.AdminId, reason, CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(c => c.UnlockUser(w.AdminId, CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(c => c.DeleteUser(w.AdminId, CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(c => c.IssuePasswordResetLink(w.AdminId, CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(async c => (await c.SetAccessMode(w.AdminId, new AccessModeRequest(AccessModes.NoLogin, "x"), CancellationToken.None)).Result!),
+            PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(async c => (await c.UpdateUser(w.AdminId, new UpdateUserRequest("Renamed", null, null, null), CancellationToken.None)).Result!),
+            PrivilegeCeiling.Codes.AdminTarget);
+        AssertRefused(await Run(c => c.SetGroupScope(w.AdminId, new SetGroupScopeRequest(false), CancellationToken.None)), PrivilegeCeiling.Codes.AdminTarget);
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var admin = await verify.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == w.AdminId);
+        Assert.True(admin.IsActive);
+        Assert.False(admin.IsDeleted);
+        Assert.False(admin.IsLocked);
+        Assert.Equal("Active", admin.Status);
+        Assert.Equal(AccessModes.FullPortal, admin.AccessMode);
+        Assert.Equal("Admin", admin.FullName);
+        Assert.True(admin.IsGroupScope);
+        Assert.False(await verify.PasswordResetTokens.AnyAsync(x => x.UserId == w.AdminId));
+        Assert.Equal(8, await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x =>
+            x.TenantId == w.TenantId && x.Action == "access.change_refused" && x.EntityId == w.AdminId.ToString() && x.UserId == w.ConsoleId));
+    }
+
+    [Fact]
+    public async Task HrManager_CannotSuspendAUserHoldingMore_ButCanSuspendOneInside_AndItIsAudited()
+    {
+        var w = await SeedAsync();
+        var payrollUser = await AddUserAsync(w.TenantId, "Payroll Manager");
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = await Controller(db, w, w.HrId).SuspendUser(payrollUser, new ReasonRequest("x"), CancellationToken.None);
+            var body = AssertRefused(refused, PrivilegeCeiling.Codes.TargetAboveCeiling);
+            Assert.Contains("payroll.approve", body.GetProperty("missingPermissions").EnumerateArray().Select(x => x.GetString()));
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<NoContentResult>(await Controller(db, w, w.HrId).SuspendUser(w.StaffId, new ReasonRequest("leaver"), CancellationToken.None));
+
+        await using var verify = _fixture.CreateRetryingDb();
+        Assert.True((await verify.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == payrollUser)).IsActive);
+        var row = await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Action == "access.user_suspended");
+        Assert.Equal(w.HrId, row.UserId);
+        Assert.Equal(w.StaffId.ToString(), row.EntityId);
+        Assert.Contains("\"statusBefore\":\"Active\"", row.Metadata);
+        Assert.Contains("\"statusAfter\":\"Suspended\"", row.Metadata);
+    }
+
+    [Fact]
+    public async Task AnAccessModeIsAGrant_SoAModeCarryingPermissionsYouLackIsRefused()
+    {
+        var w = await SeedAsync();
+        await using var db = _fixture.CreateRetryingDb();
+
+        // ManagerPortal carries approvals.decide (AuthService.AccessModePermissions); the Console Admin holds none of it.
+        var result = await Controller(db, w, w.ConsoleId).SetAccessMode(
+            w.StaffId, new AccessModeRequest(AccessModes.ManagerPortal, "promote"), CancellationToken.None);
+
+        AssertRefused(result.Result, PrivilegeCeiling.Codes.PermissionAboveCeiling);
+        await using var verify = _fixture.CreateRetryingDb();
+        Assert.Equal(AccessModes.FullPortal, (await verify.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == w.StaffId)).AccessMode);
+    }
+
+    // ── Grantor paths ───────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AGrantor_CannotGrantBeyondWhatTheyHold_NorToThemselves_NorDelegateIt()
+    {
+        var w = await SeedAsync();
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            // An Admin once made the Console Admin a grantor of everything, sub-delegable.
+            seed.PermissionGrantorRecords.Add(new PermissionGrantorRecord
+            {
+                TenantId = w.TenantId, GrantorUserId = w.ConsoleId, PermissionScope = "all", CanSubDelegate = true, GrantedByUserId = w.AdminId,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var single = await Controller(db, w, w.ConsoleId).GrantPermission(
+                w.StaffId, new GrantPermissionRequest("payroll.approve", "Allow"), CancellationToken.None);
+            AssertRefused(single.Result, PrivilegeCeiling.Codes.PermissionAboveCeiling);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var bulk = await Controller(db, w, w.ConsoleId).GrantPermissionsBulk(
+                w.StaffId, new BulkGrantPermissionsRequest([new BulkGrantPermissionItem("employees.read", "Allow"), new BulkGrantPermissionItem("payroll.approve", "Allow")]),
+                CancellationToken.None);
+            AssertRefused(bulk.Result, PrivilegeCeiling.Codes.PermissionAboveCeiling);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var self = await Controller(db, w, w.ConsoleId).GrantPermissionsBulk(
+                w.ConsoleId, new BulkGrantPermissionsRequest([new BulkGrantPermissionItem("payroll.approve", "Allow")]), CancellationToken.None);
+            AssertRefused(self.Result, PrivilegeCeiling.Codes.SelfChange);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var delegated = await Controller(db, w, w.ConsoleId).AddGrantor(
+                new AddGrantorRequest(w.StaffId, "all", CanSubDelegate: true), CancellationToken.None);
+            AssertRefused(delegated.Result, PrivilegeCeiling.Codes.PermissionAboveCeiling);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            // Inside the ceiling the grantor path still works.
+            var ok = await Controller(db, w, w.ConsoleId).GrantPermission(
+                w.StaffId, new GrantPermissionRequest("employees.read", "Allow"), CancellationToken.None);
+            Assert.IsType<OkObjectResult>(ok.Result);
+        }
+
+        await using var verify = _fixture.CreateRetryingDb();
+        var overrides = await verify.UserPermissionOverrides.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId && x.IsActive).ToListAsync();
+        Assert.Equal(["employees.read"], overrides.Select(x => x.PermissionKey).ToArray());
+        Assert.Equal(w.StaffId, overrides.Single().UserId);
+        Assert.False(await verify.PermissionGrantorRecords.IgnoreQueryFilters().AnyAsync(x => x.GrantorUserId == w.StaffId));
+    }
+
+    [Fact]
+    public async Task ThePlatformOperatorPath_IsOutsideTheTenantCeiling()
+    {
+        var w = await SeedAsync();
+        await using var db = _fixture.CreateRetryingDb();
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
+
+        // PlatformController calls with UserId: null behind RequirePlatformRole.
+        await service.UnlockUserAsync(w.TenantId, w.AdminId, EntityScopeContext.GroupLevel,
+            new RequestContext("127.0.0.1", "platform", null, w.TenantId), CancellationToken.None);
     }
 
     // ── Audit ───────────────────────────────────────────────────────────────────────────────────────

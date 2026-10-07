@@ -358,6 +358,21 @@ public sealed class PasswordResetLinkTests
         db.Tenants.Add(tenant);
         db.SecuritySettings.Add(new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenant.Id });
         db.Users.Add(user);
+        // The administrator acting in these tests: a real, active user of the workspace, because the Access API
+        // resolves its caller (PrivilegeCeiling) before acting on another user's account.
+        db.Users.Add(new User
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenant.Id,
+            Tenant = tenant,
+            Email = ActingAdminEmail,
+            NormalizedEmail = ActingAdminEmail.ToUpperInvariant(),
+            FullName = "Acting Admin",
+            PasswordHash = "test-only-hash",
+            Status = "Active",
+            AccessMode = AccessModes.FullPortal,
+            IsActive = true,
+        });
         // The default role an invitation is issued with (AccessManagementService.DefaultRoles).
         db.Roles.Add(new Role
         {
@@ -372,7 +387,13 @@ public sealed class PasswordResetLinkTests
         return (tenant, user);
     }
 
+    private const string ActingAdminEmail = "acting.admin@example.test";
+
     private static AccessController Controller(ZayraDbContext db, Guid tenantId, IEmailService email, Guid? callerId = null) =>
+        ControllerAs(db, tenantId, email, callerId
+            ?? db.Users.IgnoreQueryFilters().Where(u => u.TenantId == tenantId && u.Email == ActingAdminEmail).Select(u => u.Id).FirstOrDefault());
+
+    private static AccessController ControllerAs(ZayraDbContext db, Guid tenantId, IEmailService email, Guid callerId) =>
         new(new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt), Configuration),
             db,
             email)
@@ -384,7 +405,7 @@ public sealed class PasswordResetLinkTests
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
                         new Claim("tenant_id", tenantId.ToString()),
-                        new Claim(ClaimTypes.NameIdentifier, (callerId ?? Guid.NewGuid()).ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, callerId.ToString()),
                         new Claim(ClaimTypes.Role, "Admin"),
                         // Group-level scope, stated explicitly so the assertion does not depend on
                         // whichever way the strict-mode default happens to be set.

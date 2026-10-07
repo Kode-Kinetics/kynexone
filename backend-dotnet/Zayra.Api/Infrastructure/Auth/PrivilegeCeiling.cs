@@ -21,7 +21,9 @@ namespace Zayra.Api.Infrastructure.Auth;
 /// <item><b>The subject never decides.</b> Nobody changes their own roles, their own permission overrides, or
 /// the definition of a role they hold — another administrator must.</item>
 /// <item><b>No reaching up.</b> A user who already holds access the caller lacks (or holds the Admin role when
-/// the caller is not an Admin) cannot have their roles or overrides changed by that caller.</item>
+/// the caller is not an Admin) cannot have their roles, overrides, grantor records or account state (suspend,
+/// lock, unlock, activate, delete, access mode, password-reset link, profile, company access) changed by that
+/// caller.</item>
 /// </list>
 /// Every refusal carries a stable code and an English and an Arabic sentence.
 /// </summary>
@@ -34,6 +36,7 @@ public static class PrivilegeCeiling
         public const string CallerUnknown = "access_caller_unknown";
         public const string SelfChange = "access_self_change";
         public const string AdminOnlyRole = "access_admin_only_role";
+        public const string AdminTarget = "access_admin_target";
         public const string RoleAboveCeiling = "access_role_above_ceiling";
         public const string TargetAboveCeiling = "access_target_above_ceiling";
         public const string PermissionAboveCeiling = "access_permission_above_ceiling";
@@ -103,11 +106,23 @@ public static class PrivilegeCeiling
         return missing.Count > 0 ? Refuse(Codes.PermissionAboveCeiling, null, missing) : null;
     }
 
-    /// <summary>Why the caller may not change <paramref name="targetUserId"/>'s roles or overrides at all. Null = allowed.</summary>
-    public static Refusal? TargetRefusal(Caller caller, Guid targetUserId, bool targetIsAdmin, IEnumerable<string> targetPermissions)
+    /// <summary>
+    /// Why the caller may not change <paramref name="targetUserId"/>'s access (roles, overrides, grantor records,
+    /// access mode) at all: the subject never decides, and nobody reaches up. Null = allowed.
+    /// </summary>
+    public static Refusal? TargetRefusal(Caller caller, Guid targetUserId, bool targetIsAdmin, IEnumerable<string> targetPermissions) =>
+        targetUserId == caller.UserId
+            ? Refuse(Codes.SelfChange, null)
+            : AboveCallerRefusal(caller, targetIsAdmin, targetPermissions);
+
+    /// <summary>
+    /// Why the caller may not act on another user's ACCOUNT (suspend, lock, unlock, activate, delete, password-reset
+    /// link, profile, company access): that user is an Admin and the caller is not, or holds access the caller
+    /// lacks. Says nothing about self; each account action keeps its own self rule. Null = allowed.
+    /// </summary>
+    public static Refusal? AboveCallerRefusal(Caller caller, bool targetIsAdmin, IEnumerable<string> targetPermissions)
     {
-        if (targetUserId == caller.UserId) return Refuse(Codes.SelfChange, null);
-        if (targetIsAdmin && !caller.IsAdmin) return Refuse(Codes.AdminOnlyRole, "Admin");
+        if (targetIsAdmin && !caller.IsAdmin) return Refuse(Codes.AdminTarget, "Admin");
         var missing = Missing(caller.Held, targetPermissions);
         return missing.Count > 0 ? Refuse(Codes.TargetAboveCeiling, null, missing) : null;
     }
@@ -132,9 +147,12 @@ public static class PrivilegeCeiling
             Codes.RoleAboveCeiling => (
                 $"The '{role}' role includes permissions you do not hold ({list}). You can only work with roles inside your own access.",
                 $"يتضمن دور '{role}' صلاحيات لا تملكها ({list}). يمكنك التعامل فقط مع الأدوار التي تقع ضمن صلاحياتك."),
+            Codes.AdminTarget => (
+                "This user is an Admin. Only an Admin can change an Admin's account, roles or permissions.",
+                "هذا المستخدم مسؤول نظام (Admin). لا يمكن تغيير حسابه أو أدواره أو صلاحياته إلا من قِبل مسؤول نظام."),
             Codes.TargetAboveCeiling => (
-                $"This user holds access you do not have ({list}). Only someone with at least that access can change their roles or permissions.",
-                $"يملك هذا المستخدم صلاحيات لا تملكها ({list}). لا يمكن تغيير أدواره أو صلاحياته إلا لمن يملك هذه الصلاحيات على الأقل."),
+                $"This user holds access you do not have ({list}). Only someone with at least that access can change their account, roles or permissions.",
+                $"يملك هذا المستخدم صلاحيات لا تملكها ({list}). لا يمكن تغيير حسابه أو أدواره أو صلاحياته إلا لمن يملك هذه الصلاحيات على الأقل."),
             Codes.PermissionAboveCeiling => (
                 $"You can only grant permissions you hold yourself. Not held: {list}.",
                 $"يمكنك منح الصلاحيات التي تملكها فقط. صلاحيات لا تملكها: {list}."),
