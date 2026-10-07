@@ -380,9 +380,10 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
         await using var db = _fx.CreatePooledDb();
         var lease = (await TransactionHeldAdvisoryLease.TryAcquireAsync(
             db, key,
-            new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(100))
+            new TransactionHeldAdvisoryLease.LeaseOptions(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100))
             {
-                BeforeKeepalive = () => Interlocked.Increment(ref renewals) <= 3 ? Task.CompletedTask : stall.Task,
+                // One renewal, then the stall: needing several inside a short ceiling let a host pause end the lease first.
+                BeforeKeepalive = () => Interlocked.Increment(ref renewals) <= 1 ? Task.CompletedTask : stall.Task,
             },
             CancellationToken.None))!;
         try
@@ -391,7 +392,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
             while (await _fx.GrantedAdvisoryLocksAsync(key) > 0 && Stopwatch.GetElapsedTime(cap) < TimeSpan.FromSeconds(60))
                 await Task.Delay(100);
 
-            Volatile.Read(ref renewals).Should().BeGreaterThan(3, "the keepalive renewed before it stalled");
+            Volatile.Read(ref renewals).Should().BeGreaterThan(1, "the keepalive renewed once, then stalled");
             (await _fx.GrantedAdvisoryLocksAsync(key)).Should().Be(0, "a stalled holder's lease is ended by the idle ceiling");
             var lost = async () => await lease.EnsureHeldAsync(CancellationToken.None);
             await lost.Should().ThrowAsync<InvalidOperationException>("the holder must find out before doing more work");

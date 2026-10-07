@@ -196,7 +196,8 @@ public sealed class PasswordHashUpgradeTests
             await using (var other = kit.NewDb())
                 await other.Users.Where(u => u.Id == userId)
                     .ExecuteUpdateAsync(s => s.SetProperty(u => u.PasswordHash, otherUpgrade));
-            holder = gate.RunAsync(() => { release.Wait(); return true; }, CancellationToken.None);
+            // Bounded: if the gate ever stops serialising, this runs inline and must not hang CI waiting for a Set that comes later.
+            holder = gate.RunAsync(() => { release.Wait(TimeSpan.FromSeconds(10)); return true; }, CancellationToken.None);
             holder.IsCompleted.Should().BeFalse("the competitor must be waiting for the slot this re-hash holds");
         });
 
