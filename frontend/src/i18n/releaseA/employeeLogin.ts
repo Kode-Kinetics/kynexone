@@ -85,7 +85,7 @@ export const employeeLogin: ReleaseADict = {
     "For example: the login was created before the employee record": "مثال: أُنشئ حساب الدخول قبل سجل الموظف",
     'Checking the employee record…': 'جارٍ التحقق من سجل الموظف…',
     'The employee record could not be checked. Try again.': 'تعذّر التحقق من سجل الموظف. حاول مرة أخرى.',
-    'Work email': 'البريد الإلكتروني للعمل',
+    'Work email': 'البريد الإلكتروني الوظيفي',
     'Linked login': 'حساب الدخول المرتبط',
     'No linked login': 'لا يوجد حساب دخول مرتبط',
     'Reason (kept in the audit trail)': 'السبب (يُحفظ في سجل التدقيق)',

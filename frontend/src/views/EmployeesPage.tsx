@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, FileUp, History, Lock, Pencil, Plus, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
@@ -19,6 +19,13 @@ import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
+import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
+import type { EmployeeAccessDto, EmployeeAccessState, SkippedWelcomeCode } from '../api/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, WORK_EMAIL_ERROR_KEYS, workEmailErrorCode } from '../lib/employeeAccess';
+import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
+import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
+import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
+import { Ltr } from '../components/employeeAccess/fill';
 
 const employeesImportExport = {
   export: async () => {
@@ -264,6 +271,8 @@ export function EmployeesPage() {
   const [gapTypeFilter, setGapTypeFilter] = useState('');
   const [importBatchFilter, setImportBatchFilter] = useState('');
   const [view, setView] = useState<'current' | 'ex'>('current');
+  // Self-service (sign-in access) filter chip: one state, or everyone.
+  const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
   // `selectedIds` = page-level picks (persist across pages while the filter is unchanged).
   // `selectAllMatching` = act on the ENTIRE server-resolved filtered set across all pages, not just
@@ -351,6 +360,21 @@ export function EmployeesPage() {
   // "Merge" from the create warning abandons the draft and opens the existing record for editing —
   // this holds the id until its detail has loaded, then an effect opens the edit modal.
   const [autoEditId, setAutoEditId] = useState<number | null>(null);
+  // ── Self-service (employee sign-in access) ──
+  const canIssueAccess = hasPermission('employees.access.issue');
+  const canResetAccess = hasPermission('employees.access.reset');
+  const [accessRefresh, setAccessRefresh] = useState(0);
+  const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
+  // Code given → bulk print confirms first (their old codes stop working).
+  const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[] } | null>(null);
+  const [bulkPrintBusy, setBulkPrintBusy] = useState(false);
+  // The single "Add work email" box from the profile card.
+  const [workEmailFor, setWorkEmailFor] = useState<{ id: number; name: string; englishName: string; arabicName?: string; companyId?: string } | null>(null);
+  const [singleWorkEmail, setSingleWorkEmail] = useState('');
+  const [singleWorkEmailBusy, setSingleWorkEmailBusy] = useState(false);
+  const [singleWorkEmailError, setSingleWorkEmailError] = useState('');
+  // Add Employee → "{name} has been added." with the one next step.
+  const [createdEmployee, setCreatedEmployee] = useState<{ id: number; name: string; access: EmployeeAccessDto | null } | null>(null);
 
   const surfaceAdvisoryWarning = (payload: unknown) => {
     const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
@@ -388,9 +412,10 @@ export function EmployeesPage() {
   // import handlers call a `load` captured before the user changed a filter; that call must refresh
   // what is on screen now, not re-run the old query and win the race with it.
   const employeeLoadGate = useMemo(() => createLatestRequestGate(), []);
+  const seenRowsRef = useRef(new Map<number, EmployeeListItem>());
   const employeeQuery = useMemo(
-    () => ({ page, search, status, readinessFilter, gapTypeFilter, importBatchFilter }),
-    [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter],
+    () => ({ page, search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter }),
+    [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter],
   );
   const employeeQueryRef = useRef(employeeQuery);
   employeeQueryRef.current = employeeQuery;
@@ -410,10 +435,13 @@ export function EmployeesPage() {
       readiness: query.readinessFilter || undefined,
       gapType: query.gapTypeFilter || undefined,
       importBatchId: query.importBatchFilter || undefined,
+      access: query.accessFilter || undefined,
     }), {
       onResult: (res) => {
         setEmployees(res.items);
         setTotal(res.total);
+        // Remembered so a selection that spans pages still knows each person's self-service state.
+        for (const item of res.items) seenRowsRef.current.set(item.id, item);
       },
       onError: () => setError('Could not load employees from the API.'),
       onSettled: () => setLoading(false),
@@ -453,11 +481,11 @@ export function EmployeesPage() {
         }
       });
   }, []);
-  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter]);
   useEffect(() => {
     setSelectedId(null);
     setDetail(null);
-  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view]);
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view]);
 
   // ── Bulk selection: derived state + handlers ────────────────────────────────────────────────
   const clearSelection = useCallback(() => {
@@ -469,14 +497,16 @@ export function EmployeesPage() {
   // A stale "select all matching" flag (or a leftover page pick) must never carry across a FILTER
   // change or a tab switch — otherwise a bulk action could resolve against a different set than the
   // operator sees. Page navigation deliberately does NOT clear (cross-page picking is allowed).
-  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view, clearSelection]);
+  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
 
   const pageIds = useMemo(() => employees.map((e) => e.id), [employees]);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
   const somePageSelected = pageIds.some((id) => selectedIds.has(id));
   const selectionCount = selectAllMatching ? total : selectedIds.size;
   const hasSelection = selectionCount > 0;
-  const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size;
+  // Not under a Self-service filter: the bulk API's "all matching" filter has no access state, so it
+  // would resolve a different set than the one on screen.
+  const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size && !accessFilter;
 
   const canBulkActivate = hasPermission('employees.approve');
   const canBulkDeactivate = hasPermission('employees.write');
@@ -567,6 +597,91 @@ export function EmployeesPage() {
     setBulkReason('');
     setBulkTargetStatus('Suspended');
     setBulkConfirm(action);
+  };
+
+  const welcome = useWelcomeCodes(useCallback(() => {
+    setAccessRefresh((n) => n + 1);
+    void load();
+  }, [load]));
+
+  /** Every employee matching the current filter, page by page (for "all matching" selections). */
+  const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
+    const out: EmployeeListItem[] = [];
+    for (let p = 1; p <= 40; p++) {
+      const res = await employeesApi.list({
+        search: search || undefined, status: status || undefined, readiness: readinessFilter || undefined,
+        gapType: gapTypeFilter || undefined, importBatchId: importBatchFilter || undefined,
+        access: accessFilter || undefined, page: p, pageSize: 100,
+      });
+      out.push(...res.items);
+      if (out.length >= res.total || res.items.length === 0) break;
+    }
+    return out;
+  };
+
+  /**
+   * "Print sign-in slips (N)": people with no access yet or an unused code get a slip. Anyone already
+   * using KynexOne is skipped here (Reset sign-in is one person at a time, from their profile), and
+   * the rest the server explains. A selection with unused codes confirms first.
+   */
+  const startBulkPrint = async () => {
+    setBulkPrintBusy(true);
+    setError('');
+    try {
+      const rows = selectAllMatching
+        ? await resolveAllMatching()
+        : [...selectedIds].map((id) => seenRowsRef.current.get(id) ?? ({ id, fullName: '' } as EmployeeListItem));
+      const names: Record<number, string> = {};
+      const ids: number[] = [];
+      const preSkipped: SkippedWelcomeCode[] = [];
+      let replacesCode = false;
+      for (const row of rows) {
+        if (row.fullName) names[row.id] = row.fullName;
+        const state = row.accessState;
+        if (!state || BULK_PRINTABLE_STATES.has(state)) {
+          ids.push(row.id);
+          if (state && REPLACES_A_CODE.has(state)) replacesCode = true;
+        } else {
+          preSkipped.push({ employeeId: row.id, reasonCode: state, reason: '' });
+        }
+      }
+      if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped }); return; }
+      await welcome.issue(ids, { names, preSkipped });
+      clearSelection();
+    } catch (e: unknown) {
+      setError(describeApiError(e, t));
+    } finally {
+      setBulkPrintBusy(false);
+    }
+  };
+
+  const confirmBulkPrint = async () => {
+    if (!bulkPrintConfirm) return;
+    const { ids, names, preSkipped } = bulkPrintConfirm;
+    setBulkPrintConfirm(null);
+    await welcome.issue(ids, { names, preSkipped });
+    clearSelection();
+  };
+
+  const saveSingleWorkEmail = async () => {
+    if (!workEmailFor || !singleWorkEmail.trim()) return;
+    setSingleWorkEmailBusy(true);
+    setSingleWorkEmailError('');
+    try {
+      await employeesApi.update(workEmailFor.id, new Date().toISOString().slice(0, 10), { workEmail: singleWorkEmail.trim() });
+      setWorkEmailFor(null);
+      setAccessRefresh((n) => n + 1);
+      if (selectedId) await openDetail(selectedId, true);
+      await load();
+    } catch (e: unknown) {
+      const code = workEmailErrorCode(e);
+      const domain = companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain ?? '';
+      setSingleWorkEmailError(code === 'work_email_plus_address' ? t(WORK_EMAIL_ERROR_KEYS[code])
+        : code === 'work_email_wrong_domain' && domain ? t('Work email must end in @{domain}.', { domain })
+          : describeApiError(e, t));
+    } finally {
+      setSingleWorkEmailBusy(false);
+    }
   };
 
   const runBulkExport = async () => {
@@ -860,11 +975,12 @@ export function EmployeesPage() {
       const created = await employeesApi.create(payload);
       surfaceAdvisoryWarning(created);
       setDuplicateWarning([]);
-      setFormOpen(false);
       setForm(emptyEmployee());
       setFormOriginal(emptyEmployee());
+      // The form becomes "{name} has been added." with the one next step (print their sign-in slip).
+      const access = await employeeAccessApi.get(created.id).catch(() => null);
+      setCreatedEmployee({ id: created.id, name: created.fullName || created.englishName || payload.englishName, access });
       await load();
-      await openDetail(created.id);
     } catch (e: unknown) {
       // Server-authoritative duplicate backstop: re-surface the match set as the same warning the
       // pre-check shows, so the operator resolves it (never a silent create, never a hard block).
@@ -886,6 +1002,10 @@ export function EmployeesPage() {
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
       if (status === 402) {
         setFormError('Your subscription is inactive or expired. Please contact support.');
+      } else if (workEmailErrorCode(e) === 'work_email_plus_address') {
+        setFormError(t(WORK_EMAIL_ERROR_KEYS.work_email_plus_address));
+      } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {
+        setFormError(t('Work email must end in @{domain}.', { domain: selectedFormCompany.emailDomain }));
       } else if (status === 422 && data?.error === 'employee_limit_reached') {
         setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
@@ -1029,7 +1149,24 @@ export function EmployeesPage() {
     setEditOpen(false);
   };
 
+  /** "Later" (or closing) after a successful add: open the new profile, where the Self-service card waits. */
+  const finishCreated = (thenOpen = true) => {
+    const id = createdEmployee?.id;
+    setCreatedEmployee(null);
+    setFormOpen(false);
+    setFormError('');
+    if (thenOpen && id) void openDetail(id);
+  };
+
+  const printCreatedSlip = async () => {
+    if (!createdEmployee) return;
+    const { id, name } = createdEmployee;
+    finishCreated();
+    await welcome.issue([id], { names: { [id]: name } });
+  };
+
   const closeCreateModal = () => {
+    if (createdEmployee) { finishCreated(); return; }
     if (formChanged && !confirm('Discard this employee draft?')) return;
     setFormOpen(false);
     setFormError('');
@@ -1368,8 +1505,8 @@ export function EmployeesPage() {
       {view === 'ex' ? (
         <ExEmployeesTable />
       ) : (
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <section className="space-y-4">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <section className="min-w-0 space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -1391,6 +1528,31 @@ export function EmployeesPage() {
               Refresh
             </button>
           </div>
+
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('Self-service')} data-testid="access-filter">
+            <span className="me-1 text-xs font-bold uppercase text-slate-400">{t('Self-service')}</span>
+            {(['', ...EMPLOYEE_ACCESS_STATES] as Array<'' | EmployeeAccessState>).map((state) => (
+              <button
+                key={state || 'all'}
+                type="button"
+                aria-pressed={accessFilter === state}
+                onClick={() => setAccessFilter(state)}
+                className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-sapphire bg-sapphire text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
+              >
+                {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
+              </button>
+            ))}
+          </div>
+
+          {accessFilter === 'waiting_for_work_email' && canIssueAccess && (
+            <div className="flex flex-col gap-2 rounded-lg border border-sapphire/30 bg-sapphire/5 px-3 py-2.5 text-sm text-slate-700 dark:border-sapphire/40 dark:bg-sapphire/10 dark:text-slate-200 sm:flex-row sm:items-center sm:justify-between">
+              <span>{t('Paste two columns from Excel: employee number, then work email. You can also upload a CSV file.')}</span>
+              <button type="button" onClick={() => setWorkEmailsOpen(true)} className="btn-primary h-9 shrink-0 px-3 text-sm">
+                <Mail className="h-4 w-4" aria-hidden="true" />
+                {t('Add work emails')}
+              </button>
+            </div>
+          )}
 
           {importFilterActive && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-sapphire/30 bg-sapphire/5 px-3 py-2 text-xs text-slate-600 dark:border-sapphire/40 dark:bg-sapphire/10 dark:text-slate-300">
@@ -1416,6 +1578,11 @@ export function EmployeesPage() {
                 <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 underline">Clear selection</button>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
+                {canIssueAccess && (
+                  <button type="button" onClick={() => void startBulkPrint()} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-primary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <Printer className="h-3.5 w-3.5" aria-hidden="true" /> {t('Print sign-in slips ({n})', { n: selectionCount })}
+                  </button>
+                )}
                 {canBulkActivate && (
                   <button type="button" onClick={() => handleBulkAction('activate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
                     <UserCheck className="h-3.5 w-3.5" /> Activate
@@ -1470,7 +1637,7 @@ export function EmployeesPage() {
 
           <div className="surface overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] text-sm">
+              <table className="w-full min-w-[960px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     <th className="w-10 px-4 py-3 text-start">
@@ -1484,7 +1651,11 @@ export function EmployeesPage() {
                         aria-label="Select all on this page"
                       />
                     </th>
-                    {['Employee', 'Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
+                    {['Employee'].map((head) => (
+                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
+                    ))}
+                    <th className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{t('Self-service')}</th>
+                    {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
                       <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
                     ))}
                   </tr>
@@ -1492,11 +1663,11 @@ export function EmployeesPage() {
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
                   {!loading && !error && employees.length === 0 && (
-                    <tr><td colSpan={7} className="px-4 py-14 text-center">
-                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees yet'}</p>
-                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
-                      {(search || status || readinessFilter || importFilterActive) ? (
-                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); clearImportFilter(); }}>Clear filters</button>
+                    <tr><td colSpan={8} className="px-4 py-14 text-center">
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'No employees match this filter.' : 'No employees yet'}</p>
+                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
+                      {(search || status || readinessFilter || importFilterActive || accessFilter) ? (
+                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); setAccessFilter(''); clearImportFilter(); }}>Clear filters</button>
                       ) : canWriteEmployees ? (
                         <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
                       ) : null}
@@ -1534,6 +1705,11 @@ export function EmployeesPage() {
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3" data-testid="access-pill">
+                        {employee.accessState && ACCESS_STATE_COPY[employee.accessState]
+                          ? <StatusChip label={t(ACCESS_STATE_COPY[employee.accessState].label)} tone={ACCESS_STATE_COPY[employee.accessState].tone} dot />
+                          : <span className="text-xs text-slate-400">-</span>}
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
@@ -1631,6 +1807,22 @@ export function EmployeesPage() {
                     />
                   </div>
                 ) : null}
+
+                <EmployeeAccessCard
+                  key={selectedEmployee.id}
+                  employeeId={selectedEmployee.id}
+                  employeeName={selectedEmployee.fullName}
+                  refreshKey={accessRefresh}
+                  canIssue={canIssueAccess}
+                  canReset={canResetAccess}
+                  issuing={welcome.busy}
+                  onIssue={welcome.issue}
+                  onAddWorkEmail={() => {
+                    setSingleWorkEmail('');
+                    setSingleWorkEmailError('');
+                    setWorkEmailFor({ id: selectedEmployee.id, name: selectedEmployee.fullName, englishName: selectedEmployee.englishName ?? selectedEmployee.fullName, arabicName: selectedEmployee.arabicName, companyId: selectedEmployee.companyId });
+                  }}
+                />
 
                 {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
                     operator confirms it is a distinct person (clears the flag, audited) or merges it
@@ -1939,7 +2131,17 @@ export function EmployeesPage() {
         </div>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
+      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'xl'} onClose={closeCreateModal} footer={createdEmployee ? (
+        <>
+          <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
+          {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue)) && (
+            <button type="button" onClick={() => void printCreatedSlip()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+              <Printer className="h-4 w-4" aria-hidden="true" />
+              {t('Print sign-in slip')}
+            </button>
+          )}
+        </>
+      ) : (
         <>
           <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
           {/* Disabled ONLY on the same predicate the warning above renders, and never silently: the
@@ -1956,7 +2158,17 @@ export function EmployeesPage() {
             {saving ? 'Saving...' : 'Create Employee'}
           </button>
         </>
-      }>
+      )}>
+        {createdEmployee ? (
+          <div className="space-y-2 py-2 text-sm text-slate-700 dark:text-slate-200" data-testid="employee-added">
+            <p className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
+              {t('{name} has been added.', { name: createdEmployee.name })}
+            </p>
+            {createdEmployee.access?.state === 'waiting_for_work_email' && <p>{t('Add a work email so {name} can sign in.', { name: createdEmployee.name })}</p>}
+            {createdEmployee.access?.state === 'blocked' && <p>{t('This needs a system admin first.')}</p>}
+          </div>
+        ) : (
         <div className="space-y-3">
           {formError && (
             <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
@@ -2063,7 +2275,7 @@ export function EmployeesPage() {
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
             <WorkEmailField
-              label="Work email"
+              label={t('Work email')}
               value={form.workEmail ?? ''}
               onChange={(v) => setField('workEmail', v)}
               englishName={form.englishName}
@@ -2071,9 +2283,7 @@ export function EmployeesPage() {
               companyId={form.companyId}
               domain={selectedFormCompany?.emailDomain ?? ''}
               pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
-              autoDerive
-              info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
-              infoKey="employees.work_email"
+              suggest
             />
           </Section>
 
@@ -2202,6 +2412,7 @@ export function EmployeesPage() {
           </Section>
           </div>
         </div>
+        )}
       </Modal>
 
       {/* Bulk deactivate / delete confirmation — captures the required reason (and, for deactivate,
@@ -2251,6 +2462,68 @@ export function EmployeesPage() {
           )}
         </div>
       </Modal>
+
+      {/* Self-service: IT's work-email list, one person's work email, the bulk-print confirmation, and the slips. */}
+      <AddWorkEmailsDialog
+        isOpen={workEmailsOpen}
+        onClose={() => setWorkEmailsOpen(false)}
+        onSaved={() => { setAccessRefresh((n) => n + 1); void load(); }}
+        onGiveAccess={(ids, names) => { void welcome.issue(ids, { names }); }}
+      />
+
+      <Modal
+        isOpen={workEmailFor !== null}
+        title={t('Add work email')}
+        size="md"
+        onClose={() => setWorkEmailFor(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setWorkEmailFor(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => void saveSingleWorkEmail()} disabled={singleWorkEmailBusy || !singleWorkEmail.trim()} className="btn-primary disabled:opacity-60">
+              {singleWorkEmailBusy ? t('Saving…') : t('Save')}
+            </button>
+          </>
+        }
+      >
+        {workEmailFor && (
+          <div className="space-y-2" data-testid="single-work-email">
+            {singleWorkEmailError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{singleWorkEmailError}</p>}
+            <WorkEmailField
+              label={t('Work email')}
+              value={singleWorkEmail}
+              onChange={setSingleWorkEmail}
+              englishName={workEmailFor.englishName}
+              arabicName={workEmailFor.arabicName}
+              companyId={workEmailFor.companyId}
+              domain={companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain ?? ''}
+              pattern={companies.find((c) => c.id === workEmailFor.companyId)?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+              excludeEmployeeId={workEmailFor.id}
+              suggest
+            />
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={bulkPrintConfirm !== null}
+        title={t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+        size="sm"
+        onClose={() => setBulkPrintConfirm(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setBulkPrintConfirm(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => void confirmBulkPrint()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+              {t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-700 dark:text-slate-200" data-testid="bulk-print-confirm">
+          {t('Some selected employees already have a code. Their old codes will stop working. Continue?')}
+        </p>
+      </Modal>
+
+      {welcome.view}
 
       {/* Blocked-assignment popup (server-authoritative ESTABLISHMENT_BUDGET_EXCEEDED 409). */}
       <EstablishmentBlockedModal
@@ -2334,7 +2607,7 @@ function statusTone(status: string): { label: string; tone: 'emerald' | 'blue' |
 }
 
 function EmptyRow({ label }: { label: string }) {
-  return <tr><td colSpan={7} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
+  return <tr><td colSpan={8} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
 }
 
 function Section({ title, children, wide = false }: { title: string; children: React.ReactNode; wide?: boolean }) {
@@ -2368,7 +2641,7 @@ function splitEmail(value: string): { local: string; domain: string } {
  */
 function WorkEmailField({
   label, value, onChange, englishName, arabicName, companyId, domain, pattern,
-  autoDerive = false, excludeEmployeeId, originalValue, info, infoKey,
+  suggest = false, excludeEmployeeId, originalValue, info, infoKey,
 }: {
   label: string;
   value: string;
@@ -2378,26 +2651,30 @@ function WorkEmailField({
   companyId?: string;
   domain: string;
   pattern: string;
-  autoDerive?: boolean;
+  /**
+   * Offer the derived address as GHOST text while the field is empty. It is a suggestion only:
+   * nothing is saved unless HR accepts it (Tab, or the "Use" button). A blank field is fine.
+   */
+  suggest?: boolean;
   excludeEmployeeId?: number;
   originalValue?: string;
   info?: string;
   infoKey?: string;
 }) {
+  const { t } = useLocale();
   const cleanDomain = (domain ?? '').trim().toLowerCase();
   const manualMode = cleanDomain === '';
   const { local: localPart } = splitEmail(value);
   const [touched, setTouched] = useState(false);
   const [preview, setPreview] = useState<Pick<DeriveWorkEmailResponse, 'status' | 'unique' | 'suggestion'> | null>(null);
   const [checking, setChecking] = useState(false);
-  // Guards a redundant re-derive after auto-fill writes the value back (which changes `localPart`).
+  // The suggested local-part (ghost text). Shown only while the field is empty; never written on its own.
+  const [ghost, setGhost] = useState('');
+  // Guards a redundant re-derive for the same name/company.
   const autoKeyRef = useRef('');
 
-  // Reset touched whenever the widget is (re)mounted for a fresh record — handled by React key on the
-  // create modal; edit remounts per selected employee. No explicit reset needed here.
-
-  // Keep a touched local-part re-domained to the CURRENT company when the company/domain changes
-  // (multi-company: use the employing company's domain). Untouched values are re-derived below instead.
+  // Keep a typed local-part re-domained to the CURRENT company when the company/domain changes
+  // (multi-company: use the employing company's domain).
   useEffect(() => {
     if (manualMode || !touched) return;
     const parts = splitEmail(value);
@@ -2408,16 +2685,16 @@ function WorkEmailField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanDomain]);
 
-  // Debounced preview: auto-derive (untouched) or uniqueness-check (touched), server-authoritative
-  // with a local fallback. Never blocks; advisory only.
+  // Debounced, server-authoritative with a local fallback, advisory only: a suggestion while the
+  // field is empty, a uniqueness check once something is typed.
   useEffect(() => {
-    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); return; }
-    const wantAutoFill = autoDerive && !touched;
-    if (!wantAutoFill && !localPart.trim()) { setPreview(null); return; }        // touched + cleared → nothing to check
-    if (wantAutoFill && !englishName.trim()) { setPreview(null); return; }        // no name yet → nothing to derive
+    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); setGhost(''); return; }
+    const wantSuggestion = suggest && !localPart.trim();
+    if (!wantSuggestion && !localPart.trim()) { setPreview(null); return; }       // empty, no suggestion wanted
+    if (wantSuggestion && !englishName.trim()) { setPreview(null); setGhost(''); autoKeyRef.current = ''; return; }
     const autoKey = `${englishName}|${arabicName ?? ''}|${companyId ?? ''}|${cleanDomain}|${pattern}`;
-    if (wantAutoFill && autoKey === autoKeyRef.current) return;                   // already derived for this input
-    if (wantAutoFill) autoKeyRef.current = autoKey;
+    if (wantSuggestion && autoKey === autoKeyRef.current) return;                  // already suggested for this input
+    if (wantSuggestion) autoKeyRef.current = autoKey;
 
     let cancelled = false;
     setChecking(true);
@@ -2426,12 +2703,12 @@ function WorkEmailField({
       try {
         res = await employeesApi.deriveWorkEmail({
           englishName, arabicName, companyId,
-          localPart: wantAutoFill ? undefined : localPart,
+          localPart: wantSuggestion ? undefined : localPart,
           excludeEmployeeId,
         });
       } catch {
         // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
-        const local = wantAutoFill ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
+        const local = wantSuggestion ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
         res = {
           domain: cleanDomain, pattern, localPart: local,
           workEmail: assembleWorkEmail(local, cleanDomain),
@@ -2441,15 +2718,17 @@ function WorkEmailField({
       }
       if (cancelled) return;
       setChecking(false);
-      setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
-      if (wantAutoFill) {
-        const next = res.workEmail || assembleWorkEmail(res.suggestion || res.localPart, cleanDomain);
-        if (next && next !== value) onChange(next);
+      if (wantSuggestion) {
+        const suggested = splitEmail(res.suggestedWorkEmail || res.workEmail || '').local || res.suggestion || res.localPart || '';
+        setGhost(suggested);
+        setPreview(res.status === 'manual-arabic-only' ? { status: res.status, unique: true, suggestion: '' } : null);
+      } else {
+        setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
       }
     }, 300);
     return () => { cancelled = true; setChecking(false); clearTimeout(handle); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, touched, autoDerive, manualMode, excludeEmployeeId]);
+  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, suggest, manualMode, excludeEmployeeId]);
 
   const handleLocalChange = (raw: string) => {
     setTouched(true);
@@ -2458,10 +2737,10 @@ function WorkEmailField({
     onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
   };
 
+  const showGhost = suggest && !localPart && !!ghost;
+  const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
+
   const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const naturalBase = !manualMode ? deriveWorkEmailLocalPart(englishName, pattern) : '';
-  const wasSuffixed = autoDerive && !touched && !!naturalBase && !!localPart
-    && localPart !== naturalBase && localPart.startsWith(naturalBase);
   const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
   const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
 
@@ -2483,6 +2762,7 @@ function WorkEmailField({
             className="input mt-1.5 w-full"
             spellCheck={false}
             autoCapitalize="none"
+            dir="ltr"
           />
           <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
             {companyId
@@ -2497,12 +2777,27 @@ function WorkEmailField({
               type="text"
               value={localPart}
               onChange={(e) => handleLocalChange(e.target.value)}
-              placeholder="john.smith"
-              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
+              onKeyDown={(e) => {
+                // Tab takes the ghost suggestion (and moves on, as Tab does).
+                if (e.key === 'Tab' && !e.shiftKey && showGhost) acceptGhost();
+              }}
+              placeholder={showGhost ? ghost : undefined}
+              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 placeholder:italic focus:ring-0"
               spellCheck={false}
               autoCapitalize="none"
-              aria-label={`${label} local part`}
+              aria-label={label}
+              data-testid="work-email-local-part"
             />
+            {showGhost && (
+              <button
+                type="button"
+                onClick={(e) => { e.preventDefault(); acceptGhost(); }}
+                className="flex min-h-11 items-center px-2.5 text-xs font-semibold text-sapphire hover:underline"
+                aria-label={t('Use')}
+              >
+                {t('Use')}
+              </button>
+            )}
             <span
               className="flex min-h-11 max-w-full items-center gap-1 bg-slate-100 px-2.5 py-2 text-sm font-medium text-slate-600 dark:bg-white/[0.06] dark:text-slate-400"
               title="Domain is locked to the company. Change it in Setup → Companies."
@@ -2529,19 +2824,13 @@ function WorkEmailField({
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
               Couldn&apos;t derive a Latin local-part from the name — type the part before the @ manually.
             </p>
-          ) : wasSuffixed ? (
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Auto-adjusted to keep it unique — {naturalBase}@{cleanDomain} was already taken. Edit if you prefer.
-            </p>
           ) : checking ? (
             <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
-          ) : (
-            <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">
-              Editable name only — the @{cleanDomain} domain is locked to the company.
-            </p>
-          )}
+          ) : null}
         </>
       )}
+
+      {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
 
       {changedFromOriginal && originalValue && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
