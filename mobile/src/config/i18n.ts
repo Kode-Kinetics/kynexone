@@ -15,6 +15,7 @@ import {
   readStoredLanguage,
   type AppLanguage,
 } from './languageDirection';
+import { mfaAr, mfaEn } from './mfaStrings';
 
 export type { AppLanguage };
 
@@ -75,6 +76,7 @@ export const en = {
     invalidCredentials: 'Invalid username or password.',
     firstLogin: 'Welcome! Please set your password to continue.',
   },
+  mfa: mfaEn,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -331,6 +333,7 @@ const ar: TranslationResources = {
     invalidCredentials: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
     firstLogin: 'مرحباً! يرجى تعيين كلمة المرور للمتابعة.',
   },
+  mfa: mfaAr,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',
