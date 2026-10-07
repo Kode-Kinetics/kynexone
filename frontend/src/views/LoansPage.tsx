@@ -31,6 +31,8 @@ import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type Offered
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { LoanLimitCard } from '../components/loans/LoanLimitCard';
+import { LoanConsentStep } from '../components/deductions/LoanConsentStep';
+import { LoanConsentAttach } from '../components/deductions/LoanConsentAttach';
 import { LoadFailedRow } from '../components/ui/LoadFailedRow';
 import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
@@ -297,8 +299,12 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const [eligibility, setEligibility] = useState<LoanEligibility | null>(null);
   const [checkingEligibility, setCheckingEligibility] = useState(false);
   const [requestException, setRequestException] = useState(false);
+  // Release A (Art. 92): the employee's signed consent, uploaded to their file, when the instalment is above 10% of the wage.
+  const [consentDocumentId, setConsentDocumentId] = useState<string | null>(null);
   const applicantId = selectedEmployee?.intId ?? (mine || !staff ? user?.employeeId : undefined);
   const eligibilityKey = JSON.stringify([applicantId, createForm.loanTypeId, createForm.requestedAmount, createForm.requestedInstallments, createForm.repaymentMethod]);
+  // A consent belongs to one employee: choosing another applicant drops it.
+  useEffect(() => { setConsentDocumentId(null); }, [applicantId]);
   const [checkedKey, setCheckedKey] = useState('');
   const { t, locale } = useLocale();
   const self = mine || !staff;
@@ -351,7 +357,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
   // Grade limits are hard: no policy exception can lift them.
   const gradeBlocked = isGradeBlocked(checkedEligibility);
-  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked
+  const consentMissing = !!checkedEligibility?.art92?.requiresConsent && !consentDocumentId;
+  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked && !consentMissing
     && (checkedEligibility.eligible || (requestException && !!checkedEligibility.canRequestException));
   // Reasons the limit card already explains in plain words (grade refusals, "not offered") are not repeated.
   // Reasons the limit card already explains (grade refusals) and "not offered" are not repeated. Every other
@@ -394,6 +401,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         employeeName: selectedEmployee?.fullName ?? user?.fullName ?? '',
         employeeIntId: applicantId,
         requestPolicyException: requestException && !eligibility.eligible,
+        consentDocumentId: consentDocumentId ?? undefined,
       });
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
@@ -445,7 +453,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <option value="">All Statuses</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
         </div>
@@ -538,6 +546,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               : <div role="status" className="space-y-1 text-sm">
                 <p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{t(checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request')}</p>
                 <LoanLimitCard eligibility={checkedEligibility} self={self} />
+                {checkedEligibility.art92 && <LoanConsentStep art92={checkedEligibility.art92} self={self} employeeId={applicantId} consentDocumentId={consentDocumentId} onConsent={setConsentDocumentId} />}
                 <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.money(checkedEligibility.maxAvailableAmount, checkedEligibility.currency ?? null) })} · {t('Policy version {version}', { version: checkedEligibility.policyVersion ?? '—' })}</p>
                 {otherReasons.map(reason => <p key={reason}>{reason}</p>)}
                 {!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}
@@ -562,6 +571,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         {selected && (
           <div className="space-y-4">
             <LoanStatement detail={selected} />
+            <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
             {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">HR review required: {selected.loan.reviewReason || 'Employment details have changed.'} Open Reviews &amp; Changes for the review history and next action.</p>}
             <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
               {selected.loan.status === 'Approved' ? 'Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.' : selected.loan.status === 'Pending' ? 'Awaiting the next approval decision. Approval does not send funds.' : selected.loan.status === 'Active' ? `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}. ${selected.loan.repaymentMethod === 'PayrollDeduction' ? 'Scheduled installments are collected through payroll.' : 'Finance records receipts after payments are received.'}` : `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}.`}
