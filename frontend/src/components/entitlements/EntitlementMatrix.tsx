@@ -399,7 +399,7 @@ function CellEditor({ draft: d, component: c, grade, companyView, hasCompanyValu
         <h2 id="cell-editor-heading" className="font-semibold text-slate-800 dark:text-slate-100">{componentName(c)} — {gradeName(grade)}</h2>
         <p className="text-xs text-slate-500">{t(groupKeys[c.group])}</p>
       </div>
-      <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onClose}>{t('Done')}</button>
+      <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onClose}>{t('Done editing')}</button>
     </div>
     {c.isFloor && <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs dark:border-white/10 dark:bg-white/[0.03]">
       <p className="font-semibold">{reasonText(c.floorReason, 'title')}</p>

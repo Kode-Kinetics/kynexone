@@ -86,11 +86,11 @@ for (const locale of ['en', 'ar'] as const) {
       const { errors, publishes } = await boot(page, locale);
       await cellButton(page, locale, 'HOUSING', 'G3').click();
       await page.getByLabel(say(locale, 'Percent of basic salary')).fill('35');
-      await page.getByRole('button', { name: say(locale, 'Done') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
       await cellButton(page, locale, 'PER_DIEM', 'G5').click();
       await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check();
       await page.getByLabel(say(locale, 'Amount ({currency})', { currency: groupMatrix.currency })).fill('500');
-      await page.getByRole('button', { name: say(locale, 'Done') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
       await page.getByLabel(say(locale, 'Effective from')).fill('2026-11-01');
 
       await expect(page.getByText(say(locale, 'Reaches {now} employee(s) on that date and {later} at their next contract year.',
