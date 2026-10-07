@@ -13,6 +13,7 @@ import type { CompanyDto, CompanyRequest } from '../api/organization';
 import type { GCCComplianceSetting } from '../api/setup';
 import { isSaudiCompany, selectSaudiCompany } from '../lib/saudiCompany';
 import { requestFailureReason } from '../lib/requestFailure';
+import { QIWA_SIMULATED_LABEL, qiwaConnectionLabel } from '../lib/integrationDeliveryState';
 
 function toRequest(c: CompanyDto, patch: Partial<CompanyRequest>): CompanyRequest {
   return {
@@ -58,6 +59,10 @@ interface QiwaConnection {
   simulationNotice?: string | null;
   /** Set when a stored "production" setting cannot be honoured by this deployment. */
   configurationIgnored?: string | null;
+  /** Platform-operator flag, default OFF. Without it the OAuth credential form is not rendered. */
+  credentialFormEnabled?: boolean;
+  /** QIWA_USE_LIVE_ADAPTER is set but no partner agreement is on file, so live calls are refused. */
+  liveAdapterRefused?: boolean;
 }
 
 const qiwaApi = {
@@ -110,9 +115,10 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, live }: { status: string; live?: boolean | null }) {
   const map: Record<string, string> = {
-    Connected: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
+    Connected: live === true ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
+    Simulated: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
     Disconnected: 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400',
     NotConfigured: 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400',
     Error: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400',
@@ -121,8 +127,8 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${map[status] ?? 'bg-slate-100 text-slate-500'}`}>
-      {status === 'Connected' ? <CheckCircle className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-      {status}
+      {status === 'Connected' && live === true ? <CheckCircle className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+      {qiwaConnectionLabel(status, live)}
     </span>
   );
 }
@@ -169,8 +175,9 @@ function QiwaPanel() {
     if (!connForm.establishmentId.trim()) { setConnMsg('Establishment ID is required.'); setConnErr(true); return; }
     setSavingConn(true); setConnMsg(''); setConnErr(false);
     try {
-      await qiwaApi.upsertConnection(connForm);
-      setConnMsg('Connection settings saved successfully.');
+      // Without the operator flag there is no environment choice: the data check is always 'sandbox'.
+      await qiwaApi.upsertConnection({ ...connForm, environment: conn?.credentialFormEnabled === true ? connForm.environment : 'sandbox' });
+      setConnMsg('Establishment settings saved.');
       const c = await qiwaApi.getConnection(); setConn(c);
     } catch (e: any) {
       setConnMsg(e?.response?.data?.message ?? 'Failed to save connection settings.');
@@ -194,14 +201,18 @@ function QiwaPanel() {
   const envOptions = ['sandbox', 'production'];
 
   if (loading) {
-    return <Section title="QIWA Integration" icon={Wifi}><div className="h-32 animate-pulse rounded-lg bg-slate-100 dark:bg-white/[0.05]" /></Section>;
+    return <Section title="Qiwa data check" icon={Wifi}><div className="h-32 animate-pulse rounded-lg bg-slate-100 dark:bg-white/[0.05]" /></Section>;
   }
+
+  // Operator flag, default OFF: no OAuth form, no production switch, no hunt for client secrets
+  // until a Qiwa partner agreement exists and the platform operator turns this on.
+  const credentialFormEnabled = conn?.credentialFormEnabled === true;
 
   return (
     <Section
-      title="QIWA Integration"
+      title="Qiwa data check"
       icon={Wifi}
-      badge={conn ? <StatusBadge status={conn.status} /> : <StatusBadge status="NotConfigured" />}
+      badge={conn ? <StatusBadge status={conn.status} live={conn.isLiveIntegration} /> : <StatusBadge status="NotConfigured" />}
     >
       <div className="space-y-6">
         {/* ── What this deployment will actually do ──────────────────────────
@@ -211,15 +222,12 @@ function QiwaPanel() {
         {conn?.isLiveIntegration === false && (
           <div className="rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-3 dark:border-amber-500/30 dark:bg-amber-500/[0.08]">
             <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
-              🧪 Simulation — nothing is filed with Qiwa
+              {QIWA_SIMULATED_LABEL}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-amber-900/90 dark:text-amber-100/90">
               {conn.simulationNotice
-                ?? 'This deployment is running the Qiwa sandbox simulator. No request leaves this '
-                 + 'server and no employee record is filed with Qiwa or MHRSD.'}
-            </p>
-            <p className="mt-1.5 text-xs text-amber-900/80 dark:text-amber-100/80">
-              Employees synced here are marked <strong>Simulated</strong>, never <strong>Synced</strong>.
+                ?? 'This checks your employee records against what Qiwa requires. Nothing is sent to '
+                 + 'Qiwa or MHRSD, and no employee record is filed. Record changes in Qiwa itself.'}
             </p>
           </div>
         )}
@@ -243,11 +251,11 @@ function QiwaPanel() {
               <p className="mt-0.5 text-lg font-bold text-slate-900 dark:text-white">{readiness.totalEmployees}</p>
             </div>
             <div className="rounded-lg border border-emerald-100 p-3 dark:border-emerald-900/30">
-              <p className="text-xs text-slate-400">Ready for Sync</p>
+              <p className="text-xs text-slate-400">Passing the data check</p>
               <p className="mt-0.5 text-lg font-bold text-emerald-600 dark:text-emerald-400">{readiness.readyForSync}</p>
             </div>
             <div className="rounded-lg border border-red-100 p-3 dark:border-red-900/30">
-              <p className="text-xs text-slate-400">Blocked</p>
+              <p className="text-xs text-slate-400">Missing Qiwa details</p>
               <p className="mt-0.5 text-lg font-bold text-red-600 dark:text-red-400">{readiness.blockedFromSync}</p>
             </div>
           </div>
@@ -275,7 +283,7 @@ function QiwaPanel() {
                 title="Unified Organisation Number"
               />
             </Field>
-            <Field label="API Environment">
+            {credentialFormEnabled && <Field label="API Environment">
               <div className="flex gap-2">
                 {envOptions.map(opt => (
                   <button
@@ -284,13 +292,13 @@ function QiwaPanel() {
                     onClick={() => setConnForm(x => ({ ...x, environment: opt }))}
                     className={`flex-1 rounded-lg border px-3 py-2 text-sm font-semibold capitalize transition ${connForm.environment === opt ? (opt === 'production' ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400') : 'border-slate-200 text-slate-500 dark:border-white/10'}`}
                   >
-                    {opt === 'production' ? '🟢 Production' : '🧪 Sandbox'}
+                    {opt === 'production' ? 'Production' : 'Sandbox'}
                   </button>
                 ))}
               </div>
-            </Field>
-            {conn?.lastConnectedAtUtc && (
-              <Field label="Last Connected">
+            </Field>}
+            {conn?.isLiveIntegration === true && conn?.lastConnectedAtUtc && (
+              <Field label="Last partner API response">
                 <div className="input w-full bg-slate-50 text-slate-500 dark:bg-white/[0.04]">{new Date(conn.lastConnectedAtUtc).toLocaleString()}</div>
               </Field>
             )}
@@ -303,21 +311,23 @@ function QiwaPanel() {
           <div className="mt-3 flex items-center gap-3">
             <SaveBanner message={connMsg} isError={connErr} />
             <button type="button" onClick={saveConn} disabled={savingConn} className="ms-auto btn-primary disabled:opacity-60">
-              {savingConn ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save Connection</>}
+              {savingConn ? <><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Saving…</> : <><Save className="h-3.5 w-3.5" /> Save establishment settings</>}
             </button>
           </div>
         </div>
 
-        {/* OAuth2 Credentials */}
+        {/* OAuth2 Credentials — rendered only when the platform operator has switched the form on
+            (server flag Qiwa:ShowCredentialForm, default off). */}
+        {credentialFormEnabled && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/10">
           <h4 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
             <ShieldCheck className="h-3.5 w-3.5" /> OAuth2 API Credentials
           </h4>
           <p className="mb-3 text-xs text-amber-600 dark:text-amber-300">
-            Client Secret is encrypted at rest and never returned in API responses. Obtained from the Qiwa Developer Portal.
+            Only for a signed Qiwa partner integration. The client secret is encrypted at rest and never returned.
           </p>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Client ID" required hint="From Qiwa Developer Portal → My Apps → Client ID">
+            <Field label="Client ID" required>
               <input
                 value={credForm.clientId}
                 onChange={e => setCredForm(x => ({ ...x, clientId: e.target.value }))}
@@ -350,7 +360,7 @@ function QiwaPanel() {
                     onClick={() => setCredForm(x => ({ ...x, environment: opt }))}
                     className={`flex-1 rounded-lg border px-3 py-2 text-sm font-semibold capitalize transition ${credForm.environment === opt ? (opt === 'production' ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400') : 'border-slate-200 text-slate-500 dark:border-white/10'}`}
                   >
-                    {opt === 'production' ? '🟢 Production' : '🧪 Sandbox'}
+                    {opt === 'production' ? 'Production' : 'Sandbox'}
                   </button>
                 ))}
               </div>
@@ -363,6 +373,7 @@ function QiwaPanel() {
             </button>
           </div>
         </div>
+        )}
       </div>
     </Section>
   );
@@ -629,7 +640,7 @@ function WpsPanel({ company, onCompanyUpdate, gcc, onGccUpdate }: {
               value={form.wpsAgentId}
               onChange={e => setForm(x => ({ ...x, wpsAgentId: e.target.value }))}
               className="input w-full font-mono"
-              placeholder="0000000000"
+              placeholder="From your WPS bank"
               maxLength={10}
               title="WPS Agent ID"
             />
@@ -923,7 +934,7 @@ function DocumentTrackingPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting
 type ConfigSection = 'qiwa' | 'gosi' | 'wps' | 'labor' | 'documents';
 
 const navItems: { id: ConfigSection; label: string; icon: React.ElementType; desc: string }[] = [
-  { id: 'qiwa',      label: 'QIWA',             icon: Wifi,        desc: 'Establishment ID, OAuth2 credentials, sync environment' },
+  { id: 'qiwa',      label: 'QIWA',             icon: Wifi,        desc: 'Establishment ID and the Qiwa data check' },
   { id: 'gosi',      label: 'GOSI',             icon: Users,       desc: 'Employer ID, contribution rates reference' },
   { id: 'wps',       label: 'WPS',              icon: Banknote,    desc: 'Wage Protection System, SIF export, MOL code' },
   { id: 'labor',     label: 'Labor & EOSB',     icon: Clock,       desc: 'Work week, EOSB rates, Ramadan hours' },

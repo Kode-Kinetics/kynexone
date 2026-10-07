@@ -11,6 +11,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
@@ -63,11 +64,17 @@ public sealed partial class MigrationImportController : ControllerBase
     private readonly IPasswordHasher _passwordHasher;
     private readonly IAuditService _audit;
 
-    public MigrationImportController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit)
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+
+    /// <param name="termLifecycle">Release A term hooks: an imported contract that becomes, or stops being, Active goes
+    /// through the same hooks as one changed on the contract screen. Optional so direct constructions keep compiling.</param>
+    public MigrationImportController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
         _audit = audit;
+        _termLifecycle = termLifecycle;
     }
 
     [HttpGet("template")]
@@ -105,6 +112,8 @@ public sealed partial class MigrationImportController : ControllerBase
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
+        // The access gate answers the preview exactly as it answers the commit (see MigrationImportController.AccessGate).
+        if (await FindAccessRefusalsAsync(tenantId, request, ct) is { Count: > 0 } accessRefusals) return AccessRefused(accessRefusals);
 
         var plan = await BuildPlanAsync(tenantId, request, ct);
         var batch = new MigrationImportBatch
@@ -146,6 +155,11 @@ public sealed partial class MigrationImportController : ControllerBase
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
+
+        // ── ACCESS GATE ─────────────────────────────────────────────────────────────────────────────
+        // Before the lease, before a batch row, before a single section: a package that would change who can
+        // do what beyond this importer's own authority is refused whole, every offending row named.
+        if (await FindAccessRefusalsAsync(tenantId, request, ct) is { Count: > 0 } accessRefusals) return AccessRefused(accessRefusals);
 
         // ── LOCKED-PERIOD REFUSAL ───────────────────────────────────────────────────────────────────
         // Runs BEFORE the lease and before a single row is written. Restating an employee's opening
@@ -232,6 +246,7 @@ public sealed partial class MigrationImportController : ControllerBase
             return Conflict(new { message = "ExternalBatchId is already associated with a different package checksum." });
         }
 
+        _currentBatchId = batch.Id;
         try
         {
             var totals = new PlanTotals();
@@ -408,7 +423,7 @@ public sealed partial class MigrationImportController : ControllerBase
                     "payrollOpeningBalances" => await UpsertPayrollOpeningBalanceAsync(row, tenantId, cutover, result, ct),
                     "benefitsEnrollments" => await UpsertBenefitsEnrollmentAsync(row, tenantId, result, ct),
                     "documentManifests" => await UpsertDocumentManifestAsync(row, tenantId, ct),
-                    "contracts" => await UpsertContractAsync(row, tenantId, ct),
+                    "contracts" => await UpsertContractIsolatedAsync(row, tenantId, ct),
                     "reconciliationSignoffs" => AddReconciliationSignoff(row, result),
                     _ => throw new InvalidOperationException($"Unsupported section '{section}'.")
                 };
@@ -541,8 +556,13 @@ public sealed partial class MigrationImportController : ControllerBase
         var role = await _db.Roles.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.NormalizedName == normalized && !x.IsDeleted, ct);
         var created = role is null;
         role ??= new Role { TenantId = tenantId, Name = name, NormalizedName = normalized };
+        // Last line of defence behind the access gate: a system or non-editable role is never rewritten here.
+        if (!created && (role.IsSystem || !role.IsEditable))
+            throw new InvalidOperationException($"'{role.Name}' is a system role; an import cannot change it.");
         role.Name = name; role.NormalizedName = normalized; role.Description = Val(row, "Description"); role.AuthorityLevel = Int(row, "AuthorityLevel", 99); role.IsActive = Bool(row, "IsActive", true); role.IsEditable = true;
         if (created) _db.Roles.Add(role);
+        AuditAccessChange(created ? "access.role_created" : "access.role_updated", "Role", role.Id, tenantId,
+            new { name = role.Name, role.IsActive, role.AuthorityLevel });
         return created ? "created" : "updated";
     }
 
@@ -565,15 +585,27 @@ public sealed partial class MigrationImportController : ControllerBase
         user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
         user.Email = email; user.NormalizedEmail = normalized; user.FullName = Require(row, "FullName"); user.PhoneNumber = Val(row, "PhoneNumber"); user.PreferredLanguage = Val(row, "PreferredLanguage", "en"); user.Timezone = Val(row, "Timezone", "UTC"); user.Status = Val(row, "Status", "Invited"); user.IsActive = user.Status == "Active"; user.IsGroupScope = Bool(row, "IsGroupScope", false);
         var names = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var assigned = new List<string>();
         if (names.Length > 0)
         {
-            var roles = await _db.Roles.Where(x => x.TenantId == tenantId && names.Contains(x.Name) && !x.IsDeleted).ToListAsync(ct);
-            if (roles.Count != names.Length) throw new InvalidOperationException("One or more RoleNames do not exist in this tenant.");
+            // Resolved as the Access screen resolves them (normalised name; this tenant's or a platform role), so the
+            // access gate and the write can never be talking about two different roles.
+            var normalizedNames = names.Select(AuthService.Normalize).Distinct(StringComparer.Ordinal).ToList();
+            var roles = await _db.Roles
+                .Where(x => (x.TenantId == tenantId || x.TenantId == null) && normalizedNames.Contains(x.NormalizedName) && x.IsActive && !x.IsDeleted)
+                .ToListAsync(ct);
+            roles = roles.GroupBy(r => r.NormalizedName).Select(g => g.OrderBy(r => r.TenantId == null).First()).ToList();
+            if (roles.Count != normalizedNames.Count) throw new InvalidOperationException("One or more RoleNames do not exist in this tenant.");
             _db.UserRoles.RemoveRange(user.UserRoles);
             user.UserRoles = roles.Select(r => new UserRole { UserId = user.Id, RoleId = r.Id }).ToList();
             _db.UserRoles.AddRange(user.UserRoles);
+            assigned = roles.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
         }
         if (created) _db.Users.Add(user);
+        AuditAccessChange(created ? "access.user_created" : "access.user_updated", "User", user.Id, tenantId,
+            new { email = user.Email, user.Status, user.IsGroupScope, roles = assigned });
+        if (!created && names.Length > 0)
+            AuditAccessChange("access.roles_assigned", "User", user.Id, tenantId, new { roles = assigned });
         return created ? "created" : "updated";
     }
 
@@ -860,12 +892,66 @@ public sealed partial class MigrationImportController : ControllerBase
         return created ? "created" : "updated";
     }
 
+    /// <summary>
+    /// Release A: one contract row is one unit — its own transaction under the per-employee package lock (so it cannot race
+    /// an activation or a freeze for the same employee), saved on its own. A row the lifecycle hooks refuse (or that fails
+    /// in any way) is rolled back AND removed from the change tracker, so the section's later save never writes half of it.
+    /// </summary>
+    private async Task<string> UpsertContractIsolatedAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
+    {
+        var before = _db.ChangeTracker.Entries().Select(e => (e.Entity, e.State)).ToList();
+        try
+        {
+            if (!_db.Database.IsRelational()) return await UpsertContractAsync(row, tenantId, ct);
+            var employee = await Employee(row, tenantId, ct);
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db,
+                    Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tenantId, employee.PublicId, ct);
+                var action = await UpsertContractAsync(row, tenantId, ct);
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+                return action;
+            });
+        }
+        catch
+        {
+            var known = before.Select(b => b.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var entry in _db.ChangeTracker.Entries().ToList())
+            {
+                if (!known.Contains(entry.Entity)) { entry.State = EntityState.Detached; continue; }
+                if (entry.State == EntityState.Modified)
+                {
+                    entry.CurrentValues.SetValues(entry.OriginalValues);
+                    entry.State = EntityState.Unchanged;
+                }
+            }
+            throw;
+        }
+    }
+
     private async Task<string> UpsertContractAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
         var contractNumber = Require(row, "ContractNumber").Trim();
         var item = await _db.EmployeeContracts.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.ContractNumber == contractNumber && !x.IsDeleted, ct);
         var created = item is null;
+        // Release A: a term under renewal review is changed only by the renewal itself, never by a re-import.
+        // The review belongs to the TERM: any version of it (an amendment carries the review) is guarded the same way.
+        if (!created && await Zayra.Api.Infrastructure.Contracts.RenewalTermVersions.HasOpenReviewAsync(_db, tenantId, item!, ct))
+            throw new InvalidOperationException(
+                $"Contract '{contractNumber}' has an open renewal review. Finish the renewal review before re-importing this contract.");
+        var previousStatus = item?.Status;
+        // Release A: an import never re-dates or re-states a term that already has fixed or proposed benefits — that is how a
+        // running term was turned into a "future" one and frozen by one person. Those changes go through Supersede (or
+        // Terminate) on the contract screen, which the package rules govern.
+        if (!created && (DateReq(row, "StartDate") != item!.StartDate || !string.Equals(Val(row, "Status", "Active"), item.Status, StringComparison.Ordinal))
+            && (await _db.EmployeeEntitlements.AnyAsync(x => x.TenantId == tenantId && x.ContractId == item.Id, ct)
+                || (await Zayra.Api.Infrastructure.Entitlements.PackageProposals.OpenAsync(_db, tenantId, item.Id, ct)).Count > 0))
+            throw new InvalidOperationException(
+                $"Contract '{contractNumber}' has fixed or proposed benefits, so the import cannot change its start date or status. Use Supersede or Terminate on the contract screen.");
         item ??= new EmployeeContract { TenantId = tenantId, ContractNumber = contractNumber, CompanyId = employee.CompanyId };
         item.EmployeeId = employee.PublicId;
         item.EmployeeName = employee.FullName;
@@ -880,6 +966,13 @@ public sealed partial class MigrationImportController : ControllerBase
         item.CreatedByUserId = UserId();
         item.UpdatedAtUtc = DateTime.UtcNow;
         if (created) _db.EmployeeContracts.Add(item);
+        if (_termLifecycle is not null)
+        {
+            if (item.Status == "Active" && previousStatus != "Active")
+                await _termLifecycle.OnActivatedAsync(item, ct);
+            else if (previousStatus == "Active" && (item.Status is "Expired" or "Terminated" or "Superseded"))
+                await _termLifecycle.OnEndedAsync(item, item.Status, ct);
+        }
         return created ? "created" : "updated";
     }
 

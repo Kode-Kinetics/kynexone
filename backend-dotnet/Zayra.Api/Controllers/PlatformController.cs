@@ -170,7 +170,15 @@ public class PlatformController : ControllerBase
     /// never waits on SMTP, and a notice with a dedupe key goes out at most once.
     /// </summary>
     private void NotifyOperator(PlatformUser user, string subject, string text, string kind, string? dedupeKey = null)
-        => _securityNotices?.TryEnqueue(new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
+    {
+        if (_securityNotices is null) return;
+        var outcome = _securityNotices.TryEnqueue(
+            new PlatformSecurityNotice(user.Id, user.Email, user.FullName, subject, text, kind), dedupeKey);
+        // A dropped notice is not remembered, so the next sign-in for the same event queues it again.
+        if (outcome == PlatformSecurityNoticeOutcome.Dropped)
+            _log.LogWarning("Security notice {Kind} for platform user {PlatformUserId} was dropped: the notice queue is full.",
+                kind, user.Id);
+    }
 
     private IActionResult PlatformRefused(string error, string message, int? retryAfterSeconds = null)
     {
@@ -1137,6 +1145,11 @@ public class PlatformController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         FeatureFlagGuardFilter.InvalidateCache(_cache, tenantId, featureKey);
+        // Release A: switching release_a on installs the renewal approval chains at once (insert-if-absent), rather
+        // than waiting for the next boot's backfill. A no-op until R5 registers the renewal producers.
+        if (req.IsEnabled && featureKey == FeatureKeys.ReleaseA
+            && await Zayra.Api.Infrastructure.Seed.TenantProvisioningBundle.InstallDefaultApprovalWorkflowsAsync(_db, tenantId, ct) > 0)
+            await _db.SaveChangesAsync(ct);
         return Ok(flag);
     }
 
@@ -2596,12 +2609,12 @@ public class PlatformController : ControllerBase
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Platform password reset email failed for {Email}. Token saved.", user.Email);
+                _log.LogWarning("Platform password reset email failed for user {UserId} ({ErrorType}). Token saved.", user.Id, ex.GetType().Name);
             }
         }
         else
         {
-            _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
+            _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
         // The old message told the operator to "share the reset link directly" while showing no
@@ -4395,8 +4408,9 @@ public class PlatformController : ControllerBase
         {
             // The relay's own words are the single most useful thing here ("535 authentication
             // failed", "relay access denied"), so they are surfaced rather than swallowed.
-            // The exception carries the relay's own message; the host is not re-logged as text.
-            _log.LogWarning(ex, "Platform SMTP test failed on port {Port}.", smtp.Port);
+            // The operator sees the relay's message in the response; the log keeps the type only, because
+            // an SMTP exception message routinely names the recipient ("550 <x@y>: mailbox unavailable").
+            _log.LogWarning("Platform SMTP test failed on port {Port} ({ErrorType}).", smtp.Port, ex.GetType().Name);
             return Ok(new
             {
                 sent = false,

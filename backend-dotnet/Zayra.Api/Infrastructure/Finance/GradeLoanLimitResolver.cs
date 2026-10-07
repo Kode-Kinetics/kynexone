@@ -58,7 +58,9 @@ public static class GradeLimitCodes
     public const string NotConfigured = "GradeLimitNotConfigured";
     public const string SalaryMissing = "GradeSalaryMissing";
     public const string CurrencyAmbiguous = "GradeLimitCurrencyAmbiguous";
-    public static readonly string[] All = [NotEligible, PerLoan, Outstanding, Missing, NotConfigured, SalaryMissing, CurrencyAmbiguous];
+    /// <summary>Release A (R2): the limit is a multiple of the housing allowance, and housing is provided in kind.</summary>
+    public const string HousingInKind = "GradeHousingInKind";
+    public static readonly string[] All = [NotEligible, PerLoan, Outstanding, Missing, NotConfigured, SalaryMissing, CurrencyAmbiguous, HousingInKind];
 
     public const string NotConfiguredText = "Your loan limit hasn't been set up yet — HR has been notified.";
 }
@@ -144,7 +146,8 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
 
         decimal? salaryBasis = null;
         decimal? perLoanCap = cell.ValueType == GradeEntitlementValueTypes.Amount ? cell.Amount : null;
-        if (cell.ValueType is GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross)
+        if (cell.ValueType is GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross
+            or GradeEntitlementValueTypes.MultipleOfHousing)
         {
             var salary = await db.EmployeeSalaryStructures.AsNoTracking()
                 .Where(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate <= asOf)
@@ -152,10 +155,18 @@ public sealed class GradeLoanLimitResolver(ZayraDbContext db)
             if (salary == null || !string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase))
                 return Blocked(GradeLimitCodes.SalaryMissing,
                     "The loan limit is based on salary, and no current salary in the company's currency is on file. HR needs to complete it.", grade, cell);
-            salaryBasis = cell.ValueType == GradeEntitlementValueTypes.MultipleOfBasic
-                ? salary.BasicSalary
-                : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
-                  + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
+            // Release A (R2): a housing advance is a multiple of the monthly housing ALLOWANCE. When housing is given in
+            // kind there is no allowance to advance against — refused with its own reason, never computed as zero.
+            if (cell.ValueType == GradeEntitlementValueTypes.MultipleOfHousing && salary.HousingBasis == AllowanceBases.InKind)
+                return Blocked(GradeLimitCodes.HousingInKind,
+                    "Your housing is provided in kind (accommodation), so there is no housing allowance to advance against.", grade, cell);
+            salaryBasis = cell.ValueType switch
+            {
+                GradeEntitlementValueTypes.MultipleOfBasic => salary.BasicSalary,
+                GradeEntitlementValueTypes.MultipleOfHousing => salary.HousingAllowance,
+                _ => salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
+                     + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance,
+            };
             if (salaryBasis <= 0)
                 return Blocked(GradeLimitCodes.SalaryMissing,
                     "The loan limit is based on salary, and the salary on file is zero. HR needs to complete it.", grade, cell);

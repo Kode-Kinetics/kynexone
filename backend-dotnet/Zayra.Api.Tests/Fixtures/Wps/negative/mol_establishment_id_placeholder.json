@@ -1,0 +1,8 @@
+{
+  "expectedCode": "mol_establishment_id_placeholder",
+  "patch": {
+    "header": {
+      "molEstablishmentId": "0000000000"
+    }
+  }
+}

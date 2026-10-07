@@ -40,6 +40,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Golden and negative wage-file fixtures (KsaWpsQiwaHonestyTests). -->
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Zayra.Api\Zayra.Api.csproj" />
   </ItemGroup>
 

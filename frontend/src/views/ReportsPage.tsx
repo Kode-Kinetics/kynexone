@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { notifyApiError } from '../api/client';
+import { apiErrorReason, notifyApiError } from '../api/client';
 import { requestFailureReason } from '../lib/requestFailure';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -32,6 +32,7 @@ import type {
   ReportSchedule, ReportExecutionLog, AnalyticsKPIs,
 } from '../api/reports';
 import { Modal } from '../components/Modal';
+import { useAuth } from '../contexts/AuthContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
 type Tab = 'analytics' | 'library' | 'saved' | 'schedules' | 'executions';
@@ -266,6 +267,10 @@ function AnalyticsDashboard() {
 const CATEGORIES = ['HR', 'Attendance', 'Leave', 'Overtime', 'Payroll', 'Recruitment', 'Compliance', 'Finance'];
 
 function ReportLibrary() {
+  // CSV/Excel export is `reports.export` on the API (ReportsController.ExportReport), held by Admin
+  // and HR Director only; every other report reader was offered the buttons and got a 403.
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission('reports.export');
   const searchParams = useSearchParams();
   const [catalog, setCatalog] = useState<ReportCatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -391,12 +396,14 @@ function ReportLibrary() {
                 <>
                   {/* The on-screen table stops at 200 rows; these download all of them.
                       Only CSV and XLSX are offered because only CSV and XLSX exist. */}
+                  {canExport && <>
                   <button type="button" onClick={() => exportReport('csv')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
                     {exporting === 'csv' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} CSV
                   </button>
                   <button type="button" onClick={() => exportReport('xlsx')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
                     {exporting === 'xlsx' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
                   </button>
+                  </>}
                   <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveError(''); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
                     <Save className="h-3.5 w-3.5" /> Save
                   </button>
@@ -603,6 +610,9 @@ function SavedReportsTab() {
 // ── Scheduled Reports ─────────────────────────────────────────────────────────
 
 function ScheduledReportsTab() {
+  // Creating, pausing and deleting a schedule are `reports.schedule` on the API (ReportsController).
+  const { hasPermission } = useAuth();
+  const canSchedule = hasPermission('reports.schedule');
   const [items, setItems] = useState<ReportSchedule[]>([]);
   const [catalog, setCatalog] = useState<ReportCatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -633,7 +643,7 @@ function ScheduledReportsTab() {
     if (!form.reportKey || !form.recipients.trim()) { setError('Report and recipients are required'); return; }
     setSaving(true); setError('');
     try { await reportsApi.createSchedule(form); setCreateModal(false); load(); }
-    catch { setError('Failed to create schedule.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to create schedule.')); }
     finally { setSaving(false); }
   };
 
@@ -664,9 +674,9 @@ function ScheduledReportsTab() {
               <button type="button" onClick={load} className="font-semibold underline">Retry</button>
             </p>
           )}
-          <button type="button" disabled={!!catalogError} onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary shrink-0 disabled:opacity-60">
+          {canSchedule && <button type="button" disabled={!!catalogError} onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary shrink-0 disabled:opacity-60">
             <Plus className="h-4 w-4" /> New Schedule
-          </button>
+          </button>}
         </div>
         <FormError error={actionError} />
         <div className="surface overflow-hidden">
@@ -712,14 +722,14 @@ function ScheduledReportsTab() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <button type="button" onClick={() => toggle(s)} disabled={toggling === s.id} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
+                    <button type="button" onClick={() => toggle(s)} disabled={toggling === s.id || !canSchedule} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
                       {s.isActive ? <ToggleRight className="h-5 w-5 text-emerald-500" /> : <ToggleLeft className="h-5 w-5" />}
                     </button>
                   </td>
                   <td className="px-4 py-3">
-                    <button type="button" onClick={() => deleteSchedule(s.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 dark:border-red-800 dark:hover:bg-red-900/20" aria-label="Delete schedule">
+                    {canSchedule && <button type="button" onClick={() => deleteSchedule(s.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 dark:border-red-800 dark:hover:bg-red-900/20" aria-label="Delete schedule">
                       <Trash2 className="h-3 w-3" />
-                    </button>
+                    </button>}
                   </td>
                 </tr>
               ))}

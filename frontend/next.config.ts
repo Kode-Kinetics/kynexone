@@ -13,6 +13,11 @@ const apiUrl =
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   outputFileTracingRoot: __dirname,
+  // Self-hosting (frontend/Dockerfile): emit .next/standalone/server.js with only the traced
+  // node_modules it needs. Vercel ignores this and uses its own output; `next start` still works.
+  // The /api rewrite below is resolved at BUILD time, so a self-hosted image must be built with
+  // NEXT_PUBLIC_API_BASE_URL pointing at its API.
+  output: 'standalone',
 
   async rewrites() {
     return [

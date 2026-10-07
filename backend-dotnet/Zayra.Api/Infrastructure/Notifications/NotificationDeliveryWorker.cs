@@ -118,7 +118,8 @@ public sealed class NotificationDeliveryWorker : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _log.LogWarning(ex, "Notification delivery {DeliveryId} failed unexpectedly.", delivery.Id);
+                    // Type only: a send-path exception message can carry the recipient's address or number.
+                    _log.LogWarning("Notification delivery {DeliveryId} failed unexpectedly ({ErrorType}).", delivery.Id, ex.GetType().Name);
                 }
             }
         }

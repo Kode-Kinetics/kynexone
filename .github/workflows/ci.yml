@@ -105,10 +105,12 @@ jobs:
         run: npx playwright test -c e2e/playwright.browserless.config.ts
         working-directory: frontend
 
-      # Pure-function unit specs (no browser, no stack). Includes the loan-limit specs that run against the
-      # backend's REAL eligibility JSON (unit/fixtures), which GradeLoanLimitTests keeps in step with the API.
-      - name: Frontend unit specs
-        run: npx playwright test -c playwright.unit.config.ts
+      # Pure-function unit tests (playwright.unit.config.ts: no browser, no stack), then the same
+      # suite under a viewer zone east of Riyadh: calendar dates must not slip a day (lib/format.ts).
+      # Includes the loan-limit specs that run against the backend's REAL eligibility JSON
+      # (unit/fixtures), which GradeLoanLimitTests keeps in step with the API.
+      - name: Frontend unit tests (also under TZ=Asia/Karachi)
+        run: npm run test:unit && npm run test:unit:tz
         working-directory: frontend
 
   # ── Security gate: secret scan ────────────────────────────────────────────────
@@ -400,7 +402,15 @@ jobs:
         run: |
           set -euo pipefail
           npx next build
-          nohup npx next start -p 5173 > /tmp/fe.log 2>&1 &
+          # Serve the standalone output (`output: 'standalone'` in next.config.ts), the same server
+          # frontend/Dockerfile ships; `next start` warns that it does not support standalone. The
+          # standalone tree carries no static assets or public/, so copy them in as the Dockerfile
+          # does. HOSTNAME=:: listens dual-stack, so "localhost" works whether it resolves to
+          # 127.0.0.1 or ::1 (the server's own default, 0.0.0.0, is IPv4-only).
+          mkdir -p public
+          cp -R .next/static .next/standalone/.next/static
+          cp -R public .next/standalone/public
+          PORT=5173 HOSTNAME=:: nohup node .next/standalone/server.js > /tmp/fe.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf -m 5 -o /dev/null http://localhost:5173/; then echo "frontend up"; exit 0; fi
             sleep 1

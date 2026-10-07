@@ -1,0 +1,10 @@
+{
+  "expectedCode": "nationality_not_recognised_as_saudi",
+  "patch": {
+    "rows": {
+      "0": {
+        "nationality": "Saudia"
+      }
+    }
+  }
+}

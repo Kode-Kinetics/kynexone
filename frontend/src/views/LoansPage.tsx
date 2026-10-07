@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { notifyApiError } from '../api/client';
+import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
@@ -17,7 +17,7 @@ import type {
   FinanceGlEntry, AuditLogEntry,
 } from '../api/loans';
 import { Modal } from '../components/Modal';
-import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useTenantSettings, useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { employeesApi } from '../api/employees';
@@ -31,8 +31,13 @@ import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type Offered
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { LoanLimitCard } from '../components/loans/LoanLimitCard';
-import { fillTemplate, isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
+import { LoanConsentStep } from '../components/deductions/LoanConsentStep';
+import { LoanConsentAttach } from '../components/deductions/LoanConsentAttach';
+import { LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
+import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { useFormat } from '../hooks/useFormat';
 type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
@@ -49,7 +54,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, enumName = 'LoanStatus' }: { status: string; enumName?: EnumName }) {
   const colors: Record<string, string> = {
     Active: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     Approved: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
@@ -66,7 +71,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${colors[status] ?? 'bg-slate-100 text-slate-500'}`}>
-      {status}
+      <EnumLabel enum={enumName} value={status} />
     </span>
   );
 }
@@ -171,11 +176,13 @@ function LoanTypesTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode, minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode, { decimals: 0 });
 
+  const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await loanTypesApi.list()); } catch { /**/ }
+    try { setItems(await loanTypesApi.list()); setLoadError(null); } catch (e) { setItems([]); setLoadError(e); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -184,7 +191,7 @@ function LoanTypesTab() {
     if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
     setSaving(true); setError('');
     try { await loanTypesApi.create(form); setModalOpen(false); load(); }
-    catch { setError('Failed to save.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -209,6 +216,8 @@ function LoanTypesTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loan types yet</td></tr>
               ) : items.map((t) => (
@@ -264,9 +273,11 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const staff = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director', 'Manager'].includes(role)) ?? false;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number, currency: string) => n.toLocaleString('en-US', { style: 'currency', currency });
+  const fx = useFormat();
+  const fmt = (n: number, currency: string) => fx.plain.money(n, currency);
   const [items, setItems] = useState<EmployeeLoan[]>([]);
   const [total, setTotal] = useState(0);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState('');
   const [page, setPage] = useState(1);
@@ -288,8 +299,12 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const [eligibility, setEligibility] = useState<LoanEligibility | null>(null);
   const [checkingEligibility, setCheckingEligibility] = useState(false);
   const [requestException, setRequestException] = useState(false);
+  // Release A (Art. 92): the employee's signed consent, uploaded to their file, when the instalment is above 10% of the wage.
+  const [consentDocumentId, setConsentDocumentId] = useState<string | null>(null);
   const applicantId = selectedEmployee?.intId ?? (mine || !staff ? user?.employeeId : undefined);
   const eligibilityKey = JSON.stringify([applicantId, createForm.loanTypeId, createForm.requestedAmount, createForm.requestedInstallments, createForm.repaymentMethod]);
+  // A consent belongs to one employee: choosing another applicant drops it.
+  useEffect(() => { setConsentDocumentId(null); }, [applicantId]);
   const [checkedKey, setCheckedKey] = useState('');
   const { t, locale } = useLocale();
   const self = mine || !staff;
@@ -342,7 +357,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
   // Grade limits are hard: no policy exception can lift them.
   const gradeBlocked = isGradeBlocked(checkedEligibility);
-  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked
+  const consentMissing = !!checkedEligibility?.art92?.requiresConsent && !consentDocumentId;
+  const canSubmit = !!checkedEligibility && !notOffered && !gradeBlocked && !consentMissing
     && (checkedEligibility.eligible || (requestException && !!checkedEligibility.canRequestException));
   // Reasons the limit card already explains in plain words (grade refusals, "not offered") are not repeated.
   // Reasons the limit card already explains (grade refusals) and "not offered" are not repeated. Every other
@@ -362,7 +378,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { const r = await loansApi.list({ mine, status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); } catch (e) { setError(loanErrorMessage(e, 'Unable to load loans.')); }
+    try { const r = await loansApi.list({ mine, status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); setLoadError(null); }
+    catch (e) { setItems([]); setTotal(0); setLoadError(e); } // the table's failed-load row says why and offers Retry
     finally { setLoading(false); }
   }, [filterStatus, page, mine]);
   useEffect(() => { load(); }, [load]);
@@ -384,6 +401,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         employeeName: selectedEmployee?.fullName ?? user?.fullName ?? '',
         employeeIntId: applicantId,
         requestPolicyException: requestException && !eligibility.eligible,
+        consentDocumentId: consentDocumentId ?? undefined,
       });
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
@@ -435,7 +453,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <option value="">All Statuses</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
           </select>
-          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
         </div>
@@ -451,6 +469,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loans found</td></tr>
               ) : items.map((l) => (
@@ -526,7 +546,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               : <div role="status" className="space-y-1 text-sm">
                 <p className={checkedEligibility.eligible ? 'text-emerald-700' : 'text-amber-700'}>{t(checkedEligibility.eligible ? 'Eligible to apply' : 'Not eligible for this request')}</p>
                 <LoanLimitCard eligibility={checkedEligibility} self={self} />
-                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : fillTemplate(t('Maximum available: {amount}'), { amount: checkedEligibility.maxAvailableAmount.toLocaleString('en-US') })} · {fillTemplate(t('Policy version {version}'), { version: checkedEligibility.policyVersion ?? '—' })}</p>
+                {checkedEligibility.art92 && <LoanConsentStep art92={checkedEligibility.art92} self={self} employeeId={applicantId} consentDocumentId={consentDocumentId} onConsent={setConsentDocumentId} />}
+                <p>{checkedEligibility.maxAvailableAmount == null ? t('No fixed amount limit') : t('Maximum available: {amount}', { amount: fx.money(checkedEligibility.maxAvailableAmount, checkedEligibility.currency ?? null) })} · {t('Policy version {version}', { version: checkedEligibility.policyVersion ?? '—' })}</p>
                 {otherReasons.map(reason => <p key={reason}>{reason}</p>)}
                 {!checkedEligibility.eligible && checkedEligibility.canRequestException && !gradeBlocked && <label className="flex items-center gap-2"><input type="checkbox" checked={requestException} onChange={e => setRequestException(e.target.checked)} />{t('Request an HR Director policy exception')}</label>}
                 {gradeBlocked && <p className="text-xs text-slate-500">{t('Grade limits cannot be overridden by a policy exception.')}</p>}
@@ -550,6 +571,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         {selected && (
           <div className="space-y-4">
             <LoanStatement detail={selected} />
+            <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
             {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">HR review required: {selected.loan.reviewReason || 'Employment details have changed.'} Open Reviews &amp; Changes for the review history and next action.</p>}
             <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
               {selected.loan.status === 'Approved' ? 'Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.' : selected.loan.status === 'Pending' ? 'Awaiting the next approval decision. Approval does not send funds.' : selected.loan.status === 'Active' ? `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}. ${selected.loan.repaymentMethod === 'PayrollDeduction' ? 'Scheduled installments are collected through payroll.' : 'Finance records receipts after payments are received.'}` : `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}.`}
@@ -686,7 +708,7 @@ function AdvancePolicyTab() {
   const save = async () => {
     setSaving(true); setError(''); setSuccess(false);
     try { const p = await advancePolicyApi.upsert(form); setPolicy(p); setForm({ ...p }); setSuccess(true); }
-    catch { setError('Failed to save policy.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to save policy.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -725,7 +747,8 @@ function AdvancePolicyTab() {
 
 function AdvancesTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -771,7 +794,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.approve(selected.id, approveForm); setApproveModal(false); load(); }
-    catch { setError('Failed to approve.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to approve.')); }
     finally { setSaving(false); }
   };
 
@@ -779,7 +802,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.reject(selected.id, rejectReason); setRejectModal(false); load(); }
-    catch { setError('Failed to reject.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to reject.')); }
     finally { setSaving(false); }
   };
 
@@ -1184,8 +1207,13 @@ function BonusTypesTab() {
 // ── Bonus Batches ─────────────────────────────────────────────────────────────
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
-  const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  // A bonus batch has no currency of its own; it is paid in the tenant's. Until the tenant's
+  // settings load, that currency is unknown (the context's 'USD' is a placeholder), so amounts
+  // are shown bare rather than labelled with a guess.
+  const { settings: { currencyCode }, loaded: settingsLoaded } = useTenantSettingsContext();
+  const batchCurrency = settingsLoaded ? currencyCode : null;
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, batchCurrency);
   const [items, setItems] = useState<BonusBatch[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1229,7 +1257,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!createForm.bonusTypeId || !createForm.batchName.trim() || !createForm.paymentPeriod.trim() || !createForm.paymentDate) { setError('All fields are required'); return; }
     setSaving(true); setError('');
     try { await bonusBatchesApi.create(createForm); setCreateModal(false); load(); }
-    catch { setError('Failed to create batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to create batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1245,7 +1273,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       });
       setAddResult({ grossBonusAmount: r.grossBonusAmount, taxWithheld: r.taxWithheld, netBonusAmount: r.netBonusAmount });
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
-    } catch { setError('Failed to add employee.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Failed to add employee.')); }
     finally { setSaving(false); }
   };
 
@@ -1275,7 +1303,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!editBatchId) return;
     setSaving(true); setError('');
     try { await bonusBatchesApi.update(editBatchId, editBatchForm); setEditBatchModal(false); load(); }
-    catch { setError('Failed to update batch.'); }
+    catch (e) { setError(apiErrorReason(e, 'Failed to update batch.')); }
     finally { setSaving(false); }
   };
 
@@ -1303,7 +1331,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       setBulkResult(r);
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
       load();
-    } catch { setError('Bulk add failed.'); }
+    } catch (e) { setError(apiErrorReason(e, 'Bulk add failed.')); }
     finally { setSaving(false); }
   };
 
@@ -1490,7 +1518,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
               <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {bulkResult.totalNetAdded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.plain.money(bulkResult.totalNetAdded, batchCurrency)}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
@@ -1565,7 +1593,8 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 
 function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1595,7 +1624,9 @@ function AuditReportTab() {
             <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
               All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
-              Report generated: {new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' })} EST
+              {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's
+                  zone, named, so a reader in another zone knows which clock the time is on. */}
+              Report generated: {fx.dateTime(new Date())} ({fx.zone()})
             </p>
           </div>
         </div>
@@ -1734,7 +1765,8 @@ export function LoansPage() {
   const ownAccounts = mine || !canViewTeam;
   const canManagePayments = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver'].includes(role)) ?? false;
   const { currencyCode } = useTenantSettings();
-  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: currencyCode });
+  const fx = useFormat();
+  const fmt = (n: number) => fx.plain.money(n, currencyCode);
   const [activeTab, setActiveTab] = useState<Tab>('loans');
   const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
   const [bonusTypes, setBonusTypes] = useState<BonusType[]>([]);

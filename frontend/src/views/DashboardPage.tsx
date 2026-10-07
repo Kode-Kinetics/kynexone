@@ -28,6 +28,8 @@ import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { resolvePayrollRunCurrency, resolvePayrollRunsCurrency } from '../lib/payrollCurrency';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import { msg } from '../i18n/translations';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
 import { AttentionStrip } from '../components/dashboard/AttentionStrip';
 import { PayrollHero } from '../components/dashboard/PayrollHero';
@@ -45,6 +47,7 @@ import { buildAttention, tenantHour } from '../components/dashboard/dashboardMod
 
 function useTenantClock() {
   const { calendarSystem, hijriDatesEnabled, defaultTimezone } = useTenantSettings();
+  const f = useFormat();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 30_000);
@@ -58,13 +61,11 @@ function useTenantClock() {
   // TenantSettingsContext's own defaults, so both the "not stated" and "not loaded yet" cases land
   // on the viewer's zone rather than on a foreign one.
   const tz = defaultTimezone.trim() || undefined;
-  const fmt = (opts: Intl.DateTimeFormatOptions, cal?: string) => {
-    try { return new Intl.DateTimeFormat(cal ? `en-GB-u-ca-${cal}` : 'en-GB', { ...opts, timeZone: tz }).format(now); }
-    catch { return null; }
-  };
-  const greg = fmt({ weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-  const hijri = fmt({ day: 'numeric', month: 'long', year: 'numeric' }, 'islamic-umalqura');
-  const time = fmt({ hour: '2-digit', minute: '2-digit' });
+  // lib/format.ts applies the same zone (and the viewer's language) to every value below.
+  const safe = (fn: () => string) => { try { return fn(); } catch { return null; } };
+  const greg = safe(() => f.gregorian(now, 'weekdayDate'));
+  const hijri = safe(() => f.hijri(now, 'long'));
+  const time = safe(() => f.time(now));
   const wantHijri = calendarSystem === 'Hijri' && !!hijri;
   return {
     now,
@@ -74,10 +75,7 @@ function useTenantClock() {
     secondary: hijriDatesEnabled && hijri && greg ? (wantHijri ? greg : hijri) : null,
     time,
     wantHijri,
-    fmtTime: (d: Date) => {
-      try { return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(d); }
-      catch { return d.toTimeString().slice(0, 5); }
-    },
+    fmtTime: (d: Date) => safe(() => f.time(d)) ?? d.toTimeString().slice(0, 5),
   };
 }
 
@@ -88,6 +86,7 @@ const MONTHS = 12;
 
 export function DashboardPage() {
   const t = useT();
+  const f = useFormat();
   const clock = useTenantClock();
   const { companies, selectedCompanyId, isGroupScope, companyVersion } = useCompany();
   const { isFeatureEnabled } = useFeatureFlags();
@@ -121,7 +120,8 @@ export function DashboardPage() {
     } catch {
       // Keep the last good figures on screen, marked as such, instead of blanking the page.
       setRefreshFailed(true);
-      setError('Dashboard data could not be loaded. Figures shown are from the last successful load, if any.');
+      // A dictionary key, translated where it renders (this callback must not depend on the language).
+      setError(msg('Dashboard data could not be loaded. Figures shown are from the last successful load, if any.'));
     } finally {
       setLoading(false);
       inFlight.current = false;
@@ -137,8 +137,8 @@ export function DashboardPage() {
   // Payroll readiness items link to /payroll, so they are only raised for someone who can open it.
   const showPayrollAttention = payrollEnabled && canReadPayroll;
   const attention = useMemo(
-    () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention }),
-    [data, findings.insights, showPayrollAttention],
+    () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention, t, relative: (iso) => f.relative(iso) }),
+    [data, findings.insights, showPayrollAttention, t, f],
   );
   // Tiles show the last six months; the hero uses the full year.
   const tileData = useMemo(() => (data ? { ...data, trends: data.trends.slice(-6) } : null), [data]);
@@ -172,13 +172,13 @@ export function DashboardPage() {
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         {(refreshFailed || minutesOld >= 10) && (
           <span role="status" className={`rounded-lg px-2.5 py-1.5 text-xs font-medium ${refreshFailed ? 'bg-rose-50 text-rose-900 dark:bg-rose-500/10 dark:text-rose-200' : 'bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200'}`}>
-            {refreshFailed ? (asOf ? `${t('Refresh failed. Showing figures from')} ${asOf}.` : t('Figures could not be loaded.')) : `${t('Loaded')} ${minutesOld} ${t('min ago')}.`}
+            {refreshFailed ? (asOf ? t('Refresh failed. Showing figures from {time}.', { time: asOf }) : t('Figures could not be loaded.')) : t('Loaded {count} min ago.', { count: minutesOld })}
           </span>
         )}
         <button type="button" onClick={onRefresh} disabled={loading}
           className="wg-press inline-flex h-10 items-center gap-2 rounded-xl border border-[color:var(--wg-line-strong)] bg-[color:var(--wg-surface)] px-3 text-[13px] font-medium text-slate-700 hover:text-slate-900 disabled:opacity-60 dark:text-slate-200 dark:hover:text-white">
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
-          <span className="tabular-nums">{asOf ? `${t('Updated')} ${asOf}` : t('Refresh')}</span>
+          <span className="tabular-nums">{asOf ? t('Updated {time}', { time: asOf }) : t('Refresh')}</span>
           <span className="sr-only">{t('Refresh dashboard')}</span>
         </button>
         {canReadReports && (
@@ -214,7 +214,7 @@ export function DashboardPage() {
   if (compact) {
     return (
       <div className="mx-auto flex w-full min-w-0 flex-col gap-4" aria-label="HR Command Center">
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
         {header}
         {!data ? skeleton : (
           <DashboardViews
@@ -230,7 +230,7 @@ export function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3.5" aria-label="HR Command Center">
-      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+      {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
       {header}
       {!data ? skeleton : (
         <>

@@ -109,8 +109,9 @@ export interface FixtureTenant {
    * Tenant-user emails to attach to real EMPLOYEE records, in order, starting at the first
    * company's second employee.
    *
-   * `DataScopeService.ResolveCallerEmployeeIdAsync` links a signed-in user to an employee by
-   * matching the token's email against the employee's work or personal email. Without that link the
+   * A signed-in user is linked to an employee ONLY by the explicit login link the invitation flow
+   * writes (the token's employee_id claim; `CallerEmployeeResolver`). An email match does not link
+   * anyone. Without that link the
    * account is a login with no person behind it: every employee-self-service surface resolves to
    * "Own" scope over an EMPTY employee set, so My Benefits, ESS document requests and the employee
    * letter journey render nothing at all while the API returns 200.

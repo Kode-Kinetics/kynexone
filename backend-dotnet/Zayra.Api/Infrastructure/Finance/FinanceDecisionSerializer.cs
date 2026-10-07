@@ -55,6 +55,10 @@ public static class FinanceDecisionSerializer
 {
     public const string ScopeLoan = "finance.loan";
     public const string ScopeAdvance = "finance.advance";
+    /// <summary>Release A per-employee lock: every writer of an employee's package, salary, contract term or renewal
+    /// case (loan request, Apply, Correction, freeze) serialises on (tenant, employee PublicId). Fixed order inside
+    /// it: case row → contract → salary → entitlement rows.</summary>
+    public const string ScopeEmployeePackage = "employee.package";
 
     /// <summary>
     /// Runs <paramref name="body"/> as the sole writer of (<paramref name="scope"/>,

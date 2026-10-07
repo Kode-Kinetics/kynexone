@@ -1,0 +1,10 @@
+{
+  "expectedCode": "name_missing",
+  "patch": {
+    "rows": {
+      "0": {
+        "name": " "
+      }
+    }
+  }
+}

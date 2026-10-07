@@ -1,0 +1,8 @@
+{
+  "expectedCode": "currency_not_sar",
+  "patch": {
+    "header": {
+      "currency": "AED"
+    }
+  }
+}

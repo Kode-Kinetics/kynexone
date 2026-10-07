@@ -154,6 +154,52 @@ public class PayrollGosiZeroRegressionTests
         Assert.Contains(saudiLines, l => l.ComponentCode == "GOSI-OH-ER" && l.Amount > 0);
     }
 
+    // A Saudi recorded as "KSA" or in Arabic used to classify as an expatriate (GOSI knew only
+    // SA/SAU/Saudi/Saudi Arabia/Saudi Arabian, untrimmed), so the payslip carried no GOSI at all.
+    [Theory]
+    [InlineData("KSA")]
+    [InlineData(" سعودي ")]
+    public async Task Process_SaudiRecordedWithAnotherSpelling_GetsEmployeeGosiOnThePayslip(string nationality)
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var company = new Company
+        {
+            Id = Guid.NewGuid(), TenantId = tenantId, LegalNameEn = "Spelling Co", CountryCode = "SAU",
+            Jurisdiction = "KSA-mainland", RegistrationNumber = $"SP-{Guid.NewGuid():N}"[..20], DefaultCurrency = "SAR",
+            IsActive = true, CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Companies.Add(company);
+        var emp = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"KSA-{Guid.NewGuid():N}", FullName = "Saudi Spelling",
+            Nationality = nationality, Status = "Active", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, HousingAllowance = 3_000m, EffectiveDate = new DateOnly(2024, 1, 1), IsActive = true,
+        });
+        var run = new PayrollRun
+        {
+            TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 6,
+            CreatedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.PayrollRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await BuildController(db, tenantId).Process(run.Id, CancellationToken.None));
+
+        var slip = await db.PayrollSlips.FirstAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id);
+        Assert.Equal(13_000m * 0.0975m, slip.EmployeeStatutoryTotal, precision: 2);
+        var lines = await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == run.Id && d.EmployeeId == emp.Id)
+            .ToListAsync();
+        Assert.Contains(lines, l => l.ComponentCode == "GOSI-ANN-EE" && l.Amount > 0);
+    }
+
     // ── Helper: build PayrollController with KSA pack resolver ────────────────
 
     private static PayrollController BuildController(ZayraDbContext db, Guid tenantId)

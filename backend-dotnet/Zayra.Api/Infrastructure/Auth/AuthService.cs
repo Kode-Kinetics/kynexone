@@ -81,7 +81,8 @@ public class AuthService : IAuthService
             // Same PBKDF2 work as a real check, so an unknown or ineligible account is not
             // distinguishable by response time from a wrong password.
             await VerifyDummyAsync(request.Password, cancellationToken);
-            _log.LogWarning("Login failed for {Email} / tenant={Slug}: {Reason}", request.Email, request.TenantSlug, failReason);
+            // No email in logs (personal data): the user id when the account exists, otherwise nothing.
+            _log.LogWarning("Login failed for user {UserId} / tenant={Slug}: {Reason}", user?.Id, LogSafe.Text(request.TenantSlug), failReason);
             _db.LoginActivities.Add(new LoginActivity
             {
                 TenantId      = user?.TenantId,
@@ -113,7 +114,7 @@ public class AuthService : IAuthService
         if (lockoutActive && !knownDevice)
         {
             await VerifyDummyAsync(request.Password, cancellationToken);
-            _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for {Email}", user.LockoutEnd, request.Email);
+            _log.LogWarning("Login blocked — lockout active until {LockoutEnd} for user {UserId}", user.LockoutEnd, user.Id);
             _db.LoginActivities.Add(new LoginActivity
             {
                 TenantId      = user.TenantId,
@@ -171,8 +172,8 @@ public class AuthService : IAuthService
             {
                 user.IsLocked  = true;
                 user.LockoutEnd = DateTime.UtcNow.AddMinutes(lockoutMinutes);
-                _log.LogWarning("Account locked for {Email} after {Count} failed attempts; locked until {Until}",
-                    request.Email, user.FailedLoginCount, user.LockoutEnd);
+                _log.LogWarning("Account locked for user {UserId} after {Count} failed attempts; locked until {Until}",
+                    user.Id, user.FailedLoginCount, user.LockoutEnd);
             }
 
             _db.LoginActivities.Add(new LoginActivity
@@ -666,11 +667,11 @@ public class AuthService : IAuthService
         if (await _emailService.IsConfiguredAsync(user.TenantId, cancellationToken))
         {
             try { await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Reset your KynexOne password", html, cancellationToken: cancellationToken); }
-            catch (Exception ex) { _log.LogWarning(ex, "Password reset email failed for {Email}. Token saved.", user.Email); }
+            catch (Exception ex) { _log.LogWarning("Password reset email failed for user {UserId} ({ErrorType}). Token saved.", user.Id, ex.GetType().Name); }
         }
         else
         {
-            _log.LogInformation("SMTP not configured — reset token saved for {Email}, no email sent.", user.Email);
+            _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
         return new ForgotPasswordResponse(safeMessage, null, null);

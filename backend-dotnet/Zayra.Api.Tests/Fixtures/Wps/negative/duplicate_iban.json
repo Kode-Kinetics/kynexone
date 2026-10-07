@@ -1,0 +1,11 @@
+{
+  "expectedCode": "duplicate_iban",
+  "patch": {
+    "rows": {
+      "1": {
+        "iban": "SA0380000000608010167519",
+        "bankBic": "RJHISARI"
+      }
+    }
+  }
+}

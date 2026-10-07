@@ -127,13 +127,13 @@ public class PayrollP0CountryPackTests
     // ── 4. WPS format assertion — KSA → mudad-xml, UAE → mohre-sif ───────────
 
     [Fact]
-    public async Task KsaWpsExporter_ProducesMudadXmlFormat()
+    public async Task KsaExporter_ProducesInternalPayrollRegisterFormat()
     {
         var exporter = new KsaWageProtectionExporter();
         var input = WpsTestInput("SAU-EST-001");
         var result = await exporter.ExportAsync(input);
 
-        Assert.Equal("mudad-xml", result.Format);
+        Assert.Equal(Zayra.Api.Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterFormat, result.Format);
         Assert.True(result.FileBytes.Length > 0, "KSA exporter must produce non-empty file bytes");
         Assert.Equal(1, result.RecordCount);
     }

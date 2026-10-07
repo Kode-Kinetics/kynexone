@@ -16,7 +16,35 @@ namespace Zayra.Api.Infrastructure.Finance;
 public record LoanEligibilityAssessment(bool Eligible, string[] Reasons, string[] Codes, decimal? MaxAvailableAmount,
     Guid? PolicyId, int? PolicyVersion, string PolicySnapshotJson, string EmploymentSnapshotJson,
     decimal MonthlySalary, decimal CommittedAmount, GradeLoanLimitResult? GradeLimit = null,
-    decimal? Available = null, string? BindingLimit = null, IReadOnlyList<LoanLimitBreakdown>? Limits = null);
+    decimal? Available = null, string? BindingLimit = null, IReadOnlyList<LoanLimitBreakdown>? Limits = null,
+    LoanArt92Check? Art92 = null);
+
+/// <summary>
+/// Saudi Labour Law Art. 92: an employer-loan instalment deducted from the wage may be at most 10% of the wage unless the
+/// employee consents in writing. Evaluated for every non-preview assessment; ENFORCED (a <c>LoanDeductionConsent</c>
+/// document required) only for tenants with Release A on — see <c>LoansController</c>.
+/// </summary>
+/// <param name="Instalment">The monthly instalment this request implies (amount ÷ instalments, monthly equivalent).</param>
+/// <param name="WageDue">The monthly wage the test used (the active salary structure); null when it is not known.</param>
+/// <param name="Pct">Instalment ÷ wage, 0–100, two decimals; null when the wage is not known.</param>
+/// <param name="RequiresConsent">True when the instalment is deducted from pay and is above 10% of the wage — or the wage is
+/// unknown, so the 10% cannot be shown to hold (fail-closed).</param>
+/// <param name="DeductedFromPay">False for a loan repaid outside payroll: Art. 92 governs deductions from the wage.</param>
+public sealed record LoanArt92Check(decimal Instalment, decimal? WageDue, decimal? Pct, bool RequiresConsent, bool DeductedFromPay)
+{
+    public const decimal ThresholdPercent = 10m;
+
+    public static LoanArt92Check Evaluate(decimal monthlyInstalment, decimal? wage, bool deductedFromPay)
+    {
+        var knownWage = wage is > 0m ? wage : null;
+        var above = knownWage is not decimal ww || monthlyInstalment > ww * ThresholdPercent / 100m;
+        // Shown next to "above 10%": rounded away from the threshold so the label never contradicts the verdict.
+        decimal? pct = knownWage is decimal w
+            ? Zayra.Api.Infrastructure.Payroll.DeductionStatementBuilder.DisplayShare(monthlyInstalment / w * 100m, ThresholdPercent)
+            : null;
+        return new LoanArt92Check(Math.Round(monthlyInstalment, 2), knownWage, pct, deductedFromPay && above, deductedFromPay);
+    }
+}
 
 /// <summary>Stable codes this service adds beyond the policy rules (the UI maps codes to Arabic).</summary>
 public static class LoanEligibilityCodes
@@ -33,8 +61,11 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
 {
     public async Task<LoanEligibilityAssessment> EvaluateAsync(Guid tid, Employee employee, LoanType loanType,
         decimal amount, int installments, string repaymentMethod, Guid? excludeLoanId = null,
-        string? policySnapshotJson = null, CancellationToken ct = default, bool preview = false)
+        string? policySnapshotJson = null, CancellationToken ct = default, bool preview = false, DateOnly? asOf = null)
     {
+        // asOf: the date a preview is read for (the package screen's date). Every date rule below uses it; default today.
+        var asOfDate = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var asOfUtc = asOfDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         // Preview: no amount chosen yet. Report the limits for this type without the rules that judge an
         // amount (or an instalment count the employee has not picked). Never used to create or approve.
         var reasons = new List<string>();
@@ -92,13 +123,10 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
             else Refuse("PolicyInvalid", "The loan type must have a valid installment limit.");
             policy.MinServiceMonths = Math.Max(policy.MinServiceMonths, loanType.MinServiceMonths);
         }
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = asOfDate;
         var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
-        var salary = await db.Set<EmployeeSalaryStructure>().AsNoTracking()
-            .Where(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate <= today)
-            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
-        var monthlySalary = salary == null ? 0 : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance
-            + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
+        var salary = await SalaryAsOfAsync(tid, employee.Id, today, ct);
+        var monthlySalary = MonthlyWage(salary);
         var notice = await db.Set<EmployeeOffboarding>().AnyAsync(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.Status == "InProgress", ct);
         var statuses = ReadList(policy.AllowedEmploymentStatusesJson, Refuse);
         var contracts = ReadList(policy.AllowedContractTypesJson, Refuse);
@@ -107,11 +135,11 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         if (employee.IsDeleted || !statuses.Contains(employee.Status, StringComparer.OrdinalIgnoreCase))
             Refuse("EmploymentStatus", $"Employment status '{employee.Status}' is not eligible under this policy.");
         if (policy.BlockDuringNotice && (notice || employee.Status == EmployeeStatuses.Offboarded)) Refuse("Notice", "Employees serving notice cannot receive a new loan.");
-        if (employee.JoiningDate == default || employee.JoiningDate.Date > DateTime.UtcNow.Date)
+        if (employee.JoiningDate == default || employee.JoiningDate.Date > asOfUtc.Date)
             Refuse("EmploymentDate", "A valid joining date is required before a loan can be assessed.");
         else if (policy.MinServiceMonths is < 0 or > 600)
             Refuse("PolicyInvalid", "The policy service requirement is invalid.");
-        else if (employee.JoiningDate.Date > DateTime.UtcNow.Date.AddMonths(-policy.MinServiceMonths))
+        else if (employee.JoiningDate.Date > asOfUtc.Date.AddMonths(-policy.MinServiceMonths))
             Refuse("MinService", $"At least {policy.MinServiceMonths} completed service month(s) are required.");
         if (policy.RequireProbationCompleted && !(employee.ConfirmationDate <= today
             || (employee.ProbationEndDate.HasValue && employee.ProbationEndDate.Value < today)))
@@ -151,7 +179,7 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
             || await db.LoanInstallments.AnyAsync(x => x.TenantId == tid && liveIds.Contains(x.LoanId) && x.DueDate < today && x.AmountPaid < x.AmountDue && x.Status != "Waived", ct)))
             Refuse("Overdue", "An overdue loan must be resolved before another loan is granted.");
         if (policy.CooldownMonthsAfterRepayment > 0 && loans.Any(x => x.Status is "Settled" or "Closed"
-            && x.UpdatedAtUtc > DateTime.UtcNow.AddMonths(-policy.CooldownMonthsAfterRepayment)))
+            && x.UpdatedAtUtc > asOfUtc.AddMonths(-policy.CooldownMonthsAfterRepayment)))
             Refuse("Cooldown", $"Wait {policy.CooldownMonthsAfterRepayment} month(s) after the previous loan was settled.");
         decimal? maximum = policy.MaxAmount > 0 ? policy.MaxAmount : null;
         if (policy.MaxTotalOutstanding > 0) maximum = Min(maximum, Math.Max(0, policy.MaxTotalOutstanding - committedAmount));
@@ -232,10 +260,39 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         if (preview && binding is { Available: 0m } && PreviewExhaustedCode(binding.Limit) is { } exhaustedCode && !codes.Contains(exhaustedCode))
             Refuse(exhaustedCode, $"Nothing is available to borrow right now: {LimitPhrase(binding.Limit)} is fully used.");
         decimal? available = gradeBlocksOutright ? 0m : binding?.Available;
+        // Art. 92 (Release A): the instalment as a share of the wage. A salary in another currency is not a usable wage.
+        var art92 = preview ? null : LoanArt92Check.Evaluate(
+            MonthlyEquivalent(amount / Math.Max(1, installments), repaymentFrequency),
+            salaryUsable ? monthlySalary : null, repaymentMethod == "PayrollDeduction");
         return new(reasons.Count == 0, reasons.ToArray(), codes.ToArray(), maximum,
             policy.Id == Guid.Empty ? null : policy.Id, policy.Version == 0 ? null : policy.Version,
             JsonSerializer.Serialize(policy), "{}", monthlySalary, committedAmount,
-            grade, available, gradeBlocksOutright ? null : binding?.Limit, limits);
+            grade, available, gradeBlocksOutright ? null : binding?.Limit, limits, art92);
+    }
+
+    /// <summary>The employee's salary structure in force on <paramref name="asOf"/> (latest active row), or null.</summary>
+    private Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
+        db.Set<EmployeeSalaryStructure>().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= asOf)
+            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
+
+    /// <summary>The monthly wage of a salary structure (basic + every fixed allowance); 0 for none.</summary>
+    public static decimal MonthlyWage(EmployeeSalaryStructure? s) => s == null ? 0 : s.BasicSalary + s.HousingAllowance
+        + s.TransportAllowance + s.FoodAllowance + s.MobileAllowance + s.OtherAllowance;
+
+    /// <summary>
+    /// Art. 92 for an instalment that is not a new request — a reschedule, a switch to payroll collection, a consent
+    /// attached to a pending loan. Same rule and the same wage as <see cref="EvaluateAsync"/>: the salary in force today,
+    /// usable only in the company's loan currency; an unknown wage requires consent.
+    /// </summary>
+    public async Task<LoanArt92Check> Art92ForInstalmentAsync(Guid tid, Employee employee, decimal monthlyInstalment,
+        string repaymentMethod, CancellationToken ct)
+    {
+        var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
+        var salary = await SalaryAsOfAsync(tid, employee.Id, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+        var wage = MonthlyWage(salary);
+        var usable = salary != null && wage > 0 && string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase);
+        return LoanArt92Check.Evaluate(monthlyInstalment, usable ? wage : null, repaymentMethod == "PayrollDeduction");
     }
 
     /// <summary>Stamps the grade witnesses onto a loan from an assessment (at request, and again at the

@@ -30,7 +30,20 @@ public class ContractsController : ControllerBase
         };
 
     private readonly ZayraDbContext _db;
-    public ContractsController(ZayraDbContext db) => _db = db;
+    private readonly Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? _termLifecycle;
+    private readonly Zayra.Api.Application.Common.ITenantClock? _clock;
+
+    /// <param name="termLifecycle">Release A term-activation hooks (chain stamp, package freeze). Optional so direct
+    /// constructions keep compiling; the dispatcher itself is a no-op unless the tenant has release_a on.</param>
+    /// <param name="clock">Tenant-local "today" for the Release A replacement check (UTC date when absent).</param>
+    public ContractsController(ZayraDbContext db,
+        Zayra.Api.Infrastructure.Contracts.IContractTermLifecycleDispatcher? termLifecycle = null,
+        Zayra.Api.Application.Common.ITenantClock? clock = null)
+    {
+        _db = db;
+        _termLifecycle = termLifecycle;
+        _clock = clock;
+    }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -244,6 +257,33 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateContractStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: every change to a term's status runs under the per-employee package lock, in one transaction, so two
+        // activations (or an activation and a freeze) for the same employee cannot both pass the writer's overlap check.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => UpdateStatusCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            // A DbUpdateException at SaveChanges, or a bare PostgresException from a deferred trigger at COMMIT.
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private ObjectResult PackageConflict(string code, string message, DateOnly? possibleFrom) =>
+        Conflict(new { error = code, message, possibleFrom, reason = Zayra.Api.Infrastructure.Entitlements.PackageReasons.Describe(code) });
+
+    private async Task<IActionResult> UpdateStatusCoreAsync(Guid id, UpdateContractStatusRequest req, Guid tid, CancellationToken ct)
+    {
         var contract = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (contract == null) return NotFound();
@@ -270,7 +310,8 @@ public class ContractsController : ControllerBase
             });
         if (requested == "Active" && string.IsNullOrWhiteSpace(req.SignedByHrName))
             return BadRequest(new { error = "hr_signature_required", message = "HR signatory name is required to activate a contract." });
-        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > DateOnly.FromDateTime(DateTime.UtcNow)))
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (requested == "Expired" && (!contract.EndDate.HasValue || contract.EndDate.Value > today))
             return BadRequest(new { error = "contract_not_expired", message = "A contract can only be marked Expired on or after its recorded end date." });
 
         contract.Status = requested;
@@ -280,6 +321,17 @@ public class ContractsController : ControllerBase
         {
             contract.SignedByHrName = req.SignedByHrName!.Trim();
             contract.SignedByHrAtUtc = DateTime.UtcNow;
+            // Release A: stamp the chain and freeze the contract-year package in this same SaveChanges.
+            if (_termLifecycle is not null) await _termLifecycle.OnActivatedAsync(contract, ct);
+        }
+        else if (old == "Active" && (requested is "Expired" or "Terminated") && _termLifecycle is not null)
+        {
+            // Release A, in this SaveChanges. Terminated cancels an open renewal case (T21) and closes the package;
+            // Expired is RECORD-ONLY — the employee working on renews the contract by law (Art. 74(2)), so the case
+            // stays open for the holdover (T22, R6). See IContractTermLifecycle.OnEndedAsync.
+            await _termLifecycle.OnEndedAsync(contract, requested == "Expired"
+                ? Zayra.Api.Application.Entitlements.ContractEndReasons.Expired
+                : Zayra.Api.Application.Entitlements.ContractEndReasons.Terminated, ct);
         }
 
         _db.ComplianceAuditLogs.Add(new ComplianceAuditLog
@@ -300,6 +352,29 @@ public class ContractsController : ControllerBase
     public async Task<IActionResult> Supersede(Guid id, [FromBody] CreateContractRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // Release A: under the per-employee package lock, in one transaction — a supersede and a proposal confirm (or an
+        // activation) for the same employee are serialised, so neither commits onto a term the other just replaced.
+        var employeeId = await _db.EmployeeContracts.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted).Select(x => (Guid?)x.EmployeeId).FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        try
+        {
+            return await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db,
+                Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.ScopeEmployeePackage, tid, employeeId.Value,
+                () => SupersedeCoreAsync(id, req, tid, ct), ct);
+        }
+        catch (Zayra.Api.Infrastructure.Entitlements.EntitlementLifecycleBlockedException ex)
+        {
+            return PackageConflict(ex.Code, ex.Message, ex.PossibleFrom);
+        }
+        catch (Exception ex) when (Zayra.Api.Infrastructure.Entitlements.PackageReasons.FromDatabase(ex) is { } code)
+        {
+            return PackageConflict(code, "The contract's benefits don't fit this change.", null);
+        }
+    }
+
+    private async Task<IActionResult> SupersedeCoreAsync(Guid id, CreateContractRequest req, Guid tid, CancellationToken ct)
+    {
         var old = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (old == null) return NotFound();
@@ -315,9 +390,28 @@ public class ContractsController : ControllerBase
             return BadRequest(new { error = "invalid_contract_dates", message = "The replacement contract must start on or after the prior start date and end on or after its start date." });
         if (req.BasicSalary < 0m)
             return BadRequest(new { error = "invalid_basic_salary", message = "Basic salary cannot be negative." });
+        // Release A: an open renewal review follows its term (RenewalCaseCarry). An amendment within the term is allowed and
+        // the review moves onto the new version when that version is activated; a new term after the end is the renewal's
+        // own decision, and a changed end date once an action is chosen is refused.
+        var carry = await Zayra.Api.Infrastructure.Contracts.RenewalCaseCarry.DecideAsync(_db, tid, old, req.StartDate, req.EndDate, ct);
+        if (carry.RefusalCode == Zayra.Api.Application.Contracts.ReleaseABlockReasons.RenewalCaseInProgress)
+        {
+            var reason = Zayra.Api.Application.Contracts.ReleaseABlockReasons.All[carry.RefusalCode];
+            return Conflict(new { error = carry.RefusalCode, reason, message = reason.WhyEn, messageAr = reason.WhyAr });
+        }
+        if (carry.RefusalCode is not null)
+            return Conflict(new { error = carry.RefusalCode, message = carry.RefusalEn, messageAr = carry.RefusalAr });
+
+        // Release A: refuse BEFORE anything changes when the replacement would need a fixed benefit that has not started
+        // removed (the database never removes one) — the current version then simply stays in force.
+        var today = _clock is not null ? await _clock.TodayAsync(tid, ct) : DateOnly.FromDateTime(DateTime.UtcNow);
+        if (await Zayra.Api.Infrastructure.Entitlements.EntitlementWriter.ReplacementBlockAsync(_db, tid, old.Id, req.StartDate, today, ct) is { } blocked)
+            return PackageConflict(blocked.Code, blocked.Message, blocked.PossibleFrom);
 
         old.Status = "Superseded";
         old.UpdatedAtUtc = DateTime.UtcNow;
+        if (_termLifecycle is not null)
+            await _termLifecycle.OnEndedAsync(old, Zayra.Api.Application.Entitlements.ContractEndReasons.Superseded, ct);
 
         var count = await _db.EmployeeContracts.CountAsync(x => x.TenantId == tid, ct);
         var contractNumber = $"CON-{DateTime.UtcNow.Year}-{(count + 1):D4}";
@@ -336,6 +430,12 @@ public class ContractsController : ControllerBase
             Version = old.Version + 1,
             PreviousVersionId = old.Id,
             CreatedByUserId = GetUserId(),
+            // Release A: an amendment is the same worker under the same chain — keep the stamped nationality class, so
+            // nationality-scoped benefits are not "needs confirmation" on every new version.
+            // The same term's renewal terms carry over to the new version (Release A).
+            AutoRenew = old.AutoRenew,
+            NonRenewalNoticeDays = old.NonRenewalNoticeDays,
+            WorkerNationalityClass = old.WorkerNationalityClass,
         };
 
         _db.EmployeeContracts.Add(newContract);

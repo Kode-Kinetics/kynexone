@@ -60,6 +60,10 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// JSON console logs (traceId + tenantId via scopes) outside Development; OpenTelemetry OTLP export
+// only when OTEL_EXPORTER_OTLP_ENDPOINT is set — otherwise nothing is registered. See Observability.
+builder.AddKynexObservability();
+
 // Recovery and invitation credentials are delivered as browser links. A
 // non-development deployment must never emit a relative or insecure link into
 // email/admin responses; fail the release before any credential can be issued.
@@ -119,6 +123,15 @@ builder.Host.UseDefaultServiceProvider(options =>
     options.ValidateOnBuild = true;
     options.ValidateScopes  = true;
 });
+
+// ── Graceful drain (multi-instance / zero-downtime deploys) ──────────────────
+// On SIGTERM /health/ready flips to 503 first, the instance keeps serving for
+// Shutdown:ReadinessDrainSeconds (default 0) while the balancer notices, then the server stops
+// accepting and in-flight requests get the rest of Shutdown:TimeoutSeconds (default 30; the drain
+// runs inside it and is capped to leave them at least 10s). /health/live is unchanged.
+builder.Services.AddSingleton<ShutdownDrain>();
+builder.Services.Configure<HostOptions>(options =>
+    options.ShutdownTimeout = ShutdownDrain.ShutdownTimeout(builder.Configuration));
 
 // ── P3: JWT audience prod fail-fast ──────────────────────────────────────────
 // Dev defaults are intentionally left in appsettings.json for zero-config local dev.
@@ -450,13 +463,25 @@ builder.Services.AddDataProtection()
     .SetApplicationName("Zayra.Api")
     .PersistKeysToDbContext<ZayraDbContext>();
 
-// Qiwa API adapter: live HTTP client when QIWA_USE_LIVE_ADAPTER=true, sandbox mock otherwise.
+// Qiwa API adapter. HARD-DISABLED unless QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is
+// recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
+// network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
 builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech"));
-if (string.Equals(Environment.GetEnvironmentVariable("QIWA_USE_LIVE_ADAPTER"), "true", StringComparison.OrdinalIgnoreCase))
-    builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
-else
-    builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
+{
+    case QiwaLiveAdapterPolicy.Mode.Live:
+        builder.Services.AddSingleton<IQiwaApiAdapter, LiveQiwaApiAdapter>();
+        break;
+    case QiwaLiveAdapterPolicy.Mode.RefusedLive:
+        Console.Error.WriteLine("[startup] QIWA_USE_LIVE_ADAPTER=true but no Qiwa partner agreement is recorded "
+            + $"({QiwaLiveAdapterPolicy.PartnerAgreementKey}); live Qiwa calls are REFUSED.");
+        builder.Services.AddSingleton<IQiwaApiAdapter, RefusedLiveQiwaApiAdapter>();
+        break;
+    default:
+        builder.Services.AddSingleton<IQiwaApiAdapter, SandboxQiwaApiAdapter>();
+        break;
+}
 builder.Services.AddHostedService<QiwaSyncWorker>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();
@@ -517,6 +542,11 @@ builder.Services.AddSingleton(effectiveChangeOptions);
 builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler.Descriptor);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
+
+// Release A (grade entitlements, contract-year package, contract renewals, deductions statement). Every service
+// is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
+// surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
+Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
@@ -726,6 +756,8 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
+
 if (trustForwardedHeaders)
     app.UseForwardedHeaders();
 
@@ -777,6 +809,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 app.UseAuthentication();
+app.UseTenantLogScope();
 // Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
 // /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
 // Placed AFTER UseAuthentication (User is populated) and BEFORE UseAuthorization (runs first).
@@ -802,8 +835,13 @@ app.MapGet("/health/live", () => Results.Ok(new
 // whole internet. It answers status + pendingMigrations and nothing else (PublicReadiness); the full
 // evidence (tenant counts, worker names, SMTP/Qiwa modes, queues) is at /health/ready/details for
 // platform operators only. Both compute the status with the same rule, so they cannot disagree.
-app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
+app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, ShutdownDrain drain, CancellationToken ct) =>
 {
+    // Shutting down: tell the balancer to stop routing here before the server stops accepting.
+    // Answered without touching the database, so a drain never waits on a slow dependency.
+    if (drain.IsDraining)
+        return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
     var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false);
     if (evidence.Status == "ready") return Results.Ok(PublicReadiness.From(evidence));
     LogReadinessRefusal(evidence, lf);

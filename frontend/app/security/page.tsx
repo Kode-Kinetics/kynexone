@@ -129,8 +129,8 @@ export default function SecurityPage() {
               detail="Saudi GOSI rates (9% EE annuity + 0.75% SANED, 11.75% ER for Saudis; 2% ER OH only for expats) are enforced in the calculation engine. Covered wage is capped at SAR 45,000 per KSA regulation. Statutory rule overrides can be configured per-tenant."
             />
             <Claim
-              label="WPS (Mudad) export"
-              detail="Payroll runs generate ISO 20022-formatted SIF files compatible with the UAE/GCC Wages Protection System (Mudad). Export is blocked when employee data fails WPS validation (invalid IBAN, missing government ID). File format follows the Mudad SIF specification."
+              label="Saudi bank payroll file with WPS fields"
+              detail="For Saudi Arabia, payroll runs produce an ANB Connect payroll instruction (switched on per legal entity) carrying the WPS wage fields (basic, housing, other earnings, deductions, government ID). Generation is blocked unless every line passes the WPS field rules: a real MOL establishment ID, SAR only, a valid 24-character Saudi IBAN, a 10-digit national ID or Iqama matching nationality, net pay reconciled to the payslip, a unique file reference and deductions within the 50% limit. The product does not submit to Mudad: Mudad accepts only the WPS file your bank signs, and a batch is marked Accepted only against stored evidence (the bank's output file or a Mudad screenshot). Bank acceptance of the layout has not yet been certified."
             />
             <Claim
               label="EOSB calculation"

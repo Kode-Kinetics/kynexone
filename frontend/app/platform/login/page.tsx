@@ -374,7 +374,7 @@ export default function PlatformLoginPage() {
                   <label htmlFor="platform-password" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Password
                   </label>
-                  <span className="text-xs text-slate-400 dark:text-slate-500">Not for tenant users</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">Not for tenant users</span>
                 </div>
                 <div className="relative">
                   <input
@@ -417,7 +417,7 @@ export default function PlatformLoginPage() {
             <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-6 dark:border-white/10">
               <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
               {['Audit-logged', 'MFA-aware', 'Tenant-safe'].map((pill) => (
-                <span key={pill} className="text-xs font-medium text-slate-400 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-['']">
+                <span key={pill} className="text-xs font-medium text-slate-500 after:mx-1.5 after:text-slate-300 after:content-['·'] last:after:content-[''] dark:text-slate-400">
                   {pill}
                 </span>
               ))}
@@ -425,7 +425,7 @@ export default function PlatformLoginPage() {
 
             <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
               Tenant workspace login?{' '}
-              <a href="/login" className="font-medium text-sapphire underline underline-offset-2 hover:text-blue-700 dark:text-sky-400">
+              <a href="/login" className="font-medium text-blue-700 underline underline-offset-2 hover:text-blue-800 dark:text-sky-400 dark:hover:text-sky-300">
                 Sign in here
               </a>
             </p>
@@ -447,11 +447,12 @@ export default function PlatformLoginPage() {
         }
         .pa-input::placeholder { color: #94a3b8; }
         .pa-input:focus { border-color: #2f6bff; box-shadow: 0 0 0 3px rgba(47,107,255,0.14); }
-        @media (prefers-color-scheme: dark) {
-          .pa-input { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #f1f5f9; }
-          .pa-input::placeholder { color: rgba(255,255,255,0.28); }
-          .pa-input:focus { border-color: #5eebff; box-shadow: 0 0 0 3px rgba(94,235,255,0.16); }
-        }
+        /* Dark follows the .dark class like every dark: utility on this page (tailwind darkMode:
+           'class'). A prefers-color-scheme query here painted light text on the still-light form
+           for anyone whose OS is in dark mode: 1.04:1, the typed email/code all but invisible. */
+        .dark .pa-input { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #f1f5f9; }
+        .dark .pa-input::placeholder { color: rgba(255,255,255,0.28); }
+        .dark .pa-input:focus { border-color: #5eebff; box-shadow: 0 0 0 3px rgba(94,235,255,0.16); }
         .pa-btn {
           position: relative; display: flex; align-items: center; justify-content: center; gap: 8px;
           width: 100%; overflow: hidden; border-radius: 10px;

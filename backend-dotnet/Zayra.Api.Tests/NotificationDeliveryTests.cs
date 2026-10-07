@@ -256,6 +256,48 @@ public class NotificationDeliveryTests
             .Should().BeGreaterThan(0, "a security notice must survive any module configuration");
     }
 
+    /// <summary>
+    /// The employee's email master switch must not silence an account-security notice ("someone is
+    /// using your password"), but only "security.*" codes are exempt: other notices, including ones
+    /// Classify files under Security by keyword, still honour the switch.
+    /// </summary>
+    [Theory]
+    [InlineData("security.lockout_bypassed_known_device", true)]
+    [InlineData("security.known_device_distrusted", true)]
+    [InlineData("PASSWORD_RESET", false)]
+    [InlineData("PAYSLIP_READY", false)]
+    [InlineData("SECURITY.LOCKOUT", false)]
+    public async Task EmailMasterSwitch_IsOverriddenOnlyBySecurityEventCodes(string eventCode, bool expectEmail)
+    {
+        using var h = new Harness();
+        var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+        var userId = UserIdOf(db, tenantId);
+        db.EmployeeNotificationPreferences.Add(new EmployeeNotificationPreference
+        { TenantId = tenantId, EmployeeId = 1, EmailEnabled = false });
+        await db.SaveChangesAsync();
+
+        await h.Notifications.EnqueueAsync(new NotificationRequest
+        {
+            TenantId = tenantId, UserId = userId, EventCode = eventCode,
+            EntityName = "User", EntityId = userId.ToString("N"),
+            Title = "Notice", Message = "Something happened on your account.",
+        }, default);
+
+        var email = h.NewDb().NotificationDeliveries.IgnoreQueryFilters()
+            .Where(d => d.TenantId == tenantId && d.Channel == NotificationChannels.Email).ToList();
+        if (expectEmail)
+        {
+            email.Should().ContainSingle();
+            email[0].Outcome.Should().NotBe(DeliveryOutcomes.Suppressed);
+            email[0].NextAttemptAtUtc.Should().NotBeNull("the security email is queued for sending");
+        }
+        else
+        {
+            email.Should().BeEmpty("the employee turned email off and this is not a security.* notice");
+        }
+    }
+
     private static Guid UserIdOf(ZayraDbContext db, Guid tenantId) =>
         db.Users.IgnoreQueryFilters().First(u => u.TenantId == tenantId).Id;
 

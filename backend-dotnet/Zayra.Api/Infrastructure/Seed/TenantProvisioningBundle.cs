@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
@@ -634,7 +635,58 @@ public static class TenantProvisioningBundle
             db.ApprovalWorkflows.Add(workflow);
             added++;
         }
+
+        added += await InstallReleaseAApprovalWorkflowsAsync(db, tenantId, coveredEntities, codes, ct);
         return added;
+    }
+
+    // ── Release A: contract renewal approval chains (HR Manager → HR Director) ──
+    // Deliberately NOT in ApprovalDefaults: that list may only name entities with a producer
+    // (ConfigurationConsumerTests), and the renewal producer arrives with slice R5. Each row installs only once
+    // (a) ApprovalEntities registers its producer — R5 does that, so these switch on with R5 and nothing else
+    // edits a seeder — and (b) the tenant has the release_a opt-in flag on, so no live tenant gains workflows
+    // for a feature it cannot see. Two named roles, so the offer author (HR Manager) is never the final decider
+    // and the subject/earlier-step bars always leave a distinct decider per step.
+    internal static readonly (string EntityName, string Code, string Name)[] ReleaseAApprovalDefaults =
+    {
+        (Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApprovalEntityName, "CONTRACT-RENEWAL-DEFAULT", "Default Contract Renewal Approval"),
+        (Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.BatchApprovalEntityName, "CONTRACT-RENEWAL-BATCH-DEFAULT", "Default Contract Renewal Batch Approval"),
+    };
+
+    private static async Task<int> InstallReleaseAApprovalWorkflowsAsync(
+        ZayraDbContext db, Guid tenantId, HashSet<string> coveredEntities, HashSet<string> codes, CancellationToken ct)
+    {
+        var producible = ReleaseAApprovalDefaults
+            .Where(d => ApprovalEntities.HasProducer(d.EntityName) && !coveredEntities.Contains(d.EntityName) && !codes.Contains(d.Code))
+            .ToList();
+        if (producible.Count == 0) return 0;
+
+        var releaseAOn = await ScopedBypass.TenantWide(db.TenantFeatureFlags, tenantId,
+                "Seeder reads this tenant's own release_a flag row to decide whether to install the renewal approval defaults.")
+            .AsNoTracking()
+            .AnyAsync(f => f.FeatureKey == FeatureKeys.ReleaseA && f.IsEnabled, ct);
+        if (!releaseAOn) return 0;
+
+        foreach (var (entityName, code, name) in producible)
+        {
+            var workflow = new ApprovalWorkflow
+            {
+                TenantId = tenantId, Code = code, Name = name, EntityName = entityName,
+                IsDefault = true, IsActive = true,
+            };
+            workflow.Steps.Add(new ApprovalWorkflowStep
+            {
+                TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1,
+                StepName = "HR Manager review", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = false,
+            });
+            workflow.Steps.Add(new ApprovalWorkflowStep
+            {
+                TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 2,
+                StepName = "HR Director approval", ApproverType = "Role", ApproverRole = "HR Director", IsFinalStep = true,
+            });
+            db.ApprovalWorkflows.Add(workflow);
+        }
+        return producible.Count;
     }
 
     // ── 7. Bilingual notification-template defaults (Program row 142 — seeded at provisioning) ──

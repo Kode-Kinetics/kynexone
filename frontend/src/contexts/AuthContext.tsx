@@ -3,6 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthUser } from '../api/auth';
+import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
+import { clearSessionKeepingLocale } from '../api/clearSession';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
 export interface MfaPendingState {
@@ -20,6 +22,14 @@ export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll';
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
+  /**
+   * Set when the session could not be confirmed for a reason OTHER than being signed out: the
+   * server could not be reached ('network') or answered with an error ('server'). The tokens are
+   * kept; screens show "can't reach the server" with a Retry instead of redirecting to /login.
+   */
+  authError: AuthLoadError | null;
+  /** Re-run the session check (`/me`) after an authError. */
+  retryAuth: () => Promise<void>;
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
@@ -42,6 +52,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [mfaPending, setMfaPending] = useState<MfaPendingState | null>(null);
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
+  const [authError, setAuthError] = useState<AuthLoadError | null>(null);
+
+  // Ask the server who the user is. Only a 401 ends the session (lib/authLoadState.ts): a network
+  // error or a 5xx keeps the tokens and sets authError, so an outage never signs anyone out.
+  const loadUser = useCallback(async () => {
+    let next;
+    try {
+      next = afterMeSuccess(await authApi.me());
+    } catch (err) {
+      next = afterMeFailure<AuthUser>(err);
+    }
+    if (next.clearSession) clearSessionKeepingLocale();
+    setUser(next.user);
+    setAuthError(next.authError);
+  }, []);
+
   useEffect(() => {
     if (['/login', '/reset-password', '/accept-invitation'].includes(window.location.pathname)) {
       setIsLoading(false);
@@ -52,15 +78,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       return;
     }
-    authApi
-      .me()
-      .then(setUser)
-      .catch(() => {
-        localStorage.removeItem('zayra_access_token');
-        localStorage.removeItem('zayra_refresh_token');
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
+    loadUser().finally(() => setIsLoading(false));
+  }, [loadUser]);
+
+  // The offline screen shows its own "Retrying…" state, so a retry does not flip isLoading (which
+  // would swap that screen for a bare spinner and back).
+  const retryAuth = loadUser;
 
   const login = useCallback(async (email: string, password: string, tenantSlug: string) => {
     const res = await authApi.login(email, password, tenantSlug);
@@ -80,6 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
+    setAuthError(null);
     setUser(res.user);
     return 'authenticated';
   }, []);
@@ -91,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
+    setAuthError(null);
     setUser(res.user);
   }, [mfaPending]);
 
@@ -98,9 +123,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { enrollmentToken, expiresInSeconds } = await authApi.mfaEnrollmentStart();
     // NOT authApi.logout(): logout rotates the session stamp, and the enrolment token is bound to
     // the current stamp, so it would be dead on arrival. Completing enrolment rotates the stamp
-    // itself, which ends this session server-side; here we only drop the local copy.
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // itself, which ends this session server-side; here we only drop the local copy, the same way
+    // every other session exit does (the display language survives, nothing else of this user does).
+    clearSessionKeepingLocale();
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending({ enrollmentToken, expiresInSeconds });
@@ -113,9 +138,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // ignore
     }
-    localStorage.removeItem('zayra_access_token');
-    localStorage.removeItem('zayra_refresh_token');
+    // Same wipe as an expired session: a shared computer keeps nothing of this user's
+    // (search history, company selection, import history), only the display language.
+    clearSessionKeepingLocale();
     setUser(null);
+    setAuthError(null);
     setMfaPending(null);
     setMfaEnrollmentPending(null);
   }, []);
@@ -131,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

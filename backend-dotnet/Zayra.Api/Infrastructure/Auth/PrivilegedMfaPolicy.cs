@@ -112,6 +112,9 @@ public static class PrivilegedMfaPolicy
         // Approvals beyond one's own line, recruitment, performance and compliance decisions.
         "approvals.override", "approvals.manage", "recruitment.write", "recruitment.approve", "recruitment.delete",
         "performance.approve", "performance.cycle_manage", "compliance.write", "compliance.approve",
+        // Release A: packages and renewal cases show each employee's pay terms (like payroll.read), and the manage keys
+        // change contract terms — all four are privileged, the read keys included.
+        "entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage",
     };
 
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);

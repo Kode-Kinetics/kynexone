@@ -1,0 +1,11 @@
+{
+  "expectedCode": "duplicate_mol_id",
+  "patch": {
+    "rows": {
+      "1": {
+        "molId": "1012345678",
+        "nationality": "Saudi"
+      }
+    }
+  }
+}

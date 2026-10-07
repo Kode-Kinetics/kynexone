@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
 
@@ -24,6 +25,9 @@ public partial class LoansController
 
     [HttpPost("policies")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
+    // Explicit gate (owner decision): HR policy owners. loans.policy_manage is Admin and HR Manager; employees.approve
+    // admits HR Director, whose seeded bundle has no loan write keys. Finance holds neither. The body re-checks the role.
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> CreateLoanPolicy([FromBody] LoanPolicyRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, LoanPolicyLockScope, GetTenantId(), req.CompanyId, async () =>
         {
@@ -105,6 +109,8 @@ public partial class LoansController
             monthlySalary, result.CommittedAmount, canRequestException,
             preview, available = result.Available, bindingLimit = result.BindingLimit, limitBreakdowns = limits,
             gradeLimit = GradeLimitDto(result.GradeLimit, maySeeSalary),
+            // Release A: the Art. 92 10% test for this request (null in a preview, or when the tenant does not have it).
+            art92 = await ReleaseAEnabledAsync(tid, ct) ? Art92Dto(result.Art92, maySeeSalary) : null,
             // The employee's company currency — every amount above is in it. The UI never guesses a tenant default.
             currency = await Zayra.Api.Infrastructure.Payroll.GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct) });
     }

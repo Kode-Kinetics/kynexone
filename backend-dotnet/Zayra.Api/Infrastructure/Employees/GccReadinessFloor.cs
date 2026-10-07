@@ -54,9 +54,9 @@ public static class GccReadinessFloor
     {
         var n = (nationality ?? string.Empty).Trim().ToUpperInvariant();
         if (n.Length == 0) return string.Empty;
+        if (Compliance.SaudiNationality.IsSaudi(nationality)) return "SA";
         return n switch
         {
-            "SA" or "SAU" or "KSA" or "SAUDI" or "SAUDI ARABIA" or "SAUDIARABIA" => "SA",
             "AE" or "ARE" or "UAE" or "EMIRATI" or "EMIRATES" or "UNITED ARAB EMIRATES" => "AE",
             "QA" or "QAT" or "QATAR" or "QATARI" => "QA",
             "KW" or "KWT" or "KUWAIT" or "KUWAITI" => "KW",

@@ -247,7 +247,9 @@ public sealed class PeriodHandoffReconciler
 
         // ── 5. DELTAS — surfaced, never netted away ────────────────────────────────────────────────
         var settledToGl = JournalAmount.Round(selection.Entries
-            .Where(e => e.EventType == GlEventTypes.NetSettlement && !e.IsReversed && !string.IsNullOrEmpty(e.CreditAccount))
+            .Where(e => e.EventType == GlEventTypes.NetSettlement && !e.IsReversed && !string.IsNullOrEmpty(e.CreditAccount)
+                        // Cash/cheque wages recorded outside the bank file are never bank-confirmed.
+                        && (e.SourceEntityRef == null || !e.SourceEntityRef.StartsWith(Zayra.Api.Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRefPrefix)))
             .Sum(e => e.Amount));
 
         var returnPeriod = returnsDetail

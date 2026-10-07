@@ -1,0 +1,11 @@
+{
+  "dryRun": true,
+  "published": 2,
+  "unchanged": 0,
+  "reverted": 0,
+  "affectedNow": 1,
+  "affectedAtRenewal": 3,
+  "gapsRemaining": 0,
+  "matrix": null,
+  "superseded": 1
+}

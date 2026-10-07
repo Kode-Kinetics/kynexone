@@ -125,6 +125,39 @@ test('HR creates an immutable company policy version with its approval route', a
   expect(policy.companyId).toBe('company-1'); expect(policy.allowedRepaymentMethods).toEqual(['BankTransfer']); expect(policy.allowedRepaymentFrequencies).toContain('Quarterly'); expect(policy.isOffered).not.toBe(false); expect(errors).toEqual([]);
 });
 
+// Owner decision: HR Director manages loan policies. Its seeded bundle has loans.read and employees.approve (the
+// API's second key on the four policy gates) but no loans.write or loans.policy_manage, so boot it with exactly that.
+const hrDirectorMe = { id: 'hr-director', employeeId: 17, tenantId: 'tenant-1', tenantSlug: 'fixture', fullName: 'Huda Director', roles: ['HR Director'], permissions: ['loans.read', 'employees.read', 'employees.approve', 'organization.read'], companies: [{ id: 'company-1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] };
+const gradeRow = { gradeId: 'grade-1', gradeCode: 'G1', gradeName: 'Grade One', gradeNameAr: null, level: 1, cellId: null, eligible: false, valueType: null, amount: null, rate: null, maxOutstandingAmount: null, effectiveFrom: null, isCompanyOverride: false };
+
+test('HR Director sees every loan policy edit control, enabled', async ({ page }) => {
+  const errors = await boot(page, 'HR Director', path => {
+    if (path === '/api/auth/me') return hrDirectorMe;
+    if (path.endsWith('/policies')) return [];
+    if (path === '/api/finance/loans/grade-limits') return [gradeRow];
+  });
+  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toBeEnabled();
+  const offerings = page.getByRole('region', { name: 'Loan types offered' });
+  await expect(offerings.getByRole('checkbox', { name: 'Offered' })).toBeEnabled();
+  const grid = page.getByRole('region', { name: 'Limits by grade' });
+  await expect(grid.getByRole('checkbox', { name: 'Limit this loan type by grade' })).toBeEnabled();
+  await expect(grid.getByRole('combobox', { name: 'Eligible — Grade One' })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+for (const role of ['Finance', 'Finance Approver']) {
+  test(`${role} gets no loan policy edit controls`, async ({ page }) => {
+    const errors = await boot(page, role, () => undefined);
+    await expect(page.getByRole('button', { name: 'Loans', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Loan Policies', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Loan types offered' })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Limits by grade' })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('Finance records a failed line, retries it, and requests audited corrections', async ({ page }, info) => {
   let correctionReviewer = false;
   const loan = { ...originalLoan, status: 'Approved', disbursementDate: undefined as string | undefined, outstandingBalance: 0, totalRepaid: 0 };
@@ -282,4 +315,104 @@ test('batch totals distinguish paid, cancelled and reversed instructions', async
   await expect(page.getByText('Payment: Reversed', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Record Outcome/ })).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test('a malformed loan-policies reply shows a failed load with Retry, never "No policy versions"', async ({ page }) => {
+  let malformed = true;
+  const errors = await boot(page, 'HR Manager', path => {
+    if (path === '/api/finance/loans/policies') return malformed ? { items: [] } : [];   // malformed: not a list
+  });
+  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  const failed = page.getByTestId('list-load-failed');
+  await expect(failed).toContainText('This list could not be loaded');
+  await expect(failed).toContainText('The server sent an unexpected reply.');
+  await expect(page.getByText('No policy versions for this selection.', { exact: true })).toHaveCount(0);
+  malformed = false;
+  await failed.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByText('No policy versions for this selection.', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('list-load-failed')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+// The session check (/api/auth/me) failing for a reason other than 401 must not sign the user out:
+// the shell shows "Can't reach the server right now" with Retry and keeps the tokens.
+test('a network failure of the session check keeps the user signed in and offers Retry', async ({ page }) => {
+  let reachable = false;
+  await page.addInitScript(() => { localStorage.setItem('zayra_access_token', 'fixture'); localStorage.setItem('zayra_refresh_token', 'fixture-refresh'); });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      if (!reachable) return route.abort('internetdisconnected');
+      return route.fulfill({ json: { id: 'user-1', employeeId: 17, tenantId: 'tenant-1', tenantSlug: 'fixture', fullName: 'Amira Mansour', roles: ['HR Manager'], permissions: ['loans.read', 'loans.write'], companies: [{ id: 'company-1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] } });
+    }
+    if (path === '/api/finance/loans/types') return route.fulfill({ json: [loanType] });
+    if (path === '/api/finance/loans') return route.fulfill({ json: { items: [originalLoan], total: 1 } });
+    if (path.includes('/features/') || path === '/api/notifications' || path.endsWith('/bonuses/types') || path.endsWith('/offerings') || path.endsWith('/grade-limits')) return route.fulfill({ json: [] });
+    return route.fulfill({ json: { items: [], total: 0 } });
+  });
+  await page.goto('/loans');
+  const offline = page.getByTestId('server-unreachable');
+  await expect(offline).toContainText("Can't reach the server right now.", { timeout: 15_000 });
+  await expect(offline).toContainText('You are still signed in.');
+  await expect(page).toHaveURL(/\/loans$/);
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBe('fixture');
+
+  reachable = true;
+  await offline.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByTestId('server-unreachable')).toHaveCount(0);
+  await expect(page.getByText('LN-001').first()).toBeVisible();
+  await expect(page).toHaveURL(/\/loans$/);
+});
+
+test('a 502 from the session check is shown as a server problem, not a sign-out', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'fixture'));
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') return route.fulfill({ status: 502, body: '<html>Bad Gateway</html>', contentType: 'text/html' });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  await expect(page.getByTestId('server-unreachable')).toContainText('is not responding normally', { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/loans$/);
+});
+
+test('a 401 from the session check still ends the session and goes to sign-in', async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('zayra_access_token', 'expired'); sessionStorage.setItem('seeded', '1'); } });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') return route.fulfill({ status: 401, json: { code: 'unauthorized' } });
+    if (path === '/api/auth/refresh') return route.fulfill({ status: 401, json: { code: 'invalid_refresh_token' } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
+});
+
+test('the offline screen offers Sign out, which ends the session and goes to sign-in', async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('zayra_access_token', 'fixture'); sessionStorage.setItem('seeded', '1'); } });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me' || path === '/api/auth/logout') return route.abort('internetdisconnected');
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  const offline = page.getByTestId('server-unreachable');
+  await expect(offline).toContainText('If this keeps happening, you can sign out', { timeout: 15_000 });
+  await offline.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
+});
+
+test('a 403 from the session check ends the session instead of trapping the user offline', async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('zayra_access_token', 'fixture'); sessionStorage.setItem('seeded', '1'); } });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') return route.fulfill({ status: 403, json: { code: 'forbidden', message: 'This account cannot use the tenant app.' } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('/loans');
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
+  await expect(page.getByTestId('server-unreachable')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBeNull();
 });

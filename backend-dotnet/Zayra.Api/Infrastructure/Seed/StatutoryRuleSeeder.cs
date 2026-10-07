@@ -543,6 +543,71 @@ public static class StatutoryRuleSeeder
             "[CONF] Qatar has no express exclusion of unpaid leave from the Art.54 service period; it turns on " +
             "'continuous service'. Defaults to including the days — confirm with counsel before flipping."));
 
+        // ── Release A — contract renewal (Arts. 37, 55, 74(2)) and the unified Qiwa contract ─────────────
+        // Read by the renewal case (Application/Contracts/RenewalRules: RenewalRuleKeys). A tenant row overrides
+        // the platform row, so a tenant's own lead times or a counsel-confirmed reading need no deploy.
+        var effUnified = new DateTime(2025, 10, 6, 0, 0, 0, DateTimeKind.Utc);
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ksa.art55.max_consecutive_renewals", "3", "int", eff07,
+            "[CERT] KSA Art.55(1): a Saudi worker's fixed-term contract becomes indefinite once renewed three consecutive "
+            + "times or once the original term plus the renewals reach four years, whichever is less."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ksa.art55.max_total_years", "4", "int", eff07,
+            "[CERT] KSA Art.55(1): the four-year limit on a Saudi worker's fixed-term chain (whichever of three "
+            + "renewals or four years comes first)."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ksa.art55.reading", "conservative", "string", eff07,
+            "[COUNSEL] How the Art.55 threshold is counted. 'conservative' (owner decision, default): reached when the NEXT "
+            + "renewal would be the third, or the renewed term would bring the chain to four years — only Convert to "
+            + "indefinite or Non-renew are offered. 'lenient': reached only once three renewals have happened or four years "
+            + "have elapsed by the end of the expiring term. Non-Saudi contracts never convert (Art.37)."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ksa.unified_contract_from", "2025-10-06", "string", effUnified,
+            "[CONF] Start of the unified Qiwa employment contract. A contract that started before this date always needs a "
+            + "Qiwa step at renewal (migration onto the unified contract)."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "qiwa.contract_response_days", "10", "int", effUnified,
+            "[CONF] Days the employee has to approve an employer-initiated contract request in Qiwa (OTP) before Qiwa "
+            + "cancels it for no response. Sets the renewal case's respond-by date."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.renewal_lead_days", "120", "int", eff07,
+            "[PRODUCT] Days before a fixed-term contract ends that its renewal case opens. A tenant row may change it."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.offer_lead_days", "14", "int", eff07,
+            "[PRODUCT] Days before the non-renewal notice date by which the renewal offer is due."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.qiwa_submit_lead_days", "30", "int", eff07,
+            "[PRODUCT] Days before the contract ends by which the Qiwa renewal request should be sent."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.qiwa_gate_lead_days", "7", "int", eff07,
+            "[PRODUCT] Days before the contract ends by which the Qiwa outcome must be evidenced so the new term can be applied."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.default_non_renewal_notice_days", "60", "int", eff07,
+            "[COUNSEL] Default notice, in days before the end date, for not renewing a fixed-term contract when the contract "
+            + "states none. Without notice served by then the contract renews on its terms (Art.74(2))."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.open_margin_days", "14", "int", eff07,
+            "[PRODUCT] Preparation days before the offer is due. A case opens no later than end − (notice + offer lead + "
+            + "this margin), so a contract with a long notice period still opens in time."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.original_term_joining_tolerance_days", "0", "int", eff07,
+            "[PRODUCT] Days a first contract on file may start after the employee's joining date and still count as the original "
+            + "term of the Art.55 chain. 0 (default): only a contract starting on the joining date is the original; any later "
+            + "start means earlier contracts may exist off-system, so HR confirms the history. A tenant may set 0-31."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.chain_gap_tolerance_days", "0", "int", eff07,
+            "[COUNSEL] Days of gap between two fixed-term contracts with the same employer still counted as one continuous "
+            + "Art.55 chain. 0 (default): only a contract starting the day after the previous one ended continues it; any gap "
+            + "leaves the history for HR to confirm. A tenant may set 0-31 on counsel's advice."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.as_is_requires_employee_acceptance", "true", "bool", eff07,
+            "[COUNSEL] Owner decision: the employee accepts every renewal in the app, including an unchanged one. A tenant "
+            + "may switch this off for unchanged (fast-lane) renewals only on counsel's advice."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "contracts.as_is_requires_qiwa_step", "true", "bool", eff07,
+            "[COUNSEL] An unchanged renewal still goes through Qiwa. Any change of terms, or a contract that started "
+            + "before the unified Qiwa contract, always does, whatever this says."));
+
         // ── UAE GPSSA ────────────────────────────────────────────────────────
         // Source: Federal Law 7/1999 + Cabinet Resolution 50/2022.
         list.Add(Rule(CountryCodes.UAE, Jurisdictions.UAEMainland,

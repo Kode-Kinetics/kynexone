@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { policyDocumentsApi } from '../api/policyDocuments';
 import type { PolicyDocument, PolicyAskResponse } from '../api/policyDocuments';
+import { notifyApiError } from '../api/client';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,8 +114,8 @@ export function PolicyDocumentManager() {
     try {
       await policyDocumentsApi.delete(id);
       setDocuments(prev => prev.filter(d => d.id !== id));
-    } catch {
-      alert('Failed to delete document.');
+    } catch (e) {
+      notifyApiError(e, 'Failed to delete document.');
     }
   };
 

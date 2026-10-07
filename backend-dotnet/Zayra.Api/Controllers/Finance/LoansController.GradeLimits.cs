@@ -21,8 +21,9 @@ public partial class LoansController
     private const string GradeLimitLockScope = "finance.grade-limits";
     /// <summary>Per-company policy lock, shared with CreateLoanPolicy and the offering switch.</summary>
     internal const string LoanPolicyLockScope = "finance.loan-policies";
-    /// <summary>The permission that owns loan policy configuration (seeded to Admin and HR Manager; Finance never).</summary>
-    internal const string LoanPolicyManagePermission = "loans.policy_manage";
+    // The loan-policy gates (CreateLoanPolicy, PublishGradeLimits, SetLoanTypeGradeLimited, SetLoanTypeOffering) take
+    // loans.policy_manage (Admin, HR Manager) OR employees.approve (Admin, HR Manager, HR Director): owner decision that
+    // HR Director manages loan policies. Finance and Finance Approver hold neither key.
 
     /// <summary>The grid for one loan type: one row per active grade, by level. With <c>companyId</c>, each row
     /// is the cell in force for that company — its own override, else the tenant-wide cell
@@ -46,9 +47,9 @@ public partial class LoansController
     /// </summary>
     [HttpPut("grade-limits")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> PublishGradeLimits([FromBody] PublishGradeLimitsRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), req.LoanTypeId, async () =>
         {
@@ -81,6 +82,12 @@ public partial class LoansController
                 var grade = grades.FirstOrDefault(g => g.Id == row.GradeId);
                 if (grade == null) { errors.Add(new { gradeId = row.GradeId, message = "This grade doesn't exist or is no longer in use." }); continue; }
                 if (ValidateGradeLimitRow(row) is { } problem) errors.Add(new { gradeId = row.GradeId, gradeName = grade.Name, message = problem });
+                // Release A (R2): × housing allowance exists only for the housing advance (EntitlementComponentRules).
+                else if (row.ValueType == GradeEntitlementValueTypes.MultipleOfHousing
+                    && Infrastructure.Entitlements.EntitlementComponentRules.For(type.EntitlementComponentCode ?? GradeLoanLimitResolver.FacilityCodeFor(type.Code))
+                        ?.AllowedValueTypes.Contains(GradeEntitlementValueTypes.MultipleOfHousing) != true)
+                    errors.Add(new { gradeId = row.GradeId, gradeName = grade.Name,
+                        message = "A multiple of the housing allowance is only available for the housing advance." });
             }
             if (errors.Count > 0)
                 return BadRequest(new { error = "invalid_grade_limits", message = "Some limits need correcting before they can be published.", rows = errors });
@@ -163,9 +170,9 @@ public partial class LoansController
     /// limit in force for some company — those employees could not apply at all.</summary>
     [HttpPatch("types/{id:guid}/grade-limited")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> SetLoanTypeGradeLimited(Guid id, [FromBody] SetGradeLimitedRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, GradeLimitLockScope, GetTenantId(), id, async () =>
         {
@@ -269,9 +276,9 @@ public partial class LoansController
     /// </summary>
     [HttpPut("offerings")]
     [Authorize(Roles = "Admin,HR Manager,HR Director")]
-    // Explicit gate: the policy-owner permission (not loans.write, which Finance holds). The body re-checks the
-    // role as defence in depth (403 hr_policy_owner_required).
-    [HasPermission(LoanPolicyManagePermission)]
+    // Explicit gate: the policy owners' keys (not loans.write, which Finance holds). employees.approve admits HR
+    // Director. The body re-checks the role as defence in depth (403 hr_policy_owner_required).
+    [HasPermission("loans.policy_manage", "employees.approve")]
     public Task<IActionResult> SetLoanTypeOffering([FromBody] SetLoanOfferingRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, LoanPolicyLockScope, GetTenantId(), req.CompanyId, async () =>
         {
@@ -492,9 +499,9 @@ public partial class LoansController
         {
             GradeEntitlementValueTypes.Amount when row.Amount is decimal a && Money(a) && row.Rate is null => null,
             GradeEntitlementValueTypes.Amount => "Enter the per-loan maximum as a positive amount with at most two decimals.",
-            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross
+            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross or GradeEntitlementValueTypes.MultipleOfHousing
                 when row.Rate is decimal m && m > 0 && m <= 120 && decimal.Round(m, 4) == m && row.Amount is null => null,
-            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross =>
+            GradeEntitlementValueTypes.MultipleOfBasic or GradeEntitlementValueTypes.MultipleOfGross or GradeEntitlementValueTypes.MultipleOfHousing =>
                 "Enter how many months of salary (more than 0, at most 120).",
             _ when row.Amount is null && row.Rate is null => null,
             _ => "With no per-loan maximum, leave the amount and multiple empty.",

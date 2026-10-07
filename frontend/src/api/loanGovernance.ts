@@ -1,4 +1,5 @@
 import client from './client';
+import { requireList } from '../lib/listResponse';
 import type { LoanRepaymentMethod } from './loans';
 
 export interface LoanPolicyInput {
@@ -25,6 +26,21 @@ export interface LoanEligibility {
   /** Strictest of every evaluated limit, as principal. 0 when nothing can be borrowed; null when nothing caps the amount. */
   available?: number | null;
   gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null;
+  /** Release A (Art. 92): the instalment as a share of the wage. Absent in a preview and for tenants without Release A. */
+  art92?: LoanArt92Check | null;
+}
+
+/** Saudi Labour Law Art. 92: an employer-loan instalment deducted from pay above 10% of the wage needs written consent. */
+export interface LoanArt92Check {
+  instalment: number;
+  /** Null when the wage is unknown, or hidden from this caller. */
+  wageDue: number | null;
+  /** Instalment ÷ wage, 0–100. Null when the wage is unknown. */
+  pct: number | null;
+  /** True when deducted from pay and above 10% (or the wage is unknown): a signed LoanDeductionConsent is required. */
+  requiresConsent: boolean;
+  deductedFromPay: boolean;
+  thresholdPercent: number;
 }
 
 /** Which of the effective limits is the one that actually caps this request (strictest wins). */
@@ -36,7 +52,7 @@ export interface LoanLimitBreakdown {
   /** Which limit this breakdown describes; the form explains the one matching bindingLimit. */
   limit: LoanBindingLimit;
   /** 'Count' only for PolicyConcurrentLoans (a number of loans, not money). */
-  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'Count';
+  basis: 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing' | 'Count';
   multiple?: number | null;
   salaryBasisAmount?: number | null;
   /** In `unit`: principal, a monthly instalment amount, or a number of loans. */
@@ -54,10 +70,10 @@ export interface LoanLimitBreakdown {
 // ── Grade loan limits (slice L1) ─────────────────────────────────────────────
 
 /** How a grade cell's per-loan figure is expressed. EligibilityOnly = no per-loan cap (or not eligible). */
-export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'EligibilityOnly';
+export type GradeLimitValueType = 'Amount' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing' | 'EligibilityOnly';
 
 /** Grade-limit reason codes the eligibility service can return. Never exceptionable. */
-export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous';
+export type GradeLimitReasonCode = 'GradeNotEligible' | 'GradeLimitPerLoan' | 'GradeLimitOutstanding' | 'GradeMissing' | 'GradeLimitNotConfigured' | 'GradeSalaryMissing' | 'GradeLimitCurrencyAmbiguous' | 'GradeHousingInKind';
 
 /** One row of GET /api/finance/loans/grade-limits — one per active grade, ordered by level. */
 export interface GradeLoanLimitRow {
@@ -177,7 +193,7 @@ export interface LoanCorrectionRequest {
   createdAtUtc: string; decisionReason?: string;
 }
 export const loanGovernanceApi = {
-  policies: (params: { companyId?: string; loanTypeId?: string } = {}) => client.get<LoanPolicy[]>('/api/finance/loans/policies', { params }).then(r => r.data),
+  policies: (params: { companyId?: string; loanTypeId?: string } = {}) => client.get<LoanPolicy[]>('/api/finance/loans/policies', { params }).then(r => requireList<LoanPolicy>(r.data, 'loan policies')),
   createPolicy: (body: LoanPolicyInput) => client.post<LoanPolicy>('/api/finance/loans/policies', body).then(r => r.data),
   eligibility: (params: { employeeIntId?: number; loanTypeId: string; amount: number; installments: number; repaymentMethod: LoanRepaymentMethod }) => client.get<LoanEligibility>('/api/finance/loans/eligibility', { params }).then(r => r.data),
   /** Limits-only preview for a chosen loan type: no amount or instalments, so only the limits (gradeLimit, available, bindingLimit) are meaningful. */
