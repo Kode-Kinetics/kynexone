@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Modal } from '../Modal';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../EmployeeSearchSelect';
 import { usersApi } from '../../api/identity';
@@ -52,30 +52,45 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Opened from a login: look for its employee record so the admin does not have to. The work email is what a
-  // link requires, so search by the login's email first (the employee search matches work email); one hit is
-  // picked, and the server's status check below still confirms the email matches exactly. No hit by email →
-  // offer employees named like the login, since the usual cause is a work email that was never filled in.
+  // Opened from a login: look for its employee record so the admin does not have to. The employee search matches
+  // work email as a SUBSTRING (ann@ also finds joann@) and does not return the email, so a hit is only a candidate:
+  // the status endpoint gives each candidate's work email, and only an exact match (case-insensitive) is picked
+  // automatically. Other candidates are offered to choose from. No candidate by email → offer employees named like
+  // the login, since the usual cause is a work email that was never filled in.
   const [suggestions, setSuggestions] = useState<{ by: 'email' | 'name'; items: EmployeeListItem[] } | null>(null);
   const [lookingUp, setLookingUp] = useState(Boolean(user));
   const [autoPicked, setAutoPicked] = useState(false);
+  // Set by any choice the admin makes; a lookup still in flight must never overwrite it.
+  const choseByHand = useRef(false);
   const userEmail = user?.email ?? '';
   const userName = user?.fullName ?? '';
   useEffect(() => {
     if (!userEmail) return;
     let current = true;
-    const toSelection = (e: EmployeeListItem): EmployeeSelection =>
-      ({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
+    const live = () => current && !choseByHand.current;
+    const wanted = userEmail.trim().toLowerCase();
     (async () => {
       try {
         const byEmail = await employeesApi.list({ search: userEmail, pageSize: 5, status: LINKABLE_STATUSES });
-        if (!current) return;
-        if (byEmail.items.length === 1) { setEmployee(toSelection(byEmail.items[0])); setAutoPicked(true); return; }
-        if (byEmail.items.length > 1) { setSuggestions({ by: 'email', items: byEmail.items }); return; }
+        if (!live()) return;
+        if (byEmail.items.length > 0) {
+          const checked = await Promise.all(byEmail.items.map((e) =>
+            usersApi.employeeLoginStatus(e.id).then((st) => ({ e, exact: st.workEmail.trim().toLowerCase() === wanted }), () => ({ e, exact: false }))));
+          if (!live()) return;
+          const exact = checked.filter((c) => c.exact);
+          if (exact.length === 1) {
+            const e = exact[0].e;
+            setEmployee({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
+            setAutoPicked(true);
+            return;
+          }
+          setSuggestions({ by: 'email', items: byEmail.items });
+          return;
+        }
         const nameTerm = userName.trim();
         if (!nameTerm) return;
         const byName = await employeesApi.list({ search: nameTerm, pageSize: 5, status: LINKABLE_STATUSES });
-        if (current && byName.items.length > 0) setSuggestions({ by: 'name', items: byName.items });
+        if (live() && byName.items.length > 0) setSuggestions({ by: 'name', items: byName.items });
       } catch {
         // A failed lookup only means no suggestion; the search box still works.
       } finally {
@@ -83,14 +98,17 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
       }
     })();
     return () => { current = false; };
-    // Keyed on the login's email and name, not the object: a parent re-render must not redo the lookup and
-    // overwrite an employee the admin chose by hand.
+    // Keyed on the login's email and name, not the object: a parent re-render must not redo the lookup.
   }, [userEmail, userName]);
 
-  const pick = (e: EmployeeListItem) => {
-    setEmployee({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
+  const choose = (selection: EmployeeSelection | null) => {
+    choseByHand.current = true;
+    setLookingUp(false);
+    setEmployee(selection);
     setAutoPicked(false);
   };
+  const pick = (e: EmployeeListItem) =>
+    choose({ intId: e.id, publicId: e.publicId, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department ?? '' });
 
   // A new employee starts a new question: forget the previous answer, error and outcome.
   useEffect(() => {
@@ -221,7 +239,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
           <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee')}</p>
           <EmployeeSearchSelect
             value={employee}
-            onChange={(e) => { setEmployee(e); setAutoPicked(false); }}
+            onChange={choose}
             placeholder={t('Search employees by name, code or work email')}
             statuses={LINKABLE_STATUSES}
             inlineResults
@@ -239,7 +257,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
             <div className="mt-3 space-y-2" data-testid="employee-suggestions">
               <p className="text-sm text-slate-600 dark:text-slate-400">
                 {suggestions?.by === 'email'
-                  ? t('More than one employee record mentions {email}. Choose the right one below.', { email: user.email })
+                  ? t('No employee record has exactly the work email {email}, but these records mention it. Choose the right one below.', { email: user.email })
                   : suggestions?.by === 'name'
                     ? t('No employee record has the work email {email}. The employees below have a similar name. Choose one, then check its work email.', { email: user.email })
                     : t('No employee record has the work email {email}. Search by name above, then set that work email on the record.', { email: user.email })}

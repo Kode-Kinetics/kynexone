@@ -26,6 +26,7 @@ const noah = {
 };
 
 // A login whose email is on no employee record (the work email was typed differently).
+const ann = { ...noah, id: '55555555-5555-5555-5555-555555555555', email: 'ann@kkdemo.com', fullName: 'Ann Lee' };
 const layla = { ...noah, id: '44444444-4444-4444-4444-444444444444', email: 'l.haddad@kkdemo.com', fullName: 'Layla Haddad' };
 
 const employees = [
@@ -33,11 +34,13 @@ const employees = [
   // Invited, not Active: the picker must still find an employee who was invited but has no login yet.
   { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Invited', workEmail: 'layla.haddad@kkdemo.com' },
   { id: 44, publicId: 'p-44', employeeCode: 'EMP-0044', fullName: 'Omar Saleh', department: 'Operations', status: 'Active', workEmail: 'omar.saleh@kkdemo.com' },
+  // Her work email CONTAINS ann@kkdemo.com, which is not the same as having it.
+  { id: 45, publicId: 'p-45', employeeCode: 'EMP-0045', fullName: 'Joann Price', department: 'Legal', status: 'Active', workEmail: 'joann@kkdemo.com' },
 ];
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -47,7 +50,7 @@ async function openUserManagement(page: Page) {
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', 'light');
   });
-  await page.route('**/api/**', (route: Route) => {
+  await page.route('**/api/**', async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
@@ -74,10 +77,12 @@ async function openUserManagement(page: Page) {
     if (pathname === '/api/auth/me') return json({ id: 'admin-1', tenantId: 't1', email: 'admin@kkdemo.com', fullName: 'Tenant Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
     if (pathname === '/api/access/users') {
       const row = linked ? { ...noah, employeeId: 42, employeeName: 'Noah Williams', employeeCode: 'EMP-0042' } : noah;
-      return json({ items: [row, layla], total: 2, page: 1, pageSize: 20 });
+      return json({ items: [row, layla, ann], total: 3, page: 1, pageSize: 20 });
     }
     if (pathname === '/api/employees') {
       const search = (url.searchParams.get('search') ?? '').toLowerCase();
+      // The dialog's automatic lookup, answered late, after the admin has already chosen someone.
+      if (opts.slowLookupFor && search === opts.slowLookupFor) await new Promise((r) => setTimeout(r, 2500));
       const status = url.searchParams.get('status');
       const items = employees.filter((e) => (!status || e.status === status)
         // Like the server: name, code or work email.
@@ -91,6 +96,10 @@ async function openUserManagement(page: Page) {
     });
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
+      matchingLogin: null, nextAction: 'invite', reason: null,
+    });
+    if (pathname === '/api/access/employee-logins/45') return json({
+      employeeId: 45, employeeName: 'Joann Price', workEmail: 'joann@kkdemo.com', linkedLogin: null,
       matchingLogin: null, nextAction: 'invite', reason: null,
     });
     if (pathname === '/api/access/employee-logins/44') return json({
@@ -221,4 +230,30 @@ test('search results stay inside the dialog, with room to read them', async ({ p
     expect(r.y + r.height).toBeLessThanOrEqual(box.y + box.height);
   }
   await page.screenshot({ path: testInfo.outputPath('employee-search-results.png') });
+});
+
+test('an employee whose work email only contains the login email is offered, never picked automatically', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page);
+  await page.getByRole('row').filter({ hasText: ann.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const suggestions = dialog.getByTestId('employee-suggestions');
+  await expect(suggestions).toContainText(`No employee record has exactly the work email ${ann.email}, but these records mention it.`);
+  await expect(suggestions.getByRole('button', { name: /Joann Price/ })).toBeVisible();
+  await expect(dialog.getByTestId('employee-auto-picked')).toHaveCount(0);
+  await expect(dialog.getByTestId('employee-login-status')).toHaveCount(0);
+  expect(writes).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('an employee chosen by hand is never replaced by the automatic lookup answering late', async ({ page }) => {
+  const { errors } = await openUserManagement(page, { slowLookupFor: noah.email });
+  await page.getByRole('row').filter({ hasText: noah.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await pickEmployee(page, 'Omar Saleh');
+  await expect(dialog.getByText('This login works in a different company.', { exact: false })).toBeVisible();
+  await page.waitForTimeout(3500); // the lookup for Noah answers now
+  await expect(dialog.getByText('Omar Saleh', { exact: true })).toBeVisible();
+  await expect(dialog.getByTestId('employee-auto-picked')).toHaveCount(0);
+  await expect(dialog.getByText('Noah Williams')).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
