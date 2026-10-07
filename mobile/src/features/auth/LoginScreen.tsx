@@ -58,7 +58,7 @@ const loginSchema = z.object({
 type LoginFormData = z.infer<typeof loginSchema>;
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 export default function LoginScreen({ navigation, route }: Props) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { theme, reduceMotion } = useTheme();
   const insets = useSafeAreaInsets();
   const { width, height, fontScale } = useWindowDimensions();
@@ -251,13 +251,7 @@ export default function LoginScreen({ navigation, route }: Props) {
           navigation.navigate('MfaEnrollment', outcome);
         } else {
           setLoginSucceeded(true);
-          // HR issued a reset code for this login that is still unused: say so once (Amendment 3, F1).
-          const notice = outcome.user.pendingResetNotice?.date;
-          if (notice) {
-            const date = new Intl.DateTimeFormat(i18n.language === 'ar' ? 'ar-SA-u-ca-gregory-nu-latn' : 'en-GB',
-              { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Riyadh' }).format(new Date(notice));
-            Alert.alert(t('signin.signedInTitle'), t('signin.resetNotice', { date }));
-          }
+          // A live reset code is reported by ResetCodeBanner in the signed-in shell (Amendment 3, F1).
         }
       } catch (error) {
         const { status, code } = authFailure(error);
@@ -280,7 +274,7 @@ export default function LoginScreen({ navigation, route }: Props) {
         // Anything else: the auth store owns the user-facing error state.
       }
     },
-    [i18n.language, login, mfaJustEnabled, navigation, setError, setValue, showWorkspace, t],
+    [login, mfaJustEnabled, navigation, setError, setValue, showWorkspace],
   );
 
   const openWelcome = useCallback(() => {

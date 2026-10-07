@@ -340,6 +340,43 @@ test.describe('/login for employees', () => {
   });
 });
 
+test.describe('app shell: a reset code issued while already signed in', () => {
+  async function signedIn(page: Page, notice: { date: string } | null) {
+    await page.addInitScript(() => {
+      localStorage.setItem('zayra_access_token', 'fixture-access');
+      localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
+    });
+    await page.route('**/api/**', async (route: Route) => {
+      const url = new URL(route.request().url());
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      if (url.pathname === '/api/auth/me') return json({ ...session().user, pendingResetNotice: notice });
+      if (url.pathname === '/api/auth/mfa/status') return json({ enabled: false, required: false, promptToEnroll: false });
+      return json(route.request().method() === 'GET' ? [] : {});
+    });
+  }
+
+  test('shows the notice from /api/auth/me and hides it for this session when dismissed', async ({ page }) => {
+    await signedIn(page, { date: '2026-10-05T09:00:00Z' });
+    await page.goto('/ess');
+    const notice = page.getByTestId('reset-code-notice');
+    await expect(notice).toContainText("HR gave you a new sign-in code on");
+    await expect(notice).toContainText("If you didn't ask for it, tell HR.");
+    await expect(notice).toContainText('2026');
+    await notice.getByRole('button', { name: 'Hide this message' }).click();
+    await expect(notice).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator('main')).toBeVisible();
+    await expect(page.getByTestId('reset-code-notice')).toHaveCount(0);
+  });
+
+  test('shows nothing when there is no live reset code', async ({ page }) => {
+    await signedIn(page, null);
+    await page.goto('/ess');
+    await expect(page.locator('main')).toBeVisible();
+    await expect(page.getByTestId('reset-code-notice')).toHaveCount(0);
+  });
+});
+
 /** Screenshots for review: only when SIGNIN_SHOTS names a directory. */
 test('screenshots', async ({ page }, info) => {
   const dir = process.env.SIGNIN_SHOTS;

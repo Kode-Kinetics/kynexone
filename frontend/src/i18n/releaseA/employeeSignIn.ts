@@ -81,6 +81,7 @@ export const employeeSignIn: ReleaseADict = {
     "Save password and sign in": "Save password and sign in",
     "Forgot your password? Ask HR for a new welcome code.": "Forgot your password? Ask HR for a new welcome code.",
     "I already have a password": "I already have a password",
+    "Hide this message": "Hide this message",
   },
   ar: {
     "We couldn't find your company from your email. Enter your company ID. HR can tell you what it is.": "تعذّر التعرّف على شركتك من البريد الإلكتروني. يُرجى إدخال معرّف الشركة، ويمكن للموارد البشرية تزويدك به.",
@@ -155,5 +156,6 @@ export const employeeSignIn: ReleaseADict = {
     "Save password and sign in": "حفظ كلمة المرور وتسجيل الدخول",
     "Forgot your password? Ask HR for a new welcome code.": "نسيت كلمة المرور؟ اطلب رمز تفعيل جديد من الموارد البشرية.",
     "I already have a password": "لديّ كلمة مرور بالفعل",
+    "Hide this message": "إخفاء هذه الرسالة",
   },
 };

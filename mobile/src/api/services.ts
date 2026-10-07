@@ -606,13 +606,20 @@ export const authApi = {
     await apiPost('/auth/change-password', { currentPassword: oldPassword, newPassword });
   },
 
-  async forgotPassword(email: string, tenantSlug?: string): Promise<void> {
+  /**
+   * Resolves to `{ emailDelivery: false }` when the reply says no email can be sent for this
+   * company (then only HR's welcome code helps); otherwise the reply says nothing either way.
+   */
+  async forgotPassword(email: string, tenantSlug?: string): Promise<{ emailDelivery?: boolean }> {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) throw new Error('Work email is required.');
-    await createPublicAuthClient().post('/auth/forgot-password', {
+    const res = await createPublicAuthClient().post('/auth/forgot-password', {
       email: normalizedEmail,
       ...optionalWorkspace(tenantSlug),
     });
+    const data = unwrapApiData<Record<string, unknown> | undefined>(res?.data);
+    const noDelivery = data?.emailDeliveryConfigured === false || data?.emailed === false || data?.emailSent === false;
+    return noDelivery ? { emailDelivery: false } : {};
   },
 
   /**

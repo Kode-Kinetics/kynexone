@@ -17,6 +17,7 @@ import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '
 import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
 import { dateLocale } from '../lib/format';
+import { markResetNoticeSeen } from '../components/ResetCodeNotice';
 
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
@@ -500,7 +501,11 @@ function LoginCard() {
                       <AlertCircle aria-hidden />
                       <p>{t("HR gave you a new sign-in code on {date}. If you didn't ask for it, tell HR.", { date: noticeDate })}</p>
                     </div>
-                    <button type="button" className="lx-submit" onClick={() => router.replace(from)}>{t('Continue')}</button>
+                    <button type="button" className="lx-submit" onClick={() => {
+                      // Seen here: the app shell's banner need not repeat it this session.
+                      if (user?.pendingResetNotice?.date) markResetNoticeSeen(user.pendingResetNotice.date);
+                      router.replace(from);
+                    }}>{t('Continue')}</button>
                   </div>
                 )}
 
