@@ -21,8 +21,15 @@ namespace Zayra.Api.Tests;
 /// count parity, manager email-fallback + auto-code linking, advisory-gap activatability, gap self-heal, and
 /// the server-side readiness / gap deep-link filter.
 /// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeImportAcceptNeverBlockTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeImportAcceptNeverBlockTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
@@ -130,7 +137,7 @@ public class EmployeeImportAcceptNeverBlockTests
     [Fact]
     public async Task ImportPreview_CountsMatchCommit()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenant(db);
         await SeedCompany(db, tenantId, "Acme");
         var ctrl = ImportController(db, tenantId);
@@ -160,7 +167,7 @@ public class EmployeeImportAcceptNeverBlockTests
         // An existing "ABC" makes an incoming "abc" a duplicate. Preview already treats it as a dup;
         // commit previously used a case-sensitive DB check and would have CREATED the case-variant,
         // diverging from preview. Both paths must now drop it (aligned to the in-file dedup folding).
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenant(db);
         db.Employees.Add(new Employee
         {

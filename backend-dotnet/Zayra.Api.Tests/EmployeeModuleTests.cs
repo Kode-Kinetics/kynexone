@@ -19,8 +19,15 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
 
+[Trait("Category", "Integration")]
+[Collection("Integration")]
 public class EmployeeModuleTests
 {
+    // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
+    private readonly PostgresFixture? _fx;
+    public EmployeeModuleTests(PostgresFixture fx) => _fx = fx;
+    private ZayraDbContext PgDb() => _fx!.CreateDb();
+
     [Fact]
     public async Task ApproveDraft_ActivatesEmployeeCreatesUserAndHistory()
     {
@@ -439,7 +446,7 @@ public class EmployeeModuleTests
     [Fact]
     public async Task EmployeeImportPreview_InvalidIban_ProducesWarning()
     {
-        await using var db = CreateDb();
+        await using var db = PgDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         var ctrl = CreateController(db, tenantId);
 
@@ -456,7 +463,7 @@ public class EmployeeModuleTests
         Assert.Contains("IBAN", json);
         Assert.Contains("invalid", json);
         // No DB records created (preview is dry-run)
-        Assert.Equal(0, await db.EmployeePayrollProfiles.CountAsync());
+        Assert.Equal(0, await db.EmployeePayrollProfiles.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId));
     }
 
     // ── Test: 15-row import on a fresh empty tenant succeeds without pre-setup ─

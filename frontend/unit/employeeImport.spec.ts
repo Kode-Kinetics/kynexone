@@ -85,3 +85,10 @@ test('an unquoted thousands separator is refused naming the row and both cell co
   expect(body.error).toBe('csv_row_shape');
   expect(body.failedRows).toEqual([expect.objectContaining({ row: 2, cells: 9, expected: 8 })]);
 });
+
+test('a file already imported previews as a refusal that names the earlier import', () => {
+  const preview = fixtures.PreviewAlreadyImported as EmployeeImportPreview;
+  expect(preview.commitCheck?.outcome).toBe('would_refuse');
+  expect(preview.commitCheck?.error).toBe('import_already_committed');
+  expect(preview.commitCheck?.message).toMatch(/already imported on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC by /);
+});

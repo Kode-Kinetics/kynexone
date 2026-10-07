@@ -596,8 +596,28 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
-    public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct) =>
-        RunEmployeeImportAsync(req, dryRun: false, ct);
+    public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
+        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null) =>
+        RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
+
+    /// <summary>
+    /// The most rows one employee file may carry. The import holds the whole file — every row's employee, payroll
+    /// profile, salary structure, gaps and audit — in one transaction and one change tracker, so its memory grows
+    /// with the file; 2,000 rows was measured to stay well inside a 300 MB heap (see the PR). A larger file is
+    /// refused up front, with a coded message, rather than risking an out-of-memory restart half-way.
+    /// </summary>
+    internal const int MaxImportRows = 2_000;
+
+    private IActionResult? TooManyRows(int count) => count <= MaxImportRows ? null : UnprocessableEntity(new
+    {
+        error = "import_too_many_rows",
+        message = $"This file has {count:N0} rows; one employee import takes at most {MaxImportRows:N0}. "
+                  + "Split the file into parts of up to 2,000 rows (keep the header row in each part) and import them one after another. "
+                  + "Nothing from this file was imported.",
+        received = count,
+        maxRows = MaxImportRows,
+        created = 0,
+    });
 
     /// <summary>
     /// THE employee import — the commit, and the dry run the preview reports from. <paramref name="dryRun"/> runs
@@ -606,7 +626,8 @@ public class EmployeesController : ControllerBase
     /// do with this file against this database, not a second validator's opinion of it. A dry run ignores the
     /// import key (it neither replays nor records a batch) and is only possible on a relational provider.
     /// </summary>
-    private async Task<IActionResult> RunEmployeeImportAsync(ImportEmployeesRequest req, bool dryRun, CancellationToken ct)
+    private async Task<IActionResult> RunEmployeeImportAsync(ImportEmployeesRequest req, bool dryRun, CancellationToken ct,
+        Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
         // HEADERS FIRST — before a single row is read, let alone written. An unrecognised column used to
@@ -615,6 +636,14 @@ public class EmployeesController : ControllerBase
         // Then the SHAPE of every row: a row with more or fewer cells than the header (an unquoted "8,000") would
         // shift every later value into the wrong column. Every such row is named; nothing is read from the file.
         if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
+        if (TooManyRows(rows.Count) is IActionResult tooMany) return tooMany;
+        if (req.ConfirmReimport && string.IsNullOrWhiteSpace(req.ReimportReason))
+            return UnprocessableEntity(new
+            {
+                error = "reimport_reason_required",
+                message = "Importing the same file again needs a reason (it is recorded in the audit trail). Nothing was imported.",
+            });
+        EarlierImport? earlierCommit = null;
 
         // ── ONE TRANSACTION FOR THE WHOLE FILE, AND A COMMIT THAT IS SAFE TO RETRY ─────────────────────
         // The import writes at several persistence boundaries (employees, position assignments, payroll
@@ -647,10 +676,13 @@ public class EmployeesController : ControllerBase
             // Non-relational providers (the in-memory test double) have no transactions: run the body directly.
             if (clientKey is not null && await FindCommittedImportAsync(tenantId, importBatchId, ct) is { } landedInMemory)
                 return ImportReplay(landedInMemory, contentSha256, importBatchId);
+            if (await RefuseSameContentAsync(ct) is IActionResult sameContentInMemory) return sameContentInMemory;
             return await RunImportAsync();
         }
 
         var strategy = _db.Database.CreateExecutionStrategy();
+        try
+        {
         return await strategy.ExecuteAsync(
             new ImportCommitAttempt(),
             async (_, attempt, token) =>
@@ -664,6 +696,10 @@ public class EmployeesController : ControllerBase
                 IActionResult outcome;
                 try
                 {
+                    // A PREVIEW never queues behind a running import or hire for long: it waits at most 5 s for any
+                    // lock (the ID-rule row, the audit chain, the establishment cells) and then says so (import_busy).
+                    if (dryRun && _db.Database.IsNpgsql())
+                        await _db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '5s'", token);
                     if (clientKey is not null)
                     {
                         // Two submissions carrying the same key serialize here; the second one then finds the
@@ -677,7 +713,25 @@ public class EmployeesController : ControllerBase
                             return ImportReplay(landed, contentSha256, importBatchId);
                         }
                     }
+                    // Two submissions of the same file under DIFFERENT keys (or none) serialize here, so the second
+                    // sees the first's commit marker and is refused as a re-import.
+                    if (!dryRun && _db.Database.IsNpgsql())
+                        await _db.Database.ExecuteSqlInterpolatedAsync(
+                            $"SELECT pg_advisory_xact_lock({ImportContentLockKey(tenantId, contentSha256)})", token);
+                    if (await RefuseSameContentAsync(token) is IActionResult sameContent)
+                    {
+                        await tx.RollbackAsync(token);
+                        return sameContent;
+                    }
                     outcome = await RunImportAsync();
+                }
+                // A preview that waited its 5 s for a lock answers "busy" HERE, inside the attempt: rethrown, the
+                // retrying strategy would treat the timeout as transient and wait again, six times over.
+                catch (Exception ex) when (dryRun && IsLockTimeout(ex))
+                {
+                    _db.ChangeTracker.Clear();
+                    try { await tx.RollbackAsync(token); } catch { /* the transaction is already aborted */ }
+                    return ImportBusy();
                 }
                 catch
                 {
@@ -708,6 +762,46 @@ public class EmployeesController : ControllerBase
                 return new ExecutionResult<IActionResult>(landed, attempt.Outcome);
             },
             ct);
+        }
+        catch (Exception ex) when (IsLockTimeout(ex))
+        {
+            _db.ChangeTracker.Clear();
+            return ImportBusy();
+        }
+
+        IActionResult ImportBusy() => Conflict(new
+        {
+            error = "import_busy",
+            message = "Another employee import or a new hire is being saved right now, so this check could not run. "
+                      + "Nothing was imported — try again in a moment.",
+        });
+
+        // The re-import guard (P1): the SAME file content already committed for this tenant, under any import key.
+        // Re-uploading a file without employee codes used to create every person a second time (each row got a
+        // fresh generated code). Refused unless the request says, with a reason, that it means to import it again.
+        async Task<IActionResult?> RefuseSameContentAsync(CancellationToken token)
+        {
+            // A file whose every row carries an EmployeeCode re-imports idempotently (existing codes are matched,
+            // never duplicated), so only a file with code-less rows can double anyone.
+            var hasCodelessRows = rows.Any(r => !string.IsNullOrWhiteSpace(r.GetValueOrDefault("FullName", string.Empty))
+                                                && string.IsNullOrWhiteSpace(r.GetValueOrDefault("EmployeeCode", string.Empty)));
+            if (!hasCodelessRows) return null;
+            var earlier = await FindEarlierCommitOfContentAsync(tenantId, contentSha256, importBatchId, token);
+            earlierCommit = earlier;
+            if (earlier is null || req.ConfirmReimport) return null;
+            var by = string.IsNullOrWhiteSpace(earlier.ImportedBy) ? "an unknown user" : earlier.ImportedBy;
+            return Conflict(new
+            {
+                error = "import_already_committed",
+                message = $"This exact file was already imported on {earlier.ImportedAtUtc:yyyy-MM-dd HH:mm} UTC by {by} "
+                          + $"({earlier.Created} created). Importing it again would add every row without an EmployeeCode a second time. "
+                          + "Nothing was imported. If you really mean to import it again, confirm the re-import and give a reason.",
+                earlierImportBatchId = earlier.ImportBatchId,
+                earlierImportedAtUtc = earlier.ImportedAtUtc,
+                earlierImportedBy = by,
+                earlierCreated = earlier.Created,
+            });
+        }
 
         async Task<IActionResult> RunImportAsync()
         {
@@ -751,11 +845,22 @@ public class EmployeesController : ControllerBase
             // Non-fatal notices: the row IS imported, but an optional reference could not be resolved.
             var warnings = new List<string>();
             var rowNum = 1;
+            // PER-ROW OUTCOMES — what the preview shows for each row, recorded by the commit itself as it decides,
+            // so the preview is the dry run alone (it used to rebuild the same answers in a second, parallel pass).
+            var rowOutcomes = new SortedDictionary<int, ImportRowOutcome>();
+            ImportRowOutcome Outcome(int rn) => rowOutcomes.TryGetValue(rn, out var o) ? o : rowOutcomes[rn] = new ImportRowOutcome(rn);
+            void RowWarn(int rn, string text) { warnings.Add($"Row {rn}: {text}"); if (rn > 0) Outcome(rn).Warnings.Add(text); }
+            void RowError(int rn, string text) { errors.Add($"Row {rn}: {text}"); if (rn > 0) Outcome(rn).Errors.Add(text); }
             // Per-created-row org-skeleton/payroll gaps (typed), keyed by the row's FINAL employee code
             // (auto-generated included) — persisted as EmployeeImportGap after Id assignment; Pass 2 appends
             // link:manager/supervisor gaps to the same map before persistence.
             var gapsByCode = new Dictionary<string, List<ImportGap>>(StringComparer.OrdinalIgnoreCase);
             var rowNumByCode = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            void CodeWarn(string code, string text)
+            {
+                warnings.Add($"Employee {code}: {text}");
+                if (rowNumByCode.TryGetValue(code, out var rn)) Outcome(rn).Warnings.Add(text);
+            }
             // Rows whose salary is HELD (no valid grade): Pass 1b must skip the salary-structure insert.
             var heldSalaryCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             // Final advisory re-stamp inputs: base readiness per created row (merged with all gaps at the end).
@@ -767,7 +872,7 @@ public class EmployeesController : ControllerBase
             // activate-blockers ⇒ downgraded to Draft + warning (row still created).
             var readinessPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
 
-            async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy)> ResolveRowLandingAsync(
+            async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy, string PolicyCountry)> ResolveRowLandingAsync(
                 Dictionary<string, string> row, Guid? companyId, Guid? deptId, Guid? desigId, DateTime jd, string csvStatus)
             {
                 var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
@@ -780,7 +885,7 @@ public class EmployeesController : ControllerBase
                 }
                 var snap = ImportReadinessSnapshot(row, deptId, desigId, jd);
                 var readiness = _activationGuard.Evaluate(snap, policy);
-                return (ImportLandingStatus(csvStatus, readiness, jd), readiness, policy.Items.Count > 0);
+                return (ImportLandingStatus(csvStatus, readiness, jd), readiness, policy.Items.Count > 0, policy.CountryCode);
             }
             // Track employee codes created (or repaired) in this batch for Pass 2 resolution
             var batchCodes = new Dictionary<string, Employee>(StringComparer.OrdinalIgnoreCase);
@@ -794,11 +899,19 @@ public class EmployeesController : ControllerBase
             // (2) takenCodes: EVERY code the unique (TenantId, EmployeeCode) index holds — all companies, soft-
             //     deleted rows included. A row whose code is taken but not visible is skipped as a duplicate
             //     (it used to fail the WHOLE file with a 422 at SaveChanges), and auto-generated codes skip it.
-            var existingEmployeesByCode = (await _db.Employees
+            // Ordered by id so that, where two existing codes differ only in letter case ('emp-1' and 'EMP-1' — the
+            // unique index is case-sensitive), the match is ALWAYS the earliest record, never whichever the database
+            // happened to return first; the row that names such a code is flagged (see existingCodeClashes).
+            var existingEmployeeGroups = (await _db.Employees
                     .Where(e => e.TenantId == tenantId && !e.IsDeleted)
+                    .OrderBy(e => e.Id)
                     .ToListAsync(ct))
                 .GroupBy(e => e.EmployeeCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var existingEmployeesByCode = existingEmployeeGroups
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var existingCodeClashes = existingEmployeeGroups.Where(g => g.Count() > 1)
+                .ToDictionary(g => g.Key, g => g.Select(e => e.EmployeeCode).ToList(), StringComparer.OrdinalIgnoreCase);
             var takenCodes = new HashSet<string>(
                 await Zayra.Api.Infrastructure.Data.ScopedBypass
                     .NullableTenantWide(_db.Employees, tenantId, TakenCodesBypassJustification)
@@ -953,8 +1066,10 @@ public class EmployeesController : ControllerBase
                 var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
                 // Only a row with EVERY cell blank gets here (the ROW GATE refused any other nameless row): it is
                 // not a person, so it is counted as skipped and noted, never reported as a rejected row.
-                if (string.IsNullOrWhiteSpace(name)) { skipped++; skippedNoName++; warnings.Add($"Row {rowNum}: empty row ignored."); continue; }
+                if (string.IsNullOrWhiteSpace(name)) { skipped++; skippedNoName++; Outcome(rowNum).Status = "Error"; RowWarn(rowNum, $"empty row ignored."); continue; }
                 var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
+                Outcome(rowNum).EmployeeCode = code;
+                Outcome(rowNum).FullName = name;
                 if (!string.IsNullOrWhiteSpace(code))
                 {
                     // A second row in this same file with an already-added code would both pass the
@@ -965,11 +1080,15 @@ public class EmployeesController : ControllerBase
                         return ImportRowsRefused(new[] { new ImportRowRefusal(rowNum, code, $"EmployeeCode '{code}' is used by more than one row") }, rows.Count, importBatchId);
                     if (existingEmployeesByCode.TryGetValue(code, out var existingEmployee))
                     {
+                        if (existingCodeClashes.TryGetValue(code, out var clashing))
+                            RowWarn(rowNum, $"EmployeeCode '{code}' matches more than one existing employee ({string.Join(", ", clashing.Select(c => $"'{c}'"))} differ only in letter case) — "
+                                            + $"matched to the earliest record, '{existingEmployee.EmployeeCode}'. Rename the other in the People list.");
                         // A separated employee is never changed by an import (see EmployeeImportRepairPlan.IsSeparated).
                         if (EmployeeImportRepairPlan.IsSeparated(existingEmployee))
                         {
                             skipped++; skippedDupCode++; skippedSeparated++;
-                            errors.Add($"Row {rowNum}: EmployeeCode '{code}' belongs to a separated employee ({existingEmployee.Status}) — an import never changes a separated employee.");
+                            Outcome(rowNum).Status = "Error";
+                            RowError(rowNum, $"EmployeeCode '{code}' belongs to a separated employee ({existingEmployee.Status}) — an import never changes a separated employee.");
                             continue;
                         }
                         // Approval-gated values in the row (bank, IBAN, account, routing, MOL ID, payment method,
@@ -979,7 +1098,7 @@ public class EmployeesController : ControllerBase
                         if (gatedNotApplied.Count > 0)
                         {
                             approvalRequired.Add((rowNum, code, gatedNotApplied));
-                            warnings.Add($"Row {rowNum}: EmployeeCode '{code}' already exists — {string.Join(", ", gatedNotApplied)} in this row were NOT applied. "
+                            RowWarn(rowNum, $"EmployeeCode '{code}' already exists — {string.Join(", ", gatedNotApplied)} in this row were NOT applied. "
                                          + "An existing employee's bank, payroll-identity and salary details change only through an approved change: edit the employee.");
                         }
                         // REPAIR, NEVER OVERWRITE (see EmployeeImportRepairPlan): the row may only fill NON-sensitive
@@ -987,8 +1106,10 @@ public class EmployeesController : ControllerBase
                         var rowJoining = ParseImportJoiningDate(row);
                         if (!EmployeeImportRepairPlan.NeedsRepair(existingEmployee, row, repairLookups,
                                 rowJoining.Supplied && !rowJoining.Unparsed ? rowJoining.Value : null))
-                        { skipped++; skippedDupCode++; errors.Add($"Row {rowNum}: EmployeeCode '{code}' already exists."); continue; }
+                        { skipped++; skippedDupCode++; Outcome(rowNum).Status = "Error"; RowError(rowNum, $"EmployeeCode '{code}' already exists."); continue; }
                         repairExistingCodes.Add(code);
+                        Outcome(rowNum).Status = "WillRepair";
+                        Outcome(rowNum).ProjectedStatus = existingEmployee.Status;
                         batchCodes[code] = existingEmployee;
                         batchPayroll[code] = (existingEmployee, row);
                         rowNumByCode[code] = rowNum;
@@ -1030,19 +1151,26 @@ public class EmployeesController : ControllerBase
                 var resolvedDeptId = resolved.DepartmentId;
                 var resolvedDesigId = resolved.DesignationId;
                 AddUnparsedJoiningDateGap(resolved, joining);
-                foreach (var w in resolved.Warnings) warnings.Add($"Row {rowNum}: {w}");
+                foreach (var w in resolved.Warnings) RowWarn(rowNum, $"{w}");
 
                 // ── Readiness landing decision (§7): blank ⇒ Draft; Active + activate-blockers ⇒ Draft + warning ──
-                var (rowStatus, rowReadiness, rowHasPolicy) = await ResolveRowLandingAsync(
+                var (rowStatus, rowReadiness, rowHasPolicy, rowPolicyCountry) = await ResolveRowLandingAsync(
                     row, resolved.CompanyId, resolvedDeptId, resolvedDesigId, jd, statusVal);
+                // Country-aware column checks (values in columns that do not apply to this row's country/nationality,
+                // identity numbers failing the pack's format) — warnings only, in the commit and therefore the preview.
+                Zayra.Api.Application.CountryPack.IIdentityDocumentFormat rowFormat =
+                    countryPacks?.ResolveIdentityDocumentFormat(rowPolicyCountry, string.Empty)
+                    ?? new Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat();
+                foreach (var w in CountryAwareRowWarnings(row, rowPolicyCountry, row.GetValueOrDefault("Nationality", string.Empty).Trim(), rowFormat))
+                    RowWarn(rowNum, w);
                 if (!string.IsNullOrWhiteSpace(statusVal)
                     && string.Equals(statusVal, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
                     && rowStatus == EmployeeStatuses.Draft)
-                    warnings.Add($"Row {rowNum}: {name} imported as Draft — cannot be Active until: "
+                    RowWarn(rowNum, $"{name} imported as Draft — cannot be Active until: "
                                  + $"{string.Join(", ", rowReadiness.Blocking.Select(b => b.Label))}. Fix in the People list.");
                 else if (joining.Unparsed && !string.IsNullOrWhiteSpace(statusVal)
                          && !string.Equals(statusVal, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
-                    warnings.Add($"Row {rowNum}: {name} imported as Draft instead of '{statusVal}' — the joining date could not be read.");
+                    RowWarn(rowNum, $"{name} imported as Draft instead of '{statusVal}' — the joining date could not be read.");
 
                 // ── Active-seat budget (P1-4) ─────────────────────────────────────────────
                 // MaxEmployees caps ACTIVE seats. A complete row that would land Active but has no seat left is
@@ -1053,7 +1181,7 @@ public class EmployeesController : ControllerBase
                     else
                     {
                         rowStatus = EmployeeStatuses.Draft;
-                        warnings.Add($"Row {rowNum}: {name} imported as Draft — active seat limit reached ({sub?.MaxEmployees}); activate once an active seat is available.");
+                        RowWarn(rowNum, $"{name} imported as Draft — active seat limit reached ({sub?.MaxEmployees}); activate once an active seat is available.");
                     }
                 }
 
@@ -1073,12 +1201,12 @@ public class EmployeesController : ControllerBase
                     resolved.Gaps.Add(new ImportGap("org:establishment", "org", estDecision.Detail, estDecision.DeptDisplay));
                     if (estDecision.Advisory)
                     {
-                        warnings.Add($"Row {rowNum}: {estDecision.Detail}");
+                        RowWarn(rowNum, $"{estDecision.Detail}");
                     }
                     else
                     {
                         rowStatus = EmployeeStatuses.Draft;
-                        warnings.Add($"Row {rowNum}: {name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
+                        RowWarn(rowNum, $"{name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
                     }
                 }
 
@@ -1107,7 +1235,7 @@ public class EmployeesController : ControllerBase
                         {
                             resolved.Gaps.Add(new ImportGap("email:duplicate", "readiness",
                                 $"Work email '{workEmail}' is already used by another employee in this tenant.", workEmail));
-                            warnings.Add($"Row {rowNum}: Work email '{workEmail}' is already in use — imported as-is and flagged.");
+                            RowWarn(rowNum, $"Work email '{workEmail}' is already in use — imported as-is and flagged.");
                         }
                         else claimedEmailNorm.Add(norm);
                     }
@@ -1128,6 +1256,14 @@ public class EmployeesController : ControllerBase
                 rowNumByCode[finalCode] = rowNum;
                 if (resolved.SalaryDecision == ImportSalaryDecision.Hold) heldSalaryCodes.Add(finalCode);
                 createdRowMeta.Add((employee, rowReadiness, rowHasPolicy, finalCode));
+                {
+                    var outcome = Outcome(rowNum);
+                    outcome.Status = "WillCreate";
+                    outcome.EmployeeCode = finalCode;
+                    outcome.ProjectedStatus = rowStatus;
+                    outcome.Readiness = rowReadiness;
+                    outcome.FinalCode = finalCode;
+                }
                 created++;
 
                 // ── DUPLICATE-PERSON detection for this row (accept-never-block: flag only, never drop/merge) ──
@@ -1142,7 +1278,7 @@ public class EmployeesController : ControllerBase
                     if (!gapsByCode[finalCode].Any(g => g.Type is "dup:strong" or "dup:possible"))
                     {
                         gapsByCode[finalCode].Add(new ImportGap(gapType, "dup", detail, raw));
-                        warnings.Add($"Row {rowNum}: {detail}");
+                        RowWarn(rowNum, $"{detail}");
                     }
                     // Back-flag the earlier member of any INTRA-FILE pair so BOTH rows surface (S2).
                     foreach (var m in dupMatches)
@@ -1154,7 +1290,7 @@ public class EmployeesController : ControllerBase
                         var (bDetail, bRaw) = DupGapText(dupImporterScope, dupProbe, m.Signals); // earlier row points at THIS row
                         earlierGaps.Add(new ImportGap(earlierType, "dup", bDetail, bRaw));
                         var earlierRow = rowNumByCode.GetValueOrDefault(earlierKey, 0);
-                        warnings.Add($"Row {earlierRow}: {bDetail}");
+                        RowWarn(earlierRow, $"{bDetail}");
                     }
                 }
                 dupMatcher.Register(dupProbe);
@@ -1287,7 +1423,7 @@ public class EmployeesController : ControllerBase
                 // ── A NEW employee: initial data entry, the same as POST /api/employees (bank and salary included). ──
                 var ibanRaw = rowData.GetValueOrDefault("IBAN", string.Empty).Trim();
                 if (!string.IsNullOrWhiteSpace(ibanRaw) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanRaw))
-                    warnings.Add($"Employee {emp.EmployeeCode}: IBAN '{ibanRaw}' fails country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
+                    CodeWarn(emp.EmployeeCode, $"IBAN '{ibanRaw}' is invalid — it fails the country format/length or the ISO 13616 mod-97 checksum — imported, but it must be corrected before this employee can be included in a payroll run.");
                 var bankNameRaw = rowData.GetValueOrDefault("BankName", string.Empty).Trim();
                 var molIdRaw = rowData.GetValueOrDefault("MolId", string.Empty).Trim();
                 var accountRaw = rowData.GetValueOrDefault("AccountNumber", string.Empty).Trim();
@@ -1343,7 +1479,7 @@ public class EmployeesController : ControllerBase
                     {
                         const string bankDetail = "Bank details (IBAN/account/routing code) were set by an import without a second " +
                                                   "review. Verify them with the employee before their first payroll.";
-                        warnings.Add($"Employee {emp.EmployeeCode}: {bankDetail}");
+                        CodeWarn(emp.EmployeeCode, $"{bankDetail}");
                         gapsByCode[payrollCode].Add(new ImportGap(EmployeeImportGap.BankDetailsUnverified, "pay", bankDetail, null));
                     }
                 }
@@ -1364,7 +1500,7 @@ public class EmployeesController : ControllerBase
                 var structureGap = SalaryStructureGap(salary, emp.JoiningDate != default);
                 if (structureGap is not null)
                 {
-                    warnings.Add($"Employee {emp.EmployeeCode}: {structureGap.Detail}");
+                    CodeWarn(emp.EmployeeCode, $"{structureGap.Detail}");
                     gapsByCode[payrollCode].Add(structureGap);
                     continue;
                 }
@@ -1401,6 +1537,7 @@ public class EmployeesController : ControllerBase
             int hierarchyLinked = 0;
             int managersUnresolved = 0;
             var hierarchyWarnings = new List<string>();
+            void HierWarn(int rn, string text) { hierarchyWarnings.Add($"Row {rn}: {text}"); if (rn > 0) Outcome(rn).Warnings.Add(text); }
             var allEmployees = await _db.Employees
                 .Where(e => e.TenantId == tenantId && !e.IsDeleted)
                 .ToListAsync(ct);
@@ -1444,13 +1581,13 @@ public class EmployeesController : ControllerBase
                     if (mgr is null)
                     {
                         managersUnresolved++;
-                        hierarchyWarnings.Add($"Row {rn}: Manager '{mgrLabel}' not found — imported without a manager link.");
+                        HierWarn(rn, $"Manager '{mgrLabel}' not found — imported without a manager link.");
                         gaps.Add(new ImportGap("link:manager", "link", $"Manager '{mgrLabel}' not found — not linked.", mgrLabel));
                     }
                     else if (mgr.Id == emp.Id)
                     {
                         managersUnresolved++;
-                        hierarchyWarnings.Add($"Row {rn}: Employee cannot be their own manager — manager link skipped.");
+                        HierWarn(rn, $"Employee cannot be their own manager — manager link skipped.");
                         gaps.Add(new ImportGap("link:manager", "link", "Employee cannot be their own manager — not linked.", mgrLabel));
                     }
                     else
@@ -1466,7 +1603,7 @@ public class EmployeesController : ControllerBase
                         if (circular)
                         {
                             managersUnresolved++;
-                            hierarchyWarnings.Add($"Row {rn}: Setting '{mgrLabel}' as manager of '{finalCode}' would create a circular hierarchy — manager link skipped.");
+                            HierWarn(rn, $"Setting '{mgrLabel}' as manager of '{finalCode}' would create a circular hierarchy — manager link skipped.");
                             gaps.Add(new ImportGap("link:manager", "link", $"Setting '{mgrLabel}' as manager would create a circular hierarchy — not linked.", mgrLabel));
                         }
                         else
@@ -1491,7 +1628,7 @@ public class EmployeesController : ControllerBase
                     var sup = ResolveRef(supCode, supEmail);
                     if (sup is null)
                     {
-                        hierarchyWarnings.Add($"Row {rn}: Supervisor '{supLabel}' not found — imported without a supervisor link.");
+                        HierWarn(rn, $"Supervisor '{supLabel}' not found — imported without a supervisor link.");
                         gaps.Add(new ImportGap("link:supervisor", "link", $"Supervisor '{supLabel}' not found — not linked.", supLabel));
                     }
                     else if (sup.Id != emp.Id)
@@ -1558,7 +1695,8 @@ public class EmployeesController : ControllerBase
             foreach (var untouched in repairExistingCodes.Where(c => !repairedTouchedCodes.Contains(c)))
             {
                 skipped++; skippedDupCode++;
-                errors.Add($"Row {rowNumByCode[untouched]}: EmployeeCode '{untouched}' already exists and this file had nothing missing it could fill.");
+                Outcome(rowNumByCode[untouched]).Status = "Error";
+                RowError(rowNumByCode[untouched], $"EmployeeCode '{untouched}' already exists and this file had nothing missing it could fill.");
             }
             var repaired = repairedTouchedCodes.Count;
 
@@ -1616,8 +1754,18 @@ public class EmployeesController : ControllerBase
             if (createdIncomplete.Count > 0)
                 await _audit.WriteAsync("employee.import_created_incomplete", "Employee", importBatchId.ToString(), Context(),
                     JsonSerializer.Serialize(new { importBatchId, createdIncompleteCount = createdIncomplete.Count, managersUnresolved, salariesHeld }), ct);
+            if (req.ConfirmReimport && earlierCommit is not null)
+                await _audit.WriteAsync("employee.reimport_confirmed", ImportBatchEntityName, importBatchId.ToString(), Context(),
+                    JsonSerializer.Serialize(new
+                    {
+                        importBatchId, contentSha256, reason = req.ReimportReason!.Trim(),
+                        earlierImportBatchId = earlierCommit.ImportBatchId, earlierImportedAtUtc = earlierCommit.ImportedAtUtc,
+                    }), ct);
             await _audit.WriteAsync(ImportCommittedAction, ImportBatchEntityName, importBatchId.ToString(), Context(),
                 JsonSerializer.Serialize(new ImportCommitRecord(importBatchId, contentSha256, rows.Count, created, repaired, skipped, 0)), ct);
+
+            if (dryRun)
+                _lastDryRun = BuildDryRunReport(rowOutcomes.Values, gapsByCode, created, repaired, skipped, approvalRequired.Count);
 
             return Ok(new
             {
@@ -1657,7 +1805,59 @@ public class EmployeesController : ControllerBase
     }
 
     /// <param name="ImportKey">Optional client-generated id for this file, re-sent on retry. See <see cref="Import"/>.</param>
-    public record ImportEmployeesRequest(string CsvContent, Guid? ImportKey = null);
+    /// <param name="ConfirmReimport">True to import a file whose exact content was already committed for this tenant
+    /// (refused otherwise — see the re-import guard in <see cref="RunEmployeeImportAsync"/>).</param>
+    /// <param name="ReimportReason">Required with <paramref name="ConfirmReimport"/>; recorded in the audit trail.</param>
+    public record ImportEmployeesRequest(string CsvContent, Guid? ImportKey = null, bool ConfirmReimport = false, string? ReimportReason = null);
+
+    /// <summary>An earlier committed import of the same file content, for the re-import guard.</summary>
+    private sealed record EarlierImport(Guid ImportBatchId, DateTime ImportedAtUtc, string ImportedBy, int Created);
+
+    /// <summary>The most recent committed import of this exact content (other than <paramref name="currentBatchId"/>).</summary>
+    private async Task<EarlierImport?> FindEarlierCommitOfContentAsync(Guid tenantId, string contentSha256, Guid currentBatchId, CancellationToken ct)
+    {
+        var markers = await Zayra.Api.Infrastructure.Data.ScopedBypass
+            .NullableTenantWide(_db.AuditLogs, tenantId,
+                "Re-import guard: the tenant's committed employee-import markers, whatever company the importer was scoped to — the same file must be recognised tenant-wide. Tenant re-applied; markers only.")
+            .AsNoTracking()
+            .Where(a => a.EntityName == ImportBatchEntityName && a.Action == ImportCommittedAction)
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => new { a.Metadata, a.UserId, a.CreatedAtUtc })
+            .ToListAsync(ct);
+        foreach (var marker in markers)
+        {
+            ImportCommitRecord? record;
+            try { record = marker.Metadata is null ? null : JsonSerializer.Deserialize<ImportCommitRecord>(marker.Metadata); }
+            catch (JsonException) { continue; }
+            if (record is null || record.ImportBatchId == currentBatchId
+                || !string.Equals(record.ContentSha256, contentSha256, StringComparison.OrdinalIgnoreCase)) continue;
+            var who = marker.UserId is Guid uid
+                ? await Zayra.Api.Infrastructure.Data.ScopedBypass
+                    .TenantWide(_db.Users, tenantId, "Re-import guard: name the user who imported the earlier file, whatever company scope they had. Tenant re-applied; name and email only.")
+                    .AsNoTracking().Where(u => u.Id == uid)
+                    .Select(u => string.IsNullOrWhiteSpace(u.FullName) ? u.Email : u.FullName + " (" + u.Email + ")")
+                    .FirstOrDefaultAsync(ct)
+                : null;
+            return new EarlierImport(record.ImportBatchId, marker.CreatedAtUtc, who ?? string.Empty, record.Created);
+        }
+        return null;
+    }
+
+    /// <summary>Transaction-scoped advisory-lock key for one (tenant, file content), so two commits of the same file
+    /// under different import keys serialize and the second sees the first's marker.</summary>
+    private static long ImportContentLockKey(Guid tenantId, string contentSha256)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"EMPIMPRT-CONTENT:{tenantId:D}:{contentSha256}"));
+        return System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(digest.AsSpan(0, 8));
+    }
+
+    /// <summary>A statement gave up waiting for a lock (lock_timeout, SQLSTATE 55P03), however it was wrapped.</summary>
+    private static bool IsLockTimeout(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException { SqlState: "55P03" }) return true;
+        return false;
+    }
 
     // ── Commit marker (see Import: RETRY / CLIENT KEY) ─────────────────────────────────────────────────
     internal const string ImportCommittedAction = "employee.import_committed";
@@ -2256,108 +2456,105 @@ public class EmployeesController : ControllerBase
         CancellationToken ct = default,
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
-        var tenantId = RequireTenant();
-        // The preview is the safety mechanism for a bulk write, so it must fail on exactly what the commit
-        // fails on — a dry run that accepts a file the commit rejects is worse than no dry run.
-        if (HeaderRejection(req.CsvContent) is IActionResult headerRejection) return headerRejection;
-        if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
+        RequireTenant();
+        // THE PREVIEW IS THE DRY RUN, AND ONLY THE DRY RUN. The commit runs to the end in its one transaction and is
+        // rolled back; every per-row line below was recorded by the commit as it decided that row. There used to be a
+        // second, parallel per-row projection here as well — the same lookups, resolution and readiness evaluated
+        // twice per preview, which doubled the memory a large file needed and could still drift from the commit.
+        _lastDryRun = null;
+        var dry = await RunEmployeeImportAsync(req with { ImportKey = null, ConfirmReimport = false, ReimportReason = null },
+            dryRun: true, ct, countryPacks);
+        _db.ChangeTracker.Clear();
 
-        var sub = await _db.TenantSubscriptions.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        int currentCount = await _db.Employees
-            .CountAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == EmployeeStatuses.Active, ct);
-        int remaining = sub is not null && sub.MaxEmployees > 0 ? sub.MaxEmployees - currentCount : int.MaxValue;
+        var commitCheck = DescribeImportDryRun(dry);
+        if (_lastDryRun is { } report && dry is OkObjectResult)
+            return Ok(new
+            {
+                received = report.Created + report.Repaired + report.Skipped,
+                commitCheck,
+                wouldCreate = report.Created,
+                wouldRepair = report.Repaired,
+                wouldSkip = report.Skipped,
+                wouldFail = 0,
+                wouldNeedApproval = report.NeedApproval,
+                wouldCreateActive = report.CreateActive,
+                wouldCreateDraft = report.CreateDraft,
+                fieldGaps = report.FieldGaps,
+                rows = report.Rows,
+            });
 
-        // SHARED master-data lookups — the SAME loader Import (commit) uses → dry-run resolution == commit.
-        var lookups = await EmployeeImportRowResolver.LoadImportLookupsAsync(_db, tenantId, ct);
-        // Cumulative in-file position claims (file order wins) — mirrors commit exactly.
-        var claimedPositionCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // SHARED establishment preloads — the SAME loader Import (commit) uses, so the over-budget
-        // downgrade PROJECTED here == the commit landing. Cumulative claims mirror commit (file order wins).
-        var establishmentContext = await EmployeeImportEstablishmentEvaluator.LoadAsync(_db, _establishmentGuard, tenantId, ct);
-        var claimedLevelSlots = new Dictionary<(Guid Dept, Guid Level), int>();
+        // Refusals about the FILE itself (unreadable header, mis-shaped rows, too many rows, another import in
+        // progress) are returned as they are: there are no rows to preview.
+        var body = dry is ObjectResult refusedResult && refusedResult.Value is { } value ? JsonSerializer.SerializeToElement(value) : default;
+        var error = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        if (dry is ObjectResult { StatusCode: 400 } || error is "csv_row_shape" or "import_too_many_rows" or "import_busy")
+            return dry;
 
-        // Existing employees, exactly as the commit sees them: the visible repair candidates by code, and every
-        // taken code tenant-wide (see Import).
-        var existingEmployeesByCode = (await _db.Employees.AsNoTracking()
-                .Where(e => e.TenantId == tenantId && !e.IsDeleted)
-                .ToListAsync(ct))
-            .GroupBy(e => e.EmployeeCode, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        var takenCodes = new HashSet<string>(
-            await Zayra.Api.Infrastructure.Data.ScopedBypass
-                .NullableTenantWide(_db.Employees, tenantId, TakenCodesBypassJustification)
-                .AsNoTracking().Select(e => e.EmployeeCode).ToListAsync(ct),
-            StringComparer.OrdinalIgnoreCase);
-        var repairLookups = await ImportRepairLookups.LoadAsync(_db, tenantId, track: false, ct);
-        var existingCodes = new HashSet<string>(existingEmployeesByCode.Keys.Select(c => c.ToUpperInvariant()));
-        // The commit's ROW GATE, the same function: any of these rows refuses the whole file.
-        var refusalByRow = ImportRowRefusals(rows, existingEmployeesByCode, takenCodes).ToDictionary(r => r.Row);
-        // Duplicate-person detection PREVIEW parity (§4d): the SAME preloaded matcher commit uses, so the
-        // dry-run flags the identical rows. Persists nothing — feeds the "most common gaps" strip + per-row
-        // warnings only. Register non-error rows in file order so intra-file matches surface as in commit.
-        var dupMatcher = new EmployeeDuplicateMatcher();
-        foreach (var e in await _db.Employees.AsNoTracking()
-            // IgnoreQueryFilters is intentional: duplicate detection is authoritative TENANT-WIDE across every
-            // company; a scoped caller's company filter must not hide a cross-company dup (masking protects PII).
-            .IgnoreQueryFilters()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted)
-            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.EnglishName, e.ArabicName, e.CompanyId,
-                e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber })
-            .ToListAsync(ct))
+        // The commit would refuse the file: preview the refused rows, with the commit's verdict on top.
+        var refusedRows = new List<object>();
+        if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("failedRows", out var failed) && failed.ValueKind == JsonValueKind.Array)
+            foreach (var f in failed.EnumerateArray())
+            {
+                string Str(string name) => f.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+                var problem = string.Join(" ", new[] { Str("column"), Str("problem") }.Where(x => x.Length > 0));
+                refusedRows.Add(new
+                {
+                    row = f.TryGetProperty("row", out var r) && r.ValueKind == JsonValueKind.Number ? r.GetInt32() : 0,
+                    employeeCode = Str("employeeCode"),
+                    fullName = string.Empty,
+                    status = "WillFail",
+                    projectedStatus = string.Empty,
+                    blocking = Array.Empty<string>(),
+                    recommended = Array.Empty<string>(),
+                    errors = new[] { $"{problem} — the import will be refused until this is corrected." },
+                    warnings = Array.Empty<string>(),
+                });
+            }
+        return Ok(new
         {
-            dupMatcher.Register(DuplicateCandidateBuilder.Build(e.Id, null, e.EmployeeCode, e.FullName, e.EnglishName,
-                e.ArabicName, e.CompanyId, e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber));
-        }
-        var dupImporterScope = this.GetEntityScope();
-        // Work emails already in the tenant — the email fallback the commit Pass 2 uses, so a "manager
-        // known" test here matches commit's link outcome.
-        var existingEmails = new HashSet<string>(await _db.Employees
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != "")
-            .Select(e => e.WorkEmail.ToUpper())
-            .ToListAsync(ct), StringComparer.OrdinalIgnoreCase);
-        var seenEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // Work-email derivation collision sets (login-normalized), mirroring commit so the derived address +
-        // email:duplicate flag projected here == the commit landing (dry-run == commit).
-        // IgnoreQueryFilters is intentional: work-email uniqueness is tenant-wide (company-agnostic), matching
-        // the User login boundary — a company-scoped caller must still collide against every company's rows.
-        var existingEmailNorm = new HashSet<string>(
-            (await _db.Employees.AsNoTracking().IgnoreQueryFilters()
-                .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.WorkEmail != "")
-                .Select(e => e.WorkEmail).ToListAsync(ct)).Select(AuthService.Normalize),
-            StringComparer.Ordinal);
-        var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
-        var tenantCurrency = await _db.ResolveTenantCurrencyAsync(tenantId, ct);
+            received = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("received", out var rc) && rc.ValueKind == JsonValueKind.Number ? rc.GetInt32() : 0,
+            commitCheck,
+            wouldCreate = 0,
+            wouldRepair = 0,
+            wouldSkip = 0,
+            wouldFail = refusedRows.Count,
+            wouldNeedApproval = 0,
+            wouldCreateActive = 0,
+            wouldCreateDraft = 0,
+            fieldGaps = Array.Empty<object>(),
+            rows = refusedRows,
+        });
+    }
 
-        // Pre-pass: collect all batch code→managerCode so circular detection works even when
-        // both employee and manager are new in the same import batch. Also index batch emails so the
-        // manager email-fallback is recognized in preview.
-        var batchManagerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var batchEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in rows)
-        {
-            var c = r.GetValueOrDefault("EmployeeCode", string.Empty).Trim().ToUpperInvariant();
-            var m = r.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim().ToUpperInvariant();
-            if (!string.IsNullOrEmpty(c) && !string.IsNullOrEmpty(m))
-                batchManagerMap[c] = m;
-            var em = r.GetValueOrDefault("WorkEmail", string.Empty).Trim();
-            if (!string.IsNullOrEmpty(em)) batchEmails.Add(em);
-        }
+    /// <summary>One CSV row as the commit decided it — what the preview lists for that row.</summary>
+    private sealed class ImportRowOutcome(int row)
+    {
+        public int Row { get; } = row;
+        public string EmployeeCode { get; set; } = string.Empty;
+        public string FullName { get; set; } = string.Empty;
+        /// <summary>WillCreate | WillRepair | Error (not imported: an existing employee with nothing to fill, a separated one, an empty row).</summary>
+        public string Status { get; set; } = "Error";
+        public string ProjectedStatus { get; set; } = string.Empty;
+        public EmployeeReadiness? Readiness { get; set; }
+        public string? FinalCode { get; set; }
+        public List<string> Warnings { get; } = new();
+        public List<string> Errors { get; } = new();
+    }
 
-        var previewRows = new List<object>();
-        var seen = new HashSet<string>();
-        int wouldCreate = 0, wouldRepair = 0, wouldSkip = 0, wouldFail = 0, wouldCreateActive = 0, wouldCreateDraft = 0;
-        // Existing-employee rows whose approval-gated values would be left unapplied (see Import).
-        int wouldNeedApproval = 0;
-        int activeSeatsProjected = 0; // Active-landing rows counted against the active-seat budget (P1-4).
-        // Dry-run readiness projection (§7.1): per non-error row, the landing state it WOULD get
-        // (Active vs Draft) + why. Persists nothing. Policy per (company, country, nationality).
-        var previewPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
-        // Per-field aggregation across rows ("ideally which fields" — owner's ask). Keyed by readiness
-        // field key so the modal can render a "most common missing fields" strip. gate/label come off the
-        // readiness item; rowCount is how many rows are missing it.
+    /// <summary>One field in the preview's "most common missing details" strip (lower-case names are the wire contract).</summary>
+    private sealed record PreviewFieldGap(string field, string label, string gate, string kind, int rowCount);
+
+    private sealed record DryRunReport(int Created, int Repaired, int Skipped, int NeedApproval, int CreateActive, int CreateDraft,
+        IReadOnlyList<object> Rows, IReadOnlyList<object> FieldGaps);
+
+    /// <summary>Set by a dry run (see <see cref="ImportPreview"/>); one controller instance serves one request.</summary>
+    private DryRunReport? _lastDryRun;
+
+    private static DryRunReport BuildDryRunReport(IEnumerable<ImportRowOutcome> outcomes, IReadOnlyDictionary<string, List<ImportGap>> gapsByCode,
+        int created, int repaired, int skipped, int needApproval)
+    {
         var fieldGapAgg = new Dictionary<string, (string Label, string Gate, string Kind, int Count)>(StringComparer.OrdinalIgnoreCase);
-        void RecordGaps(IEnumerable<ReadinessItem> items, string kind)
+        void Record(IEnumerable<ReadinessItem> items, string kind)
         {
             foreach (var it in items)
             {
@@ -2365,360 +2562,49 @@ public class EmployeesController : ControllerBase
                 fieldGapAgg[it.Key] = (it.Label, it.Gate, kind, cur.Count + 1);
             }
         }
-
-        int rowNum = 1;
-        foreach (var row in rows)
+        var rows = new List<object>();
+        int active = 0, draft = 0;
+        foreach (var o in outcomes)
         {
-            rowNum++;
-            var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
-            var name = row.GetValueOrDefault("FullName", string.Empty).Trim();
-            var mgrCode = row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim();
-            var mgrEmail = row.GetValueOrDefault("ManagerEmail", string.Empty).Trim();
-            var supCode = row.GetValueOrDefault("SupervisorEmployeeCode", string.Empty).Trim();
-            var supEmail = row.GetValueOrDefault("SupervisorEmail", string.Empty).Trim();
-            var email = row.GetValueOrDefault("WorkEmail", string.Empty).Trim();
-
-            var rowWarnings = new List<string>();
-            var rowErrors = new List<string>();
-            // Values the database cannot store: the commit refuses the WHOLE file on them (nothing is written),
-            // so they are reported separately from the two lawful per-row skips.
-            var rowFailures = new List<string>();
-            string status;
-            Employee? repairTarget = null;
-            var joining = ParseImportJoiningDate(row);
-            var salary = ParseImportSalary(row);
-
-            if (refusalByRow.TryGetValue(rowNum, out var refusal))
+            var gaps = o.FinalCode is not null && gapsByCode.TryGetValue(o.FinalCode, out var g) ? g : new List<ImportGap>();
+            var gapItems = gaps.Select(x => EmployeeReadinessEvaluator.ImportGapToItem(x.Type, x.Category)).ToList();
+            var blocking = new List<string>();
+            var recommended = new List<string>();
+            if (o.Status == "WillCreate")
             {
-                wouldFail++;
-                previewRows.Add(new
+                if (string.Equals(o.ProjectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) active++;
+                else if (string.Equals(o.ProjectedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)) draft++;
+                if (o.Readiness is { } readiness)
                 {
-                    row = rowNum, employeeCode = code, fullName = name, status = "WillFail", projectedStatus = string.Empty,
-                    blocking = new List<string>(), recommended = new List<string>(),
-                    errors = new List<string> { $"{refusal.Problem} — the import will be refused until this is corrected." },
-                    warnings = new List<string>(),
-                });
-                continue;
+                    blocking = readiness.Blocking.Select(b => b.Label).ToList();
+                    recommended = readiness.Recommended.Select(b => b.Label).ToList();
+                    Record(readiness.Blocking, "blocking");
+                    Record(readiness.Recommended, "recommended");
+                }
+                recommended = recommended.Concat(gapItems.Select(i => i.Label)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                Record(gapItems, "recommended");
             }
-
-            // The two lawful drops are the only preview ERRORS (⇒ wouldSkip), so dry-run skips == commit
-            // skips: (a) missing FullName, (b) duplicate EmployeeCode. Self/circular manager are WARNINGS —
-            // commit does NOT drop those rows (Pass 1 created the person; Pass 2 only skips the link). A code
-            // that already exists is a REPAIR, not a skip, when the row can fill something the employee is
-            // missing (EmployeeImportRepairPlan — the same decision the commit makes).
-            if (string.IsNullOrWhiteSpace(name))
-            { rowErrors.Add("Empty row — ignored"); }
-            else if (!string.IsNullOrEmpty(code))
+            rows.Add(new
             {
-                if (seen.Contains(code.ToUpperInvariant()))
-                    rowErrors.Add($"Duplicate EmployeeCode '{code}'");
-                else if (existingEmployeesByCode.TryGetValue(code, out var candidate))
-                {
-                    // The SAME decisions as the commit (see Import): separated employees are never touched,
-                    // approval-gated values are named and never applied, and only non-sensitive gaps are filled.
-                    if (EmployeeImportRepairPlan.IsSeparated(candidate))
-                        rowErrors.Add($"EmployeeCode '{code}' belongs to a separated employee ({candidate.Status}) — an import never changes a separated employee");
-                    else
-                    {
-                        var gatedNotApplied = EmployeeImportRepairPlan.ApprovalGatedValuesNotApplied(candidate, row, repairLookups);
-                        if (gatedNotApplied.Count > 0)
-                        {
-                            wouldNeedApproval++;
-                            rowWarnings.Add($"{string.Join(", ", gatedNotApplied)} will NOT be applied to this existing employee — bank, payroll-identity and salary details change only through an approved change: edit the employee.");
-                        }
-                        if (EmployeeImportRepairPlan.NeedsRepair(candidate, row, repairLookups,
-                                joining.Supplied && !joining.Unparsed ? joining.Value : null))
-                        {
-                            repairTarget = candidate;
-                            rowWarnings.Add("This employee already exists and will not be overwritten — only missing non-sensitive details (payroll group, salary-structure reference, currency, reporting lines, an unknown joining date) will be filled in.");
-                        }
-                        else rowErrors.Add($"Duplicate EmployeeCode '{code}'");
-                    }
-                }
-                else if (takenCodes.Contains(code))
-                    rowErrors.Add($"Duplicate EmployeeCode '{code}'");
-            }
-
-            // ── SHARED accept-never-block resolution (IDENTICAL to commit) → org/grade/position/salary gaps.
-            var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, claimedPositionCodes, ImportJoiningDateOnly(joining.Value));
-            if (repairTarget is null) AddUnparsedJoiningDateGap(resolved, joining);
-            rowWarnings.AddRange(resolved.Warnings);
-
-            if (!string.IsNullOrEmpty(mgrCode) || !string.IsNullOrEmpty(mgrEmail))
-            {
-                var mgrUpper = mgrCode.ToUpperInvariant();
-                var mgrLabel = !string.IsNullOrEmpty(mgrCode) ? mgrCode : mgrEmail;
-                if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(mgrCode) && mgrCode.Equals(code, StringComparison.OrdinalIgnoreCase))
-                {
-                    rowWarnings.Add("Employee cannot be their own manager — manager link will be skipped");
-                }
-                else
-                {
-                    bool mgrKnown = (!string.IsNullOrEmpty(mgrCode) && (existingCodes.Contains(mgrUpper) || seen.Contains(mgrUpper) || batchManagerMap.ContainsKey(mgrUpper)))
-                                 || (!string.IsNullOrEmpty(mgrEmail) && (existingEmails.Contains(mgrEmail) || seenEmails.Contains(mgrEmail) || batchEmails.Contains(mgrEmail)));
-                    if (!mgrKnown)
-                        rowWarnings.Add($"Manager '{mgrLabel}' not found — manager link will be skipped");
-
-                    if (!string.IsNullOrEmpty(code) && !string.IsNullOrEmpty(mgrCode))
-                    {
-                        // Circular check using the full batch map — detects A→B→A even when both are new
-                        var visited2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { code.ToUpperInvariant() };
-                        var cursor2 = mgrUpper;
-                        bool circular2 = false;
-                        for (int d = 0; d < 50; d++)
-                        {
-                            if (!visited2.Add(cursor2)) { circular2 = true; break; }
-                            if (batchManagerMap.TryGetValue(cursor2, out var next)) cursor2 = next;
-                            else break;
-                        }
-                        if (circular2) rowWarnings.Add($"Setting '{mgrLabel}' as manager would create a circular hierarchy — manager link will be skipped");
-                    }
-                }
-            }
-
-            if (!string.IsNullOrEmpty(supCode) || !string.IsNullOrEmpty(supEmail))
-            {
-                var supLabel = !string.IsNullOrEmpty(supCode) ? supCode : supEmail;
-                bool supKnown = (!string.IsNullOrEmpty(supCode) && (existingCodes.Contains(supCode.ToUpperInvariant()) || seen.Contains(supCode.ToUpperInvariant())))
-                             || (!string.IsNullOrEmpty(supEmail) && (existingEmails.Contains(supEmail) || seenEmails.Contains(supEmail) || batchEmails.Contains(supEmail)));
-                if (!supKnown)
-                    rowWarnings.Add($"Supervisor '{supLabel}' not found — supervisor link will be skipped");
-            }
-
-            var ibanPreview = row.GetValueOrDefault("IBAN", string.Empty).Trim();
-            // Use the real ISO 13616 mod-97 check (not just structure) so a bad checksum is caught in
-            // preview, matching what the payroll-run/WPS gate enforces later.
-            if (!string.IsNullOrEmpty(ibanPreview) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(ibanPreview))
-                rowWarnings.Add($"IBAN '{ibanPreview}' is invalid — country format/length or ISO 13616 mod-97 validation failed; it will be stored as-is but must be corrected before this employee can be paid via WPS");
-
-            bool hasErrors = rowErrors.Count > 0;
-
-            // Readiness projection for a row that WILL be created.
-            string projectedStatus = string.Empty;
-            List<string> projBlocking = new(), projRecommended = new();
-            if (!hasErrors && repairTarget is null)
-            {
-                var csvStatus = row.GetValueOrDefault("Status", string.Empty).Trim();
-                var country = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
-                var nationality = row.GetValueOrDefault("Nationality", string.Empty).Trim();
-                // The row's resolved company is the SAME the shared resolver used (default when unknown), so
-                // a company-scoped policy applies here exactly as it will at commit; cache key mirrors commit.
-                var rowCompanyId = resolved.CompanyId;
-                var key = $"{rowCompanyId}|{country.ToUpperInvariant()}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nationality)}";
-                if (!previewPolicyCache.TryGetValue(key, out var policy))
-                {
-                    policy = await _activationGuard.ResolvePolicyAsync(tenantId, rowCompanyId, country, nationality, ct);
-                    previewPolicyCache[key] = policy;
-                }
-                // Country-aware column validation (§4): warn on values in columns that don't apply to this
-                // row's (country, nationality) and on identity numbers failing the pack format — never errors.
-                Zayra.Api.Application.CountryPack.IIdentityDocumentFormat fmt =
-                    countryPacks?.ResolveIdentityDocumentFormat(policy.CountryCode, string.Empty)
-                    ?? new Zayra.Api.Infrastructure.CountryPack.DefaultIdentityDocumentFormat();
-                rowWarnings.AddRange(CountryAwareRowWarnings(row, policy.CountryCode, nationality, fmt));
-                // The SAME joining-date parser as the commit (invariant culture; an unreadable cell stays unknown
-                // and blocks — it used to fall back to TODAY here and project a clean Active row).
-                var snap = ImportReadinessSnapshot(row, resolved.DepartmentId, resolved.DesignationId, joining.Value);
-                var readiness = _activationGuard.Evaluate(snap, policy);
-
-                // The SAME gap producers as the commit: the employee builder records the data:unparsed* gaps
-                // (dates / whole numbers that could not be read), and SalaryStructureGap the pay:salaryReview gap
-                // (a malformed salary cell, a zero basic under allowances, or no known joining date).
-                var probe = BuildImportedEmployee(tenantId, row, resolved, name,
-                    string.IsNullOrWhiteSpace(code) ? "AUTO" : code, email, EmployeeStatuses.Draft, joining.Value, resolved.Gaps);
-                if (SalaryStructureGap(salary, joining.Value != default) is { } structureGap)
-                {
-                    resolved.Gaps.Add(structureGap);
-                    rowWarnings.Add(structureGap.Detail);
-                }
-                // Values the columns cannot hold — the same check the commit makes before its first save.
-                var currencyRaw = row.GetValueOrDefault("Currency", string.Empty).Trim();
-                var probeProfile = new EmployeePayrollProfile
-                {
-                    TenantId = tenantId, BankName = row.GetValueOrDefault("BankName", string.Empty).Trim(),
-                    Iban = ibanPreview, AccountNumber = row.GetValueOrDefault("AccountNumber", string.Empty).Trim(),
-                    BankRoutingCode = row.GetValueOrDefault("BankRoutingCode", string.Empty).Trim(),
-                    PaymentMethod = row.GetValueOrDefault("PaymentMethod", string.Empty).Trim(),
-                    PayrollGroup = row.GetValueOrDefault("PayrollGroup", string.Empty).Trim(),
-                    SalaryStructureReference = row.GetValueOrDefault("SalaryStructureCode", string.Empty).Trim(),
-                    SocialInsuranceReference = row.GetValueOrDefault("SocialInsuranceReference", string.Empty).Trim(),
-                    MolId = row.GetValueOrDefault("MolId", string.Empty).Trim(),
-                    SalaryCurrency = string.IsNullOrWhiteSpace(currencyRaw) ? tenantCurrency : currencyRaw.ToUpperInvariant(),
-                };
-                var probeSalary = new EmployeeSalaryStructure
-                {
-                    TenantId = tenantId, BasicSalary = salary.BasicSalary, HousingAllowance = salary.Housing,
-                    TransportAllowance = salary.Transport, FoodAllowance = salary.Food, MobileAllowance = salary.Mobile,
-                    OtherAllowance = salary.Other, FixedDeduction = salary.FixedDeduction,
-                };
-                foreach (var problem in new object[] { probe, probeProfile, probeSalary }
-                             .SelectMany(entity => EmployeeImportStorageGuard.Check(_db.Model, entity)))
-                    rowFailures.Add($"{problem.Column} {problem.Problem} — the import will be refused until this is corrected.");
-
-                projBlocking = readiness.Blocking.Select(b => b.Label).ToList();
-                // Per-row guidance carries the same advisory gaps as the aggregate below — otherwise a salary held
-                // for a missing grade, or a date that could not be read, would read as "Complete" on its own row.
-                projRecommended = readiness.Recommended.Select(b => b.Label)
-                    .Concat(resolved.Gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.Type, g.Category).Label))
-                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                RecordGaps(readiness.Blocking, "blocking");
-                RecordGaps(readiness.Recommended, "recommended");
-                // Advisory org-skeleton / payroll / data import gaps also feed the "most common gaps" strip (Part E3).
-                // (email:needs-info / email:domain-mismatch are already in resolved.Gaps + resolved.Warnings.)
-                RecordGaps(resolved.Gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.Type, g.Category)), "recommended");
-
-                // Work-email derive/duplicate projection (mirrors commit → dry-run == commit).
-                if (!string.IsNullOrEmpty(resolved.WorkEmailLocalPart))
-                {
-                    var derived = WorkEmailDeriver.Uniqueify(resolved.WorkEmailLocalPart, resolved.WorkEmailDomain,
-                        addr => existingEmailNorm.Contains(AuthService.Normalize(addr)) || claimedEmailNorm.Contains(AuthService.Normalize(addr)));
-                    claimedEmailNorm.Add(AuthService.Normalize(derived));
-                }
-                else if (!string.IsNullOrWhiteSpace(resolved.WorkEmailProvided))
-                {
-                    var norm = AuthService.Normalize(resolved.WorkEmailProvided);
-                    if (existingEmailNorm.Contains(norm) || claimedEmailNorm.Contains(norm))
-                    {
-                        RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem("email:duplicate", "readiness") }, "recommended");
-                        rowWarnings.Add($"Work email '{resolved.WorkEmailProvided}' is already in use — imported as-is and flagged.");
-                    }
-                    else claimedEmailNorm.Add(norm);
-                }
-                // SHARED landing rule (blank ⇒ Draft; Active + blocker ⇒ Draft; unknown joining date ⇒ Draft).
-                projectedStatus = ImportLandingStatus(csvStatus, readiness, joining.Value);
-
-                // Seat gate (P1-4): only Active-landing rows consume an active seat. A complete row that
-                // would land Active but has no seat left is DOWNGRADED to Draft (imported inactive), never
-                // errored — Draft rows never consume a seat, matching the inactive-until-complete model and
-                // the commit path. Unlimited plans have remaining == int.MaxValue so this never fires.
-                if (string.Equals(projectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (activeSeatsProjected < remaining) activeSeatsProjected++;
-                    else
-                    {
-                        projectedStatus = EmployeeStatuses.Draft;
-                        rowWarnings.Add($"Active seat limit reached ({sub?.MaxEmployees}) — imported as inactive until an active seat is available.");
-                    }
-                }
-
-                // Establishment budget projection (§5.2 / AC9) — SHARED evaluator, byte-identical to commit.
-                // Runs AFTER the seat gate so it sees the final landing status (commit does the same). An
-                // over-budget row is NEVER skipped: Advisory consumes+warns; Enforced downgrades to Draft with
-                // an org:establishment gap. This is the parity fix — preview now matches commit's landing.
-                var estDecision = EmployeeImportEstablishmentEvaluator.Evaluate(
-                    resolved.DepartmentId, resolved.DesignationId, projectedStatus, establishmentContext,
-                    claimedLevelSlots, row.GetValueOrDefault("Department", string.Empty).Trim());
-                if (estDecision.OverBudget)
-                {
-                    // Feed the org:establishment gap into the "most common gaps" strip, exactly as commit persists it.
-                    RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem("org:establishment", "org") }, "recommended");
-                    if (estDecision.Advisory)
-                    {
-                        rowWarnings.Add(estDecision.Detail);
-                    }
-                    else
-                    {
-                        projectedStatus = EmployeeStatuses.Draft;
-                        rowWarnings.Add($"{name} imported as Draft — {estDecision.Detail} Assign within budget to activate.");
-                    }
-                }
-
-                // ── DUPLICATE-PERSON detection (dry-run parity with commit) ──────────────────────────
-                var dupBatchKey = !string.IsNullOrWhiteSpace(code) ? code : $"__row{rowNum}";
-                var dupProbe = DuplicateCandidateBuilder.Build(
-                    null, dupBatchKey, code, name, name, row.GetValueOrDefault("ArabicName", string.Empty),
-                    resolved.CompanyId, nationality, ReadCsvDate(row, "DateOfBirth"),
-                    row.GetValueOrDefault("IqamaNumber", string.Empty), row.GetValueOrDefault("EmiratesId", string.Empty),
-                    row.GetValueOrDefault("Qid", string.Empty), row.GetValueOrDefault("CivilId", string.Empty),
-                    row.GetValueOrDefault("IdNumber", string.Empty), row.GetValueOrDefault("PassportNumber", string.Empty));
-                var dupMatches = dupMatcher.Match(dupProbe);
-                if (dupMatches.Count > 0)
-                {
-                    var strongest = dupMatches[0];
-                    var gapType = strongest.MatchType == DuplicateMatchTypes.Strong ? "dup:strong" : "dup:possible";
-                    RecordGaps(new[] { EmployeeReadinessEvaluator.ImportGapToItem(gapType, "dup") }, "recommended");
-                    var (detail, _) = DupGapText(dupImporterScope, strongest.Counterpart, strongest.Signals);
-                    rowWarnings.Add(detail);
-                }
-                dupMatcher.Register(dupProbe);
-            }
-            else if (!hasErrors && repairTarget is not null)
-            {
-                projectedStatus = repairTarget.Status;
-            }
-
-            if (hasErrors) { status = "Error"; wouldSkip++; }
-            else if (rowFailures.Count > 0)
-            {
-                status = "WillFail";
-                wouldFail++;
-                if (!string.IsNullOrWhiteSpace(code)) seen.Add(code.ToUpperInvariant());
-            }
-            else if (repairTarget is not null)
-            {
-                status = "WillRepair";
-                wouldRepair++;
-                seen.Add(code.ToUpperInvariant());
-            }
-            else
-            {
-                status = "WillCreate";
-                wouldCreate++;
-                if (string.Equals(projectedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) wouldCreateActive++;
-                else if (string.Equals(projectedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)) wouldCreateDraft++;
-                if (!string.IsNullOrWhiteSpace(code)) seen.Add(code.ToUpperInvariant());
-                if (!string.IsNullOrWhiteSpace(email)) seenEmails.Add(email);
-            }
-
-            previewRows.Add(new
-            {
-                row = rowNum,
-                employeeCode = code,
-                fullName = name,
-                status,
-                projectedStatus,
-                blocking = projBlocking,
-                recommended = projRecommended,
-                errors = rowErrors.Concat(rowFailures).ToList(),
-                warnings = rowWarnings
+                row = o.Row,
+                employeeCode = o.EmployeeCode,
+                fullName = o.FullName,
+                status = o.Status,
+                projectedStatus = o.ProjectedStatus,
+                blocking,
+                recommended,
+                errors = o.Errors,
+                warnings = o.Warnings,
             });
         }
-
-        // Per-field summary ("most common missing fields" strip) — blockers first, then by frequency.
         var fieldGaps = fieldGapAgg
-            .Select(kv => new { field = kv.Key, label = kv.Value.Label, gate = kv.Value.Gate, kind = kv.Value.Kind, rowCount = kv.Value.Count })
-            .OrderByDescending(g => g.kind == "blocking")
-            .ThenByDescending(g => g.rowCount)
-            .ThenBy(g => g.label)
+            .Select(kv => new PreviewFieldGap(kv.Key, kv.Value.Label, kv.Value.Gate, kv.Value.Kind, kv.Value.Count))
+            .OrderByDescending(x => x.kind == "blocking")
+            .ThenByDescending(x => x.rowCount)
+            .ThenBy(x => x.label, StringComparer.Ordinal)
+            .Cast<object>()
             .ToList();
-
-        // ── THE COMMIT, DRY-RUN ─────────────────────────────────────────────────────────────────────────
-        // The per-row projection above explains each row; this is the verdict: the real import of this file,
-        // run to the end in a transaction that is then rolled back. If the two ever disagree, the commit's
-        // answer is the one the screen must act on (the Import button follows it, not the row counts).
-        object? commitCheck = null;
-        if (_db.Database.IsRelational())
-        {
-            var dry = await RunEmployeeImportAsync(req with { ImportKey = null }, dryRun: true, ct);
-            _db.ChangeTracker.Clear();
-            commitCheck = DescribeImportDryRun(dry);
-        }
-
-        return Ok(new
-        {
-            received = rows.Count,
-            commitCheck,
-            wouldCreate,
-            wouldRepair,
-            wouldSkip,
-            // Rows holding a value the database cannot store. The commit refuses the WHOLE file while any remain.
-            wouldFail,
-            wouldNeedApproval,
-            wouldCreateActive,
-            wouldCreateDraft,
-            fieldGaps,
-            rows = previewRows
-        });
+        return new DryRunReport(created, repaired, skipped, needApproval, active, draft, rows, fieldGaps);
     }
 
     /// <summary>The preview's summary of a dry-run commit: would it import (and how many), or why it would not.</summary>
@@ -5740,23 +5626,28 @@ public class EmployeesController : ControllerBase
         return Math.Round(Math.Min(100m, completed * 100m / 18m), 1);
     }
 
+    /// <summary>A generated code for draft approval, taken under the same ID-rule lock as the import and the form
+    /// (<see cref="EmployeeIdRuleLock"/>). Runs inside the approval's own transaction.</summary>
     private async Task<string> GenerateEmployeeCode(Guid tenantId, CancellationToken cancellationToken)
     {
-        var rule = await _db.EmployeeIdRules
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, cancellationToken);
+        var rules = await EmployeeIdRuleLock.LockAsync(_db, tenantId, cancellationToken);
+        var rule = rules.FirstOrDefault(r => r.CompanyId == null) ?? rules.FirstOrDefault();
         if (rule is null)
         {
             rule = new EmployeeIdRule { TenantId = tenantId, CreatedBy = GetUserId() };
             _db.EmployeeIdRules.Add(rule);
-            await _db.SaveChangesAsync(cancellationToken);
         }
 
         var parts = new List<string> { rule.CompanyPrefix };
         if (rule.UseYear) parts.Add(DateTime.UtcNow.Year.ToString());
-        var code = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x)))
-            + "-"
-            + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
-        rule.NextSequence += 1;
+        var prefix = string.Join('-', parts.Where(x => !string.IsNullOrWhiteSpace(x))) + "-";
+        string code;
+        do
+        {
+            code = prefix + rule.NextSequence.ToString().PadLeft(rule.PaddingLength, '0');
+            rule.NextSequence += 1;
+        }
+        while (await EmployeeIdRuleLock.CodeTakenAsync(_db, tenantId, code, cancellationToken));
         rule.UpdatedAtUtc = DateTime.UtcNow;
         rule.UpdatedBy = GetUserId();
         await _db.SaveChangesAsync(cancellationToken);
@@ -5786,9 +5677,9 @@ public class EmployeesController : ControllerBase
     /// </summary>
     private async Task<Func<string>> OpenEmployeeCodeDispenserAsync(Guid tenantId, Func<string, bool> isTaken, CancellationToken cancellationToken)
     {
-        var rule = await _db.EmployeeIdRules
-            .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, cancellationToken);
+        // The same lock, on the same rows, in the same order as the form and draft approval (EmployeeIdRuleLock).
+        var rules = await EmployeeIdRuleLock.LockAsync(_db, tenantId, cancellationToken);
+        var rule = rules.FirstOrDefault(r => r.CompanyId == null) ?? rules.FirstOrDefault();
         if (rule is null)
         {
             rule = new EmployeeIdRule { TenantId = tenantId, CreatedBy = GetUserId() };

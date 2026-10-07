@@ -91,3 +91,20 @@ test('a mis-shaped row (an unquoted 8,000) is refused naming the row and both ce
   await expect(page.getByText(/Import failed — CSV row 2 has 9 cell\(s\) but the header declares 8 column\(s\)/)).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test('re-uploading a file already imported is blocked in the preview, naming when and by whom', async ({ page }) => {
+  let committed = 0;
+  const errors = await boot(page, (p, method) => {
+    if (p === '/api/employees/import-preview' && method === 'POST') return { json: fixtures.PreviewAlreadyImported };
+    if (p === '/api/employees/import' && method === 'POST') { committed++; return { json: {} }; }
+    return undefined;
+  });
+  await choose(page, 'FullName,CompanyLegalName,JoiningDate\nFixture Codeless,Pilot Demo,2024-01-01\n');
+  const dialog = page.getByRole('dialog');
+  const refusal = dialog.getByTestId('import-commit-refusal');
+  await expect(refusal).toContainText('This file will not be imported.');
+  await expect(refusal).toContainText('already imported on 2026-01-01 00:00 UTC by');
+  await expect(dialog.getByRole('button', { name: 'Confirm import' })).toBeDisabled();
+  expect(committed).toBe(0);
+  expect(errors).toEqual([]);
+});

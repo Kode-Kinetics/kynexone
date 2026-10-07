@@ -267,6 +267,159 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
         Assert.True(HasGap("FR3", "org:position", "is not effective on the joining date"));
     }
 
+    // ── P1: re-uploading the same code-less file never imports everyone twice ─────────────────────────
+
+    private static string FiftyCodelessRows() =>
+        "EmployeeCode,FullName,CompanyLegalName,JoiningDate\n"
+        + string.Join("\n", Enumerable.Range(1, 50).Select(i => $",Codeless Person {i},Pilot Demo,2024-01-01")) + "\n";
+
+    [Fact]
+    public async Task TheSameCodelessFileImportedTwice_CreatesFifty_NotAHundred_UnlessReimportIsConfirmedWithAReason()
+    {
+        var tenant = await SeedAsync();
+        var csv = FiftyCodelessRows();
+
+        await using (var db = _fixture.CreateDb())
+            Assert.Equal(50, Body(Assert.IsType<OkObjectResult>(await Controller(db, tenant)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv, Guid.NewGuid()), CancellationToken.None))).GetProperty("created").GetInt32());
+
+        // Again, under a NEW import key (a second upload, not a retry): refused, nothing written.
+        await using (var db = _fixture.CreateDb())
+        {
+            var refused = Assert.IsType<ConflictObjectResult>(await Controller(db, tenant)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv, Guid.NewGuid()), CancellationToken.None));
+            var body = Body(refused);
+            Assert.Equal("import_already_committed", body.GetProperty("error").GetString());
+            Assert.Contains(DateTime.UtcNow.ToString("yyyy-MM-dd"), body.GetProperty("message").GetString());
+            Assert.True(body.TryGetProperty("earlierImportedBy", out _));
+        }
+        // ...and without a key at all.
+        await using (var db = _fixture.CreateDb())
+            Assert.IsType<ConflictObjectResult>(await Controller(db, tenant)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+        Assert.Equal(50, await PersistedEmployees(tenant));
+
+        // The preview says so up front, as a blocking verdict naming the earlier import.
+        await using (var db = _fixture.CreateDb())
+        {
+            var preview = Body(Assert.IsType<OkObjectResult>(await Controller(db, tenant)
+                .ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)));
+            var check = preview.GetProperty("commitCheck");
+            Assert.Equal("would_refuse", check.GetProperty("outcome").GetString());
+            Assert.Equal("import_already_committed", check.GetProperty("error").GetString());
+            Assert.Contains("already imported on", check.GetProperty("message").GetString());
+        }
+
+        // Confirming without a reason is refused; with one it imports, and the reason is in the audit trail.
+        await using (var db = _fixture.CreateDb())
+            Assert.Equal("reimport_reason_required", Body(Assert.IsType<UnprocessableEntityObjectResult>(await Controller(db, tenant)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv, Guid.NewGuid(), ConfirmReimport: true), CancellationToken.None))).GetProperty("error").GetString());
+        await using (var db = _fixture.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, tenant).Import(
+                new EmployeesController.ImportEmployeesRequest(csv, Guid.NewGuid(), ConfirmReimport: true, ReimportReason: "Second branch roster, same names"),
+                CancellationToken.None));
+        Assert.Equal(100, await PersistedEmployees(tenant));
+        await using var verify = _fixture.CreateDb();
+        var reasons = await verify.AuditLogs.IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenant && a.Action == "employee.reimport_confirmed").Select(a => a.Metadata).ToListAsync();
+        Assert.Contains(reasons, m => m!.Contains("Second branch roster"));
+    }
+
+    [Fact]
+    public async Task AFileWithEveryRowCoded_ReimportsIdempotently_WithoutAConfirmation()
+    {
+        var tenant = await SeedAsync();
+        var csv = FiftyRows();
+        await using (var db = _fixture.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+        await using (var db = _fixture.CreateDb())
+            Assert.Equal(0, Body(Assert.IsType<OkObjectResult>(await Controller(db, tenant)
+                .Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None))).GetProperty("created").GetInt32());
+        Assert.Equal(50, await PersistedEmployees(tenant));
+    }
+
+    // ── P2: a file over the cap is refused up front, with a coded message ───────────────────────────────
+
+    [Fact]
+    public async Task AFileOverTwoThousandRows_IsRefusedUpFront_WithASplitTheFileMessage()
+    {
+        var tenant = await SeedAsync();
+        var csv = "EmployeeCode,FullName\n" + string.Join("\n", Enumerable.Range(1, EmployeesController.MaxImportRows + 1).Select(i => $"BIG{i:D5},Big File {i}")) + "\n";
+        await using var db = _fixture.CreateDb();
+        foreach (var result in new[]
+                 {
+                     await Controller(db, tenant).ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None),
+                     await Controller(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None),
+                 })
+        {
+            var body = Body(Assert.IsType<UnprocessableEntityObjectResult>(result));
+            Assert.Equal("import_too_many_rows", body.GetProperty("error").GetString());
+            Assert.Contains("Split the file", body.GetProperty("message").GetString());
+        }
+        await AssertNothingPersisted(tenant);
+    }
+
+    // ── P2: a preview never queues behind a running import or hire for long ──────────────────────────────
+
+    [Fact]
+    public async Task APreviewBlockedByAnotherImportsLock_GivesUpAfterAFewSeconds_WithACodedRetryMessage()
+    {
+        var tenant = await SeedAsync();
+        await using (var seed = _fixture.CreateDb())
+        {
+            seed.EmployeeIdRules.Add(new EmployeeIdRule { TenantId = tenant, CompanyPrefix = "EMP", IsActive = true });
+            await seed.SaveChangesAsync();
+        }
+        // Another writer holds the ID-rule lock (as a running import or hire does) and does not let go.
+        await using var holder = new Npgsql.NpgsqlConnection(_fixture.ConnectionString);
+        await holder.OpenAsync();
+        await using var held = await holder.BeginTransactionAsync();
+        await using (var lockCmd = new Npgsql.NpgsqlCommand("SELECT id FROM employee_id_rules WHERE tenant_id = @t FOR UPDATE", holder, held))
+        {
+            lockCmd.Parameters.AddWithValue("t", tenant);
+            await lockCmd.ExecuteNonQueryAsync();
+        }
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        await using var db = _fixture.CreateDb();
+        var result = await Controller(db, tenant).ImportPreview(new EmployeesController.ImportEmployeesRequest(FiftyCodelessRows()), CancellationToken.None);
+        started.Stop();
+
+        var busy = Body(Assert.IsType<ConflictObjectResult>(result));
+        Assert.Equal("import_busy", busy.GetProperty("error").GetString());
+        Assert.InRange(started.Elapsed.TotalSeconds, 4, 30);
+        await held.RollbackAsync();
+        await AssertNothingPersisted(tenant);
+    }
+
+    // ── P3: existing codes that differ only in case resolve deterministically and are flagged ─────────────
+
+    [Fact]
+    public async Task ARowNamingACodeThatTwoExistingEmployeesShareInDifferentCase_MatchesTheEarliest_AndIsFlagged()
+    {
+        var tenant = await SeedAsync();
+        int earliest;
+        await using (var seed = _fixture.CreateDb())
+        {
+            var first = new Employee { TenantId = tenant, EmployeeCode = "emp-7", FullName = "First Seven", Status = "Active", JoiningDate = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+            seed.Employees.Add(first);
+            await seed.SaveChangesAsync();
+            seed.Employees.Add(new Employee { TenantId = tenant, EmployeeCode = "EMP-7", FullName = "Second Seven", Status = "Active", JoiningDate = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) });
+            await seed.SaveChangesAsync();
+            earliest = first.Id;
+        }
+        var csv = "EmployeeCode,FullName,CompanyLegalName,PayrollGroup,JoiningDate\nEmp-7,First Seven,Pilot Demo,MONTHLY,2023-01-01\n";
+        await using var db = _fixture.CreateDb();
+        var preview = Body(Assert.IsType<OkObjectResult>(await Controller(db, tenant).ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None)));
+        var row = preview.GetProperty("rows")[0];
+        Assert.Contains(row.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()), w => w!.Contains("matches more than one existing employee") && w.Contains("'emp-7'"));
+        await using var db2 = _fixture.CreateDb();
+        Assert.IsType<OkObjectResult>(await Controller(db2, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+        await using var verify = _fixture.CreateDb();
+        Assert.Equal("MONTHLY", (await verify.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.TenantId == tenant)).PayrollGroup);
+        Assert.Equal(earliest, (await verify.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.TenantId == tenant)).EmployeeId);
+    }
+
     // ── The frontend specs read these REAL responses (route-mocked browser check + unit lane) ──────────
 
     /// <summary>
@@ -301,6 +454,12 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
         await Capture("ImportShapeRefused", c => c.Import(new EmployeesController.ImportEmployeesRequest(shifted), CancellationToken.None));
         await AssertNothingPersisted(tenant);
 
+        // The re-import notice: a code-less file committed once, then previewed again.
+        var codeless = "FullName,CompanyLegalName,JoiningDate\nFixture Codeless,Pilot Demo,2024-01-01\n";
+        await using (var db = _fixture.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(codeless), CancellationToken.None));
+        await Capture("PreviewAlreadyImported", c => c.ImportPreview(new EmployeesController.ImportEmployeesRequest(codeless), CancellationToken.None));
+
         var actual = NormaliseIds(JsonSerializer.Serialize(responses, new JsonSerializerOptions
         {
             WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -318,6 +477,9 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
     private static string NormaliseIds(string json)
     {
         var seen = new Dictionary<string, string>();
+        // Moments (the earlier import's time) change on every run; dates in the DATA do not and are left alone.
+        json = System.Text.RegularExpressions.Regex.Replace(json, @"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?", "2026-01-01T00:00:00Z");
+        json = System.Text.RegularExpressions.Regex.Replace(json, @"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", "2026-01-01 00:00 UTC");
         return System.Text.RegularExpressions.Regex.Replace(json, "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
             m => seen.TryGetValue(m.Value, out var v) ? v : seen[m.Value] = $"00000000-0000-0000-0000-{seen.Count + 1:D12}");
     }

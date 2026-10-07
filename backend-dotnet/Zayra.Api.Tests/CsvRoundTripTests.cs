@@ -203,4 +203,18 @@ public class CsvRoundTripTests
         ex.Message.Should().Contain("CSV row 3 has 4 cell(s) but the header declares 3 column(s)")
             .And.Contain("Also wrong: row 5 (2), row 6 (4)");
     }
+
+    /// <summary>A quoted cell holding a line break (a multi-line address) is named as exactly that, not as a
+    /// "thousands separator" cell-count problem, and its continuation line is not reported as a second bad row.</summary>
+    [Fact]
+    public void A_multi_line_quoted_cell_gets_a_message_that_says_so()
+    {
+        var csv = "EmployeeCode,FullName,Address\nE1,Fine,Riyadh\nE2,Split,\"King Fahd Road\nRiyadh\"\nE3,Fine,Jeddah\n";
+
+        var ex = Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
+
+        ex.RowNumber.Should().Be(3);
+        ex.Mismatches.Should().ContainSingle().Which.UnterminatedQuote.Should().BeTrue();
+        ex.Message.Should().Contain("CSV row 3 has a line break inside a quoted cell").And.NotContain("thousands separator");
+    }
 }

@@ -3515,6 +3515,25 @@
     ],
     "created": 0
   },
+  "PreviewAlreadyImported": {
+    "received": 0,
+    "commitCheck": {
+      "outcome": "would_refuse",
+      "status": 409,
+      "error": "import_already_committed",
+      "message": "This exact file was already imported on 2026-01-01 00:00 UTC by an unknown user (1 created). Importing it again would add every row without an EmployeeCode a second time. Nothing was imported. If you really mean to import it again, confirm the re-import and give a reason.",
+      "failedRows": []
+    },
+    "wouldCreate": 0,
+    "wouldRepair": 0,
+    "wouldSkip": 0,
+    "wouldFail": 0,
+    "wouldNeedApproval": 0,
+    "wouldCreateActive": 0,
+    "wouldCreateDraft": 0,
+    "fieldGaps": [],
+    "rows": []
+  },
   "PreviewGood": {
     "received": 2,
     "commitCheck": {
@@ -3612,55 +3631,15 @@
         }
       ]
     },
-    "wouldCreate": 1,
+    "wouldCreate": 0,
     "wouldRepair": 0,
     "wouldSkip": 0,
     "wouldFail": 2,
     "wouldNeedApproval": 0,
     "wouldCreateActive": 0,
-    "wouldCreateDraft": 1,
-    "fieldGaps": [
-      {
-        "field": "IqamaNumber",
-        "label": "Iqama number",
-        "gate": "activate",
-        "kind": "blocking",
-        "rowCount": 1
-      },
-      {
-        "field": "doc:Contract",
-        "label": "Contract document",
-        "gate": "activate",
-        "kind": "recommended",
-        "rowCount": 1
-      },
-      {
-        "field": "BankIban",
-        "label": "IBAN (WPS)",
-        "gate": "pay",
-        "kind": "recommended",
-        "rowCount": 1
-      }
-    ],
+    "wouldCreateDraft": 0,
+    "fieldGaps": [],
     "rows": [
-      {
-        "row": 2,
-        "employeeCode": "FX1",
-        "fullName": "Fixture One",
-        "status": "WillCreate",
-        "projectedStatus": "Draft",
-        "blocking": [
-          "Iqama number"
-        ],
-        "recommended": [
-          "Contract document",
-          "IBAN (WPS)"
-        ],
-        "errors": [],
-        "warnings": [
-          "Company 'Pilot Demo' has no branches yet — everyone imported without a branch. Create the company's branches in Organization setup, then assign them."
-        ]
-      },
       {
         "row": 3,
         "employeeCode": "FX2",
@@ -3677,7 +3656,7 @@
       {
         "row": 4,
         "employeeCode": "FX1",
-        "fullName": "Fixture Twin",
+        "fullName": "",
         "status": "WillFail",
         "projectedStatus": "",
         "blocking": [],
