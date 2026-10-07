@@ -93,7 +93,8 @@ export async function tenantLoginLive(
   slug: string
 ): Promise<void> {
   stampActor({ email, tenantSlug: slug, via: 'tenant login form' });
-  await page.goto('/login');
+  // The workspace field shows only for a ?workspace= link (or when the API asks for it).
+  await page.goto(`/login?workspace=${encodeURIComponent(slug)}`);
   await page.locator('#li-em, input[type="email"]').first().fill(email);
   await page.locator('#li-pw, input[type="password"]').first().fill(password);
   await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(slug);

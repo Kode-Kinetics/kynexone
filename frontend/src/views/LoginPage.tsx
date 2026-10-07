@@ -8,11 +8,25 @@ import {
   ShieldCheck, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { LocaleProvider, useLocale } from '../contexts/LocaleContext';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
+import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
 import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
-import { waitPhrase } from '../lib/retryAfter';
+import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
+import { setWelcomeHandoff } from '../lib/welcomeHandoff';
+import { dateLocale } from '../lib/format';
+
+/** Shapes, not words: nothing here to translate. */
+const EMAIL_PLACEHOLDER = 'name@company.com';
+const WORKSPACE_PLACEHOLDER = 'your-workspace';
+
+/** Whole minutes for a 429's Retry-After (the API's LoginAbuseGuard thresholds round the same way). */
+function waitMinutes(retryAfterHeader: unknown): number {
+  const seconds = Number.parseInt(String(retryAfterHeader ?? ''), 10);
+  return Number.isFinite(seconds) && seconds > 60 ? Math.ceil(seconds / 60) : 1;
+}
 
 /**
  * The aurora is CODE-SPLIT and never server-rendered.
@@ -44,10 +58,24 @@ const LoginAuroraScene = dynamic(
  */
 const SCENE_MIN_WIDTH = 768;
 
-type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll';
+type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'reset-notice';
 
+/**
+ * The sign-in surface runs outside the tenant shell, so it mounts its own LocaleProvider: the card is
+ * translated with the same dictionary and the same stored choice as the app, and the language picked
+ * here is the one the person lands in.
+ */
 export function LoginPage() {
-  const { login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
+  return (
+    <LocaleProvider>
+      <LoginCard />
+    </LocaleProvider>
+  );
+}
+
+function LoginCard() {
+  const { t, dir, locale } = useLocale();
+  const { user, login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
   const router       = useRouter();
   const searchParams = useSearchParams();
   const from         = safeLocalReturnPath(searchParams?.get('from'));
@@ -57,6 +85,15 @@ export function LoginPage() {
   const [password,     setPassword]     = useState('');
   const [tenantSlug,   setTenantSlug]   = useState('');
   const [tenantLocked, setTenantLocked] = useState(false);
+  /* Workspace is asked for only when it is needed: a ?workspace= link, a tenant subdomain, or the
+     server answering `workspace_required` because the email's domain belongs to more than one
+     company. Everyone else signs in with the two things they actually know. */
+  const [showWorkspace, setShowWorkspace] = useState(false);
+  const workspaceRef = useRef<HTMLInputElement>(null);
+  /* Bumped to put the cursor in the company-ID field once it has rendered (it may only just have
+     appeared, so a focus() in the same tick would find nothing). */
+  const [focusWorkspace, setFocusWorkspace] = useState(0);
+  useEffect(() => { if (focusWorkspace) workspaceRef.current?.focus(); }, [focusWorkspace]);
   const [error,        setError]        = useState('');
   const [info,         setInfo]         = useState('');
   const [loading,      setLoading]      = useState(false);
@@ -79,7 +116,7 @@ export function LoginPage() {
     // Query-string bearer credentials are deliberately rejected. Support and
     // impersonation are contained until their revocation ledger is proven.
     const wsParam = searchParams ? resolveWorkspaceAlias(searchParams) : '';
-    if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); return; }
+    if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); setShowWorkspace(true); return; }
     if (typeof window === 'undefined') return;
     const hostname = window.location.hostname.toLowerCase();
     if (hostname.endsWith('.vercel.app') || hostname.endsWith('.vercel.com')) return;
@@ -87,18 +124,37 @@ export function LoginPage() {
     const skip = new Set(['www', 'app', 'admin', 'mail', 'localhost']);
     const first = parts[0];
     const looksLikeSlug = /^[a-z][a-z0-9-]*$/i.test(first);
-    if (parts.length >= 3 && !skip.has(first) && looksLikeSlug) setTenantSlug(normalizeWorkspace(first));
+    if (parts.length >= 3 && !skip.has(first) && looksLikeSlug) {
+      setTenantSlug(normalizeWorkspace(first));
+      setTenantLocked(true);
+      setShowWorkspace(true);
+    }
   }, [searchParams]);
 
+  /** The server could not tell the company from the email alone: ask, and put the cursor there. */
+  const askForWorkspace = () => {
+    setShowWorkspace(true);
+    setTenantLocked(false);
+    setError(t("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is."));
+    setFocusWorkspace((n) => n + 1);
+  };
+
+  const workspaceArg = () => (showWorkspace ? normalizeWorkspace(tenantSlug) || undefined : undefined);
+
   const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault(); setError('');
-    if (!tenantSlug.trim()) { setError('Workspace is required.'); return; }
+    e.preventDefault(); setError(''); setInfo('');
+    if (!email.trim()) { setError(t('Enter your work email.')); return; }
+    if (showWorkspace && !tenantSlug.trim()) {
+      setError(t('Enter your company ID.'));
+      workspaceRef.current?.focus();
+      return;
+    }
     setLoading(true);
     try {
-      const outcome = await login(email, password, tenantSlug);
+      const outcome = await login(email, password, workspaceArg());
       if (outcome === 'mfa') { setMode('mfa'); return; }
       if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
-      router.replace(from);
+      setSignedIn(true);
     }
     // Only a 401 actually means the credentials were wrong. Reporting a server
     // outage or an unreachable API as "invalid credentials" sends everyone hunting
@@ -106,23 +162,42 @@ export function LoginPage() {
     // lagged behind a deploy) stays invisible.
     catch (err: any) {
       const status = err?.response?.status;
-      if (status === 401)      setError('Invalid credentials. Check your email, password and workspace.');
-      else if (status === 400) setError(err.response?.data?.message ?? 'Please check the details you entered.');
+      const code = err?.response?.data?.code;
+      if (status === 400 && code === 'workspace_required') { askForWorkspace(); return; }
+      // Someone typed the 8-digit welcome code from their slip into the Password box. That is the
+      // most natural mistake on a first sign-in, so take them where the code works. Only AFTER the
+      // sign-in failed (an 8-digit password is still a password), and the email and code travel in
+      // memory (lib/welcomeHandoff.ts), never in a URL or storage.
+      if ((status === 401 || status === 400) && email.trim() && isWelcomeCode(password)) {
+        setWelcomeHandoff({ email, code: normalizeWelcomeCode(password), workspace: workspaceArg(), source: 'login' });
+        setPassword('');
+        router.push('/welcome');
+        return;
+      }
+      if (status === 401) {
+        setError(showWorkspace
+          ? t('Email, password or company ID is incorrect. Check them and try again.')
+          : t('Email or password is incorrect. Check both and try again.'));
+      }
+      else if (status === 400) setError(t('Please check the details you entered.'));
       else if (status === 429) {
         // Distinct codes from the API (LoginAbuseGuard): only the account limit is "too many attempts".
-        const code = err?.response?.data?.error;
-        const when = waitPhrase(err?.response?.headers?.['retry-after']);
-        if (code === 'account_rate_limited') setError(`Too many attempts for this account. Please try again ${when}.`);
-        else if (code === 'ip_failure_budget') setError(`Too many failed sign-ins from your network. Please try again ${when}.`);
-        else setError(`The sign-in service is busy — try again ${when}.`);
+        const limit = err?.response?.data?.error;
+        const count = waitMinutes(err?.response?.headers?.['retry-after']);
+        if (limit === 'account_rate_limited') {
+          setError(t('Too many attempts for this account. Try again in {count, plural, one {# minute} other {# minutes}}.', { count }));
+        } else if (limit === 'ip_failure_budget') {
+          setError(t('Too many failed sign-ins from your network. Try again in {count, plural, one {# minute} other {# minutes}}.', { count }));
+        } else {
+          setError(t('The sign-in service is busy. Try again in {count, plural, one {# minute} other {# minutes}}.', { count }));
+        }
       }
-      else if (!err?.response) setError('Cannot reach the server. Check your connection and try again.');
+      else if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
       else {
         const traceId = err.response?.data?.traceId;
-        setError(
-          `Sign-in is temporarily unavailable (server error ${status}). This is not a problem with your password.`
-          + (traceId ? ` Reference: ${traceId}` : ''),
-        );
+        setError(traceId
+          ? t('Sign-in is unavailable right now (server error {status}). This is not a problem with your password. Reference: {traceId}', { status, traceId })
+          : t('Sign-in is unavailable right now (server error {status}). This is not a problem with your password.', { status }));
       }
     }
     finally { setLoading(false); }
@@ -132,9 +207,9 @@ export function LoginPage() {
     e.preventDefault(); setError(''); setLoading(true);
     try {
       await verifyMfaChallenge(totpCode);
-      router.replace(from);
+      setSignedIn(true);
     }
-    catch { setError('Invalid or expired code. Please try again.'); }
+    catch { setError(t('Invalid or expired code. Please try again.')); }
     finally { setLoading(false); }
   };
 
@@ -156,32 +231,62 @@ export function LoginPage() {
         const parsed = new URL(res.provisioningUri);
         setEnrollmentSecret(parsed.searchParams.get('secret') ?? '');
       })
-      .catch(() => setError('MFA enrolment expired. Please sign in again.'));
-  }, [mfaEnrollmentPending]);
+      .catch(() => setError(t('Two-factor setup expired. Please sign in again.')));
+  }, [mfaEnrollmentPending, t]);
 
   const handleMfaEnrollment = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);
     try {
       if (!mfaEnrollmentPending || !enrollmentSecret) throw new Error('Missing enrollment challenge.');
       await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
-      setInfo('MFA is enabled. Sign in again to continue.');
+      setInfo(t('Two-factor authentication is on. Sign in again to continue.'));
       setTotpCode('');
       setMode('login');
     }
-    catch { setError('Invalid or expired enrolment code. Please try again.'); }
+    catch { setError(t('Invalid or expired code. Please try again.')); }
     finally { setLoading(false); }
   };
 
   const handleForgot = async (e: React.FormEvent) => {
-    e.preventDefault(); setError('');
-    if (!tenantSlug.trim()) { setError('Workspace is required.'); return; }
+    e.preventDefault(); setError(''); setInfo('');
+    if (!(forgotEmail || email).trim()) { setError(t('Enter your work email.')); return; }
+    if (showWorkspace && !tenantSlug.trim()) { setError(t('Enter your company ID.')); return; }
     setLoading(true);
     try {
-      const res = await authApi.forgotPassword(forgotEmail || email, tenantSlug);
-      setInfo(res.message ?? 'Check your email for a reset link.');
-    } catch (err: any) { setError(err.response?.data?.message ?? 'Request failed.'); }
+      // The server's own sentence is English; the page says the same thing in the reader's language.
+      await authApi.forgotPassword(forgotEmail || email, workspaceArg());
+      setInfo(t('If this email has an account, a reset link is on its way to it.'));
+    } catch (err: any) {
+      if (err?.response?.status === 400 && err?.response?.data?.code === 'workspace_required') askForWorkspace();
+      else if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
+      else setError(t('The reset link could not be sent. Try again in a moment.'));
+    }
     finally { setLoading(false); }
   };
+
+  /** First sign-in: carry whatever is already typed (email, company ID) to /welcome, in memory. */
+  const goWelcome = () => {
+    setWelcomeHandoff({ email: email.trim() || undefined, workspace: workspaceArg() });
+    router.push('/welcome');
+  };
+
+  /* Signed in. If HR has issued a reset code for this login that is still unused, say so before
+     going on (contract Amendment 3, F1): the old password still works until the code is redeemed,
+     so this is the one moment the person can tell HR "that wasn't me". */
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    if (!signedIn || !user) return;
+    if (user.pendingResetNotice?.date) setMode('reset-notice');
+    else router.replace(from);
+  }, [signedIn, user, from, router]);
+  const noticeDate = (() => {
+    const raw = user?.pendingResetNotice?.date;
+    const when = raw ? new Date(raw) : null;
+    if (!when || Number.isNaN(when.getTime())) return raw ?? '';
+    // Before sign-in completes there is no tenant setting to read; the copy deck's default zone applies.
+    return new Intl.DateTimeFormat(dateLocale(locale),
+      { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Riyadh' }).format(when);
+  })();
 
   const go = (m: Mode) => { setError(''); setInfo(''); setMode(m); if (m === 'forgot' && email) setForgotEmail(email); };
 
@@ -247,7 +352,7 @@ export function LoginPage() {
               <Logo size="xl" collapsed theme="dark" />            </div>
             <div className="lx-lockup-type">
               <span className="lx-wordmark">Kynex<em>One</em></span>
-              <span className="lx-descriptor">Payroll, HR and compliance</span>
+              <span className="lx-descriptor">{t('Payroll, HR and compliance')}</span>
             </div>
           </div>
         </header>
@@ -258,14 +363,16 @@ export function LoginPage() {
         <main className="lx-stage">
           <div className="lx-slot" ref={slotRef}>
             <div className="lx-pane" ref={paneRef}>
-              <div className="lx-card">
+              <div className="lx-card" dir={dir}>
+                <SignInLanguageToggle />
                 {mode === 'login' && (
                   <>
-                    <Head title="Sign in" />
+                    <Head title={t('Sign in')} />
                     <form onSubmit={handleLogin} noValidate className="lx-form">
-                      <Field legend="Work email" htmlFor="li-em">
-                        <input id="li-em" type="email" value={email} onChange={e => setEmail(e.target.value)}
-                          className="lx-in" placeholder="you@company.com" autoComplete="email" required />
+                      <Field legend={t('Email')} htmlFor="li-em">
+                        {/* Emails and passwords are left-to-right in every language. */}
+                        <input id="li-em" type="email" dir="ltr" value={email} onChange={e => setEmail(e.target.value)}
+                          className="lx-in" placeholder={EMAIL_PLACEHOLDER} autoComplete="email" required />
                       </Field>
 
                       {/* dir="auto": the card's strings are still English while
@@ -276,12 +383,12 @@ export function LoginPage() {
                           "auto" takes the direction from the first strong
                           character, so this reads correctly as English today
                           and will still be right if the string is translated. */}
-                      <Field legend="Password" htmlFor="li-pw" aside={
+                      <Field legend={t('Password')} htmlFor="li-pw" aside={
                         <button type="button" onClick={() => go('forgot')} className="lx-link"
-                          dir="auto" data-testid="login-forgot">Forgot password?</button>
+                          dir="auto" data-testid="login-forgot">{t('Forgot password?')}</button>
                       }>
-                        <span className="lx-inwrap">
-                          <input id="li-pw" type={showPw ? 'text' : 'password'} value={password}
+                        <span className="lx-inwrap" dir="ltr">
+                          <input id="li-pw" dir="ltr" type={showPw ? 'text' : 'password'} value={password}
                             onChange={e => setPassword(e.target.value)}
                             className="lx-in lx-in-pw" placeholder="••••••••••" autoComplete="current-password" required />
                           {/* No tabIndex={-1}. Revealing the password is
@@ -293,7 +400,7 @@ export function LoginPage() {
                               it visually is. */}
                           <button type="button" onClick={() => setShowPw(v => !v)}
                             className="lx-reveal" data-testid="login-password-toggle"
-                            aria-label={showPw ? 'Hide password' : 'Show password'} aria-pressed={showPw}>
+                            aria-label={showPw ? t('Hide password') : t('Show password')} aria-pressed={showPw}>
                             {showPw ? <EyeOff /> : <Eye />}
                           </button>
                         </span>
@@ -304,74 +411,97 @@ export function LoginPage() {
                           shows the shape of the value, and a line of help text
                           under the last field before the button is exactly
                           where a form should be silent. */}
-                      <Field legend="Workspace" htmlFor="li-ws" aside={
-                        tenantLocked ? <span className="lx-tag"><Lock />Auto-detected</span> : null
-                      }>
-                        <input id="li-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                          className="lx-in lx-in-mono" placeholder="your-workspace" autoComplete="organization" required />
-                      </Field>
+                      {showWorkspace && (
+                        <Field legend={t('Company ID')} htmlFor="li-ws" aside={
+                          tenantLocked ? <span className="lx-tag"><Lock />{t('Auto-detected')}</span> : null
+                        }>
+                          <input id="li-ws" ref={workspaceRef} type="text" dir="ltr" value={tenantSlug}
+                            onChange={e => setTenantSlug(e.target.value)}
+                            className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" required />
+                        </Field>
+                      )}
 
                       <Feedback error={error} info={info} />
-                      <Submit busy={busy} label="Sign in" busyLabel="Signing in…" />
+                      <Submit busy={busy} label={t('Sign in')} busyLabel={t('Signing in…')} />
+                      {/* The other way in, for someone holding a welcome slip and no password yet.
+                          Full width and labelled in words: it is the first thing most employees
+                          will ever press here. */}
+                      <button type="button" className="lx-alt" onClick={goWelcome} data-testid="login-welcome-code">
+                        {t('First time? Use your welcome code')}
+                      </button>
                     </form>
                   </>
                 )}
 
                 {mode === 'forgot' && (
                   <form onSubmit={handleForgot} noValidate className="lx-form">
-                    <Back onClick={() => go('login')} />
-                    <Head kicker="Account recovery" title="Reset password"
-                      sub="We'll email you a secure reset link." icon={<Mail />} />
-                    <Field legend="Work email" htmlFor="fg-em">
-                      <input id="fg-em" type="email" value={forgotEmail || email}
+                    <Back onClick={() => go('login')} label={t('Back to sign in')} />
+                    <Head kicker={t('Account recovery')} title={t('Reset password')}
+                      sub={t('We will email you a secure reset link.')} icon={<Mail />} />
+                    <Field legend={t('Work email')} htmlFor="fg-em">
+                      <input id="fg-em" type="email" dir="ltr" value={forgotEmail || email}
                         onChange={e => setForgotEmail(e.target.value)}
-                        className="lx-in" placeholder="you@company.com" autoComplete="email" required />
+                        className="lx-in" placeholder={EMAIL_PLACEHOLDER} autoComplete="email" required />
                     </Field>
-                    <Field legend="Workspace" htmlFor="fg-ws">
-                      <input id="fg-ws" type="text" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                        className="lx-in lx-in-mono" placeholder="your-workspace" autoComplete="organization" required />
-                    </Field>
+                    {showWorkspace && (
+                      <Field legend={t('Company ID')} htmlFor="fg-ws">
+                        <input id="fg-ws" type="text" dir="ltr" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
+                          className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" required />
+                      </Field>
+                    )}
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Send reset link" busyLabel="Sending…" />
+                    <Submit busy={busy} label={t('Send reset link')} busyLabel={t('Sending…')} />
+                    <p className="lx-note">{t('No email from us? Ask HR for a new welcome code.')}</p>
                   </form>
                 )}
 
                 {mode === 'mfa' && (
                   <form onSubmit={handleMfa} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} />
-                    <Head kicker="Security check" title="Two-factor authentication"
-                      sub="Enter the 6-digit code from your authenticator app." icon={<Smartphone />} />
-                    <Field legend="Authentication code" htmlFor="mfa-code">
+                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Two-factor authentication')}
+                      sub={t('Enter the 6-digit code from your authenticator app.')} icon={<Smartphone />} />
+                    <Field legend={t('Authentication code')} htmlFor="mfa-code">
                       <input id="mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
                         dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Verify" busyLabel="Verifying…" disabled={totpCode.length !== 6} />
+                    <Submit busy={busy} label={t('Verify')} busyLabel={t('Verifying…')} disabled={totpCode.length !== 6} />
                   </form>
                 )}
 
                 {mode === 'mfa-enroll' && (
                   <form onSubmit={handleMfaEnrollment} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} />
-                    <Head kicker="Security check" title="Set up two-factor authentication"
-                      sub="Add this account to your authenticator app, then enter the 6-digit code."
+                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Set up two-factor authentication')}
+                      sub={t('Add this account to your authenticator app, then enter the 6-digit code.')}
                       icon={<Smartphone />} />
                     {enrollmentSecret && (
-                      <Field legend="Setup key" htmlFor="mfa-setup-key">
+                      <Field legend={t('Setup key')} htmlFor="mfa-setup-key">
                         <input id="mfa-setup-key" className="lx-in lx-in-mono lx-in-sm"
                           value={enrollmentSecret} readOnly />
                       </Field>
                     )}
-                    {enrollmentUri && <p className="lx-uri">{enrollmentUri}</p>}
-                    <Field legend="Authentication code" htmlFor="mfa-enroll-code">
+                    {enrollmentUri && <p className="lx-uri" dir="ltr">{enrollmentUri}</p>}
+                    <Field legend={t('Authentication code')} htmlFor="mfa-enroll-code">
                       <input id="mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
                         dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label="Enable MFA" busyLabel="Enabling…" disabled={totpCode.length !== 6 || !enrollmentSecret} />
+                    <Submit busy={busy} label={t('Turn on two-factor authentication')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
                   </form>
+                )}
+
+                {mode === 'reset-notice' && (
+                  <div className="lx-form" data-testid="login-reset-notice">
+                    <Head kicker={t('Security check')} title={t('Signed in')} icon={<ShieldCheck aria-hidden />} />
+                    <div className="lx-fault" role="alert">
+                      <AlertCircle aria-hidden />
+                      <p>{t("HR gave you a new sign-in code on {date}. If you didn't ask for it, tell HR.", { date: noticeDate })}</p>
+                    </div>
+                    <button type="button" className="lx-submit" onClick={() => router.replace(from)}>{t('Continue')}</button>
+                  </div>
                 )}
 
                 {/* ONE line under the button. It used to be three: a
@@ -383,7 +513,7 @@ export function LoginPage() {
                     to it. What is left is the only line here that changes what
                     someone does next. */}
                 <div className="lx-card-foot">
-                  <a className="lx-secondary" href="/pricing">Get a proposal for your headcount</a>
+                  <a className="lx-secondary" href="/pricing">{t('Get a proposal for your headcount')}</a>
                 </div>
               </div>
             </div>
@@ -435,7 +565,7 @@ function Head({ kicker, title, sub, icon }: {
   );
 }
 
-function Back({ onClick, label = 'Back to sign in' }: { onClick: () => void; label?: string }) {
+function Back({ onClick, label }: { onClick: () => void; label: string }) {
   /* The arrow is a separate span marked aria-hidden rather than a character in
      the label, and the button is dir="auto" for the same bidi reason as the
      forgot link. The glyph itself is flipped for RTL in CSS, so "back" always

@@ -1429,3 +1429,81 @@
      untouched apart from the space the band now occupies above it */
   .lx-reg-t > tfoot { position: relative; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   EMPLOYEE SIGN-IN — language switch, first-sign-in button, /welcome
+   ══════════════════════════════════════════════════════════════════════ */
+/* "English / العربية" at the top of the card. Two words, each in its own
+   language, so either reader can find theirs. */
+.lx-langbar {
+  display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+  margin: -10px 0 8px;
+}
+.lx-lang-opt {
+  min-height: 32px; padding: 0 6px; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: var(--lx-f1); color: var(--lx-muted);
+  border-radius: 8px; transition: color .14s ease;
+}
+.lx-lang-opt[lang='ar'] { font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif; }
+.lx-lang-opt[aria-pressed='true'] { color: var(--lx-ink); font-weight: 600; }
+.lx-lang-opt:hover { color: var(--lx-cyan-soft); }
+.lx-lang-sep { color: var(--lx-rule); font-size: var(--lx-f1); }
+
+/* The second way in: full width, outlined, under the primary key. */
+.lx-alt {
+  width: 100%; min-height: 48px; padding: 8px 14px;
+  display: inline-flex; align-items: center; justify-content: center; text-align: center;
+  border-radius: 12px; cursor: pointer;
+  font: inherit; font-size: var(--lx-f2); font-weight: 550; color: var(--lx-ink);
+  background: rgba(94, 235, 255, 0.06);
+  border: 1px solid rgba(154, 204, 255, 0.38);
+  transition: background .14s ease, border-color .14s ease, transform .14s ease;
+}
+.lx-alt:hover { background: rgba(94, 235, 255, 0.12); border-color: rgba(94, 235, 255, 0.7); }
+.lx-alt:active { transform: translateY(1px); }
+
+.lx-note { margin: 0; font-size: var(--lx-f1); line-height: 1.5; color: var(--lx-body); text-align: center; }
+.lx-card-foot-stack { flex-direction: column; align-items: center; gap: 8px; }
+
+/* /welcome has one job, so one centred column and no brief beside it. */
+.lx-stage-solo {
+  grid-template-columns: minmax(0, 440px);
+  grid-template-areas: 'form';
+  justify-content: center;
+}
+
+/* Whose sign-in this is: the email (always LTR, isolated) and "Not your email?". */
+.lx-who {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px;
+  padding: 10px 12px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--lx-rule);
+}
+.lx-who-email {
+  unicode-bidi: isolate; min-width: 0; overflow-wrap: anywhere;
+  font-size: var(--lx-f2); color: var(--lx-ink);
+}
+
+/* Live password checks: a tick and the words, never colour alone. */
+.lx-pwchecks { list-style: none; margin: -6px 0 0; padding: 0; display: grid; gap: 6px; }
+.lx-pwcheck { display: flex; align-items: center; gap: 8px; line-height: 1.4; font-size: var(--lx-f1); color: var(--lx-muted); }
+.lx-pwcheck > span { flex: 1 1 auto; min-width: 0; }
+.lx-pwcheck svg { width: 14px; height: 14px; flex: 0 0 14px; stroke-width: 2; }
+.lx-pwcheck[data-ok='true'] { color: var(--lx-ok); }
+.lx-hint-warn { display: flex; align-items: flex-start; gap: 6px; color: var(--lx-body); margin-top: -6px; }
+.lx-hint-warn svg { width: 14px; height: 14px; flex: 0 0 14px; margin-top: 2px; stroke-width: 1.8; }
+
+/* The card in Arabic: the Arabic face, and none of the Latin tracking or
+   upper-casing (letter-spacing breaks Arabic joining). Inputs keep their own
+   LTR direction from the markup. */
+.lx-card[dir='rtl'] { font-family: var(--lx-ar), 'Noto Sans Arabic', var(--lx-sans), system-ui, sans-serif; }
+.lx-card[dir='rtl'] :where(.lx-kicker, .lx-legend label, .lx-legend > span:first-child, .lx-tag, .lx-title) {
+  font-family: inherit; letter-spacing: 0; text-transform: none;
+}
+.lx-card[dir='rtl'] .lx-in:not(.lx-in-code):not(.lx-in-mono) { font-family: var(--lx-sans), system-ui, sans-serif; }
+
+/* The lockup's descriptor in Arabic: no tracking, no capitals, the Arabic face. */
+html[dir='rtl'] .lx-rail-top .lx-descriptor {
+  font-family: var(--lx-ar), 'Noto Sans Arabic', system-ui, sans-serif; letter-spacing: 0; text-transform: none;
+}
+
+.lx-card[dir='rtl'] .lx-in[dir='ltr'] { text-align: left; }

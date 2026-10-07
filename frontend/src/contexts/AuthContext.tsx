@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
-import type { AuthUser } from '../api/auth';
+import type { AuthResponse, AuthUser } from '../api/auth';
 import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from '../api/clearSession';
 
@@ -33,7 +33,7 @@ interface AuthContextValue {
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
-  login: (email: string, password: string, tenantSlug: string) => Promise<LoginOutcome>;
+  login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
   /** Complete login after TOTP entry during challenge flow. */
   verifyMfaChallenge: (totpCode: string) => Promise<void>;
   /** From a signed-in session: obtain an enrolment token, end this session, and hand the token to
@@ -45,6 +45,11 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** HR's live reset code may be reported on the reply or on the user; keep it on the user either way. */
+function withResetNotice(res: AuthResponse): AuthUser {
+  return { ...res.user, pendingResetNotice: res.user.pendingResetNotice ?? res.pendingResetNotice ?? null };
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -69,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (['/login', '/reset-password', '/accept-invitation'].includes(window.location.pathname)) {
+    if (['/login', '/reset-password', '/accept-invitation', '/welcome'].includes(window.location.pathname)) {
       setIsLoading(false);
       return;
     }
@@ -85,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // would swap that screen for a bare spinner and back).
   const retryAuth = loadUser;
 
-  const login = useCallback(async (email: string, password: string, tenantSlug: string) => {
+  const login = useCallback(async (email: string, password: string, tenantSlug?: string) => {
     const res = await authApi.login(email, password, tenantSlug);
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.
@@ -104,7 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
-    setUser(res.user);
+    setUser(withResetNotice(res));
     return 'authenticated';
   }, []);
 
@@ -116,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
-    setUser(res.user);
+    setUser(withResetNotice(res));
   }, [mfaPending]);
 
   const beginMfaEnrollment = useCallback(async () => {

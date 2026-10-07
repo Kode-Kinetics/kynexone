@@ -56,7 +56,7 @@ test.describe('Tenant authentication', () => {
   // ── Wrong credentials ───────────────────────────────────────────────────────
 
   test('wrong password shows error and stays on login', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/login?workspace=probe');
     await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
     await page.locator('#li-pw, input[type="password"]').first().fill('WRONG_PASSWORD_XYZ!');
     await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(INTELLIFLOW_SLUG);
@@ -67,7 +67,7 @@ test.describe('Tenant authentication', () => {
   });
 
   test('wrong slug shows error and stays on login', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/login?workspace=probe');
     await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
     await page.locator('#li-pw, input[type="password"]').first().fill(INTELLIFLOW_ADMIN.password);
     await page.locator('#li-ws, input[autocomplete="organization"]').first().fill('nonexistent-tenant-xyz');

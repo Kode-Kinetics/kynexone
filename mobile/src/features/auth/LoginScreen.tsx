@@ -42,17 +42,23 @@ import {
   MotionPressable,
 } from '@/components/ui';
 import { normalizeEmail, normalizeWorkspace } from '@/auth/publicAuthInput';
+import { authFailure } from '@/auth/authStore';
+import { isWelcomeCode, normalizeWelcomeCode } from '@/auth/welcomeCode';
+import { SignInLanguageToggle } from './SignInLanguageToggle';
 
+/* The company ID is asked for only when needed (a link that names it, or the server answering
+   `workspace_required`), so it is validated in onSubmit rather than by the schema. Messages are
+   translation keys, resolved where they are shown. */
 const loginSchema = z.object({
-  tenantId: z.string().refine((value) => value.trim().length > 0, 'Workspace is required'),
-  username: z.string().refine((value) => value.trim().length > 0, 'Work email is required'),
-  password: z.string().min(1, 'Password is required'),
+  tenantId: z.string(),
+  username: z.string().refine((value) => value.trim().length > 0, 'signin.emailRequired'),
+  password: z.string().min(1, 'signin.passwordRequired'),
 });
 
 type LoginFormData = z.infer<typeof loginSchema>;
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 export default function LoginScreen({ navigation, route }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { theme, reduceMotion } = useTheme();
   const insets = useSafeAreaInsets();
   const { width, height, fontScale } = useWindowDimensions();
@@ -65,6 +71,8 @@ export default function LoginScreen({ navigation, route }: Props) {
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState<keyof LoginFormData | null>(null);
   const [loginSucceeded, setLoginSucceeded] = useState(false);
+  const [showWorkspace, setShowWorkspace] = useState(!!route.params?.tenantId);
+  const [companyIdNeeded, setCompanyIdNeeded] = useState(false);
   const entrance = useSharedValue(reduceMotion ? 1 : 0);
   const ambient = useSharedValue(0);
   const sheen = useSharedValue(0);
@@ -76,12 +84,16 @@ export default function LoginScreen({ navigation, route }: Props) {
     control,
     handleSubmit,
     setValue,
+    getValues,
+    setError,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
     defaultValues: { tenantId: '', username: '', password: '' },
   });
 
+  // A remembered company ID is only a pre-fill for the day the server asks for it; it is not sent
+  // unless the field is showing.
   const loadRememberedTenant = useCallback(async () => {
     if (route.params?.tenantId) return;
     const tenant = await appStorage.get<string>('zayra_tenant_id');
@@ -93,7 +105,10 @@ export default function LoginScreen({ navigation, route }: Props) {
   }, [loadRememberedTenant]);
 
   useEffect(() => {
-    if (route?.params?.tenantId) setValue('tenantId', normalizeWorkspace(route.params.tenantId));
+    if (route?.params?.tenantId) {
+      setValue('tenantId', normalizeWorkspace(route.params.tenantId));
+      setShowWorkspace(true);
+    }
     if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
     if (route?.params?.enrollmentComplete) setMfaJustEnabled(true);
   }, [route?.params, setValue]);
@@ -101,7 +116,10 @@ export default function LoginScreen({ navigation, route }: Props) {
   // Signed-in enrolment ends the session; say why and keep the account filled in.
   useEffect(() => {
     if (!mfaEnrolledNotice) return;
-    setValue('tenantId', normalizeWorkspace(mfaEnrolledNotice.tenantId));
+    if (mfaEnrolledNotice.tenantId) {
+      setValue('tenantId', normalizeWorkspace(mfaEnrolledNotice.tenantId));
+      setShowWorkspace(true);
+    }
     setValue('username', normalizeEmail(mfaEnrolledNotice.email));
     setMfaJustEnabled(true);
     consumeMfaEnrolledNotice();
@@ -220,21 +238,56 @@ export default function LoginScreen({ navigation, route }: Props) {
   }));
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
+      const workspace = showWorkspace ? normalizeWorkspace(data.tenantId) : '';
+      if (showWorkspace && !workspace) {
+        setError('tenantId', { message: 'signin.companyIdRequired' });
+        return;
+      }
       try {
-        const outcome = await login(normalizeEmail(data.username), data.password, normalizeWorkspace(data.tenantId));
+        const outcome = await login(normalizeEmail(data.username), data.password, workspace || undefined);
         if (outcome.kind === 'mfaChallenge') {
           navigation.navigate('MfaChallenge', { ...outcome, justEnrolled: mfaJustEnabled });
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
         } else {
           setLoginSucceeded(true);
+          // HR issued a reset code for this login that is still unused: say so once (Amendment 3, F1).
+          const notice = outcome.user.pendingResetNotice?.date;
+          if (notice) {
+            const date = new Intl.DateTimeFormat(i18n.language === 'ar' ? 'ar-SA-u-ca-gregory-nu-latn' : 'en-GB',
+              { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Riyadh' }).format(new Date(notice));
+            Alert.alert(t('signin.signedInTitle'), t('signin.resetNotice', { date }));
+          }
         }
-      } catch {
-        // The auth store owns the user-facing error state.
+      } catch (error) {
+        const { status, code } = authFailure(error);
+        if (status === 400 && code === 'workspace_required') {
+          setShowWorkspace(true);
+          setCompanyIdNeeded(true);
+          return;
+        }
+        // The 8-digit welcome code typed as the password: only after the sign-in failed, and the
+        // email and code travel as in-memory navigation params (no URL, no storage).
+        if ((status === 401 || status === 400) && isWelcomeCode(data.password)) {
+          setValue('password', '');
+          navigation.navigate('Welcome', {
+            email: normalizeEmail(data.username),
+            code: normalizeWelcomeCode(data.password),
+            workspace: workspace || undefined,
+            fromLogin: true,
+          });
+        }
+        // Anything else: the auth store owns the user-facing error state.
       }
     },
-    [login, mfaJustEnabled, navigation],
+    [i18n.language, login, mfaJustEnabled, navigation, setError, setValue, showWorkspace, t],
   );
+
+  const openWelcome = useCallback(() => {
+    const email = normalizeEmail(getValues('username'));
+    const workspace = showWorkspace ? normalizeWorkspace(getValues('tenantId')) : '';
+    navigation.navigate('Welcome', { email: email || undefined, workspace: workspace || undefined });
+  }, [getValues, navigation, showWorkspace]);
 
   return (
     <KeyboardAvoidingView
@@ -338,50 +391,27 @@ export default function LoginScreen({ navigation, route }: Props) {
             </View>
           ) : null}
 
-          <AnimatedLoginField active={focusedField === 'tenantId'} delay={260}>
-          <Controller
-            control={control}
-            name="tenantId"
-            render={({ field: { onChange, value, onBlur } }) => (
-              <GlassTextField
-                label={t('auth.tenantId')}
-                icon="business-outline"
-                value={value}
-                onChangeText={onChange}
-                onFocus={() => setFocusedField('tenantId')}
-                onBlur={() => { setFocusedField(null); onBlur(); }}
-                placeholder="e.g. acme-corp"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="organization"
-                returnKeyType="next"
-                error={errors.tenantId?.message}
-                accessibilityLabel={t('auth.tenantId')}
-              />
-            )}
-          />
-          </AnimatedLoginField>
-
           <AnimatedLoginField active={focusedField === 'username'} delay={340}>
           <Controller
             control={control}
             name="username"
             render={({ field: { onChange, value, onBlur } }) => (
               <GlassTextField
-                label={t('auth.username')}
-                icon="person-outline"
+                label={t('signin.email')}
+                icon="mail-outline"
                 value={value}
                 onChangeText={onChange}
                 onFocus={() => setFocusedField('username')}
                 onBlur={() => { setFocusedField(null); onBlur(); }}
-                placeholder="Work email or username"
+                placeholder={t('signin.emailPlaceholder')}
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoComplete="username"
+                textContentType="username"
                 keyboardType="email-address"
                 returnKeyType="next"
-                error={errors.username?.message}
-                accessibilityLabel="Work email or username"
+                error={errors.username?.message ? t(errors.username.message as 'signin.emailRequired') : undefined}
+                accessibilityLabel={t('signin.email')}
               />
             )}
           />
@@ -392,13 +422,13 @@ export default function LoginScreen({ navigation, route }: Props) {
             name="password"
             render={({ field: { onChange, value, onBlur } }) => (
               <GlassTextField
-                label={t('auth.password')}
+                label={t('signin.password')}
                 icon="lock-closed-outline"
                 value={value}
                 onChangeText={onChange}
                 onFocus={() => setFocusedField('password')}
                 onBlur={() => { setFocusedField(null); onBlur(); }}
-                placeholder="Enter your password"
+                placeholder={t('signin.passwordPlaceholder')}
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoComplete="current-password"
@@ -406,12 +436,12 @@ export default function LoginScreen({ navigation, route }: Props) {
                 secureTextEntry={!showPassword}
                 returnKeyType="done"
                 onSubmitEditing={handleSubmit(onSubmit)}
-                error={errors.password?.message}
-                accessibilityLabel="Password"
+                error={errors.password?.message ? t(errors.password.message as 'signin.passwordRequired') : undefined}
+                accessibilityLabel={t('signin.password')}
                 trailing={
                   <MotionPressable
                     accessibilityRole="button"
-                    accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+                    accessibilityLabel={showPassword ? t('signin.hidePassword') : t('signin.showPassword')}
                     onPress={() => setShowPassword((current) => !current)}
                     haptic="selection"
                     contentStyle={styles.passwordToggle}
@@ -428,6 +458,39 @@ export default function LoginScreen({ navigation, route }: Props) {
             )}
           />
           </AnimatedLoginField>
+
+          {showWorkspace ? (
+            <AnimatedLoginField active={focusedField === 'tenantId'} delay={0}>
+            {companyIdNeeded ? (
+              <Text accessibilityRole="alert" style={[theme.typography.caption, styles.companyNotice, { color: theme.colors.text }]}>
+                {t('signin.companyIdNeeded')}
+              </Text>
+            ) : null}
+            <Controller
+              control={control}
+              name="tenantId"
+              render={({ field: { onChange, value, onBlur } }) => (
+                <GlassTextField
+                  label={t('signin.companyId')}
+                  icon="business-outline"
+                  value={value}
+                  onChangeText={onChange}
+                  onFocus={() => setFocusedField('tenantId')}
+                  onBlur={() => { setFocusedField(null); onBlur(); }}
+                  placeholder="your-company"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="organization"
+                  autoFocus={companyIdNeeded}
+                  returnKeyType="done"
+                  onSubmitEditing={handleSubmit(onSubmit)}
+                  error={errors.tenantId?.message ? t(errors.tenantId.message as 'signin.companyIdRequired') : undefined}
+                  accessibilityLabel={t('signin.companyId')}
+                />
+              )}
+            />
+            </AnimatedLoginField>
+          ) : null}
 
           <MotionPressable
             accessibilityRole="button"
@@ -482,12 +545,21 @@ export default function LoginScreen({ navigation, route }: Props) {
               </View>
             </Animated.View>
           ) : null}
+          {/* The second way in, for an employee holding a welcome slip and no password yet. */}
+          <MotionPressable
+            accessibilityRole="button"
+            accessibilityLabel={t('signin.firstTime')}
+            onPress={openWelcome}
+            haptic="selection"
+            contentStyle={[styles.welcomeButton, { borderColor: theme.colors.border }]}
+            testID="login-welcome-code"
+          >
+            <Text style={[theme.typography.bodyStrong, styles.welcomeButtonText, { color: theme.colors.text }]}>
+              {t('signin.firstTime')}
+            </Text>
+          </MotionPressable>
           <View style={[styles.cardDivider, { backgroundColor: theme.colors.divider }]} />
-          <View style={styles.trustBar}>
-            <TrustItem icon="shield-checkmark-outline" label="Secure access" />
-            <View style={[styles.trustDivider, { backgroundColor: theme.colors.divider }]} />
-            <TrustItem icon="language-outline" label="English · عربي" />
-          </View>
+          <SignInLanguageToggle />
         </GlassSurface>
         </Animated.View>
       </ScrollView>
@@ -532,21 +604,6 @@ function AnimatedLoginField({
   }));
 
   return <Animated.View style={motion}>{children}</Animated.View>;
-}
-
-function TrustItem({ icon, label }: { icon: React.ComponentProps<typeof Ionicons>['name']; label: string }) {
-  const { theme } = useTheme();
-  return (
-    <View style={styles.trustItem}>
-      <Ionicons accessible={false} name={icon} size={14} color={theme.colors.primary} />
-      <Text
-        numberOfLines={1}
-        style={[theme.typography.micro, { color: theme.colors.textSecondary }]}
-      >
-        {label}
-      </Text>
-    </View>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -639,24 +696,17 @@ const styles = StyleSheet.create({
     width: '30%',
     borderRadius: 2,
   },
-  cardDivider: { height: StyleSheet.hairlineWidth, marginTop: 24 },
-  trustBar: {
-    minHeight: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-  },
-  trustItem: {
-    flex: 1,
-    minHeight: 44,
-    flexDirection: 'row',
+  cardDivider: { height: StyleSheet.hairlineWidth, marginTop: 18 },
+  companyNotice: { marginBottom: 8, lineHeight: 18 },
+  welcomeButton: {
+    marginTop: 12,
+    minHeight: 50,
+    borderRadius: 16,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
-    paddingHorizontal: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  trustDivider: {
-    width: StyleSheet.hairlineWidth,
-    height: 20,
-  },
+  welcomeButtonText: { textAlign: 'center' },
 });
