@@ -671,6 +671,26 @@ public sealed class EmployeeLoginLinkTests
         JsonSerializer.Serialize(status).Should().NotContain(user.ToString());
     }
 
+    [Fact]
+    public async Task TheStatus_ShowsAnInScopeEmployeesLinkedLogin_ExactlyWhenUserManagementListsIt()
+    {
+        // A login linked to an employee in the caller's company is inside the caller's user scope
+        // (ApplyEntityScope), so the status may name it: it reveals nothing the user list does not.
+        var w = await SeedAsync();
+        var email = Email("group-linked");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await AddLinkAsync(w, employeeId, user);
+        var scope = EntityScopeContext.ForCompanies(new[] { w.CompanyA });
+
+        await using var db = _fixture.CreateRetryingDb();
+        (await db.Users.AsNoTracking().ApplyEntityScope(db, w.TenantId, scope).AnyAsync(x => x.Id == user))
+            .Should().BeTrue("the user list shows a login linked to an in-scope employee");
+        var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyA).EmployeeLoginStatus(employeeId, default)).Result);
+        status.NextAction.Should().Be(EmployeeLoginNextActions.Linked);
+        status.LinkedLogin!.UserId.Should().Be(user);
+    }
+
     [Theory]
     [InlineData("locked")]
     [InlineData("sso")]

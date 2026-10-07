@@ -19,9 +19,13 @@ interface Props {
   onChange: (emp: EmployeeSelection | null) => void;
   placeholder?: string;
   required?: boolean;
+  /** Lifecycle statuses to search. The list API filters one status at a time, so each is queried and merged. */
+  statuses?: readonly string[];
 }
 
-export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by name or code…', required }: Props) {
+const ACTIVE_ONLY = ['Active'] as const;
+
+export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by name or code…', required, statuses = ACTIVE_ONLY }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<EmployeeListItem[]>([]);
   const [open, setOpen] = useState(false);
@@ -43,16 +47,22 @@ export function EmployeeSearchSelect({ value, onChange, placeholder = 'Search by
   // write results; typing, picking or clearing retires every older request, so a slow response for
   // an earlier query can never replace newer results or resurface after a pick.
   const searchGate = useMemo(() => createLatestRequestGate(), []);
+  // A string, so a caller passing a fresh array each render does not restart the search.
+  const statusKey = statuses.join('|');
 
   const search = useCallback(async (q: string) => {
     if (q.trim().length < 1) { searchGate.invalidate(); setResults([]); setSearching(false); return; }
     setSearching(true);
-    await runLatest(searchGate, () => employeesApi.list({ search: q, pageSize: 8, status: 'Active' }), {
-      onResult: (r) => setResults(r.items ?? []),
+    await runLatest(searchGate, async () => {
+      const pages = await Promise.all(statusKey.split('|').map(status => employeesApi.list({ search: q, pageSize: 8, status })));
+      const byId = new Map(pages.flatMap(p => p.items ?? []).map(e => [e.id, e] as const));
+      return [...byId.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)).slice(0, 8);
+    }, {
+      onResult: (items) => setResults(items),
       onError: () => setResults([]),
       onSettled: () => setSearching(false),
     });
-  }, [searchGate]);
+  }, [searchGate, statusKey]);
 
   // Debounce search
   useEffect(() => {

@@ -27,7 +27,8 @@ const noah = {
 
 const employees = [
   { id: 42, publicId: 'p-42', employeeCode: 'EMP-0042', fullName: 'Noah Williams', department: 'Sales', status: 'Active' },
-  { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Active' },
+  // Invited, not Active: the picker must still find an employee who was invited but has no login yet.
+  { id: 43, publicId: 'p-43', employeeCode: 'EMP-0043', fullName: 'Layla Haddad', department: 'Finance', status: 'Invited' },
   { id: 44, publicId: 'p-44', employeeCode: 'EMP-0044', fullName: 'Omar Saleh', department: 'Operations', status: 'Active' },
 ];
 
@@ -74,7 +75,9 @@ async function openUserManagement(page: Page) {
     }
     if (pathname === '/api/employees') {
       const search = (url.searchParams.get('search') ?? '').toLowerCase();
-      const items = employees.filter((e) => e.fullName.toLowerCase().includes(search) || e.employeeCode.toLowerCase().includes(search));
+      const status = url.searchParams.get('status');
+      const items = employees.filter((e) => (!status || e.status === status)
+        && (e.fullName.toLowerCase().includes(search) || e.employeeCode.toLowerCase().includes(search)));
       return json({ items, total: items.length, page: 1, pageSize: 8 });
     }
     if (pathname === '/api/access/employee-logins/42') return json({

@@ -176,7 +176,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         )}
         <div>
           <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee')}</p>
-          <EmployeeSearchSelect value={employee} onChange={setEmployee} placeholder={t('Search employees by name or code')} />
+          <EmployeeSearchSelect value={employee} onChange={setEmployee} placeholder={t('Search employees by name or code')} statuses={['Active', 'Invited']} />
         </div>
 
         {loadingStatus && <p className="text-sm text-slate-500">{t('Checking the employee record…')}</p>}
