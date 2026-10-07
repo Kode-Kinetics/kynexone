@@ -297,6 +297,10 @@ public sealed partial class MigrationImportController : ControllerBase
                     code = "migration_lease_lost",
                     message = "The import lost its exclusive lock before finishing; nothing further was recorded. Resume the batch."
                 });
+            // NOTHING the failed step left pending may ride on the save that records the failure: a section that
+            // threw before its own save (the admin-seat recheck, the last-admin recheck, a database rule) would
+            // otherwise be written here, by the very save that says it failed.
+            DiscardPendingChangesExcept(batch);
             batch.Status = "Failed";
             batch.ErrorJson = JsonSerializer.Serialize(new[] { ex.Message });
             batch.ErrorRows++;
@@ -404,11 +408,17 @@ public sealed partial class MigrationImportController : ControllerBase
         var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        // Entities that START being tracked while a row runs, collected from the change tracker's Tracked event:
+        // anything ADDED by a row that then fails is detached, so a half-built row is never inserted by the section's
+        // save. (This used to snapshot every tracked entry before every row — quadratic in a large section.)
+        var trackedThisRow = new List<object>();
+        void OnTracked(object? _, Microsoft.EntityFrameworkCore.ChangeTracking.EntityTrackedEventArgs e) => trackedThisRow.Add(e.Entry.Entity);
+        _db.ChangeTracker.Tracked += OnTracked;
+        try
+        {
         foreach (var (row, index) in parsedRows.Select((r, i) => (r, i + 2)))
         {
-            // Entities already tracked before this row: anything ADDED by a row that then fails is detached, so a
-            // half-built row is never inserted by the section's save.
-            var trackedBefore = _db.ChangeTracker.Entries().Select(e => e.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
+            trackedThisRow.Clear();
             try
             {
                 GuardDuplicate(section, row, seenKeys);
@@ -434,11 +444,18 @@ public sealed partial class MigrationImportController : ControllerBase
             }
             catch (Exception ex)
             {
-                foreach (var added in _db.ChangeTracker.Entries()
-                             .Where(e => e.State == EntityState.Added && !trackedBefore.Contains(e.Entity)).ToList())
-                    added.State = EntityState.Detached;
+                foreach (var entity in trackedThisRow.ToList())
+                {
+                    var entry = _db.Entry(entity);
+                    if (entry.State == EntityState.Added) entry.State = EntityState.Detached;
+                }
                 result.Skipped++; result.Errors.Add($"{section} row {index}: {ex.Message}");
             }
+        }
+        }
+        finally
+        {
+            _db.ChangeTracker.Tracked -= OnTracked;
         }
         if (section == "users") await SaveUsersUnderAdminSeatLockAsync(tenantId, ct);
         else await _db.SaveChangesAsync(ct);
@@ -635,6 +652,9 @@ public sealed partial class MigrationImportController : ControllerBase
             assigned = roles.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (user.IsActive && !wasAdmin && roles.Any(r => r.NormalizedName == "ADMIN")) _pendingNewAdmins++;
         }
+        // An Admin this row demotes (roles without Admin) or deactivates: re-checked under the admin-seat lock.
+        if (wasAdmin && (!user.IsActive || (roles is not null && !roles.Any(r => r.NormalizedName == "ADMIN"))))
+            _pendingAdminRemovals.Add(user.Id);
         if (created) _db.Users.Add(user);
         AuditAccessChange(created ? "access.user_created" : "access.user_updated", "User", user.Id, tenantId,
             new { email = user.Email, user.Status, user.IsGroupScope, roles = assigned });
@@ -1182,12 +1202,36 @@ public sealed partial class MigrationImportController : ControllerBase
             LockedPeriodRefusals = lockedPeriodRefusals ?? Array.Empty<object>()
         };
 
+    /// <summary>Revert every pending change except <paramref name="keep"/>'s: added entities are detached, modified
+    /// ones restored to the values they were read with, deleted ones un-deleted.</summary>
+    private void DiscardPendingChangesExcept(object keep)
+    {
+        foreach (var entry in _db.ChangeTracker.Entries().ToList())
+        {
+            if (ReferenceEquals(entry.Entity, keep)) continue;
+            switch (entry.State)
+            {
+                case EntityState.Added:
+                    entry.State = EntityState.Detached;
+                    break;
+                case EntityState.Modified:
+                    entry.CurrentValues.SetValues(entry.OriginalValues);
+                    entry.State = EntityState.Unchanged;
+                    break;
+                case EntityState.Deleted:
+                    entry.State = EntityState.Unchanged;
+                    break;
+            }
+        }
+    }
+
     private static Dictionary<string, decimal> ReadSectionTotals(string resultJson)
     {
         try
         {
             var ledger = JsonSerializer.Deserialize<MigrationGovernedLedgerDto>(resultJson);
-            return ledger?.Sections.ToDictionary(x => x.Key, x => x.Value.AmountTotal) ?? new();
+            // A batch that failed before any section finished has an empty ledger ("{}"): no Sections at all.
+            return ledger?.Sections?.ToDictionary(x => x.Key, x => x.Value.AmountTotal) ?? new();
         }
         catch (JsonException) { return new(); }
     }

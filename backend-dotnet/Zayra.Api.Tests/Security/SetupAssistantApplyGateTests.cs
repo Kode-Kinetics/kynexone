@@ -132,7 +132,7 @@ public sealed class SetupAssistantApplyGateTests
         Assert.Equal(1, await Companies(tenant));
         await using var verify = _fx.CreateDb();
         Assert.False(await verify.Departments.IgnoreQueryFilters().AnyAsync(d => d.TenantId == tenant));
-        Assert.Contains("Unrecognized country code 'Saudi'", Refusal(result));
+        Assert.Contains("Unrecognized country code 'SAUDI'", Refusal(result));
     }
 
     [Fact]
@@ -215,5 +215,64 @@ public sealed class SetupAssistantApplyGateTests
                  })
             Assert.Contains(audits, a => a.Action == action && a.EntityId == id.ToString() && a.Metadata!.Contains("setup_assistant"));
         Assert.Contains(audits, a => a.Action == "setup.assistant_applied");
+    }
+
+    private sealed class CompanyRacer : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        public Func<Task>? OnBegin;
+        public override async ValueTask<System.Data.Common.DbTransaction> TransactionStartedAsync(System.Data.Common.DbConnection connection,
+            Microsoft.EntityFrameworkCore.Diagnostics.TransactionEndEventData eventData, System.Data.Common.DbTransaction result, CancellationToken ct = default)
+        {
+            if (OnBegin is { } f) { OnBegin = null; await f(); }
+            return result;
+        }
+    }
+
+    [Fact]
+    public async Task TheCompanyGate_IsAskedAgainInsideTheSave_SoACompanyCreatedMeanwhileStillCounts()
+    {
+        // A single-company account with NO company yet: the gate allows one. Between the gate and the save another
+        // writer creates a company; the in-transaction re-check must refuse the assistant's, not make it the second.
+        Guid tenant;
+        await using (var seed = _fx.CreateDb())
+        {
+            tenant = await PostgresFixture.SeedMinimalTenant(seed);
+            (await seed.Tenants.SingleAsync(x => x.Id == tenant)).AccountType = TenantAccountTypes.SingleCompany;
+            await seed.SaveChangesAsync();
+        }
+        var racer = new CompanyRacer
+        {
+            OnBegin = async () =>
+            {
+                await using var other = _fx.CreateDb();
+                other.Companies.Add(new Company { TenantId = tenant, LegalNameEn = "Racer Co", CountryCode = "SA", Jurisdiction = "SA", RegistrationNumber = "REG-RACER", DefaultCurrency = "SAR", IsActive = true });
+                await other.SaveChangesAsync();
+            },
+        };
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+            .AddInterceptors(racer)
+            .Options;
+        await using var db = new ZayraDbContext(options);
+        var result = await Controller(db, tenant).Apply(Request("First Co", country: "sa"), CancellationToken.None);
+
+        Assert.Null(racer.OnBegin);
+        Assert.Contains("single-company account", Refusal(result));
+        await using var verify = _fx.CreateDb();
+        Assert.Equal(new[] { "Racer Co" }, await verify.Companies.IgnoreQueryFilters().Where(c => c.TenantId == tenant).Select(c => c.LegalNameEn).ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task ALowerCaseCountry_IsStoredUpperCase_LikeTheForms()
+    {
+        var (tenant, _) = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        var draft = SetupDraft.Empty() with { Branches = [new DraftBranch("RUH", "Riyadh", "Riyadh", true)] };
+        Assert.IsType<OkObjectResult>(await Controller(db, tenant).Apply(Request("Lower Co", country: " sa ", draft: draft), CancellationToken.None));
+        await using var verify = _fx.CreateDb();
+        Assert.Equal("SA", (await verify.Companies.IgnoreQueryFilters().SingleAsync(c => c.TenantId == tenant && c.LegalNameEn == "Lower Co")).CountryCode);
+        Assert.Equal("SA", (await verify.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == tenant && b.Code == "RUH")).CountryCode);
     }
 }

@@ -271,8 +271,9 @@ the owner's say-so. SELECT only:
 
 ```sql
 -- Matching rule (queries 2 and 3): the email or role name must be a whole CELL of the section, in ANY column —
--- start of line or after a comma, optional spaces and double quotes around it, then a comma or the end of the line
--- (LF or CRLF). The CSV header order is free, so anchoring on "first column" misses rows.
+-- start of line or after a comma, optional spaces/tabs/non-breaking spaces and double quotes around it (spaces
+-- allowed inside the quotes too), then a comma or the end of the line (LF or CRLF). The package is read from
+-- payload_json's "Sections" or, in the masked audit copy (#198), "sections". The CSV header order is free, so anchoring on "first column" misses rows.
 
 -- 1. Every committed (non-dry-run) migration package that carried a roles or users section, who committed it,
 --    when the import recorded its completion (audit_logs migration.import_completed), and whether the committer
@@ -280,11 +281,11 @@ the owner's say-so. SELECT only:
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.external_batch_id, b.status, b.created_by,
            b.created_at_utc, b.completed_at_utc,
-           (b.payload_json::jsonb -> 'Sections') ? 'roles' AS had_roles,
-           (b.payload_json::jsonb -> 'Sections') ? 'users' AS had_users
+           coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'roles' AS had_roles,
+           coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'users' AS had_users
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ?| array['roles', 'users'])
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ?| array['roles', 'users'])
 SELECT ab.tenant_id, ab.batch_id, ab.external_batch_id, ab.status, ab.completed_at_utc,
        ab.had_roles, ab.had_users, committer.email AS committed_by,
        done.created_at_utc AS completed_audit_at, done.user_id AS completed_audit_user_id,
@@ -305,17 +306,17 @@ ORDER BY ab.completed_at_utc DESC NULLS FIRST;
 --    privileged = holds Admin or any role carrying security.manage.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id, b.created_by,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'users', '')) AS users_csv
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'users', '')) AS users_csv
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ? 'users')
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'users')
 SELECT ab.tenant_id, ab.batch_id, u.id AS user_id, u.email, u.status, u.is_active, u.is_group_scope,
        u.id = ab.created_by AS committer_changed_own_account,
        string_agg(DISTINCT r.name, ', ') AS roles_now,
        coalesce(bool_or(r.normalized_name = 'ADMIN' OR p.permission_key = 'security.manage'), false) AS privileged
 FROM access_batches ab
 JOIN users u ON u.tenant_id = ab.tenant_id AND NOT u.is_deleted
- AND ab.users_csv ~ ('(^|[\n,])[ \t]*"?' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?[ \t]*(,|\r?\n|$)')
+ AND ab.users_csv ~ ('(^|[\n,])[ \t\u00a0]*"?[ \t\u00a0]*' || regexp_replace(lower(u.email), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '[ \t\u00a0]*"?[ \t\u00a0]*(,|\r?\n|$)')
 LEFT JOIN user_roles ur ON ur.user_id = u.id
 LEFT JOIN roles r ON r.id = ur.role_id AND NOT r.is_deleted
 LEFT JOIN role_permissions rp ON rp.role_id = r.id
@@ -326,17 +327,17 @@ ORDER BY privileged DESC, ab.tenant_id, u.email;
 -- 3. The roles those packages named (a Name cell in any column), as they stand NOW.
 WITH access_batches AS (
     SELECT b.tenant_id, b.id AS batch_id,
-           lower(coalesce(b.payload_json::jsonb -> 'Sections' ->> 'roles', '')) AS roles_csv
+           lower(coalesce(coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ->> 'roles', '')) AS roles_csv
     FROM migration_import_batches b
     WHERE b.package_type = 'MigrationPackage' AND NOT b.dry_run AND b.status <> 'Previewed'
-      AND (b.payload_json::jsonb -> 'Sections') ? 'roles')
+      AND coalesce(b.payload_json::jsonb -> 'Sections', b.payload_json::jsonb -> 'sections') ? 'roles')
 SELECT ab.tenant_id, ab.batch_id, r.id AS role_id, r.name, r.is_system, r.is_active, r.created_at_utc,
        (SELECT count(*) FROM user_roles ur WHERE ur.role_id = r.id) AS members_now,
        (SELECT string_agg(p.permission_key, ', ' ORDER BY p.permission_key) FROM role_permissions rp
           JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id) AS permissions_now
 FROM access_batches ab
 JOIN roles r ON (r.tenant_id = ab.tenant_id OR r.tenant_id IS NULL) AND NOT r.is_deleted
- AND ab.roles_csv ~ ('(^|[\n,])[ \t]*"?' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '"?[ \t]*(,|\r?\n|$)')
+ AND ab.roles_csv ~ ('(^|[\n,])[ \t\u00a0]*"?[ \t\u00a0]*' || regexp_replace(lower(r.name), '([.+*?^$()\[\]{}|\\-])', '\\\1', 'g') || '[ \t\u00a0]*"?[ \t\u00a0]*(,|\r?\n|$)')
 ORDER BY ab.tenant_id, r.name;
 ```
 

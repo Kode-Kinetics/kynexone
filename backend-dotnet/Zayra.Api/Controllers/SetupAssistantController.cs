@@ -54,6 +54,9 @@ public class SetupAssistantController : ControllerBase
     public async Task<IActionResult> Apply([FromBody] ApplySetupRequest req, CancellationToken ct)
     {
         if (!HasPermission("organization.setup.apply")) return Forbid();
+        // One spelling of the country everywhere it is written (company, branches, leave policies, calendars, rules):
+        // the forms store ISO codes upper-case, and "sa" would otherwise sit beside "SA".
+        req = req with { CountryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
         var tenantId = GetTenantId();
         var d = req.Draft;
         // Before anything is written: a reviewed draft can still have been edited below the Saudi
@@ -616,7 +619,43 @@ public class SetupAssistantController : ControllerBase
                 total = counts.Values.Sum(),
                 entities = audited.Count,
             })));
-        await _db.SaveChangesAsync(ct);
+        // The company gate is asked again INSIDE the save's transaction, as the org-structure import does: another
+        // legal entity created between the gate above and this save (a second apply, the form) could otherwise take
+        // the plan's last company or turn a single-company account into two.
+        var creatingCompany = company is not null && _db.Entry(company).State == EntityState.Added;
+        if (creatingCompany && _db.Database.IsRelational())
+        {
+            IActionResult? refusal = null;
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                refusal = null;
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                if (!creation.Allowed)
+                {
+                    await tx.RollbackAsync(ct);
+                    refusal = UnprocessableEntity(new
+                    {
+                        error = "setup_apply_refused",
+                        message = "Nothing was applied. " + creation.Message,
+                        problems = new[] { creation.Message },
+                    });
+                    return;
+                }
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+            });
+            if (refusal is not null)
+            {
+                _db.ChangeTracker.Clear();
+                return refusal;
+            }
+        }
+        else
+        {
+            await _db.SaveChangesAsync(ct);
+        }
         return Ok(new { applied = counts, total = counts.Values.Sum() });
     }
 

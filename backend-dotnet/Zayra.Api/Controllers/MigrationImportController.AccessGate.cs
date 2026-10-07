@@ -127,13 +127,7 @@ public sealed partial class MigrationImportController
         // THE LAST OPERATIONAL ADMIN (the Access screen's EnsureAnotherOperationalAdmin): rows that would demote or
         // deactivate an operational Admin are collected, and refused if together they would leave none.
         var now = DateTime.UtcNow;
-        var operationalAdmins = (await ScopedBypass.TenantWide(_db.Users, tenantId,
-                    "Last-administrator rule: the tenant's admin cohort must be counted across every company, exactly as the Access screen's LockAdminCohortAsync counts it. Tenant re-applied; read-only.")
-                .AsNoTracking()
-                .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
-                .Include(u => u.EmployeeUserAccounts)
-                .Where(u => !u.IsDeleted && u.UserRoles.Any(ur => ur.Role != null && ur.Role.NormalizedName == "ADMIN" && ur.Role.IsActive && !ur.Role.IsDeleted))
-                .ToListAsync(ct))
+        var operationalAdmins = (await OperationalAdminCohortAsync(tenantId, ct))
             .Where(u => IsOperationalAdmin(u, now))
             .Select(u => u.NormalizedEmail)
             .ToHashSet(StringComparer.Ordinal);
@@ -228,6 +222,20 @@ public sealed partial class MigrationImportController
     /// <summary>Users this commit gives the Admin role who did not hold it — re-checked against the plan under the lock.</summary>
     private int _pendingNewAdmins;
 
+    /// <summary>Admins this commit demotes or deactivates — re-checked against the last-admin rule under the lock.</summary>
+    private readonly HashSet<Guid> _pendingAdminRemovals = new();
+
+    /// <summary>The tenant's Admin-role holders as stored (not as this context has modified them), with what the
+    /// operational test needs.</summary>
+    private Task<List<User>> OperationalAdminCohortAsync(Guid tenantId, CancellationToken ct) =>
+        ScopedBypass.TenantWide(_db.Users, tenantId,
+                "Last-administrator rule: the tenant's admin cohort must be counted across every company, exactly as the Access screen's LockAdminCohortAsync counts it. Tenant re-applied; read-only.")
+            .AsNoTracking()
+            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .Include(u => u.EmployeeUserAccounts)
+            .Where(u => !u.IsDeleted && u.UserRoles.Any(ur => ur.Role != null && ur.Role.NormalizedName == "ADMIN" && ur.Role.IsActive && !ur.Role.IsDeleted))
+            .ToListAsync(ct);
+
     /// <summary>
     /// Save the users section under the Access screen's admin-seat lock (<see cref="AccessManagementService.AdminSeatLockKey"/>),
     /// re-counting the seats inside it. The gate counted them before the import started; two imports, or an import and
@@ -235,7 +243,7 @@ public sealed partial class MigrationImportController
     /// </summary>
     private async Task SaveUsersUnderAdminSeatLockAsync(Guid tenantId, CancellationToken ct)
     {
-        if (_pendingNewAdmins == 0 || !_db.Database.IsNpgsql())
+        if ((_pendingNewAdmins == 0 && _pendingAdminRemovals.Count == 0) || !_db.Database.IsNpgsql())
         {
             await _db.SaveChangesAsync(ct);
             return;
@@ -246,9 +254,22 @@ public sealed partial class MigrationImportController
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
             await _db.Database.ExecuteSqlInterpolatedAsync(
                 $"SELECT pg_advisory_xact_lock({AccessManagementService.AdminSeatLockKey(tenantId)})", ct);
-            if (await AdminSeatsLeftAsync(tenantId, ct) is int left && _pendingNewAdmins > left)
+            if (_pendingNewAdmins > 0 && await AdminSeatsLeftAsync(tenantId, ct) is int left && _pendingNewAdmins > left)
                 throw new InvalidOperationException(
                     $"The plan allows {left} more active administrator(s) and this package adds {_pendingNewAdmins}. Nothing in the users section was saved.");
+            // THE LAST OPERATIONAL ADMIN, re-counted under the SAME lock (as the Access screen's LockAdminCohortAsync
+            // counts it under its own): the gate counted before the import started, and an Admin demoted or blocked
+            // elsewhere since then could make this row remove the last one.
+            if (_pendingAdminRemovals.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                var remaining = (await OperationalAdminCohortAsync(tenantId, ct))
+                    .Where(u => !_pendingAdminRemovals.Contains(u.Id) && IsOperationalAdmin(u, now))
+                    .ToList();
+                if (remaining.Count == 0)
+                    throw new InvalidOperationException(
+                        "Cannot remove or block the last administrator. Add another active admin first. Nothing in the users section was saved.");
+            }
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
         });

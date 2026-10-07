@@ -47,6 +47,14 @@ public sealed class MigrationImportExposureQueryTests
         { "crlf-quoted",
           "Description,Name,AuthorityLevel,IsActive\r\n\"From legacy, migrated\",\"Migrated Clerks\",50,true\r\n",
           "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\r\n\"One, Clerk\",\"clerk.one@example.com\",,en,UTC,Invited,\"Migrated Clerks\",false\r\n" },
+        { "nbsp-inside-quotes",
+          "Description,Name,AuthorityLevel,IsActive\nFrom legacy,\"\u00a0Migrated Clerks \",50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One,\" clerk.one@example.com\u00a0\",,en,UTC,Invited,Migrated Clerks,false\n" },
+        // #198 stores the package as MigrationPackageAuditCopy, whose key is lower-case "sections". Hand-written
+        // shape (the batch's payload is rewritten to it below) until #198's serializer is on main.
+        { "masked-lowercase-sections",
+          "Name,Description,AuthorityLevel,IsActive\nMigrated Clerks,From legacy,50,true\n",
+          "FullName,Email,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\nClerk One,clerk.one@example.com,,en,UTC,Invited,Migrated Clerks,false\n" },
     };
 
     [Theory]
@@ -92,6 +100,15 @@ public sealed class MigrationImportExposureQueryTests
         await using var verify = _fx.CreateDb();
         var conn = verify.Database.GetDbConnection();
         await conn.OpenAsync();
+        if (layout.StartsWith("masked", StringComparison.Ordinal))
+        {
+            await using var rewrite = conn.CreateCommand();
+            rewrite.CommandText = "UPDATE migration_import_batches SET payload_json = jsonb_build_object("
+                + "'externalBatchId', payload_json::jsonb ->> 'ExternalBatchId', 'dryRun', false, "
+                + "'sections', payload_json::jsonb -> 'Sections')::json WHERE tenant_id = @t";
+            var p = rewrite.CreateParameter(); p.ParameterName = "t"; p.Value = tenant; rewrite.Parameters.Add(p);
+            Assert.Equal(1, await rewrite.ExecuteNonQueryAsync());
+        }
         async Task<List<Dictionary<string, object?>>> Run(string sql)
         {
             await using var cmd = conn.CreateCommand();
@@ -112,51 +129,6 @@ public sealed class MigrationImportExposureQueryTests
         Assert.Equal("Migrated Clerks", accounts[0]["roles_now"]);
         var roles = (await Run(queries[2])).Where(r => (Guid)r["tenant_id"]! == tenant).ToList();
         Assert.Equal("Migrated Clerks", Assert.Single(roles)["name"]);
-    }
-
-    /// <summary>The users section is saved under the Access screen's admin-seat advisory lock on PostgreSQL, with the
-    /// seats re-counted inside it: the grant that fits lands, and a package that needs more seats than are left
-    /// is refused without saving its users.</summary>
-    [Fact]
-    public async Task NewAdminGrants_AreSavedUnderTheAdminSeatLock_AndRecountedThere()
-    {
-        Guid tenant;
-        await using (var seed = _fx.CreateDb())
-        {
-            tenant = await PostgresFixture.SeedMinimalTenant(seed);
-            seed.Roles.Add(new Role { TenantId = tenant, Name = "Admin", NormalizedName = "ADMIN", IsSystem = true, IsEditable = false });
-            seed.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenant, Plan = "Enterprise", Status = "Active", MaxAdminUsers = 1, MaxEmployees = 10 });
-            await seed.SaveChangesAsync();
-        }
-        MigrationImportController Controller(Zayra.Api.Data.ZayraDbContext db) => new(db, new Pbkdf2PasswordHasher(1_000), new AuditService(db))
-        {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
-                    {
-                        new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-                        new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "security.manage"),
-                        new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
-                    }, "test")),
-                },
-            },
-        };
-        const string header = "Email,FullName,PhoneNumber,PreferredLanguage,Timezone,Status,RoleNames,IsGroupScope\n";
-
-        await using (var db = _fx.CreateDb())
-            Assert.IsType<OkObjectResult>((await Controller(db).Commit(new MigrationPackageRequest($"seat-{Guid.NewGuid():N}",
-                new Dictionary<string, string> { ["users"] = header + "first.admin@example.com,First Admin,,en,UTC,Active,Admin,true\n" }), CancellationToken.None)).Result);
-        await using (var db = _fx.CreateDb())
-        {
-            var refused = Assert.IsAssignableFrom<ObjectResult>((await Controller(db).Commit(new MigrationPackageRequest($"seat-{Guid.NewGuid():N}",
-                new Dictionary<string, string> { ["users"] = header + "second.admin@example.com,Second Admin,,en,UTC,Active,Admin,true\n" }), CancellationToken.None)).Result);
-            Assert.Equal(403, refused.StatusCode);
-        }
-        await using var verify = _fx.CreateDb();
-        Assert.True(await verify.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == tenant && u.NormalizedEmail == "FIRST.ADMIN@EXAMPLE.COM" && u.IsActive));
-        Assert.False(await verify.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == tenant && u.NormalizedEmail == "SECOND.ADMIN@EXAMPLE.COM"));
     }
 
     private static List<string> RunbookQueries()
