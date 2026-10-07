@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Circle, Database, Download, Eye, FileSpreadsheet, GitBranch, Info, Pencil, RefreshCw, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
+import Link from 'next/link';
 import { tenantAdminApi } from '../api/intelligence';
+import { useT } from '../hooks/useT';
+import { useReleaseA } from '../lib/releaseA';
 import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type MigrationImportBatchDto, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
 
 const COUNTRIES = [
@@ -70,6 +73,10 @@ const CURRENCIES = ['SAR', 'AED', 'QAR', 'KWD', 'BHD', 'OMR', 'USD', 'EUR', 'GBP
 type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization';
 
 export function AiSetupAssistant() {
+  // Release A: grade allowances and benefits are set in Benefits by grade, so the draft's legacy grade pay lines are
+  // neither shown nor sent (the server would skip them and say so).
+  const releaseA = useReleaseA();
+  const t = useT();
   // Blank until the workspace answers. These used to be hardcoded 'SA' and 'SAR', which meant the
   // assistant asked an admin to re-key what the workspace already knew and, worse, quietly priced
   // the draft in whatever the boxes happened to say. A currency is not visibly wrong on screen —
@@ -112,7 +119,7 @@ export function AiSetupAssistant() {
   const [engine, setEngine] = useState('');
   const [genNotes, setGenNotes] = useState<string[]>([]);
   const [draft, setDraft] = useState<SetupDraft | null>(null);
-  const [done, setDone] = useState<{ applied: Record<string, number>; total: number } | null>(null);
+  const [done, setDone] = useState<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string }> } | null>(null);
 
   // The workspace's own country and currency. Setup - Localization is where a tenant states these;
   // reading them here is what stops the draft disagreeing with the rest of the product. An empty
@@ -191,7 +198,7 @@ export function AiSetupAssistant() {
     if (!draft) return;
     setApplying(true); setError('');
     try {
-      const r = await setupAssistantApi.apply(draft, country, currency, legalEntityName.trim() || undefined);
+      const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined);
       setDone(r);
     } catch (e: unknown) {
       // Keep the draft in state on 403 so an admin can apply the exact reviewed draft.
@@ -234,7 +241,7 @@ export function AiSetupAssistant() {
 
   const totalItems = draft
     ? draft.departments.length + draft.designations.length + draft.grades.length +
-      draft.branches.length + draft.costCenters.length + draft.gradePayComponents.length +
+      draft.branches.length + draft.costCenters.length + (releaseA ? 0 : draft.gradePayComponents.length) +
       draft.leaveTypes.length + draft.shifts.length + draft.payComponents.length +
       draft.statutoryRules.length + (draft.workingWeek ? 1 : 0) +
       (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0) +
@@ -259,6 +266,9 @@ export function AiSetupAssistant() {
             <span key={k} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-300">{k}: {n}</span>
           ))}
         </div>
+        {(done.skipped?.gradePayComponents?.count ?? 0) > 0 && <p role="status" className="mt-3 text-xs text-amber-800 dark:text-amber-200">
+          {t('{count} grade pay line(s) were not saved: grade allowances and benefits are set in Benefits by grade.', { count: done.skipped!.gradePayComponents.count })}
+        </p>}
         <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); }}>Run again</button>
       </div>
     );
@@ -577,7 +587,12 @@ export function AiSetupAssistant() {
             }))}
             onRemove={i => removeAt('grades', i)} />
 
-          <DraftSection title="Grade Pay Components"
+          {releaseA
+            ? <p className="rounded-xl border border-slate-200 p-3 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                {t('Grade allowances and benefits are set in Benefits by grade, so this draft has no grade pay lines.')}{' '}
+                <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link>
+              </p>
+            : <DraftSection title="Grade Pay Components"
             rows={draft.gradePayComponents.map((x, i) => ({
               code: x.componentCode,
               desc: `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`,
@@ -589,7 +604,7 @@ export function AiSetupAssistant() {
                 boolf('Taxable', x.isTaxable, v => patch('gradePayComponents', i, { isTaxable: v })),
               ],
             }))}
-            onRemove={i => removeAt('gradePayComponents', i)} />
+            onRemove={i => removeAt('gradePayComponents', i)} />}
 
           <DraftSection title="Leave Types"
             rows={draft.leaveTypes.map((x, i) => ({
@@ -811,6 +826,9 @@ const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; section: string; labe
 ];
 
 function OrgStructureImportPanel() {
+  // Release A: the grade pay breakdown file is not offered — the server would skip its rows (they are set in Benefits by grade).
+  const releaseA = useReleaseA();
+  const importKeys = releaseA ? IMPORT_KEYS.filter(x => x.key !== 'gradePayComponentsCsv') : IMPORT_KEYS;
   const [payload, setPayload] = useState<OrgStructureImportRequest>({});
   const [batch, setBatch] = useState<MigrationImportBatchDto | null>(null);
   const [loading, setLoading] = useState('');
@@ -919,8 +937,8 @@ function OrgStructureImportPanel() {
   };
 
   const hasAny = Object.values(payload).some(Boolean);
-  const loadedCount = IMPORT_KEYS.filter(x => payload[x.key]).length;
-  const totalRows = IMPORT_KEYS.reduce((sum, x) => sum + countCsvRows(payload[x.key]), 0);
+  const loadedCount = importKeys.filter(x => payload[x.key]).length;
+  const totalRows = importKeys.reduce((sum, x) => sum + countCsvRows(payload[x.key]), 0);
   const blockingCount = batch?.errorRows ?? 0;
   const warningCount = batch?.result?.warnings ?? 0;
   const blockingGroups = groupFindings(batch?.result ?? null, 'errors');
@@ -1002,7 +1020,7 @@ function OrgStructureImportPanel() {
           </div>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {IMPORT_KEYS.map(item => {
+            {importKeys.map(item => {
               const rows = countCsvRows(payload[item.key]);
               const ready = rows > 0;
               const missingDeps = item.dependsOn.filter(dep => !payload[IMPORT_KEYS.find(x => x.section === dep)?.key ?? 'companiesCsv']);
@@ -1034,7 +1052,7 @@ function OrgStructureImportPanel() {
 
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-2">
-            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Sections loaded" value={`${loadedCount}/${IMPORT_KEYS.length}`} />
+            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Sections loaded" value={`${loadedCount}/${importKeys.length}`} />
             <MetricCard icon={<Database className="h-4 w-4" />} label="Rows" value={String(batch?.receivedRows ?? totalRows)} />
             <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Readiness" value={readiness.label} tone={readiness.tone} />
           </div>
