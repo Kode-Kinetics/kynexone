@@ -83,6 +83,16 @@ export function pairUp<T>(items: readonly T[]): T[][] {
   return pages;
 }
 
+/** An issued code went by email (per item; an older API marks it only by leaving `code` out). */
+export function wasEmailed(item: Pick<IssuedWelcomeCode, 'delivery' | 'code'>): boolean {
+  return item.delivery ? item.delivery === 'email' : !item.code;
+}
+
+/** An issued code that is printed on a slip. */
+export function isPrintable(item: Pick<IssuedWelcomeCode, 'delivery' | 'code'>): boolean {
+  return !!item.code && item.delivery !== 'email';
+}
+
 export const DEFAULT_COMPANY_TIME_ZONE = 'Asia/Riyadh';
 
 function zoneOrDefault(timeZone?: string | null): string {

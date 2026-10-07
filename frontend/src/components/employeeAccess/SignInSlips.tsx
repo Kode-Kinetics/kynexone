@@ -7,7 +7,7 @@ import type { IssuedWelcomeCode, SkippedWelcomeCode } from '../../api/employeeAc
 import { useLocale } from '../../contexts/LocaleContext';
 import { translate } from '../../i18n/translations';
 import type { MessageParams } from '../../i18n/message';
-import { appAddress, dateLine, formatWelcomeCode, pairUp, sortSlips, welcomeQrUrl } from '../../lib/employeeAccess';
+import { appAddress, dateLine, isPrintable, formatWelcomeCode, pairUp, sortSlips, welcomeQrUrl } from '../../lib/employeeAccess';
 import { fill, Ltr } from './fill';
 import { SkippedList } from './SkippedList';
 
@@ -33,16 +33,20 @@ export interface SignInSlipsProps {
   skipped: SkippedWelcomeCode[];
   /** Names for skipped rows (the API returns only ids). */
   names: Record<number, string>;
-  /** True when some codes went by email instead (they are not printed). */
-  emailed: boolean;
+  /** Codes in the same batch that went by email (summarised in one line, not printed). */
+  emailedCount: number;
+  /** Why these slips are printed, if that needs saying. */
+  note: PrintNote;
   /** The company's zone (default Asia/Riyadh), so a code ending 23:59 in Riyadh prints as that day. */
   timeZone?: string | null;
   onClose: () => void;
 }
 
-export function SignInSlips({ issued, skipped, names, emailed, timeZone, onClose }: SignInSlipsProps) {
+export type PrintNote = 'none' | 'noEmail' | 'enteredByYou';
+
+export function SignInSlips({ issued, skipped, names, emailedCount, note, timeZone, onClose }: SignInSlipsProps) {
   const { t } = useLocale();
-  const slips = useMemo(() => sortSlips(issued.filter((s) => !!s.code)), [issued]);
+  const slips = useMemo(() => sortSlips(issued.filter(isPrintable)), [issued]);
   const pages = useMemo(() => pairUp(slips), [slips]);
   const [qr, setQr] = useState<Record<number, string>>({});
   const [qrFailed, setQrFailed] = useState(false);
@@ -103,7 +107,9 @@ export function SignInSlips({ issued, skipped, names, emailed, timeZone, onClose
           <div className="min-w-0 space-y-1">
             <h2 id={titleId} className="text-base font-bold text-slate-950">{t('Sign-in slips')}</h2>
             <p className="text-sm text-slate-700" data-testid="slips-summary">{t('Slips ready: {n}. Skipped: {m}.', { n: slips.length, m: skipped.length })}</p>
-            {!emailed && <p className="text-xs text-slate-600">{t("Email isn't set up, so print the sign-in slips and hand them out.")}</p>}
+            {emailedCount > 0 && <p className="text-sm text-slate-700" data-testid="slips-emailed">{t('Sign-in codes emailed: {n}.', { n: emailedCount })}</p>}
+            {note === 'noEmail' && <p className="text-xs text-slate-600">{t("Email isn't set up, so print the sign-in slips and hand them out.")}</p>}
+            {note === 'enteredByYou' && <p className="text-xs text-slate-600" data-testid="slips-delivery-note">{t('You entered these work emails, so print the slips and hand them over in person.')}</p>}
             <p role="note" className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               {t('These slips contain codes that will not be shown again after you close this page. If printing fails, give a new code.')}

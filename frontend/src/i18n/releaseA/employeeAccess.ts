@@ -64,8 +64,9 @@ const en: Record<string, string> = {
   'Employee {id}': 'Employee {id}',
   'Slips ready: {n}. Skipped: {m}.': 'Slips ready: {n}. Skipped: {m}.',
   "Email isn't set up, so print the sign-in slips and hand them out.": "Email isn't set up, so print the sign-in slips and hand them out.",
-  '{count, plural, one {The sign-in code was emailed to # person.} other {Sign-in codes were emailed to # people.}}':
-    '{count, plural, one {The sign-in code was emailed to # person.} other {Sign-in codes were emailed to # people.}}',
+  'Sign-in codes emailed: {n}.': 'Sign-in codes emailed: {n}.',
+  'You entered these work emails, so print the slips and hand them over in person.':
+    'You entered these work emails, so print the slips and hand them over in person.',
   'The sign-in codes could not be created': 'The sign-in codes could not be created',
 
   // Employees list and Add Employee
@@ -174,8 +175,9 @@ const ar: Record<string, string> = {
   'Employee {id}': 'الموظف {id}',
   'Slips ready: {n}. Skipped: {m}.': 'الأوراق الجاهزة: {n}. تم تخطي: {m}.',
   "Email isn't set up, so print the sign-in slips and hand them out.": 'إرسال البريد الإلكتروني غير مُفعَّل، لذا اطبع أوراق تسجيل الدخول وسلّمها للموظفين.',
-  '{count, plural, one {The sign-in code was emailed to # person.} other {Sign-in codes were emailed to # people.}}':
-    '{count, plural, one {تم إرسال رمز التفعيل بالبريد الإلكتروني إلى موظف واحد.} other {تم إرسال رموز التفعيل بالبريد الإلكتروني. عدد الموظفين: #.}}',
+  'Sign-in codes emailed: {n}.': 'تم إرسال رموز التفعيل بالبريد الإلكتروني: {n}.',
+  'You entered these work emails, so print the slips and hand them over in person.':
+    'أنت من أدخل هذه العناوين، لذا اطبع الأوراق وسلّمها للموظفين شخصياً.',
   'The sign-in codes could not be created': 'تعذّر إصدار رموز التفعيل',
 
   'Print sign-in slips ({n})': 'طباعة أوراق تسجيل الدخول ({n})',

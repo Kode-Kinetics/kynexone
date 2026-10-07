@@ -1160,9 +1160,9 @@ export function EmployeesPage() {
 
   const issueCreatedCode = async (delivery?: 'email' | 'print') => {
     if (!createdEmployee) return;
-    const { id, name } = createdEmployee;
+    const { id, name, access } = createdEmployee;
     finishCreated();
-    await welcome.issue([id], { names: { [id]: name }, delivery });
+    await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
 
   const closeCreateModal = () => {
