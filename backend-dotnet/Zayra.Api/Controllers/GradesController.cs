@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -255,6 +256,15 @@ public class GradesController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var grade = await _db.Grades.FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == id && !g.IsDeleted, ct);
         if (grade is null) return NotFound();
+        // Release A (R1): benefits by grade live in one place, the matrix. For a tenant with release_a on, this writer is
+        // frozen (expand → migrate → contract: the rows stay, are readable and importable, and are dropped in a later
+        // release). Tenants without the flag keep the editor exactly as before.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct))
+            return Conflict(new
+            {
+                error = "moved_to_benefits_by_grade",
+                message = "Grade benefits are now set in Benefits → Benefits by grade. The old pay-scale lines can be imported there.",
+            });
 
         var codes = components.Select(c => c.ComponentCode?.Trim().ToUpperInvariant()).Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
         if (codes.Count != codes.Distinct().Count())
