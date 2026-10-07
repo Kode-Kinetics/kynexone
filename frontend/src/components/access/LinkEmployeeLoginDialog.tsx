@@ -69,8 +69,10 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     const named = typeof subject === 'string' && subject ? subject : null;
     if (code === LOGIN_OTHER_COMPANY && named)
       return t('This login works in a different company. Give it access to {company} first, or link it from that company.', { company: named });
-    if (code === LOGIN_POINTER_CONFLICT && named)
-      return t("This login is still recorded on {employee}'s employee record. Unlink it there first.", { employee: named });
+    if (code === LOGIN_POINTER_CONFLICT)
+      return named
+        ? t("This login is still recorded on {employee}'s employee record. Contact support to resolve it.", { employee: named })
+        : t('This login is still recorded on another employee record. Contact support to resolve it.');
     if (code === LOGIN_NEEDS_GROUP_ADMIN) return t('Only a group-level administrator can link a login that has no company access yet.');
     if (code === LOGIN_NOT_MANAGEABLE) return t('A login already uses this work email, but it is outside your access. An administrator who manages it must link it.');
     return null;

@@ -601,7 +601,7 @@ public sealed class EmployeeLoginLinkTests
         await AddLinkAsync(w, holder, user, deleted: true, keepPointer: true);
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
 
-        const string expected = "This login is still recorded on Sara Holder (EMP-HOLD)'s employee record. Unlink it there first.";
+        const string expected = "This login is still recorded on Sara Holder (EMP-HOLD)'s employee record. Contact support to resolve it.";
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
@@ -669,6 +669,111 @@ public sealed class EmployeeLoginLinkTests
         status.ReasonCode.Should().Be(EmployeeLinkRefusals.NotManageableCode);
         status.Reason.Should().NotContain("another employee").And.NotContain(user.ToString());
         JsonSerializer.Serialize(status).Should().NotContain(user.ToString());
+    }
+
+    [Theory]
+    [InlineData("locked")]
+    [InlineData("sso")]
+    public async Task AScopedAdmin_LearnsNothingAboutALoginWithNoCompanyAccess_WhateverItsState(string state)
+    {
+        var w = await SeedAsync();
+        var email = Email($"zero-{state}");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyB, email);
+        await using (var seed = _fixture.CreateRetryingDb())
+        {
+            var u = await seed.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == user);
+            if (state == "locked") { u.IsLocked = true; u.Status = "Locked"; }
+            else u.IdentityProvider = "AzureAD";
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyB).EmployeeLoginStatus(employeeId, default)).Result);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.NeedsGroupAdmin, "the group-level rule answers before any check that describes the login");
+            status.MatchingLogin.Should().BeNull();
+            var json = JsonSerializer.Serialize(status);
+            json.Should().NotContain(user.ToString()).And.NotContain("Locked").And.NotContain("single sign-on");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = Assert.IsType<ObjectResult>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyB).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
+            refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.NeedsGroupAdmin);
+        }
+        await AssertNotLinkedAsync(user, employeeId);
+    }
+
+    [Fact]
+    public async Task APointerHolderOutsideTheCallersCompanies_IsNotNamed()
+    {
+        var w = await SeedAsync();
+        var email = Email("holder-elsewhere");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false, grantCompany: w.CompanyA);
+        var holder = await AddEmployeeAsync(w, w.CompanyB, Email("holder-b"), fullName: "Hidden Holder", code: "EMP-HIDDEN");
+        await AddLinkAsync(w, holder, user, deleted: true, keepPointer: true);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        const string generic = "This login is still recorded on another employee record. Contact support to resolve it.";
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyA).EmployeeLoginStatus(employeeId, default)).Result);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.Pointer);
+            status.ReasonSubject.Should().BeNull();
+            status.Reason.Should().Be(generic);
+            JsonSerializer.Serialize(status).Should().NotContain("Hidden Holder").And.NotContain("EMP-HIDDEN");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var bad = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId, scopedTo: w.CompanyA).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, user, "link"), default)).Result);
+            Message(bad).Should().Be(generic);
+            JsonSerializer.Serialize(bad.Value).Should().NotContain("Hidden Holder");
+        }
+        await AssertNotLinkedAsync(user, employeeId);
+    }
+
+    [Fact]
+    public async Task AFailingRefusalAudit_NeverMasksTheRefusal()
+    {
+        var w = await SeedAsync();
+        var email = Email("audit-fails");
+        var user = await AddUserAsync(w, email, ["Employee"], groupScope: false);
+        var mismatched = await AddEmployeeAsync(w, w.CompanyA, Email("not-the-login"));
+
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+            .AddInterceptors(new FailRefusalAuditInterceptor())
+            .Options;
+        await using (var db = new ZayraDbContext(options))
+        {
+            var bad = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(mismatched, user, "link"), default)).Result);
+            JsonSerializer.SerializeToElement(bad.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.Email);
+        }
+
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_link_refused"))
+            .Should().BeFalse("the injected failure really stopped the audit save");
+        await AssertNotLinkedAsync(user, mismatched);
+    }
+
+    private sealed class FailRefusalAuditInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<AuditLog>()
+                .Any(e => e.State == EntityState.Added && e.Entity.Action == "access.employee_login_link_refused"))
+                throw new DbUpdateException("injected audit failure");
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     // ── Every refusal is audited, with ids only ─────────────────────────────────────────────────────

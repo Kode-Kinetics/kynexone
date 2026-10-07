@@ -42,10 +42,12 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'Invitation link',
     'Copy link': 'Copy link',
     'Link copied': 'Link copied',
+    'This login is still recorded on another employee record. Contact support to resolve it.':
+      'This login is still recorded on another employee record. Contact support to resolve it.',
     "Employee: {name}":
       "Employee: {name}",
-    "This login is still recorded on {employee}'s employee record. Unlink it there first.":
-      "This login is still recorded on {employee}'s employee record. Unlink it there first.",
+    "This login is still recorded on {employee}'s employee record. Contact support to resolve it.":
+      "This login is still recorded on {employee}'s employee record. Contact support to resolve it.",
     "Only a group-level administrator can link a login that has no company access yet.":
       "Only a group-level administrator can link a login that has no company access yet.",
     "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.":
@@ -90,10 +92,12 @@ export const employeeLogin: ReleaseADict = {
     'Invitation link': 'رابط الدعوة',
     'Copy link': 'نسخ الرابط',
     'Link copied': 'تم نسخ الرابط',
+    'This login is still recorded on another employee record. Contact support to resolve it.':
+      'حساب الدخول هذا لا يزال مسجلاً في سجل موظف آخر. تواصل مع الدعم لحل ذلك.',
     "Employee: {name}":
       "الموظف: {name}",
-    "This login is still recorded on {employee}'s employee record. Unlink it there first.":
-      "حساب الدخول هذا لا يزال مسجلاً في سجل الموظف {employee}. ألغِ الربط هناك أولاً.",
+    "This login is still recorded on {employee}'s employee record. Contact support to resolve it.":
+      "حساب الدخول هذا لا يزال مسجلاً في سجل الموظف {employee}. تواصل مع الدعم لحل ذلك.",
     "Only a group-level administrator can link a login that has no company access yet.":
       "لا يمكن ربط حساب دخول ليس لديه صلاحية وصول إلى أي شركة بعد إلا من قِبل مسؤول على مستوى المجموعة.",
     "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.":

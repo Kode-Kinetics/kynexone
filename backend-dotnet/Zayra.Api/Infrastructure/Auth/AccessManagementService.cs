@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Buffers;
 using System.Data;
@@ -22,10 +23,13 @@ public class AccessManagementService : IAccessManagementService
     private readonly IAuditService _auditService;
     private readonly ITokenService _tokenService;
     private readonly string _appUrl;
+    private readonly ILogger<AccessManagementService>? _logger;
 
-    public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService, IConfiguration? configuration = null)
+    public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService, IConfiguration? configuration = null,
+        ILogger<AccessManagementService>? logger = null)
     {
         _db = db;
+        _logger = logger;
         _passwordHasher = passwordHasher;
         _auditService = auditService;
         _tokenService = tokenService;
@@ -729,6 +733,9 @@ public class AccessManagementService : IAccessManagementService
         // Scope FIRST: a login outside the caller's access is not described at all — no id, state or links.
         if (!await UserWithinLinkScopeAsync(tenantId, user, entityScope, cancellationToken))
             return Refused(null, EmployeeLinkRefusals.NotManageable());
+        // A login with no company access is a group-level decision; a scoped administrator learns nothing else about it.
+        if (NeedsGroupAdmin(user, tenantId, entityScope))
+            return Refused(null, EmployeeLinkRefusals.GroupAdminRequired());
 
         var facts = await LoadLinkFactsAsync(tenantId, user, employee.Id, forUpdate: false, cancellationToken);
         var refusal = await EvaluateLinkAsync(tenantId, user, facts, employee.Id, employee.UserAccountId, employee.CompanyId, workEmail,
@@ -761,12 +768,12 @@ public class AccessManagementService : IAccessManagementService
         }
         catch (EmployeeLinkRefusedException ex)
         {
-            await RecordLinkRefusalAsync(tenantId, request, ex.Refusal.Code, context, cancellationToken);
+            await RecordLinkRefusalAsync(tenantId, request, ex.Refusal.Code, context);
             throw;
         }
         catch (AccessTargetNotFoundException ex)
         {
-            await RecordLinkRefusalAsync(tenantId, request, ex.Code, context, cancellationToken);
+            await RecordLinkRefusalAsync(tenantId, request, ex.Code, context);
             throw;
         }
     }
@@ -775,19 +782,30 @@ public class AccessManagementService : IAccessManagementService
     /// Every refused link is evidence in its own right. The refused transaction rolled back, so this row is
     /// written on its own, with ids and the refusal code only.
     /// </summary>
-    private async Task RecordLinkRefusalAsync(Guid tenantId, LinkExistingLoginRequest request, string code, RequestContext context, CancellationToken ct)
+    private async Task RecordLinkRefusalAsync(Guid tenantId, LinkExistingLoginRequest request, string code, RequestContext context)
     {
         if (code == AccessTargetNotFoundException.WorkspaceNotFound) return; // no tenant to attribute it to
-        _db.ChangeTracker.Clear();
-        _db.AuditLogs.Add(AuthAuditEntry.Create(
-            Guid.NewGuid(),
-            DateTime.UtcNow,
-            "access.employee_login_link_refused",
-            "Employee",
-            request.EmployeeId.ToString(CultureInfo.InvariantCulture),
-            context with { TenantId = tenantId },
-            System.Text.Json.JsonSerializer.Serialize(new { code, employeeId = request.EmployeeId, userId = request.UserId })));
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            _db.ChangeTracker.Clear();
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                "access.employee_login_link_refused",
+                "Employee",
+                request.EmployeeId.ToString(CultureInfo.InvariantCulture),
+                context with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new { code, employeeId = request.EmployeeId, userId = request.UserId })));
+            // Not the request's token: a refusal already decided is recorded even if the caller hangs up.
+            await _db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // Never mask the refusal. The log line carries the code and the exception type only — no ids, no text.
+            _db.ChangeTracker.Clear();
+            _logger?.LogWarning("Employee-link refusal audit could not be saved (refusal {RefusalCode}, {ExceptionType}).",
+                code, ex.GetType().Name);
+        }
     }
 
     private async Task<EmployeeLoginLinkResultDto> LinkExistingLoginCoreAsync(
@@ -861,6 +879,8 @@ public class AccessManagementService : IAccessManagementService
             if (user.Id == caller.UserId) throw new PrivilegeCeilingException(SelfLinkRefusal());
             if (!await UserWithinLinkScopeAsync(tenantId, user, entityScope, ct))
                 throw new AccessTargetNotFoundException(AccessTargetNotFoundException.LoginNotFound, "Login not found.");
+            if (NeedsGroupAdmin(user, tenantId, entityScope))
+                throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GroupAdminRequired());
             ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
 
             // Idempotent: this exact link already live → answer it and write nothing.
@@ -1025,6 +1045,10 @@ public class AccessManagementService : IAccessManagementService
         return new LinkFacts(row, rowEmployee, pointers);
     }
 
+    /// <summary>A company-scoped caller facing a login with no company access at all: only a group-level administrator may link it.</summary>
+    private static bool NeedsGroupAdmin(User user, Guid tenantId, EntityScopeContext scope) =>
+        !scope.IsGroupLevel && !user.IsGroupScope && !user.EntityAccesses.Any(x => x.TenantId == tenantId && x.IsActive);
+
     /// <summary>Not deleted and not merged into another record: an employee a login may still belong to.</summary>
     private static bool IsLiving(Employee employee) => !employee.IsDeleted && employee.DuplicateOfEmployeeId is null;
 
@@ -1040,14 +1064,16 @@ public class AccessManagementService : IAccessManagementService
         Guid tenantId, User user, LinkFacts facts, int employeeId, Guid? employeeUserAccountId, Guid? employeeCompanyId,
         string workEmail, EntityScopeContext entityScope, DateTime nowUtc, CancellationToken ct)
     {
+        if (NeedsGroupAdmin(user, tenantId, entityScope)) return EmployeeLinkRefusals.GroupAdminRequired();
         if (user.IsDeleted) return EmployeeLinkRefusals.LoginDeleted();
         // A live link to a LIVING employee is a real link. One stranded on a deleted or merged employee is dormant.
         if (facts.UserRow is { IsDeleted: false } row && row.EmployeeId != employeeId
             && facts.RowEmployee is { } rowEmployee && IsLiving(rowEmployee))
             return EmployeeLinkRefusals.LoginLinkedElsewhere();
         // A living employee record that still names this login: never cleared silently.
+        // Named only when the holder is inside the caller's own companies.
         if (facts.PointerEmployees.FirstOrDefault(IsLiving) is { } holder)
-            return EmployeeLinkRefusals.PointerConflict(EmployeeLabel(holder));
+            return EmployeeLinkRefusals.PointerConflict(EmployeeWithinScope(entityScope, holder.CompanyId) ? EmployeeLabel(holder) : null);
         if (!string.Equals(user.IdentityProvider, "Local", StringComparison.OrdinalIgnoreCase))
             return EmployeeLinkRefusals.LoginSso();
         if (user.IsLocked
@@ -3761,7 +3787,10 @@ public static class EmployeeLinkRefusals
     public static EmployeeLinkRefusal EmployeePointerConflict() => new(EmployeePointer, "This employee record points to a different login. Contact support to resolve it before linking.");
     public static EmployeeLinkRefusal LoginDeleted() => new(Deleted, "The login that used this work email was deleted, so it cannot be linked, and the email is still reserved. Contact support to release it, or give the employee a different work email.");
     public static EmployeeLinkRefusal LoginLinkedElsewhere() => new(LinkedElsewhere, "This login is already linked to another employee record. A login can belong to only one employee.");
-    public static EmployeeLinkRefusal PointerConflict(string employee) => new(Pointer, $"This login is still recorded on {employee}'s employee record. Unlink it there first.", Subject: employee);
+    /// <summary>Named only when the holder is inside the caller's companies; otherwise the generic sentence.</summary>
+    public static EmployeeLinkRefusal PointerConflict(string? employee) => employee is null
+        ? new(Pointer, "This login is still recorded on another employee record. Contact support to resolve it.")
+        : new(Pointer, $"This login is still recorded on {employee}'s employee record. Contact support to resolve it.", Subject: employee);
     public static EmployeeLinkRefusal LoginSso() => new(Sso, "This login signs in through single sign-on, so it cannot be linked here.");
     public static EmployeeLinkRefusal LoginLocked() => new(Locked, "This login is locked. Unlock it first, then link it.");
     public static EmployeeLinkRefusal LoginNoLogin() => new(NoLogin, "This login cannot sign in (its access mode is No login, or it is still waiting for an invitation to be accepted). It can be linked once it is active.");
