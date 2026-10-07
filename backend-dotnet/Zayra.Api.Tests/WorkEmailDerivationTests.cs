@@ -260,7 +260,14 @@ public class WorkEmailDerivationTests
             .WorkEmail.Should().BeEmpty();
     }
 
-    // ── Update: login-identity rename guard ─────────────────────────────────────────────────────
+    // ── Update: login-identity guard (P0: an employee edit never takes over an activated login) ──────
+    // A STAGED login (never activated) — the only kind an employee edit may still rename.
+    private static User StagedLogin(Guid tenantId, string email, string name) => new()
+    {
+        TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = name, PasswordHash = "x",
+        Status = "PendingPasswordSetup", AccessMode = AccessModes.NoLogin, IsActive = false,
+    };
+
     [Fact]
     public async Task Update_RenamesLinkedLogin_KeepsUserInSync()
     {
@@ -270,17 +277,48 @@ public class WorkEmailDerivationTests
         var svc = Svc(db);
         var created = await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None);
 
-        // Provision a linked login on the derived address.
-        var user = new User { TenantId = tenantId, Email = "john.smith@acme.sa", NormalizedEmail = "JOHN.SMITH@ACME.SA", FullName = "John Smith", PasswordHash = "x" };
+        // Provision a linked, still-STAGED login on the derived address.
+        var user = StagedLogin(tenantId, "john.smith@acme.sa", "John Smith");
         db.Users.Add(user);
         var emp = await db.Employees.FirstAsync(e => e.Id == created.Id);
         emp.UserAccountId = user.Id;
         await db.SaveChangesAsync();
 
-        await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", null, acme.Id), Ctx(tenantId), CancellationToken.None);
+        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", null, acme.Id), Ctx(tenantId), CancellationToken.None);
 
         (await db.Employees.FirstAsync(e => e.Id == created.Id)).WorkEmail.Should().Be("john.smithers@acme.sa");
         (await db.Users.FirstAsync(u => u.Id == user.Id)).NormalizedEmail.Should().Be("JOHN.SMITHERS@ACME.SA");
+        updated!.LoginUsernameDiffers.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Update_NeverRenamesAnActivatedLogin_AndSaysTheyNowDiffer(bool legacyPointer)
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
+        var svc = Svc(db);
+        var created = await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None);
+
+        var user = new User
+        {
+            TenantId = tenantId, Email = "john.smith@acme.sa", NormalizedEmail = "JOHN.SMITH@ACME.SA", FullName = "John Smith",
+            PasswordHash = "x", Status = "Active", IsActive = true, LastLoginAtUtc = DateTime.UtcNow.AddDays(-1),
+        };
+        db.Users.Add(user);
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount { TenantId = tenantId, EmployeeId = created.Id, UserId = user.Id, Status = "Active", RequiresPasswordSetup = false });
+        if (legacyPointer) (await db.Employees.FirstAsync(e => e.Id == created.Id)).UserAccountId = user.Id;
+        await db.SaveChangesAsync();
+
+        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", null, acme.Id), Ctx(tenantId), CancellationToken.None);
+
+        updated!.WorkEmail.Should().Be("john.smithers@acme.sa");
+        updated.LoginUsernameDiffers.Should().BeTrue();
+        (await db.Users.FirstAsync(u => u.Id == user.Id)).NormalizedEmail.Should().Be("JOHN.SMITH@ACME.SA",
+            "an employee edit must not repoint an activated login (forgot-password would mail the new address)");
+        (await db.AuditLogs.AnyAsync(x => x.Action == "employee.work_email_login_held" && x.EntityId == created.Id.ToString())).Should().BeTrue();
     }
 
     [Fact]
@@ -292,7 +330,7 @@ public class WorkEmailDerivationTests
         var svc = Svc(db);
         var created = await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None);
 
-        var user = new User { TenantId = tenantId, Email = "john.smith@acme.sa", NormalizedEmail = "JOHN.SMITH@ACME.SA", FullName = "John Smith", PasswordHash = "x" };
+        var user = StagedLogin(tenantId, "john.smith@acme.sa", "John Smith");
         var other = new User { TenantId = tenantId, Email = "john.smithers@acme.sa", NormalizedEmail = "JOHN.SMITHERS@ACME.SA", FullName = "Other", PasswordHash = "x" };
         db.Users.AddRange(user, other);
         var emp = await db.Employees.FirstAsync(e => e.Id == created.Id);

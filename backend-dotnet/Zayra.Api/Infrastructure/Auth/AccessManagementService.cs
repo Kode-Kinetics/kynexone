@@ -194,6 +194,8 @@ public class AccessManagementService : IAccessManagementService
                 IsGroupScope = isAdminUser,
                 IsActive = true,
                 IsEmailConfirmed = true,
+                // The administrator chose this password: stamp it, so a later owner-set password is provably newer.
+                LastPasswordChangedAt = createdAtUtc,
                 CreatedAtUtc = createdAtUtc
             };
             _db.Users.Add(user);
@@ -739,7 +741,7 @@ public class AccessManagementService : IAccessManagementService
 
         var facts = await LoadLinkFactsAsync(tenantId, user, employee.Id, forUpdate: false, cancellationToken);
         var refusal = await EvaluateLinkAsync(tenantId, user, facts, employee.Id, employee.UserAccountId, employee.CompanyId, workEmail,
-            entityScope, DateTime.UtcNow, cancellationToken);
+            entityScope, context.UserId, DateTime.UtcNow, cancellationToken);
         if (refusal is not null)
             // A company-scoped administrator learns nothing about a login they may not link.
             return Refused(refusal.Code == EmployeeLinkRefusals.NeedsGroupAdmin ? null : ToLinkedLogin(user, null), refusal);
@@ -899,7 +901,7 @@ public class AccessManagementService : IAccessManagementService
             // Every other employee row that names this login, and the row the login's own link points at, locked.
             var facts = await LoadLinkFactsAsync(tenantId, user, employee.Id, forUpdate: true, ct);
             var refusal = await EvaluateLinkAsync(tenantId, user, facts, employee.Id, employee.UserAccountId, employee.CompanyId,
-                employee.WorkEmail ?? string.Empty, entityScope, linkedAtUtc, ct);
+                employee.WorkEmail ?? string.Empty, entityScope, context.UserId, linkedAtUtc, ct);
             if (refusal is not null) throw new EmployeeLinkRefusedException(refusal);
             var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
 
@@ -1058,11 +1060,13 @@ public class AccessManagementService : IAccessManagementService
     /// <summary>
     /// Why <paramref name="user"/> cannot be linked to the employee, as a coded refusal. Null = it can (subject to
     /// the caller's own checks: self, scope, ceiling). One evaluator for the status screen and the write, so the
-    /// screen never offers what the write refuses.
+    /// screen never offers what the write refuses. The last two checks are about who knows the password
+    /// (<see cref="PasswordProvenanceRefusalAsync"/>): a login whose password an administrator chose is never
+    /// bound to a person until that person has set their own.
     /// </summary>
     private async Task<EmployeeLinkRefusal?> EvaluateLinkAsync(
         Guid tenantId, User user, LinkFacts facts, int employeeId, Guid? employeeUserAccountId, Guid? employeeCompanyId,
-        string workEmail, EntityScopeContext entityScope, DateTime nowUtc, CancellationToken ct)
+        string workEmail, EntityScopeContext entityScope, Guid? callerUserId, DateTime nowUtc, CancellationToken ct)
     {
         if (NeedsGroupAdmin(user, tenantId, entityScope)) return EmployeeLinkRefusals.GroupAdminRequired();
         if (user.IsDeleted) return EmployeeLinkRefusals.LoginDeleted();
@@ -1102,7 +1106,58 @@ public class AccessManagementService : IAccessManagementService
             case LinkCompanyDecision.GrantEmployeeCompany when !entityScope.IsGroupLevel:
                 return EmployeeLinkRefusals.GroupAdminRequired();
         }
-        return null;
+        return await PasswordProvenanceRefusalAsync(tenantId, user, callerUserId, ct);
+    }
+
+    /// <summary>Password writes the login's OWNER made, each audited in the same transaction as the write, as the owner.</summary>
+    private static readonly string[] OwnerSetPasswordActions = ["auth.password_reset", "auth.invitation_accepted", "auth.password_changed"];
+
+    /// <summary>Password writes an ADMINISTRATOR made (Create User; the retired admin reset).</summary>
+    private static readonly string[] AdminSetPasswordActions = ["access.user_created", "access.admin_password_reset"];
+
+    private const string LoginCreatedAction = "access.user_created";
+
+    private const string PasswordProvenanceWhy =
+        "Login-to-employee link: the password and creation history of one login is read from the tenant's audit trail; the tenant is re-applied and the login was already scope-checked.";
+
+    /// <summary>
+    /// Who knows this login's password? Linking binds a login to a person's Self-Service (payslips, IBAN, leave,
+    /// loans, approvals), so it is refused unless the person has provably set their own password since any
+    /// administrator last set one, and never to the administrator who created the login.
+    /// <para>Evidence is the audit trail, fail closed: the owner's own password writes (invitation accepted,
+    /// reset link redeemed, change password) are audited atomically with the write and attributed to the owner.
+    /// The newest of them must be no older than the newest administrator write AND than
+    /// <see cref="User.LastPasswordChangedAt"/>, which every administrator path stamps — so an unaudited
+    /// administrator write still fails the check. No owner evidence at all (seeded, platform-made, imported or
+    /// legacy logins) is refused the same way: a reset link fixes it.</para>
+    /// </summary>
+    private async Task<EmployeeLinkRefusal?> PasswordProvenanceRefusalAsync(Guid tenantId, User user, Guid? callerUserId, CancellationToken ct)
+    {
+        var userKey = user.Id.ToString();
+        var events = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, PasswordProvenanceWhy).AsNoTracking()
+            .Where(x => x.EntityName == "User" && x.EntityId == userKey
+                && (OwnerSetPasswordActions.Contains(x.Action) || AdminSetPasswordActions.Contains(x.Action)))
+            .Select(x => new { x.Action, x.UserId, x.CreatedAtUtc })
+            .ToListAsync(ct);
+
+        // Strict separation of duties: whoever made the login (and so once chose its password) never binds it to a person.
+        if (callerUserId is Guid caller && events.Any(x => x.Action == LoginCreatedAction && x.UserId == caller))
+            return EmployeeLinkRefusals.LoginCreatedByCaller();
+
+        var ownerSetAt = events
+            .Where(x => OwnerSetPasswordActions.Contains(x.Action) && x.UserId == user.Id)
+            .Select(x => (DateTime?)x.CreatedAtUtc)
+            .Max();
+        var adminSetAt = events
+            .Where(x => AdminSetPasswordActions.Contains(x.Action))
+            .Select(x => (DateTime?)x.CreatedAtUtc)
+            .Max();
+        // The owner's audit row carries the same instant as the password write (the audit chain only ever moves it
+        // later); the tolerance absorbs storage rounding, never a separate later write.
+        var ownerSetOwnPassword = ownerSetAt is DateTime owner
+            && (adminSetAt is not DateTime admin || owner >= admin)
+            && (user.LastPasswordChangedAt is not DateTime changed || changed <= owner.AddMilliseconds(1));
+        return ownerSetOwnPassword ? null : EmployeeLinkRefusals.LoginPasswordAdminSet();
     }
 
     private enum LinkCompanyDecision { NoGrant, GrantEmployeeCompany, Refuse }
@@ -3780,6 +3835,8 @@ public static class EmployeeLinkRefusals
     public const string NotManageableCode = "login_not_manageable";
     public const string Graph = "graph_inconsistent";
     public const string RoleMissing = "employee_role_missing";
+    public const string PasswordAdminSet = "login_password_admin_set";
+    public const string CreatedByCaller = "login_created_by_caller";
 
     public static EmployeeLinkRefusal ReasonRequired() => new(ReasonRequiredCode, "Give a reason for linking this login. It is kept in the audit trail.");
     public static EmployeeLinkRefusal EmployeeNotEligible(string status) => new(NotEligible, $"Only active or invited employees can be linked to a login. This employee's status is {status}.");
@@ -3800,6 +3857,8 @@ public static class EmployeeLinkRefusals
     public static EmployeeLinkRefusal GroupAdminRequired() => new(NeedsGroupAdmin, "Only a group-level administrator can link a login that has no company access yet.", 403);
     public static EmployeeLinkRefusal NotManageable() => new(NotManageableCode, "A login already uses this work email, but it is outside your access. An administrator who manages it must link it.");
     public static EmployeeLinkRefusal GraphInconsistent() => new(Graph, "This login's access records are inconsistent. Contact support to resolve it before linking.");
+    public static EmployeeLinkRefusal LoginPasswordAdminSet() => new(PasswordAdminSet, "This login's password was set by an administrator. Send the person a password-reset link from User Management; once they set their own password, the login can be linked.");
+    public static EmployeeLinkRefusal LoginCreatedByCaller() => new(CreatedByCaller, "You created this login, so you cannot link it to an employee record. Another administrator must link it.", 403);
     public static EmployeeLinkRefusal EmployeeRoleMissing() => new(RoleMissing, "The Employee role is not available in this workspace. Restore it before linking a login.");
 
     public static string OtherCompanyMessage(string company) =>

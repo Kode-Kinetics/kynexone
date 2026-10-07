@@ -278,7 +278,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
-        return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+        var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+        return updated is null ? null : updated with { LoginUsernameDiffers = workEmailAudit.LoginUsernameDiffers };
     }
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -1467,7 +1468,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         public string? DerivedJson;   // → employee.work_email_derived
         public string? CoercedJson;   // → employee.work_email_domain_coerced
-        public string? RenamedJson;   // → employee.work_email_renamed (login identity kept in sync)
+        public string? RenamedJson;   // → employee.work_email_renamed (STAGED login's username kept in sync)
+        public string? LoginHeldJson; // → employee.work_email_login_held (ACTIVATED login left untouched)
+        public bool LoginUsernameDiffers;
     }
 
     /// <summary>
@@ -1481,10 +1484,11 @@ public class EmployeeManagementService : IEmployeeManagementService
     ///  - Domain present + WorkEmail provided → the domain is server-authoritative: extract the local part
     ///    and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted), then
     ///    a collision throws WorkEmailConflictException (the one deliberate stop — never silently duplicate).
-    ///  - Login-identity rename guard (update only): if the employee has a linked User and the normalized
-    ///    address actually changed, keep User.Email/NormalizedEmail in sync in the SAME transaction (no
-    ///    desync / duplicate-account on re-provision) and block a rename that would collide with another
-    ///    login. Sets the STRING only — no mailbox is provisioned.
+    ///  - Login-identity guard (update only, <see cref="WorkEmailLoginGuard"/>): when the normalized address
+    ///    actually changed, a STAGED (never-activated) login's username follows it in the SAME transaction and
+    ///    its pending invitation is cancelled (a rename that would collide with another login is blocked); an
+    ///    ACTIVATED login is left untouched and the response reports LoginUsernameDiffers. Sets the STRING
+    ///    only — no mailbox is provisioned.
     /// Collision keys use AuthService.Normalize (Trim + UpperInvariant), the SAME transform the unique
     /// User.(TenantId, NormalizedEmail) index uses, so two addresses differing only by case are one login.
     /// </summary>
@@ -1517,30 +1521,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         // edge-7 (no domain): employee.WorkEmail keeps the request value (Clean'd in ApplyEmployee); never block.
 
-        // ── Login-identity rename guard (req 8 / R1) ──────────────────────────────────────────────
-        if (isUpdate && employee.UserAccountId is Guid uid)
+        // ── Login-identity guard (req 8 / R1, P0 login takeover) ──────────────────────────────────
+        // A STAGED login's username follows the work email (and its invitation is cancelled); an ACTIVATED
+        // login is never renamed by an employee edit — see WorkEmailLoginGuard.
+        if (isUpdate)
         {
-            var newNorm = Zayra.Api.Infrastructure.Auth.AuthService.Normalize(employee.WorkEmail);
-            var oldNorm = Zayra.Api.Infrastructure.Auth.AuthService.Normalize(priorWorkEmail);
-            if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !string.Equals(newNorm, oldNorm, StringComparison.Ordinal))
-            {
-                var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tenantId, ct);
-                if (user is not null && !string.Equals(user.NormalizedEmail, newNorm, StringComparison.Ordinal))
-                {
-                    var clash = await _db.Users.AnyAsync(u => u.TenantId == tenantId && u.Id != uid && u.NormalizedEmail == newNorm, ct);
-                    if (clash)
-                        throw new InvalidOperationException(
-                            $"Cannot rename work email to '{employee.WorkEmail}': another login already uses that address. Resolve the conflicting account first.");
-                    var oldEmail = user.Email;
-                    user.Email = employee.WorkEmail.Trim().ToLowerInvariant();
-                    user.NormalizedEmail = newNorm;
-                    audit.RenamedJson = JsonSerializer.Serialize(new
-                    {
-                        oldEmail, newEmail = user.Email,
-                        note = "HR string + login identity synced; no mailbox provisioned."
-                    });
-                }
-            }
+            var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, DateTime.UtcNow, ct);
+            audit.RenamedJson = login.RenamedJson;
+            audit.LoginHeldJson = login.HeldJson;
+            audit.LoginUsernameDiffers = login.LoginUsernameDiffers;
         }
         return audit;
     }
@@ -1568,6 +1557,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _audit.WriteAsync("employee.work_email_domain_coerced", "Employee", id, context, audit.CoercedJson, ct);
         if (audit.RenamedJson is not null)
             await _audit.WriteAsync("employee.work_email_renamed", "Employee", id, context, audit.RenamedJson, ct);
+        if (audit.LoginHeldJson is not null)
+            await _audit.WriteAsync("employee.work_email_login_held", "Employee", id, context, audit.LoginHeldJson, ct);
     }
 
     /// <summary>A generated employee code, taken under the shared ID-rule lock (<see cref="EmployeeIdRuleLock"/>) inside the

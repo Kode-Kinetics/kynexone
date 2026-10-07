@@ -32,6 +32,8 @@ const LOGIN_OTHER_COMPANY = 'login_other_company';
 const LOGIN_POINTER_CONFLICT = 'login_pointer_conflict';
 const LOGIN_NEEDS_GROUP_ADMIN = 'login_needs_group_admin';
 const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
+const LOGIN_PASSWORD_ADMIN_SET = 'login_password_admin_set';
+const LOGIN_CREATED_BY_CALLER = 'login_created_by_caller';
 
 const btnPrimary = 'rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60';
 const btnSecondary = 'rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700';
@@ -75,6 +77,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         : t('This login is still recorded on another employee record. Contact support to resolve it.');
     if (code === LOGIN_NEEDS_GROUP_ADMIN) return t('Only a group-level administrator can link a login that has no company access yet.');
     if (code === LOGIN_NOT_MANAGEABLE) return t('A login already uses this work email, but it is outside your access. An administrator who manages it must link it.');
+    if (code === LOGIN_PASSWORD_ADMIN_SET) return t("This login's password was set by an administrator. Send the person a password-reset link from User Management; once they set their own password, the login can be linked.");
+    if (code === LOGIN_CREATED_BY_CALLER) return t('You created this login, so you cannot link it to an employee record. Another administrator must link it.');
     return null;
   };
 

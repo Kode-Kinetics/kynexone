@@ -462,7 +462,9 @@ public sealed class EmployeeLoginLinkTests
         grants.Should().ContainSingle().Which.CompanyId.Should().Be(w.CompanyA, "the login's scope is never widened");
         (await RoleNamesAsync(user)).Should().Equal("Employee");
         (await StampAsync(user)).Should().Be(stampBefore, "nothing about the login changed");
-        (await verify.AuditLogs.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId).Select(x => x.Action).ToListAsync())
+        // The fixture's own owner-set-password rows (AddUserAsync) predate the attempt; nothing else may appear.
+        (await verify.AuditLogs.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId && x.Action != "auth.password_changed")
+                .Select(x => x.Action).ToListAsync())
             .Should().Equal(["access.employee_login_link_refused"], "a refused link writes nothing but its refusal");
     }
 
@@ -868,6 +870,155 @@ public sealed class EmployeeLoginLinkTests
         await AssertNotLinkedAsync(user, employeeId);
     }
 
+    // ── P0: a login whose password an administrator chose is never bound to a person ─────────────────
+
+    private const string OwnersOwnPassword = "OwnersOwn1!Password";
+
+    /// <summary>
+    /// THE TAKEOVER. Admin X makes new.hire@ in Create User with a password X knows; a peer links it to the new
+    /// hire's employee record; X now signs in as that employee (payslips, IBAN, leave, loans, approvals). Refused
+    /// for EVERY administrator until the person sets their own password; then a different administrator may link
+    /// it, and X — who created it — never may.
+    /// </summary>
+    [Theory]
+    [InlineData("reset_link")]
+    [InlineData("change_password")]
+    public async Task ACreateUserLogin_IsRefusedUntilItsOwnerSetsTheirOwnPassword_AndItsCreatorNeverLinksIt(string ownerAction)
+    {
+        var w = await SeedAsync();
+        var creator = await AddUserAsync(w, Email("creator"), ["Admin"], groupScope: true);
+        var email = Email("new.hire");
+        Guid login;
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var created = (await Controller(db, w, creator).CreateUser(new CreateUserRequest(email, "New Hire", Password, ["Reporting"]), default)).Result;
+            login = Assert.IsType<AuthUserDto>(Assert.IsType<CreatedAtActionResult>(created).Value).Id;
+        }
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        // Every administrator: blocked, coded, and the screen offers no link.
+        foreach (var caller in new[] { w.AdminId, w.ConsoleId })
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, caller).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.PasswordAdminSet);
+            status.Reason.Should().Contain("password-reset link");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, creator).EmployeeLoginStatus(employeeId, default)).Result);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.CreatedByCaller);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "New hire"), default)).Result);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.PasswordAdminSet);
+        }
+        await AssertNotLinkedAsync(login, employeeId);
+        await AssertRefusalAuditedAsync(w, employeeId, EmployeeLinkRefusals.PasswordAdminSet);
+
+        // The person sets their own password.
+        if (ownerAction == "reset_link")
+        {
+            string resetUrl;
+            await using (var db = _fixture.CreateRetryingDb())
+                resetUrl = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(
+                    await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default)).Value).GetProperty("resetUrl").GetString()!;
+            var token = Uri.UnescapeDataString(resetUrl[(resetUrl.IndexOf("#token=", StringComparison.Ordinal) + "#token=".Length)..]);
+            await using var db2 = _fixture.CreateRetryingDb();
+            await Auth(db2).ResetPasswordAsync(new ResetPasswordRequest(token, OwnersOwnPassword, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
+        }
+        else
+        {
+            await using var db = _fixture.CreateRetryingDb();
+            await Auth(db).ChangePasswordAsync(login, new ChangePasswordRequest(Password, OwnersOwnPassword), new RequestContext("127.0.0.1", "tests"), default);
+        }
+
+        // The creator still never links it — status and write agree.
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, creator).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.CreatedByCaller);
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = Assert.IsType<ObjectResult>((await Controller(db, w, creator).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "I made it"), default)).Result);
+            refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.CreatedByCaller);
+        }
+        await AssertNotLinkedAsync(login, employeeId);
+        await AssertRefusalAuditedAsync(w, employeeId, EmployeeLinkRefusals.CreatedByCaller);
+
+        // A different administrator now may.
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "Owner set their own password"), default)).Result).UserId.Should().Be(login);
+        }
+    }
+
+    [Fact]
+    public async Task AnAdministratorPasswordSetAfterTheOwnersOwn_BlocksTheLinkAgain()
+    {
+        var w = await SeedAsync();
+        var email = Email("reset-again");
+        var user = await AddUserAsync(w, email, ["Reporting"], groupScope: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await using (var db = _fixture.CreateRetryingDb())
+            Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
+                .NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+
+        // The (retired, still callable) administrator reset: the administrator knows the password again.
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var controller = Controller(db, w, w.AdminId);
+            var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt));
+            await service.AdminResetPasswordAsync(w.TenantId, user, new AdminResetPasswordRequest(OwnersOwnPassword, MustChangePassword: false),
+                EntityScopeContext.FromClaims(controller.User), new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), default);
+        }
+
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+            status.NextAction.Should().Be(EmployeeLoginNextActions.Blocked);
+            status.ReasonCode.Should().Be(EmployeeLinkRefusals.PasswordAdminSet);
+        }
+    }
+
+    [Fact]
+    public async Task ALoginWithNoEvidenceThatItsOwnerSetThePassword_IsRefused_FailClosed()
+    {
+        var w = await SeedAsync();
+        var email = Email("legacy");
+        var user = await AddUserAsync(w, email, ["Reporting"], groupScope: false, ownerSetPassword: false);
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+        await using var db = _fixture.CreateRetryingDb();
+        var refused = Assert.IsType<BadRequestObjectResult>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+            new LinkExistingLoginRequest(employeeId, user, "Seeded login"), default)).Result);
+        JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(EmployeeLinkRefusals.PasswordAdminSet);
+        await AssertNotLinkedAsync(user, employeeId);
+    }
+
+    private async Task AssertRefusalAuditedAsync(World w, int employeeId, string code)
+    {
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.TenantId == w.TenantId && x.Action == "access.employee_login_link_refused" && x.EntityId == employeeId.ToString())
+                .Select(x => x.Metadata)
+                .ToListAsync())
+            .Should().Contain(m => m != null && m.Contains($"\"code\":\"{code}\""));
+    }
+
+    private static AuthService Auth(ZayraDbContext db) =>
+        new(db, new Pbkdf2PasswordHasher(), new JwtTokenService(Jwt), new AuditService(db), new FakeEmailService(), Jwt,
+            new NullMfaService(), new TotpService(DataProtectionProvider.Create("ZayraTests")), NullLogger<AuthService>.Instance);
+
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────────
 
     private static T Ok<T>(IActionResult? result) => (T)Assert.IsType<OkObjectResult>(result).Value!;
@@ -1007,17 +1158,31 @@ public sealed class EmployeeLoginLinkTests
         return w with { AdminId = adminId, ConsoleId = consoleId };
     }
 
-    private async Task<Guid> AddUserAsync(World w, string email, string[] roles, bool groupScope, string? password = null, Guid? grantCompany = null)
+    /// <param name="ownerSetPassword">
+    /// True (the default): the login's owner set their own password (an <c>auth.password_changed</c> row attributed
+    /// to the owner, exactly what AuthService.ChangePasswordAsync writes). Linking requires that evidence; a test
+    /// about an administrator-set password passes false or creates the login through Create User.
+    /// </param>
+    private async Task<Guid> AddUserAsync(World w, string email, string[] roles, bool groupScope, string? password = null, Guid? grantCompany = null,
+        bool ownerSetPassword = true)
     {
         await using var db = _fixture.CreateRetryingDb();
         var id = Guid.NewGuid();
+        var setAtUtc = DateTime.UtcNow;
         db.Users.Add(new User
         {
             Id = id, TenantId = w.TenantId, Email = email, NormalizedEmail = AuthService.Normalize(email), FullName = "Noah Williams",
             PasswordHash = password is null ? "test-only-hash" : new Pbkdf2PasswordHasher().Hash(password),
             Status = "Active", AccessMode = AccessModes.FullPortal, IsActive = true, IsEmailConfirmed = true, IsGroupScope = groupScope,
             IdentityProvider = "Local", ProvisioningSource = "Local",
+            LastPasswordChangedAt = ownerSetPassword ? setAtUtc : null,
         });
+        if (ownerSetPassword)
+            db.AuditLogs.Add(new AuditLog
+            {
+                TenantId = w.TenantId, UserId = id, Action = "auth.password_changed", EntityName = "User", EntityId = id.ToString(),
+                Metadata = "{\"sessionsRevoked\":true}", CreatedAtUtc = setAtUtc,
+            });
         foreach (var name in roles)
         {
             var role = await db.Roles.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.NormalizedName == AuthService.Normalize(name));

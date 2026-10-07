@@ -3647,6 +3647,8 @@ public class EmployeesController : ControllerBase
         var priorDesigId = employee.DesignationId;
         // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
         var priorWorkEmail = employee.WorkEmail;
+        // The work email changed but the employee's ACTIVATED login kept its username (WorkEmailLoginGuard).
+        var loginUsernameDiffers = false;
         try
         {
             if (sensitive.Count > 0)
@@ -3684,7 +3686,7 @@ public class EmployeesController : ControllerBase
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
-                    await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
+                    loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
                     await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
                 }
@@ -3736,14 +3738,15 @@ public class EmployeesController : ControllerBase
                     approvalRequestId = approval.Id,
                     requiresApproval = true,
                     sensitiveFields = sensitive,
-                    appliedFields = immediateChanges.Keys.ToList()
+                    appliedFields = immediateChanges.Keys.ToList(),
+                    loginUsernameDiffers
                 });
             }
 
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
-            await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
+            loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
             if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
@@ -3760,7 +3763,7 @@ public class EmployeesController : ControllerBase
                 await _db.SaveChangesAsync(cancellationToken);
             }
             await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers });
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
@@ -5858,13 +5861,14 @@ public class EmployeesController : ControllerBase
     /// so the domain "lock" is enforced at the authoritative layer, not just the UI (B3). No-op unless
     /// "workEmail" is among the applied changes. When the employing company has a domain: extract the local
     /// part and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted) and a
-    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity rename
-    /// guard keeps a linked User in sync and blocks a rename that would collide with another login (R1). Sets
-    /// the STRING only — no mailbox is provisioned.
+    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity guard
+    /// (<see cref="WorkEmailLoginGuard"/>): a STAGED login's username follows the work email and its pending
+    /// invitation is cancelled; an ACTIVATED login is never renamed by an employee edit. Returns true when the
+    /// work email now differs from an activated login's username. Sets the STRING only — no mailbox is provisioned.
     /// </summary>
-    private async Task ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
+    private async Task<bool> ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
     {
-        if (!changedKeys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))) return;
+        if (!changedKeys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))) return false;
         var tenantId = employee.TenantId!.Value;
         var company = employee.CompanyId is Guid cid
             ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted)
@@ -5888,28 +5892,13 @@ public class EmployeesController : ControllerBase
                     System.Text.Json.JsonSerializer.Serialize(new { provided = coercedFrom, coercedTo = resolved }), ct);
         }
 
-        // Login-identity rename guard (same rule as the service).
-        if (employee.UserAccountId is Guid uid)
-        {
-            var newNorm = AuthService.Normalize(employee.WorkEmail);
-            var oldNorm = AuthService.Normalize(priorWorkEmail);
-            if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !string.Equals(newNorm, oldNorm, StringComparison.Ordinal))
-            {
-                var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tenantId, ct);
-                if (user is not null && !string.Equals(user.NormalizedEmail, newNorm, StringComparison.Ordinal))
-                {
-                    var clash = await _db.Users.AnyAsync(u => u.TenantId == tenantId && u.Id != uid && u.NormalizedEmail == newNorm, ct);
-                    if (clash)
-                        throw new InvalidOperationException(
-                            $"Cannot rename work email to '{employee.WorkEmail}': another login already uses that address. Resolve the conflicting account first.");
-                    var oldEmail = user.Email;
-                    user.Email = employee.WorkEmail.Trim().ToLowerInvariant();
-                    user.NormalizedEmail = newNorm;
-                    await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(),
-                        System.Text.Json.JsonSerializer.Serialize(new { oldEmail, newEmail = user.Email, note = "HR string + login identity synced; no mailbox provisioned." }), ct);
-                }
-            }
-        }
+        // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
+        var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, DateTime.UtcNow, ct);
+        if (login.RenamedJson is not null)
+            await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(), login.RenamedJson, ct);
+        if (login.HeldJson is not null)
+            await _audit.WriteAsync("employee.work_email_login_held", "Employee", employee.Id.ToString(), Context(), login.HeldJson, ct);
+        return login.LoginUsernameDiffers;
     }
 
     /// <summary>Tenant work-email collision set keyed by the login normalization (AuthService.Normalize),
