@@ -603,16 +603,17 @@ public class EmployeesController : ControllerBase
     /// <summary>
     /// The most rows one employee file may carry. The import holds the whole file — every row's employee, payroll
     /// profile, salary structure, gaps and audit — in one transaction and one change tracker, so its memory grows
-    /// with the file; 2,000 rows was measured to stay well inside a 300 MB heap (see the PR). A larger file is
+    /// with the file. At 2,000 rows a 304 MB heap peaked at ~280 MB — too thin a margin for a process that shares its
+    /// heap with live requests — so the cap is 1,000 (measured peak in the PR). A larger file is
     /// refused up front, with a coded message, rather than risking an out-of-memory restart half-way.
     /// </summary>
-    internal const int MaxImportRows = 2_000;
+    internal const int MaxImportRows = 1_000;
 
     private IActionResult? TooManyRows(int count) => count <= MaxImportRows ? null : UnprocessableEntity(new
     {
         error = "import_too_many_rows",
         message = $"This file has {count:N0} rows; one employee import takes at most {MaxImportRows:N0}. "
-                  + "Split the file into parts of up to 2,000 rows (keep the header row in each part) and import them one after another. "
+                  + $"Split the file into parts of up to {MaxImportRows:N0} rows (keep the header row in each part) and import them one after another. "
                   + "Nothing from this file was imported.",
         received = count,
         maxRows = MaxImportRows,
