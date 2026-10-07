@@ -118,10 +118,15 @@ public class OrganizationSetupService : IOrganizationSetupService
     /// </summary>
     private static void ValidateCountryCode(string? countryCode)
     {
-        if (!CountryCodeStandard.IsValidOrEmpty(countryCode))
-            throw new InvalidOperationException(
-                $"Unrecognized country code '{countryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, IN, GB).");
+        if (CountryCodeProblem(countryCode) is { } problem) throw new InvalidOperationException(problem);
     }
+
+    /// <summary>The form's country-code rule as a message (null when valid), shared with the bulk
+    /// organization-structure import so both doors refuse the same values with the same words.</summary>
+    public static string? CountryCodeProblem(string? countryCode) =>
+        CountryCodeStandard.IsValidOrEmpty(countryCode)
+            ? null
+            : $"Unrecognized country code '{countryCode}'. Use an ISO 3166-1 code (e.g. SA, AE, IN, GB).";
 
     /// <summary>
     /// Company.EmailDomain auto-derives employee work emails, so a malformed value would produce broken
