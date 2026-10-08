@@ -7,6 +7,7 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Payroll;
@@ -329,6 +330,10 @@ public class OvertimeController : ControllerBase
         if (!request.Status.StartsWith("Pending")) return BadRequest(new { message = "Only pending overtime can be approved." });
         if (request.CreatedBy.HasValue && request.CreatedBy == GetUserId())
             return BadRequest(new { message = "Maker-checker violation: requester cannot approve their own overtime." });
+        // The requester rule above bars whoever FILED it; this bars whoever it is ABOUT. HR or a manager
+        // whose overtime a colleague keyed in must not approve it, whatever their role.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), request.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This overtime is yours. Someone else has to approve it."));
 
         var isAdmin = User.IsInRole("Admin");
         var isHR = User.IsInRole("HR Manager");
@@ -395,6 +400,8 @@ public class OvertimeController : ControllerBase
         if (!request.Status.StartsWith("Pending")) return BadRequest(new { message = "Only pending overtime can be rejected." });
         if (request.CreatedBy.HasValue && request.CreatedBy == GetUserId())
             return BadRequest(new { message = "Maker-checker violation: requester cannot reject their own overtime." });
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), request.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This overtime is yours. Someone else has to reject it."));
         var isAdmin = User.IsInRole("Admin");
         var isHR = User.IsInRole("HR Manager");
         var isManager = User.IsInRole("Manager") || User.IsInRole("Supervisor");
@@ -478,6 +485,9 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         var request = await _db.OvertimeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeRequestId && x.Status == "Approved", ct);
         if (request is null) return BadRequest(new { message = "Approved overtime request not found." });
+        // Turning overtime into paid time off is a decision about that employee's entitlement.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), request.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This overtime is yours. Someone else has to convert it to time off."));
         var policy = request.OvertimePolicyId.HasValue ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == request.OvertimePolicyId && x.TenantId == tenantId, ct) : null;
         if (policy is null || !policy.AllowCompOffConversion) return BadRequest(new { message = "Comp-off conversion is not allowed by this policy." });
         if (req.CompOffDays <= 0) return BadRequest(new { message = "Comp-off days must be positive." });

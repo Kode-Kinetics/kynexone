@@ -8,7 +8,9 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -142,14 +144,27 @@ public class AttendanceController : ControllerBase
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<AttendanceRawEvent>> PushEvent(AttendanceRawEventRequest request, CancellationToken ct)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        var employeeId = await ResolveAttendanceEmployeeIdAsync(RequireTenant(), request.EmployeeId, request.EmployeeCode, ct);
-        if (employeeId is not null && !scope.CanAccessEmployee(employeeId.Value))
-            return Forbid();
+        // A raw event carries a caller-chosen timestamp, device and verification method, so it is the operator's
+        // integration path, never self-service: it always needs attendance.write, even for the caller's own record.
+        // An employee's own clock-in goes through punch/*, which stamps server time. Devices use /ingest (device key).
+        if (!User.HasPermission(OnBehalfPunchPermission)) return Forbid();
+        var tenantId = RequireTenant();
+        var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, request.EmployeeId, request.EmployeeCode, ct);
+        if (employeeId is int target)
+        {
+            var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+            // Never your own record: a raw event carries a caller-chosen timestamp, so pushing one for yourself
+            // is deciding your own pay-driving attendance. Your own clock-in is punch/*, stamped with server time.
+            if (target == self) return Forbid();
+            if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(target))
+                return Forbid();
+            // Record exactly the employee that was authorized, not whatever a second identifier might map to.
+            request = request with { EmployeeId = target, EmployeeCode = null };
+        }
 
         try
         {
-            var raw = await _attendance.PushEventAsync(RequireTenant(), request, Context(), ct);
+            var raw = await _attendance.PushEventAsync(tenantId, request, Context(), ct);
             return Created($"/api/attendance/events/raw/{raw.Id}", raw);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -162,6 +177,11 @@ public class AttendanceController : ControllerBase
     {
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         if (!scope.IsUnrestricted && await HasOutOfScopeImportRowAsync(RequireTenant(), request, scope, ct))
+            return Forbid();
+        // An import carries caller-chosen timestamps; a row for the importer's own record would let them write
+        // their own attendance. Refuse the file rather than silently dropping the row.
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), ct);
+        if (self is int ownId && await ImportHasRowForEmployeeAsync(RequireTenant(), request, ownId, ct))
             return Forbid();
 
         return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
@@ -275,35 +295,40 @@ public class AttendanceController : ControllerBase
     [HttpPost("punch/web")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> WebPunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Web punch", ct);
+        Punch(request, "Web punch", [OnBehalfPunchPermission], ct);
 
     [HttpPost("punch/mobile")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> MobilePunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Mobile app punch", ct);
+        Punch(request, "Mobile app punch", [OnBehalfPunchPermission], ct);
 
     [HttpPost("punch/kiosk")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> KioskPunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Tablet/kiosk punch", ct);
+        Punch(request, "Tablet/kiosk punch", [OnBehalfPunchPermission, KioskPunchPermission], ct);
 
     [HttpPost("regularization")]
     public async Task<IActionResult> Regularization(RegularizationRequestDto request, CancellationToken ct)
     {
-        // Employees submit for themselves. Delegated submissions require BOTH permission and data scope;
-        // approvals.decide/employees.write is authority to act, not authority to escape the caller's team.
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        var isSelf = scope.CallerEmployeeId == request.EmployeeId;
-        if (!isSelf)
+        // Filing for yourself is the every-employee baseline: any linked employee may, whatever their permissions.
+        // "Yourself" is the caller's linked employee (the employee_id claim), never a client-supplied id; an
+        // org-wide HR user has no CallerEmployeeId on their data scope, so the scope cannot answer it.
+        // Filing for anyone else is recording attendance on their behalf: attendance.write AND data scope.
+        // approvals.decide is authority to decide a correction, not to raise one; employees.write is not
+        // attendance authority either.
+        var tenantId = RequireTenant();
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+        var target = request.EmployeeId > 0 ? request.EmployeeId : self;
+        if (target is not int employeeId) return BadRequest(new { message = EssLinkGuidance.En });
+        if (employeeId != self)
         {
-            var hasWritePermission = User.Claims.Any(c => c.Type == "permission" &&
-                (c.Value == "employees.write" || c.Value == "approvals.decide"));
-            if (!hasWritePermission || !scope.CanAccessEmployee(request.EmployeeId))
-                return Forbid();
+            if (!User.HasPermission(OnBehalfPunchPermission)) return Forbid();
+            if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(employeeId)) return Forbid();
         }
+        request = request with { EmployeeId = employeeId };
         try
         {
-            var reg = await _attendance.CreateRegularizationAsync(RequireTenant(), request, Context(), ct);
+            var reg = await _attendance.CreateRegularizationAsync(tenantId, request, Context(), ct);
             return Created($"/api/attendance/regularization/{reg.Id}", reg);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -311,13 +336,18 @@ public class AttendanceController : ControllerBase
 
     [HttpGet("regularization/my")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: WorkDate, RequestType, correction timestamps, free-text Reason, Status. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<PagedResult<AttendanceRegularizationRequest>> MyRegularization([FromQuery] int? employeeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
+    public async Task<PagedResult<AttendanceRegularizationRequest>> MyRegularization([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
+        // "My" means the caller's own corrections, resolved server-side from their employee link. It used to apply
+        // the data scope, which handed a company-wide caller every correction in the company. Team and company
+        // views are pending-approval (approvers) and the daily/raw lists. A former ?employeeId= is ignored.
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        var (singleId, setFilter) = scope.Constrain(employeeId);
-        return await _attendance.GetRegularizationAsync(RequireTenant(), singleId, null, page, pageSize, ct, setFilter);
+        var tenantId = RequireTenant();
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+        if (self is not int employeeId)
+            return new PagedResult<AttendanceRegularizationRequest>([], 0, page, pageSize);
+        return await _attendance.GetRegularizationAsync(tenantId, employeeId, null, page, pageSize, ct);
     }
 
     [HttpGet("regularization/pending-approval")]
@@ -347,6 +377,8 @@ public class AttendanceController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         if (!scope.CanAccessEmployee(reg.EmployeeId))
             return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, RequireTenant(), GetUserId(), reg.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(SubjectRefusalMessage));
         if (!await CanDecideRegularizationAsync(RequireTenant(), reg.EmployeeId, reg.Status, scope, ct))
             return Forbid();
         try
@@ -368,6 +400,8 @@ public class AttendanceController : ControllerBase
         if (reg is null) return NotFound();
         if (!scope.CanAccessEmployee(reg.EmployeeId))
             return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, RequireTenant(), GetUserId(), reg.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(SubjectRefusalMessage));
         if (!await CanDecideRegularizationAsync(RequireTenant(), reg.EmployeeId, reg.Status, scope, ct))
             return Forbid();
         try
@@ -461,11 +495,34 @@ public class AttendanceController : ControllerBase
 
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
 
-    private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, CancellationToken ct)
+    /// <summary>Recording attendance for someone else: a punch, a raw event or a correction filed on their behalf.</summary>
+    private const string OnBehalfPunchPermission = "attendance.write";
+    /// <summary>The kiosk endpoint also accepts the kiosk-capture key (Kiosk Operator, KioskOnly logins).</summary>
+    private const string KioskPunchPermission = "attendance.kiosk";
+    private const string SubjectRefusalMessage =
+        "You cannot approve or reject an attendance correction about yourself. Another approver must decide it.";
+
+    /// <summary>
+    /// A punch is the caller's own unless they are authorized to punch for someone else. The employee is the
+    /// caller's linked employee (the employee_id claim, CallerEmployeeResolver) whenever the request names no
+    /// employee or names the caller. A request naming a DIFFERENT employee is a punch on that employee's behalf
+    /// and needs one of <paramref name="onBehalfPermissions"/> plus data scope; without them it is refused (403),
+    /// not silently rewritten to the caller. A punch drives pay: recording it against the caller when they asked
+    /// for someone else would write a wrong record without telling them. Data scope alone is not authority: an
+    /// Auditor's or Payroll user's org-wide read scope, or a Manager's team, used to be enough to punch.
+    /// </summary>
+    private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, string[] onBehalfPermissions, CancellationToken ct)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
-        try { return Ok(await _attendance.PunchAsync(RequireTenant(), request, source, Context(), ct)); }
+        var tenantId = RequireTenant();
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+        var target = request.EmployeeId > 0 ? request.EmployeeId : self;
+        if (target is not int employeeId) return BadRequest(new { message = EssLinkGuidance.En });
+        if (employeeId != self)
+        {
+            if (!User.HasAnyPermission(onBehalfPermissions)) return Forbid();
+            if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(employeeId)) return Forbid();
+        }
+        try { return Ok(await _attendance.PunchAsync(tenantId, request with { EmployeeId = employeeId }, source, Context(), ct)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
@@ -478,7 +535,14 @@ public class AttendanceController : ControllerBase
         return rows.Where(row => scope.AllowedEmployeeIds!.Contains(employeeIdSelector(row))).ToList();
     }
 
-    private async Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
+    private Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
+        => AnyImportRowAsync(tenantId, request, employeeId => !scope.CanAccessEmployee(employeeId), ct);
+
+    private Task<bool> ImportHasRowForEmployeeAsync(Guid tenantId, ImportAttendanceRequest request, int employeeId, CancellationToken ct)
+        => AnyImportRowAsync(tenantId, request, id => id == employeeId, ct);
+
+    /// <summary>Whether any data row of the CSV resolves to an employee matching <paramref name="match"/>.</summary>
+    private async Task<bool> AnyImportRowAsync(Guid tenantId, ImportAttendanceRequest request, Func<int, bool> match, CancellationToken ct)
     {
         var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var rowNumber = 0;
@@ -490,7 +554,7 @@ public class AttendanceController : ControllerBase
             if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
                 continue;
             var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, null, cells[0], ct);
-            if (employeeId is not null && !scope.CanAccessEmployee(employeeId.Value))
+            if (employeeId is not null && match(employeeId.Value))
                 return true;
         }
         return false;
