@@ -660,21 +660,16 @@ export function EmployeesPage() {
       const rows = selectAllMatching
         ? await resolveAllMatching()
         : [...selectedIds].map((id) => seenRowsRef.current.get(id) ?? ({ id, fullName: '' } as EmployeeListItem));
+      // Every selected id goes to the server, which says per person why it skipped anyone (yourself,
+      // an admin, someone already using KynexOne, no work email…). The screen does not guess those reasons.
       const names: Record<number, string> = {};
       const ids: number[] = [];
       const preSkipped: SkippedWelcomeCode[] = [];
       let replacesCode = false;
       for (const row of rows) {
         if (row.fullName) names[row.id] = row.fullName;
-        const state = row.accessState;
-        if (!state || BULK_PRINTABLE_STATES.has(state)) {
-          ids.push(row.id);
-          if (state && REPLACES_A_CODE.has(state)) replacesCode = true;
-        } else {
-          // Someone already using KynexOne: only a holder of employees.access.reset is pointed at Reset sign-in.
-          const reasonCode = state === 'active' && !canResetAccess ? 'reset_requires_permission' : state;
-          preSkipped.push({ employeeId: row.id, reasonCode, reason: '' });
-        }
+        ids.push(row.id);
+        if (row.accessState && REPLACES_A_CODE.has(row.accessState)) replacesCode = true;
       }
       if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped, delivery }); return; }
       await welcome.issue(ids, { names, preSkipped, delivery, companyEmails: !!companyEmails });
@@ -2550,7 +2545,6 @@ export function EmployeesPage() {
         onClose={() => setWorkEmailsOpen(false)}
         onSaved={() => { setAccessRefresh((n) => n + 1); void load(); }}
         onGiveAccess={(ids, names, delivery, emails) => { void welcome.issue(ids, { names, delivery, companyEmails: emails }); }}
-        checkEmailDelivery={checkEmailDelivery}
       />
 
       <Modal

@@ -65,6 +65,8 @@ export interface IssuedWelcomeCode {
    * email always gets "print" for that employee, even when the company can email.
    */
   delivery?: 'email' | 'print';
+  /** Why a printed code is printed: the issuer set this work email, the company can't email, or HR asked to print. */
+  printReason?: 'setter' | 'no_email' | 'requested' | null;
 }
 
 export interface SkippedWelcomeCode {
