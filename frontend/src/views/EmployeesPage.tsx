@@ -47,7 +47,7 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi, DEFAULT_WORK_EMAIL_PATTERN } from '../api/organization';
 import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
-import { TransliterateButton } from '../components/TransliterateButton';
+import { ArabicNameField } from '../components/ArabicNameField';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
 import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
@@ -952,8 +952,12 @@ export function EmployeesPage() {
     setFormOpen(true);
   };
 
-  const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) =>
+  const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) => {
     setForm((current) => ({ ...current, [key]: value }));
+    if (key === 'englishName' && typeof value === 'string' && value.trim()) {
+      setFormError(current => current === t('Enter the employee’s English full name to continue.') || current === 'English full name is required.' ? '' : current);
+    }
+  };
 
   const setDepartment = (value: string) =>
     setForm((current) => {
@@ -2601,7 +2605,7 @@ export function EmployeesPage() {
             </label>
             </div>
             <Input label="English full name" inputId="employee-create-name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
-            <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
+            <ArabicNameField source={form.englishName} value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
             <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
             <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
