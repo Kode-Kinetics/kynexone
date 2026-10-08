@@ -281,6 +281,10 @@ export const REVIEW_API_CODES: Readonly<Record<string, RefusalKey>> = {
   selfie_upload_interrupted: 'selfieUnusable',
   // Review 3: another upload of this employee is still in flight. Wait and retry; it never waives a selfie.
   selfie_upload_in_progress: 'selfieInProgress',
+  // Hardening: the upload took longer than the server's deadline (408), or the connection dropped mid-upload (400).
+  // Both are the connection's problem: take the selfie again. Neither ever carries punchWithoutSelfie.
+  selfie_upload_timeout: 'network',
+  selfie_upload_incomplete: 'network',
 };
 
 const CODE_TO_KEY: Record<string, RefusalKey> = {
