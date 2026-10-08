@@ -29,6 +29,26 @@ public static class CompanyEmailDomainRules
 
     public static string Normalize(string? domain) => (domain ?? string.Empty).Trim().ToLowerInvariant();
 
+    public const string NeedsSecurityAdminCode = "email_domain_needs_security_admin";
+    public const string NeedsSecurityAdminMessage =
+        "Only a security administrator can set or change a company's email domain, because it decides who can sign in.";
+
+    /// <summary>
+    /// THE gate, enforced inside the writer (OrganizationSetupService) so no controller can skip it: setting or changing
+    /// a company's EmailDomain needs <c>security.manage</c>, read from the database for <paramref name="actorUserId"/>.
+    /// <paramref name="current"/> null = a new company. A context with no user is a system path (seeding) and passes;
+    /// an unknown or inactive user fails closed.
+    /// </summary>
+    public static async Task EnsureCallerMaySetAsync(ZayraDbContext db, Guid tenantId, Guid? actorUserId, string? current, string? requested, CancellationToken ct)
+    {
+        var next = Normalize(requested);
+        var changes = current is null ? next.Length > 0 : !string.Equals(Normalize(current), next, StringComparison.Ordinal);
+        if (!changes || actorUserId is not Guid actor) return;
+        var caller = await Zayra.Api.Infrastructure.Auth.PrivilegeCeilingGraph.TryLoadCallerAsync(db, tenantId, actor, ct);
+        if (caller is null || !caller.Held.Contains(SecurityPermission))
+            throw new EmailDomainRefusedException(NeedsSecurityAdminCode, 403, NeedsSecurityAdminMessage);
+    }
+
     /// <summary>Throws <see cref="EmailDomainRefusedException"/> when <paramref name="domain"/> may not be claimed by <paramref name="tenantId"/>.</summary>
     public static async Task EnsureClaimableAsync(ZayraDbContext db, Guid tenantId, string? domain, CancellationToken ct)
     {

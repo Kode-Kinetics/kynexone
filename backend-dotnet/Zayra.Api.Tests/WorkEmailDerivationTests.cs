@@ -150,7 +150,9 @@ public class WorkEmailDerivationTests
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         var svc = new OrganizationSetupService(db, new AuditService(db));
-        var ctx = Ctx(tenantId);
+        // UPDATED (employee-access review P1): setting an email domain needs security.manage, read from the database for
+        // the caller — a system context (no user) is the seeding path and passes; an unknown user would be refused.
+        var ctx = Ctx(tenantId) with { UserId = null };
 
         var ok = await svc.CreateCompanyAsync(tenantId,
             new CompanyRequest("Acme", null, null, "SA", null, "REG-1", null, null, null, null, "SAR",

@@ -165,6 +165,8 @@ public sealed class EmployeeAccessService
     /// emailed to an address they chose — it is printed and handed over in person, and they become its handler.</param>
     private sealed record Pending(IssuedCodeDto Item, Guid UserId, string Email, bool ResetOfActive, bool SetterPrintOnly);
 
+    public const string PrivilegedResetReason = "A security admin must reset their sign-in.";
+
     public const string SetterPrintMessage = "You entered these work emails, so print the slips and hand them over in person.";
 
     public async Task<IssueCodesResponse> IssueCodesAsync(Guid tenantId, IssueCodesRequest request, EntityScopeContext scope,
@@ -201,13 +203,17 @@ public sealed class EmployeeAccessService
 
         // Delivery: by email to the login's username when a relay exists; otherwise the code comes back to the issuer,
         // and that disclosure makes them a credential handler for the two-person rule.
-        var configured = issued.Count > 0 && !request.PrintOnly && await _email.IsConfiguredAsync(tenantId, ct);
+        var configured = issued.Count > 0 && await _email.IsConfiguredAsync(tenantId, ct);
         var items = new List<IssuedCodeDto>();
         var anyEmailed = false;
         var allEmailed = issued.Count > 0;
         foreach (var p in issued)
         {
-            var sent = configured && !p.SetterPrintOnly && await TryEmailAsync(tenantId, p, ct);
+            // A RESET of a login already in use goes by email whenever email exists — never printed by choice, so no
+            // second person ever holds it (its username was fixed at activation, not chosen by the work-email setter).
+            // A first code is printed when asked to, or when the caller set the work email.
+            var forcePrint = !p.ResetOfActive && (request.PrintOnly || p.SetterPrintOnly);
+            var sent = configured && !forcePrint && await TryEmailAsync(tenantId, p, ct);
             if (sent) { items.Add(p.Item with { Code = null, Delivery = IssuedCodeDto.EmailDelivery }); anyEmailed = true; continue; }
             allEmailed = false;
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, DisclosedAction, "User", p.UserId.ToString(),
@@ -220,13 +226,13 @@ public sealed class EmployeeAccessService
 
         var message = issued.Count == 0
             ? "No codes were issued."
-            : issued.Any(p => p.SetterPrintOnly)
+            : issued.Any(p => p.SetterPrintOnly && !p.ResetOfActive)
                 ? SetterPrintMessage
             : allEmailed
                 ? "Each employee was emailed their sign-in code at their work email."
                 : anyEmailed
                     ? "Some codes could not be emailed. Print the sign-in slips for those employees."
-                    : request.PrintOnly
+                    : request.PrintOnly && configured
                         ? "Print the sign-in slips."
                     : configured
                         ? "The codes could not be emailed, so print the sign-in slips."
@@ -293,6 +299,8 @@ public sealed class EmployeeAccessService
             if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(user, tenantId), AuthService.GetPermissions(user)) is not null)
             { result = new(Skip.AboveCeiling, null); return; }
             var privileged = await EmployeeLoginPrivilege.IsPrivilegedAsync(_db, tenantId, user, link, employeeId, nowUtc, token);
+            // A login with extra access is never RESET from here: a security administrator does it (P2 review).
+            if (privileged && resetOfActive) { result = new(Skip.Privileged, null, PrivilegedResetReason); return; }
             if (privileged && !(single && canReset)) { result = new(Skip.Privileged, null); return; }
             if (!resetOfActive && await SeatsFullAsync(tenantId, userId, nowUtc, token)) { result = new(Skip.SeatLimit, null); return; }
 
@@ -460,6 +468,7 @@ public sealed class EmployeeAccessService
             var norm = AuthService.Normalize(email);
             if (dupEmails.Contains(norm)) { conflicts.Add(new(code, email, "duplicate_in_file")); continue; }
             if (WorkEmailPlusAddressException.IsPlusAddressed(email)) { conflicts.Add(new(code, email, WorkEmailPlusAddressException.Code)); continue; }
+            if (WorkEmailInvalidCharactersException.IsInvalid(email)) { conflicts.Add(new(code, email, WorkEmailInvalidCharactersException.Code)); continue; }
             var domain = e.CompanyId is Guid cid && domains.TryGetValue(cid, out var d) ? d : string.Empty;
             if (domain.Length == 0) { conflicts.Add(new(code, email, EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing)); continue; }
             if (!EmployeeLoginProvisioner.IsOnDomain(email, domain)) { wrongDomain.Add(new(code, email, domain)); continue; }

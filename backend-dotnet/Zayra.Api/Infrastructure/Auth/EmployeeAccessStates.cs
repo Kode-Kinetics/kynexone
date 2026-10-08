@@ -37,6 +37,7 @@ public static class EmployeeAccessStates
         EmployeeLoginProvisioner.BlockedCodes.WrongDomain =>
             string.IsNullOrEmpty(domain) ? "The work email isn't on the company's email domain." : $"Work email must end in @{domain}.",
         EmployeeLoginProvisioner.BlockedCodes.PlusAddress => WorkEmailPlusAddressException.Text,
+        EmployeeLoginProvisioner.BlockedCodes.InvalidCharacters => WorkEmailInvalidCharactersException.Text,
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToExistingLogin =>
             "This work email is already someone's sign-in. An administrator must check it is the same person and connect it.",
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToFormerEmployee =>
@@ -92,8 +93,10 @@ public static class EmployeeAccessStates
             return new Evaluation(Stopped, StoppedReason: $"The employee's status is {f.Status}.");
         if (link is not null && !string.IsNullOrEmpty(link.LoginDisabledReason) && link.AccessMode == AccessModes.NoLogin)
             return new Evaluation(Stopped, StoppedReason: link.LoginDisabledReason);
-        if (login is not null && login.Status is "Deactivated" or "Suspended")
-            return new Evaluation(Stopped, StoppedReason: "The sign-in was switched off by an administrator.");
+        if (login is not null && login.Status is "Deactivated" or "Suspended" or "Locked")
+            return new Evaluation(Stopped, StoppedReason: login.Status == "Locked"
+                ? "The sign-in was locked by an administrator."
+                : "The sign-in was switched off by an administrator.");
 
         // ── blocked ──
         if (link is not null && (login is null || login.IsDeleted))
@@ -104,6 +107,7 @@ public static class EmployeeAccessStates
             var email = f.WorkEmail.Trim();
             if (email.Length == 0) return new Evaluation(WaitingForWorkEmail);
             if (WorkEmailPlusAddressException.IsPlusAddressed(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.PlusAddress, f.CompanyDomain);
+            if (WorkEmailInvalidCharactersException.IsInvalid(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.InvalidCharacters, f.CompanyDomain);
             if (f.CompanyDomain.Length == 0) return Block(EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing, null);
             if (!EmployeeLoginProvisioner.IsOnDomain(email, f.CompanyDomain))
                 return Block(EmployeeLoginProvisioner.BlockedCodes.WrongDomain, f.CompanyDomain);

@@ -239,7 +239,7 @@ public record PasswordPolicyDto(int MinLength);
 public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc)
 {
     /// <summary>Whether the RESOLVED workspace can send email at all (never whether the address exists). Lets the
-    /// employee screens say "Ask HR for a new welcome code" when nothing can be mailed. Null when no workspace resolved.</summary>
+    /// employee screens say "Ask HR for a new welcome code" when nothing can be mailed. False for an unknown workspace (no enumeration).</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? EmailDeliveryConfigured { get; init; }
 }

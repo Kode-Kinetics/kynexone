@@ -44,6 +44,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, null, request.EmailDomain, cancellationToken);
         await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
@@ -91,6 +92,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
             await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, ct);
             var priorEmailDomain = company.EmailDomain ?? string.Empty;
+            await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, priorEmailDomain, request.EmailDomain, ct);
             Apply(company, request, applyLifecycle: false);
             if (!string.Equals(priorEmailDomain, company.EmailDomain, StringComparison.Ordinal))
                 _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog

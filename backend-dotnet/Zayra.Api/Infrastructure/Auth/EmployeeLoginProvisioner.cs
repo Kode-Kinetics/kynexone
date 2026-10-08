@@ -44,6 +44,7 @@ public sealed class EmployeeLoginProvisioner
         public const string CompanyEmailDomainMissing = "company_email_domain_missing";
         public const string WrongDomain = "work_email_wrong_domain";
         public const string PlusAddress = WorkEmailPlusAddressException.Code;
+        public const string InvalidCharacters = WorkEmailInvalidCharactersException.Code;
         public const string EmailBelongsToExistingLogin = "email_belongs_to_existing_login";
         public const string EmailBelongsToFormerEmployee = "email_belongs_to_former_employee";
         public const string LegacyUnlinkedLogin = "legacy_unlinked_login";
@@ -127,6 +128,7 @@ public sealed class EmployeeLoginProvisioner
             var normalized = AuthService.Normalize(email);
             if (employee.UserAccountId.HasValue) blocked = BlockedCodes.LegacyUnlinkedLogin;
             else if (WorkEmailPlusAddressException.IsPlusAddressed(email)) blocked = BlockedCodes.PlusAddress;
+            else if (WorkEmailInvalidCharactersException.IsInvalid(email)) blocked = BlockedCodes.InvalidCharacters;
             else if (domain.Length == 0) blocked = BlockedCodes.CompanyEmailDomainMissing;
             else if (!IsOnDomain(email, domain)) blocked = BlockedCodes.WrongDomain;
             else if (ownerByEmail.TryGetValue(normalized, out var ownerIds))
