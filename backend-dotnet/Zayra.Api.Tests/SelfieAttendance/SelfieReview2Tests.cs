@@ -59,20 +59,20 @@ public sealed class SelfieReview2Tests
     [Fact]
     public async Task Item5_TheEndpointRequiresTheEvidenceViewPermission_WhichIsCataloguedPrivilegedAndHeldByHr()
     {
-        var method = typeof(AttendanceEvidenceController).GetMethod(nameof(AttendanceEvidenceController.ViewSelfie))!;
-        var attribute = method.GetCustomAttribute<HasPermissionAttribute>();
-        Assert.NotNull(attribute);
-        Assert.Equal("perm:attendance.evidence.view", attribute!.Policy);
+        // Review 3: the permission is checked inside the action (so a refusal for it is audited), not by an attribute.
+        Assert.Equal("attendance.evidence.view", AttendanceEvidenceController.ViewPermission);
         Assert.True(PrivilegedMfaPolicy.IsPrivilegedPermission("attendance.evidence.view"));
         Assert.Contains("attendance.evidence.view", PrivilegedMfaPolicy.PrivilegedPermissions);
         Assert.Contains("attendance.evidence.view", await SelfieWorld.SeededAsync("HR Manager"));
         Assert.Contains("attendance.evidence.view", await SelfieWorld.SeededAsync("HR Director"));
         Assert.DoesNotContain("attendance.evidence.view", await SelfieWorld.SeededAsync("Employee"));
         Assert.DoesNotContain("attendance.evidence.view", await SelfieWorld.SeededAsync("Manager"));
+        // Review 3: Admin does not get it by default.
+        Assert.DoesNotContain("attendance.evidence.view", await SelfieWorld.SeededAsync("Admin"));
     }
 
     [Fact]
-    public async Task Item5_AnEmployeeOutsideTheCallersScope_AnswersNotFound_AndNothingIsAudited()
+    public async Task Item5_AnEmployeeOutsideTheCallersScope_AnswersNotFound_AndNoViewIsAudited()
     {
         var w = await SelfieWorld.CreateAsync();
         var rawId = await ColleaguePunchesWithASelfieAsync(w);
@@ -84,6 +84,8 @@ public sealed class SelfieReview2Tests
 
         Assert.Equal("evidence_not_found", SelfieWorld.CodeOf(Assert.IsType<NotFoundObjectResult>(result)));
         Assert.False(await w.Db.AttendanceAuditLogs.AnyAsync(a => a.Action == "attendance.selfie.viewed"));
+        // Review 3: the refused attempt itself is audited (who, which punch, why).
+        Assert.Single(await w.Db.AttendanceAuditLogs.Where(a => a.Action == "attendance.selfie.view_refused").ToListAsync());
     }
 
     [Fact]

@@ -84,7 +84,9 @@ public class RawSqlExecutionRatchetTests
         ["Infrastructure/Attendance/AttendanceService.cs"] = 1,
         // Selfie upload (review 1, item 5): pg_advisory_xact_lock(hashtextextended('attendance-evidence-upload:{tenant}:{employee}', 0))
         // serialises one employee's count-and-reserve of an upload attempt. Writes no row; the key is the caller's
-        // own tenant and employee. Proven by SelfieAttendancePostgresTests.Upload_TwelveInParallel_*.
+        // own tenant and employee. Review 3: the same single call site also serialises the punch's use of a server-failure
+        // waiver (SelfieConsentLock.AcquireInCurrentTransactionAsync). Proven by SelfieAttendancePostgresTests.
+        // Upload_TwelveInParallel_* and SelfieReview3PostgresTests.Item3_FourConcurrentPunches_*.
         ["Controllers/SelfieAttendanceControllers.cs"] = 1,
         // 1 -> 2: + the per-employee leave advisory lock (see the note under advisory locks above).
         ["Infrastructure/Leave/LeaveService.cs"] = 2,

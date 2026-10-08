@@ -131,19 +131,21 @@ public sealed class SelfieAttendancePostgresTests
     }
 
     /// <summary>
-    /// Review item 12: twelve uploads at once, with seven already this hour. The per-employee advisory lock serialises
-    /// the count-and-reserve, so exactly three get a slot and the other nine are refused — on d43b3943 the count was
-    /// taken under a row lock but the attempt was only recorded after the decode, and failed attempts never counted.
+    /// Review item 12, narrowed by review 3 (one upload in flight per employee): twelve uploads at once. The per-employee
+    /// advisory lock serialises the in-flight check and the reservation, so exactly one is admitted and the other eleven
+    /// are refused 409 <c>selfie_upload_in_progress</c> — never 429 busy, so they can never become waivers.
     /// </summary>
     [Fact]
-    public async Task Upload_TwelveInParallel_WithSevenThisHour_ExactlyThreeAreAdmitted()
+    public async Task Upload_TwelveInParallel_OnlyOneIsInFlight_TheOthersAre409InProgress()
     {
-        var storage = new MemoryDocumentStorage();
+        // The admitted upload is held inside its storage write until every other attempt has answered, so all twelve
+        // overlap for real.
+        var storage = new BlockingDocumentStorage();
         var (tenantId, employeeId) = await SeedEmployeeAsync();
         await using (var db = _fx.CreateDb())
         {
             await EnableAsync(db, tenantId, employeeId);
-            for (var i = 0; i < 7; i++) await AddEvidenceAsync(db, storage, tenantId, employeeId, DateTime.UtcNow.AddMinutes(-5));
+            for (var i = 0; i < 7; i++) await AddEvidenceAsync(db, storage.Inner, tenantId, employeeId, DateTime.UtcNow.AddMinutes(-5));
         }
 
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -155,13 +157,18 @@ public sealed class SelfieAttendancePostgresTests
         }
         var attempts = Enumerable.Range(0, 12).Select(_ => Task.Run(Attempt)).ToList();
         gate.SetResult();
+        await storage.WriteStarted.WaitAsync(TimeSpan.FromSeconds(30));
+        for (var i = 0; i < 400 && attempts.Count(t => t.IsCompleted) < 11; i++) await Task.Delay(50);
+        // Eleven answered while one is still writing; then let it finish.
+        Assert.Equal(11, attempts.Count(t => t.IsCompleted));
+        storage.Release();
         var codes = await Task.WhenAll(attempts);
 
-        Assert.Equal(3, codes.Count(c => c == 201));
-        Assert.Equal(9, codes.Count(c => c == 429));
+        Assert.Equal(1, codes.Count(c => c == 201));
+        Assert.Equal(11, codes.Count(c => c == 409));
         await using var verify = _fx.CreateDb();
-        Assert.Equal(10, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId));
-        Assert.Equal(3, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId && e.Sha256 != new string('b', 64) && e.PurgeState == "Active"));
+        Assert.Equal(8, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId));
+        Assert.Equal(0, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId && e.FailedReason != null));
     }
 
     /// <summary>An attempt whose body turns out to be junk still counts (it reserved a Pending row), and is swept within the hour.</summary>
@@ -205,7 +212,7 @@ public sealed class SelfieAttendancePostgresTests
         await db.SaveChangesAsync();
     }
 
-    private async Task<int?> UploadAsync(MemoryDocumentStorage storage, Guid tenantId, int employeeId, SelfieImageGate? gate = null, byte[]? bytes = null)
+    private async Task<int?> UploadAsync(IDocumentStorage storage, Guid tenantId, int employeeId, SelfieImageGate? gate = null, byte[]? bytes = null)
     {
         var principal = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
         [
@@ -334,12 +341,18 @@ public sealed class SelfieAttendanceMigrationPostgresTests
         Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         foreach (var name in new[] { "ck_attendance_evidence__purge_state", "ck_attendance_evidence__purged_pair", "ck_attendance_evidence__used_pair",
                      "ck_attendance_evidence__byte_size", "ck_attendance_evidence__expiry", "ck_attendance_evidence__active_payload",
-                     "ck_attendance_evidence__used_was_active", "ck_biometric_consents__channel",
+                     "ck_attendance_evidence__used_was_active", "ck_attendance_evidence__failed_reason",
+                     "ck_attendance_evidence__failed_never_active", "ck_attendance_evidence__waiver_pair",
+                     "ck_attendance_evidence__waiver_needs_failure", "ck_attendance_evidence__waiver_once", "ck_biometric_consents__channel",
                      "ck_biometric_consents__withdrawn_after_given", "ck_biometric_consents__policy_version" })
             Assert.Equal(1L, await Scalar<long>(db, $"SELECT count(*) FROM pg_constraint WHERE conname = '{name}'"));
         Assert.Equal("r", await Scalar<string>(db, "SELECT confdeltype::text FROM pg_constraint WHERE conname = 'FK_attendance_evidence_employees_employee_id'"));
         Assert.Contains("@retention:E", await Scalar<string>(db, "SELECT obj_description('attendance_evidence'::regclass, 'pg_class')"));
         Assert.Contains("rate limit", await Scalar<string>(db, "SELECT obj_description('ix_attendance_evidence__employee_created'::regclass, 'pg_class')"));
+        // Review 3: the waiver indexes name their queries, and the waiver's punch is a RESTRICT FK.
+        Assert.Contains("waived-punches", await Scalar<string>(db, "SELECT obj_description('ix_attendance_evidence__waived_punches'::regclass, 'pg_class')"));
+        Assert.Contains("One waiver per punch", await Scalar<string>(db, "SELECT obj_description('ux_attendance_evidence__waiver_raw_event'::regclass, 'pg_class')"));
+        Assert.Equal("r", await Scalar<string>(db, "SELECT confdeltype::text FROM pg_constraint WHERE conname = 'FK_attendance_evidence_attendance_raw_events_waiver_raw_event_~'"));
         // The purge index: no constant leading purge_state, partial on the two live states, used_at_utc included.
         var purgeIndex = await Scalar<string>(db, "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_attendance_evidence__purge_due'");
         Assert.Contains("(tenant_id, created_at_utc) INCLUDE (used_at_utc)", purgeIndex);
@@ -364,6 +377,20 @@ public sealed class SelfieAttendanceMigrationPostgresTests
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(purgeState: "Gone")));
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(purgeState: "Purged")));          // purged without purged_at
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(usedAt: "now()")));               // used without a raw event
+        // Review 3: the waiver columns.
+        string Failed(string reason = "'Busy'", string consumed = "NULL", string cancelled = "NULL", string state = "Purged") =>
+            $"INSERT INTO attendance_evidence (id,tenant_id,employee_id,storage_key,content_type,created_at_utc,expires_at_utc,purge_state,purged_at_utc,failed_reason,waiver_consumed_at_utc,waiver_raw_event_id,waiver_cancelled_at_utc) " +
+            $"VALUES (gen_random_uuid(),'{tenant}',{e},'k','image/jpeg',now(),now() + interval '10 minutes','{state}',{(state == "Purged" ? "now()" : "NULL")},{reason},{consumed},NULL,{cancelled})";
+        await Sql(db, Failed());
+        await Sql(db, Failed(reason: "'Storage'", state: "Pending"));
+        await Sql(db, Failed(cancelled: "now()"));
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Failed(reason: "'Crash'")));                // not a server failure
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Failed(reason: "NULL", cancelled: "now()"))); // a waiver without a failure
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Failed(consumed: "now()")));                  // used without its punch
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db,                                              // a failed attempt is never Active
+            $"INSERT INTO attendance_evidence (id,tenant_id,employee_id,storage_key,sha256,content_type,byte_size,created_at_utc,expires_at_utc,purge_state,failed_reason) " +
+            $"VALUES (gen_random_uuid(),'{tenant}',{e},'k',{hash},'image/jpeg',10,now(),now() + interval '10 minutes','Active','Busy')"));
+        await Sql(db, "DELETE FROM attendance_evidence WHERE failed_reason IS NOT NULL");
         await Sql(db, $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Mobile')");
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db,                                             // a second open consent
             $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Web')"));

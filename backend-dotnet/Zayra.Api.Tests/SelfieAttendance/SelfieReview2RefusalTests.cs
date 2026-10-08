@@ -200,7 +200,7 @@ public sealed class SelfieReview2RefusalTests
     // ── Item 7: busy and failed attempts do not burn the quota; the server failing never blocks attendance ─────
 
     [Fact]
-    public async Task Item7_ABusyAnswer_LeavesNoAttemptBehind()
+    public async Task Item7_ABusyAnswer_LeavesNoCountableAttemptBehind()
     {
         var w = await SelfieWorld.CreateAsync();
         var world = WithGate(w, new SelfieImageGate(concurrency: 1));
@@ -211,7 +211,12 @@ public sealed class SelfieReview2RefusalTests
         var busy = await world.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg());
 
         Assert.Equal("selfie_busy", SelfieWorld.CodeOf(busy));
-        Assert.Empty(w.Db.AttendanceEvidence);
+        // Review 3: the attempt is kept as its own server-failure record (the waiver), closed Purged with no file, so
+        // it is neither usable nor in flight, and it does not count toward the hourly limit.
+        var row = Assert.Single(w.Db.AttendanceEvidence);
+        Assert.Equal(AttendanceEvidencePurgeStates.Purged, row.PurgeState);
+        Assert.Equal(SelfieUploadFailureReasons.Busy, row.FailedReason);
+        Assert.Empty(w.Storage.Objects);
         world.Gate.Exit();
     }
 
