@@ -18,8 +18,10 @@ namespace Zayra.Api.Infrastructure.Attendance;
 ///   <item>A selfie a punch used: deleted 90 days after the payroll month of that punch is locked; when no run has
 ///     locked that month by work date + 120 days, deleted at work date + 120 days.</item>
 ///   <item>A selfie no punch ever used (failed or abandoned upload): deleted 24 hours after upload.</item>
+///   <item>An upload that never completed (still <c>Pending</c>): its file, if any, deleted 1 hour after the attempt.</item>
 /// </list>
-/// The blob goes; the <c>attendance_evidence</c> row stays with its SHA-256, <c>purge_state = 'Purged'</c>.
+/// The blob goes (every version, confirmed); the <c>attendance_evidence</c> row stays with its SHA-256,
+/// <c>purge_state = 'Purged'</c>.
 /// </summary>
 public static class SelfieEvidenceRetention
 {
@@ -27,6 +29,7 @@ public static class SelfieEvidenceRetention
     public static readonly TimeSpan AfterPayrollLock = TimeSpan.FromDays(90);
     public static readonly TimeSpan WithoutPayrollLock = TimeSpan.FromDays(120);
     public static readonly TimeSpan UnusedUpload = TimeSpan.FromHours(24);
+    public static readonly TimeSpan AbandonedPending = TimeSpan.FromHours(1);
 
     /// <summary>The earliest a USED selfie can be due (lock no earlier than the work date, + 90 days, minus a day of
     /// timezone slack). Rows used more recently are not even read.</summary>
@@ -37,22 +40,43 @@ public static class SelfieEvidenceRetention
     /// <paramref name="monthLockedAtUtc"/> the earliest lock of a regular payroll run covering that month for the
     /// employee's company (null when none).
     /// </summary>
-    public static DateTime DueAtUtc(DateTime createdAtUtc, DateTime? usedAtUtc, DateOnly? workDate, DateTime? monthLockedAtUtc)
+    public static DateTime DueAtUtc(DateTime createdAtUtc, DateTime? usedAtUtc, DateOnly? workDate, DateTime? monthLockedAtUtc,
+        string purgeState = AttendanceEvidencePurgeStates.Active)
     {
+        if (purgeState == AttendanceEvidencePurgeStates.Pending) return createdAtUtc + AbandonedPending;
         if (usedAtUtc is null || workDate is null) return createdAtUtc + UnusedUpload;
         var fallback = workDate.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) + WithoutPayrollLock;
         // A lock that arrived only after the fallback date is irrelevant: the selfie was already due at the fallback.
         return monthLockedAtUtc is { } locked && locked <= fallback ? locked + AfterPayrollLock : fallback;
+    }
+
+    /// <summary>
+    /// The rows that can be due at <paramref name="nowUtc"/> (a necessary condition; the exact due date needs the payroll
+    /// facts). Shared by the scheduler's tenant scan and the per-tenant scan so they cannot disagree.
+    /// </summary>
+    public static System.Linq.Expressions.Expression<Func<AttendanceEvidence, bool>> MaybeDue(DateTime nowUtc)
+    {
+        var pendingBefore = nowUtc - AbandonedPending;
+        var unusedBefore = nowUtc - UnusedUpload;
+        var usedBefore = nowUtc - UsedScanFloor;
+        return e => (e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.CreatedAtUtc <= pendingBefore)
+                    || (e.PurgeState == AttendanceEvidencePurgeStates.Active
+                        && ((e.UsedAtUtc == null && e.CreatedAtUtc <= unusedBefore) || (e.UsedAtUtc != null && e.UsedAtUtc <= usedBefore)));
     }
 }
 
 /// <summary>What happened to one evidence row in a purge pass.</summary>
 public enum SelfieEvidencePurgeOutcome { Purged, NotDue, AlreadyPurged, Missing }
 
+/// <summary>One row the scan found due, with the facts that made it due (so the per-item purge needs no re-derivation).</summary>
+public sealed record DueSelfieEvidence(Guid Id, DateTime? UsedAtUtc, DateTime DueAtUtc, DateOnly? WorkDate, DateTime? MonthLockedAtUtc);
+
 /// <summary>
-/// Finds and purges due selfie blobs for one tenant. Idempotent and re-runnable: a purged row is skipped, the storage
-/// delete tolerates an object that is already gone, and the state flip, the <c>retention_purge_audits</c> row and the
-/// attendance audit row are staged together so the caller's single save commits all or none of them.
+/// Finds and purges due selfie blobs for one tenant. Idempotent and re-runnable: a purged row is skipped, the STRICT
+/// storage delete (<see cref="IDocumentStorage.DeleteStrictAsync"/>) removes every version and treats an object that
+/// is already gone as success, and the state flip, the <c>retention_purge_audits</c> row and the attendance audit row
+/// are staged together so the caller's single save commits all or none of them. A delete that is not confirmed throws:
+/// the row stays as it was and the next run retries it.
 /// </summary>
 public sealed class SelfieEvidencePurger
 {
@@ -65,65 +89,95 @@ public sealed class SelfieEvidencePurger
         _storage = storage;
     }
 
-    /// <summary>Ids of the tenant's Active evidence rows that are due at <paramref name="nowUtc"/>, oldest first. Read-only.</summary>
-    public async Task<IReadOnlyList<Guid>> FindDueAsync(Guid tenantId, DateTime nowUtc, int max, CancellationToken ct)
+    /// <summary>Ids of the tenant's evidence rows due at <paramref name="nowUtc"/>, oldest first. Read-only.</summary>
+    public async Task<IReadOnlyList<Guid>> FindDueAsync(Guid tenantId, DateTime nowUtc, int max, CancellationToken ct) =>
+        (await FindDueItemsAsync(tenantId, nowUtc, max, ct)).Select(d => d.Id).ToList();
+
+    /// <summary>
+    /// The tenant's due rows with their facts. Three queries in all, however many rows: the candidates, the employees'
+    /// companies, and the payroll locks of the months involved (review item 11: no per-row lookups).
+    /// </summary>
+    public async Task<IReadOnlyList<DueSelfieEvidence>> FindDueItemsAsync(Guid tenantId, DateTime nowUtc, int max, CancellationToken ct)
     {
-        var unusedBefore = nowUtc - SelfieEvidenceRetention.UnusedUpload;
-        var usedBefore = nowUtc - SelfieEvidenceRetention.UsedScanFloor;
         var candidates = await _db.AttendanceEvidence.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.PurgeState == AttendanceEvidencePurgeStates.Active
-                        && ((e.UsedAtUtc == null && e.CreatedAtUtc <= unusedBefore) || (e.UsedAtUtc != null && e.UsedAtUtc <= usedBefore)))
+            .Where(e => e.TenantId == tenantId)
+            .Where(SelfieEvidenceRetention.MaybeDue(nowUtc))
             .OrderBy(e => e.CreatedAtUtc).ThenBy(e => e.Id)
             .Take(Math.Clamp(max, 1, 5000))
-            .Select(e => new { e.Id, e.EmployeeId, e.CreatedAtUtc, e.UsedAtUtc })
+            .Select(e => new Candidate(e.Id, e.EmployeeId, e.CreatedAtUtc, e.UsedAtUtc, e.PurgeState))
             .ToListAsync(ct);
         if (candidates.Count == 0) return [];
 
-        var tz = await TimeZoneAsync(tenantId, ct);
-        var due = new List<Guid>();
+        var facts = await PunchFactsAsync(tenantId, candidates, ct);
+        var due = new List<DueSelfieEvidence>();
         foreach (var c in candidates)
         {
-            var (workDate, locked) = c.UsedAtUtc is { } used ? await PunchFactsAsync(tenantId, c.EmployeeId, used, tz, ct) : (null, null);
-            if (SelfieEvidenceRetention.DueAtUtc(c.CreatedAtUtc, c.UsedAtUtc, workDate, locked) <= nowUtc) due.Add(c.Id);
+            var (workDate, locked) = facts.TryGetValue(c.Id, out var f) ? f : (null, null);
+            var dueAt = SelfieEvidenceRetention.DueAtUtc(c.CreatedAtUtc, c.UsedAtUtc, workDate, locked, c.PurgeState);
+            if (dueAt <= nowUtc) due.Add(new DueSelfieEvidence(c.Id, c.UsedAtUtc, dueAt, workDate, locked));
         }
         return due;
     }
 
     /// <summary>
-    /// Purges one row if it is still due: deletes the blob, then STAGES the state flip and both audit rows (the caller
-    /// saves, inside its transaction). A blob delete that throws leaves the row Active, so the next run retries it.
+    /// Purges one row if it is still due (re-derived for that single row). Kept for one-off callers; the job uses
+    /// <see cref="PurgeDueAsync"/> with the facts its scan already loaded.
     /// </summary>
     public async Task<SelfieEvidencePurgeOutcome> PurgeOneAsync(Guid tenantId, Guid evidenceId, DateTime nowUtc, Guid? jobId, CancellationToken ct)
     {
         var evidence = await _db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == evidenceId, ct);
         if (evidence is null) return SelfieEvidencePurgeOutcome.Missing;
         if (evidence.PurgeState == AttendanceEvidencePurgeStates.Purged) return SelfieEvidencePurgeOutcome.AlreadyPurged;
-
-        DateOnly? workDate = null;
-        DateTime? locked = null;
-        if (evidence.UsedAtUtc is { } used)
-            (workDate, locked) = await PunchFactsAsync(tenantId, evidence.EmployeeId, used, await TimeZoneAsync(tenantId, ct), ct);
-        var dueAt = SelfieEvidenceRetention.DueAtUtc(evidence.CreatedAtUtc, evidence.UsedAtUtc, workDate, locked);
+        var facts = await PunchFactsAsync(tenantId,
+            [new Candidate(evidence.Id, evidence.EmployeeId, evidence.CreatedAtUtc, evidence.UsedAtUtc, evidence.PurgeState)], ct);
+        var (workDate, locked) = facts.TryGetValue(evidence.Id, out var f) ? f : (null, null);
+        var dueAt = SelfieEvidenceRetention.DueAtUtc(evidence.CreatedAtUtc, evidence.UsedAtUtc, workDate, locked, evidence.PurgeState);
         if (dueAt > nowUtc) return SelfieEvidencePurgeOutcome.NotDue;
+        await PurgeAsync(evidence, nowUtc, jobId, dueAt, Reason(evidence, workDate, locked), workDate, locked, ct);
+        return SelfieEvidencePurgeOutcome.Purged;
+    }
 
-        // Deleting an object that is already gone returns false, which is the same end state: re-runnable.
-        var blobRemoved = await _storage.TryDeleteAsync(tenantId, evidence.StorageKey, ct);
+    /// <summary>
+    /// Purges a row the scan found due. The row is re-read (tracked) inside the caller's transaction; if it was purged
+    /// meanwhile, or its use changed since the scan, nothing happens.
+    /// </summary>
+    public async Task<SelfieEvidencePurgeOutcome> PurgeDueAsync(Guid tenantId, DueSelfieEvidence due, DateTime nowUtc, Guid? jobId, CancellationToken ct)
+    {
+        var evidence = await _db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == due.Id, ct);
+        if (evidence is null) return SelfieEvidencePurgeOutcome.Missing;
+        if (evidence.PurgeState == AttendanceEvidencePurgeStates.Purged) return SelfieEvidencePurgeOutcome.AlreadyPurged;
+        if (evidence.UsedAtUtc != due.UsedAtUtc) return SelfieEvidencePurgeOutcome.NotDue;
+        await PurgeAsync(evidence, nowUtc, jobId, due.DueAtUtc, Reason(evidence, due.WorkDate, due.MonthLockedAtUtc), due.WorkDate, due.MonthLockedAtUtc, ct);
+        return SelfieEvidencePurgeOutcome.Purged;
+    }
 
+    /// <summary>
+    /// Purges a row NOW, whatever its retention date (consent withdrawal: unused selfies go at once). Strict: throws
+    /// when the delete is not confirmed, leaving the row as it was.
+    /// </summary>
+    public Task PurgeNowAsync(AttendanceEvidence evidence, DateTime nowUtc, string reason, CancellationToken ct) =>
+        PurgeAsync(evidence, nowUtc, null, nowUtc, reason, null, null, ct);
+
+    private async Task PurgeAsync(AttendanceEvidence evidence, DateTime nowUtc, Guid? jobId, DateTime dueAt, string reason,
+        DateOnly? workDate, DateTime? locked, CancellationToken ct)
+    {
+        var tenantId = evidence.TenantId;
+        // STRICT: every version deleted and confirmed, or this throws and the row stays Active/Pending for the next run.
+        // An object that is already gone counts as deleted, which is what makes a re-run safe.
+        await _storage.DeleteStrictAsync(tenantId, evidence.StorageKey, ct);
+
+        var previousState = evidence.PurgeState;
         evidence.PurgeState = AttendanceEvidencePurgeStates.Purged;
         evidence.PurgedAtUtc = nowUtc;
-        var reason = evidence.UsedAtUtc is null
-            ? "Selfie upload never used by a punch; deleted 24 hours after upload."
-            : locked is { } l && l <= workDate!.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) + SelfieEvidenceRetention.WithoutPayrollLock
-                ? $"Payroll month {workDate:yyyy-MM} locked on {l:yyyy-MM-dd}; selfie deleted 90 days after the lock."
-                : $"No payroll run locked {workDate:yyyy-MM} within 120 days of the work date {workDate:yyyy-MM-dd}; selfie deleted at work date + 120 days.";
         var details = JsonSerializer.Serialize(new
         {
             employeeId = evidence.EmployeeId,
             sha256 = evidence.Sha256,
+            previousState,
             workDate = workDate?.ToString("yyyy-MM-dd"),
             payrollMonthLockedAtUtc = locked,
             usedByRawEventId = evidence.UsedByRawEventId,
-            blobRemoved,
+            blobDeletion = "confirmed, all versions",
         });
         _db.RetentionPurgeAudits.Add(new RetentionPurgeAudit
         {
@@ -150,28 +204,83 @@ public sealed class SelfieEvidencePurger
             MetadataJson = details,
             CreatedAtUtc = nowUtc,
         });
-        return SelfieEvidencePurgeOutcome.Purged;
     }
 
-    private async Task<TimeZoneInfo> TimeZoneAsync(Guid tenantId, CancellationToken ct) =>
-        TenantTimeZone.FromId(await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+    private static string Reason(AttendanceEvidence evidence, DateOnly? workDate, DateTime? locked) =>
+        evidence.PurgeState == AttendanceEvidencePurgeStates.Pending
+            ? "Selfie upload never completed; any stored file deleted 1 hour after the attempt."
+            : evidence.UsedAtUtc is null
+                ? "Selfie upload never used by a punch; deleted 24 hours after upload."
+                : locked is { } l && workDate is { } wd && l <= wd.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) + SelfieEvidenceRetention.WithoutPayrollLock
+                    ? $"Payroll month {wd:yyyy-MM} locked on {l:yyyy-MM-dd}; selfie deleted 90 days after the lock."
+                    : $"No payroll run locked {workDate:yyyy-MM} within 120 days of the work date {workDate:yyyy-MM-dd}; selfie deleted at work date + 120 days.";
 
-    /// <summary>The punch's tenant-local work date and the earliest lock of a regular run for that month.</summary>
-    private async Task<(DateOnly? WorkDate, DateTime? LockedAtUtc)> PunchFactsAsync(
-        Guid tenantId, int employeeId, DateTime usedAtUtc, TimeZoneInfo tz, CancellationToken ct)
+    private sealed record Candidate(Guid Id, int EmployeeId, DateTime CreatedAtUtc, DateTime? UsedAtUtc, string PurgeState);
+
+    /// <summary>
+    /// For every USED candidate: the punch's tenant-local work date and the earliest lock of a regular run for that
+    /// month and the employee's company. One query for the companies, one for the locks, whatever the row count.
+    /// </summary>
+    private async Task<Dictionary<Guid, (DateOnly? WorkDate, DateTime? LockedAtUtc)>> PunchFactsAsync(
+        Guid tenantId, IReadOnlyList<Candidate> candidates, CancellationToken ct)
     {
-        var workDate = TenantTimeZone.LocalDate(tz, DateTime.SpecifyKind(usedAtUtc, DateTimeKind.Utc));
-        var companyId = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-            .Select(e => e.CompanyId)
-            .FirstOrDefaultAsync(ct);
-        var locked = await _db.PayrollRuns.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.Year == workDate.Year && r.Month == workDate.Month
-                        && r.RunType == PayrollRunTypes.Regular && r.Status != "Voided" && r.LockedAtUtc != null
-                        && (r.CompanyId == null || r.CompanyId == companyId))
-            .MinAsync(r => r.LockedAtUtc, ct);
-        return (workDate, locked);
+        var used = candidates.Where(c => c.UsedAtUtc is not null && c.PurgeState == AttendanceEvidencePurgeStates.Active).ToList();
+        var result = new Dictionary<Guid, (DateOnly?, DateTime?)>();
+        if (used.Count == 0) return result;
+
+        var tz = TenantTimeZone.FromId(await _db.TenantLocalizationSettings.AsNoTracking()
+            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+        var workDates = used.ToDictionary(c => c.Id, c => TenantTimeZone.LocalDate(tz, DateTime.SpecifyKind(c.UsedAtUtc!.Value, DateTimeKind.Utc)));
+
+        var employeeIds = used.Select(c => c.EmployeeId).Distinct().ToList();
+        var companies = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.CompanyId })
+            .ToDictionaryAsync(e => e.Id, e => e.CompanyId, ct);
+
+        var years = workDates.Values.Select(d => d.Year).Distinct().ToList();
+        var locks = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && years.Contains(r.Year)
+                        && r.RunType == PayrollRunTypes.Regular && r.Status != "Voided" && r.LockedAtUtc != null)
+            .Select(r => new { r.Year, r.Month, r.CompanyId, r.LockedAtUtc })
+            .ToListAsync(ct);
+
+        foreach (var c in used)
+        {
+            var workDate = workDates[c.Id];
+            var companyId = companies.GetValueOrDefault(c.EmployeeId);
+            var locked = locks
+                .Where(r => r.Year == workDate.Year && r.Month == workDate.Month && (r.CompanyId == null || r.CompanyId == companyId))
+                .Select(r => r.LockedAtUtc)
+                .Min();
+            result[c.Id] = (workDate, locked);
+        }
+        return result;
+    }
+}
+
+/// <summary>
+/// Tenant erasure (review item 4): every selfie file of the tenant that is not already confirmed deleted is STRICTLY
+/// deleted — all versions — BEFORE any row is erased. Throws on the first delete that is not confirmed, so the caller
+/// erases nothing and retries; files already deleted are a no-op on the retry.
+/// </summary>
+public static class SelfieEvidenceErasure
+{
+    /// <param name="tenantRows">The tenant's <c>attendance_evidence</c> rows (already scoped to the tenant by the caller).</param>
+    /// <returns>How many files were deleted (or confirmed absent).</returns>
+    public static async Task<int> DeleteAllFilesAsync(IQueryable<AttendanceEvidence> tenantRows, IDocumentStorage? storage, Guid tenantId, CancellationToken ct)
+    {
+        var keys = await tenantRows
+            .Where(e => e.TenantId == tenantId && e.PurgeState != AttendanceEvidencePurgeStates.Purged)
+            .OrderBy(e => e.CreatedAtUtc)
+            .Select(e => e.StorageKey)
+            .ToListAsync(ct);
+        if (keys.Count == 0) return 0;
+        if (storage is null)
+            throw new InvalidOperationException(
+                $"Tenant {tenantId} holds {keys.Count} selfie file(s) but no document storage is available to delete them; refusing to erase the rows and orphan the files.");
+        foreach (var key in keys) await storage.DeleteStrictAsync(tenantId, key, ct);
+        return keys.Count;
     }
 }
 
@@ -222,16 +331,16 @@ public sealed class SelfieEvidencePurgeJobHandler : IBackgroundJobHandler
         var asOf = DateTime.SpecifyKind(ctx.GetPayload<SelfieEvidencePurgePayload>().AsOfUtc, DateTimeKind.Utc);
         var storage = ctx.Services.GetRequiredService<IDocumentStorage>();
         var purger = new SelfieEvidencePurger(ctx.Db, storage);
-        var due = await purger.FindDueAsync(ctx.TenantId, asOf, _options.MaxPerRun, ctx.AbortToken);
+        var due = await purger.FindDueItemsAsync(ctx.TenantId, asOf, _options.MaxPerRun, ctx.AbortToken);
         await ctx.SetTotalAsync(due.Count, $"{due.Count} selfie(s) due for deletion.");
 
         var purged = 0;
-        foreach (var id in due)
+        foreach (var item in due)
         {
-            var key = $"evidence:{id}";
+            var key = $"evidence:{item.Id}";
             if (ctx.IsItemCompleted(key)) continue;
             SelfieEvidencePurgeOutcome outcome = default;
-            if (await ctx.RunItemAsync(key, async itemCt => outcome = await purger.PurgeOneAsync(ctx.TenantId, id, asOf, ctx.JobId, itemCt),
+            if (await ctx.RunItemAsync(key, async itemCt => outcome = await purger.PurgeDueAsync(ctx.TenantId, item, asOf, ctx.JobId, itemCt),
                     () => new { outcome = outcome.ToString() })
                 && outcome == SelfieEvidencePurgeOutcome.Purged)
                 purged++;
@@ -248,8 +357,8 @@ public sealed class SelfieEvidencePurgeJobHandler : IBackgroundJobHandler
 public sealed class SelfieEvidencePurgeScheduler : BackgroundService
 {
     private const string DueScan =
-        "Selfie purge scheduler has no request principal and no ambient tenant; it reads only the tenant id of Active " +
-        "selfie evidence old enough to be due, bounded and ordered, and enqueues tenant-pinned jobs.";
+        "Selfie purge scheduler has no request principal and no ambient tenant; it reads only the DISTINCT tenant ids of " +
+        "selfie evidence (Pending or Active) old enough to be due, bounded and ordered, and enqueues tenant-pinned jobs.";
 
     private const int ScanBatch = 1000;
 
@@ -293,18 +402,14 @@ public sealed class SelfieEvidencePurgeScheduler : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var store = scope.ServiceProvider.GetRequiredService<BackgroundJobStore>();
 
-        var unusedBefore = nowUtc - SelfieEvidenceRetention.UnusedUpload;
-        var usedBefore = nowUtc - SelfieEvidenceRetention.UsedScanFloor;
-        var tenants = await ScopedBypass.SystemWide(
-                db.AttendanceEvidence, ScanBatch, DueScan,
-                e => e.PurgeState == AttendanceEvidencePurgeStates.Active
-                     && ((e.UsedAtUtc == null && e.CreatedAtUtc <= unusedBefore) || (e.UsedAtUtc != null && e.UsedAtUtc <= usedBefore)),
-                e => e.CreatedAtUtc)
-            .Select(e => e.TenantId)
+        // DISTINCT tenant ids (review item 11): the bound is on tenants, so one tenant's backlog of due rows can never
+        // push another tenant out of the batch. Served by ix_attendance_evidence__purge_due.
+        var tenants = await ScopedBypass.SystemWideDistinct(
+                db.AttendanceEvidence, ScanBatch, DueScan, SelfieEvidenceRetention.MaybeDue(nowUtc), e => e.TenantId)
             .ToListAsync(ct);
 
         var created = 0;
-        foreach (var tenantId in tenants.Distinct())
+        foreach (var tenantId in tenants)
         {
             ct.ThrowIfCancellationRequested();
             var result = await store.EnqueueAsync(tenantId, SelfieEvidencePurgeJobHandler.JobType,

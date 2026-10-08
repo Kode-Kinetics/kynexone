@@ -3405,7 +3405,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<int>("ByteSize")
+                    b.Property<int?>("ByteSize")
                         .HasColumnType("integer")
                         .HasColumnName("byte_size");
 
@@ -3432,7 +3432,7 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)")
-                        .HasDefaultValue("Active")
+                        .HasDefaultValue("Pending")
                         .HasColumnName("purge_state");
 
                     b.Property<DateTime?>("PurgedAtUtc")
@@ -3440,7 +3440,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("purged_at_utc");
 
                     b.Property<string>("Sha256")
-                        .IsRequired()
                         .HasColumnType("character(64)")
                         .HasColumnName("sha256");
 
@@ -3472,24 +3471,30 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")
                         .HasFilter("used_by_raw_event_id IS NOT NULL");
 
-                    b.HasIndex("PurgeState", "CreatedAtUtc")
+                    b.HasIndex("TenantId", "CreatedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__purge_due")
-                        .HasFilter("purge_state = 'Active'");
+                        .HasFilter("purge_state IN ('Pending','Active')");
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("TenantId", "CreatedAtUtc"), new[] { "UsedAtUtc" });
 
                     b.HasIndex("TenantId", "EmployeeId", "CreatedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__employee_created");
 
                     b.ToTable("attendance_evidence", null, t =>
                         {
-                            t.HasCheckConstraint("ck_attendance_evidence__byte_size", "byte_size > 0");
+                            t.HasCheckConstraint("ck_attendance_evidence__active_payload", "purge_state <> 'Active' OR (sha256 IS NOT NULL AND byte_size IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__byte_size", "byte_size IS NULL OR byte_size > 0");
 
                             t.HasCheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
 
-                            t.HasCheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Active','Purged')");
+                            t.HasCheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Pending','Active','Purged')");
 
                             t.HasCheckConstraint("ck_attendance_evidence__purged_pair", "(purge_state = 'Purged') = (purged_at_utc IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_attendance_evidence__used_pair", "(used_at_utc IS NULL) = (used_by_raw_event_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
                         });
                 });
 

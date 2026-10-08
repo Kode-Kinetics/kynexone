@@ -19,7 +19,33 @@ public interface IDocumentStorage
     /// default (no-op).
     /// </summary>
     Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>
+    /// The storage key a tenant-relative object name will have, so a database row can record its key BEFORE the
+    /// upload (selfie evidence: insert Pending, upload, then activate). Stores that cannot place an object at a chosen
+    /// key keep the default and refuse.
+    /// </summary>
+    string TenantKey(Guid tenantId, string relativeName) =>
+        throw new NotSupportedException($"{GetType().Name} cannot store an object at a chosen key.");
+
+    /// <summary>Stores <paramref name="content"/> at exactly <paramref name="storageKey"/> (from <see cref="TenantKey"/>).</summary>
+    Task PutAtAsync(Guid tenantId, string storageKey, byte[] content, string contentType, CancellationToken ct = default) =>
+        throw new NotSupportedException($"{GetType().Name} cannot store an object at a chosen key.");
+
+    /// <summary>
+    /// STRICT delete, for anything the product promised to delete (selfie retention, consent withdrawal, tenant
+    /// erasure). Returns only when the object is confirmed gone — every stored version of it, on a versioned bucket —
+    /// and treats an object that is already absent as success. Throws on anything else (a 403, a network error, an
+    /// object that is still there afterwards), so the caller keeps its record and retries. Unlike
+    /// <see cref="TryDeleteAsync"/> it never reports failure as a value. A store that cannot confirm a deletion keeps
+    /// this default, which throws: nothing is ever marked deleted on the strength of a delete nobody confirmed.
+    /// </summary>
+    Task DeleteStrictAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) =>
+        throw new NotSupportedException($"{GetType().Name} cannot confirm a deletion, so nothing may be marked deleted through it.");
 }
+
+/// <summary>A strict delete ran but the object (or one of its versions) is still in storage.</summary>
+public sealed class DocumentDeletionNotConfirmedException(string message) : IOException(message);
 
 public class LocalDocumentStorage : IDocumentStorage
 {
@@ -56,6 +82,32 @@ public class LocalDocumentStorage : IDocumentStorage
         if (!File.Exists(path)) return Task.FromResult(false);
         File.Delete(path);
         return Task.FromResult(true);
+    }
+
+    public string TenantKey(Guid tenantId, string relativeName) =>
+        $"storage/documents/{tenantId:N}/{SafeRelative(relativeName)}";
+
+    public async Task PutAtAsync(Guid tenantId, string storageKey, byte[] content, string contentType, CancellationToken ct = default)
+    {
+        var path = ResolveTenantPath(tenantId, storageKey);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllBytesAsync(path, content, ct);
+    }
+
+    public Task DeleteStrictAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        var path = ResolveTenantPath(tenantId, storageUrl);
+        if (File.Exists(path)) File.Delete(path);
+        if (File.Exists(path)) throw new DocumentDeletionNotConfirmedException($"Stored document still present after delete: {storageUrl}");
+        return Task.CompletedTask;
+    }
+
+    internal static string SafeRelative(string relativeName)
+    {
+        if (string.IsNullOrWhiteSpace(relativeName) || relativeName.Contains("..", StringComparison.Ordinal)
+            || relativeName.StartsWith('/') || relativeName.Contains('\\'))
+            throw new InvalidOperationException("Invalid object name.");
+        return relativeName;
     }
 
     public string ResolvePath(string storageUrl)

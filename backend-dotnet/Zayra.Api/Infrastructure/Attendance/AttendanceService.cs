@@ -375,8 +375,17 @@ public class AttendanceService : IAttendanceService
         return logs;
     }
 
-    public Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct) =>
-        PushEventAsync(tenantId, request, context, ct, verification: null);
+    /// <summary>
+    /// events/push and CSV import. The selfie/geofence labels and <c>evidence:</c> photo references are written only
+    /// by the server's own punch decision (<see cref="PunchAsync"/>), so a caller-supplied one is REFUSED here
+    /// (<see cref="ReservedVerificationLabels"/>), never stored and never rewritten.
+    /// </summary>
+    public Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    {
+        if (ReservedVerificationLabels.Violates(request.VerificationMethod, request.PhotoReference))
+            throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
+        return PushEventAsync(tenantId, request, context, ct, verification: null);
+    }
 
     private async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct,
         PunchVerification? verification)
@@ -440,6 +449,14 @@ public class AttendanceService : IAttendanceService
         };
         _db.AttendanceRawEvents.Add(raw);
         await Audit(tenantId, context, "attendance.raw_event.created", "AttendanceRawEvent", raw.Id.ToString(), ct);
+        // Review item 10: each use of the tenant-wide site fallback, and each enforced punch from a phone that cannot
+        // detect a mocked location (iOS), is audited with the punch so HR can see and fix it.
+        if (verification is { GeofenceFellBackToAllSites: true })
+            await Audit(tenantId, context, "attendance.geofence.fallback_all_sites", "AttendanceRawEvent", raw.Id.ToString(),
+                JsonSerializer.Serialize(new { employeeId = employee.Id, site = verification.GeofenceSite, reason = "no geofenced site matches the employee's work location or branch" }), ct);
+        if (verification is { MockDetectionUnavailable: true })
+            await Audit(tenantId, context, "attendance.geofence.mock_detection_unavailable", "AttendanceRawEvent", raw.Id.ToString(),
+                JsonSerializer.Serialize(new { employeeId = employee.Id, site = verification.GeofenceSite, reason = "the device reported mockDetection = Unsupported (iOS cannot detect a simulated location)" }), ct);
         if (verification?.EvidenceId is Guid evidenceId)
             await ConsumeEvidenceAsync(tenantId, employee.Id, evidenceId, raw, verification, context, ct);
         try { await _db.SaveChangesAsync(ct); }
@@ -514,6 +531,10 @@ public class AttendanceService : IAttendanceService
         _db.AttendanceDeviceSyncLogs.Add(syncLog);
 
         var punches = request.Punches ?? Array.Empty<DeviceIngestPunch>();
+        // A device never writes the server's selfie/geofence labels or an evidence: reference: the whole batch is
+        // refused before anything is stored (review item 9: refuse, not rewrite).
+        if (punches.Any(p => ReservedVerificationLabels.Violates(p.VerificationMethod, p.PhotoReference)))
+            throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
         int accepted = 0, duplicates = 0, unmatched = 0;
         var matchedEmployees = new Dictionary<int, Employee>();
         var affectedDates = new HashSet<DateOnly>();

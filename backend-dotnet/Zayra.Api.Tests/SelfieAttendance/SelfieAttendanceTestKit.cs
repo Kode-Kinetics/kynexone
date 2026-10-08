@@ -13,6 +13,7 @@ using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Documents;
+using Xunit;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Seed;
@@ -48,6 +49,19 @@ internal sealed class SelfieWorld
     /// <summary>Another employee of the same company, linked to <see cref="ColleagueUserId"/>.</summary>
     public required Employee Colleague { get; init; }
     public required MemoryDocumentStorage Storage { get; init; }
+    /// <summary>Storage that IS on the KSA allow-list (endpoint host listed under Storage:ResidencyAllowList:KSA).</summary>
+    public StorageResidency Residency { get; init; } = ResidentKsa;
+    /// <summary>This world's own image gate, so parallel test classes never share the process-wide slots.</summary>
+    public SelfieImageGate Gate { get; init; } = new();
+
+    public const string KsaEndpoint = "https://s3.ksa-region.example.test";
+    public static readonly StorageResidency ResidentKsa = new(new StorageOptions
+    {
+        Provider = "s3", Bucket = "b", Endpoint = KsaEndpoint, Region = "auto",
+        ResidencyAllowList = new(StringComparer.OrdinalIgnoreCase) { ["KSA"] = ["s3.ksa-region.example.test"] },
+    });
+
+    public AttendanceVerificationService Verification => new(Db, Residency);
 
     public static async Task<SelfieWorld> CreateAsync()
     {
@@ -119,9 +133,25 @@ internal sealed class SelfieWorld
 
     public AttendanceController Attendance(ClaimsPrincipal user) =>
         With(new AttendanceController(new AttendanceService(Db, new NullNotifications(), new NullHttpClients()),
-            new DataScopeService(Db), new HrmHierarchyService(Db, new NullAudit()), Db), user);
+            new DataScopeService(Db), new HrmHierarchyService(Db, new NullAudit()), Db, Verification), user);
 
-    public MobileController Mobile(ClaimsPrincipal user) => With(new MobileController(Db), user);
+    public MobileController Mobile(ClaimsPrincipal user) => With(new MobileController(Db, Verification), user);
+
+    public AttendanceEvidenceController Evidence(ClaimsPrincipal user) =>
+        With(new AttendanceEvidenceController(Db, Storage, Verification, Gate), user);
+
+    public EssAttendanceVerificationController Ess(ClaimsPrincipal user) =>
+        With(new EssAttendanceVerificationController(Db, Verification, Storage), user);
+
+    /// <summary>POSTs <paramref name="bytes"/> as the multipart <c>file</c> field, the way the HTTP body arrives.</summary>
+    public Task<IActionResult> UploadAsync(ClaimsPrincipal user, byte[] bytes, string contentType = "image/jpeg", string fileName = "selfie.jpg")
+    {
+        var controller = Evidence(user);
+        controller.Request.ContentType = "multipart/form-data; boundary=x";
+        var file = new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", fileName) { Headers = new HeaderDictionary(), ContentType = contentType };
+        controller.Request.Form = new FormCollection(new Dictionary<string, Microsoft.Extensions.Primitives.StringValues>(), new FormFileCollection { file });
+        return controller.UploadSelfie();
+    }
 
     /// <summary>A Setup → Locations row (what Setup writes) with coordinates and a radius, matched by WorkLocation "HQ".</summary>
     public async Task<Location> AddSiteAsync(string code = "HQ", decimal? lat = SiteLat, decimal? lon = SiteLon, decimal? radius = SiteRadius)
@@ -152,14 +182,56 @@ internal sealed class SelfieWorld
     public Task EnforceGeofenceAsync(int maxAccuracy = 100, bool allowMocked = false) =>
         SetFlagAsync(GeofenceKey, true, JsonSerializer.Serialize(new { geofenceEnforced = true, maxAccuracyMeters = maxAccuracy, allowMockedLocation = allowMocked }));
 
-    /// <summary>Both owner sign-offs, as the platform endpoint requires them.</summary>
+    public static readonly Guid SigningOwnerId = Guid.Parse("0b1d0b1d-0000-4000-8000-000000000001");
+
+    /// <summary>Both owner sign-offs as the platform endpoint STORES them (the residency block server-stamped).</summary>
     public static string SignedOffConfig(bool requireSelfieForConsented = false) => JsonSerializer.Serialize(new
     {
-        dpia = new { signedOffBy = "owner@kynexone.test", signedOffAtUtc = "2026-10-08T09:00:00Z", reference = "DPIA-2026-007" },
-        dataResidency = new { region = "KSA", confirmedBy = "owner@kynexone.test", confirmedAtUtc = "2026-10-08T09:05:00Z" },
+        dpia = new { signedOffBy = SigningOwnerId.ToString(), signedOffAtUtc = "2026-10-01T09:00:00Z", reference = "DPIA-2026-007" },
+        dataResidency = new { region = "KSA", confirmedBy = SigningOwnerId.ToString(), confirmedAtUtc = "2026-10-01T09:05:00Z", storageLocation = "s3.ksa-region.example.test" },
         requireSelfieForConsented,
         consentPolicyVersion = "1",
     });
+
+    /// <summary>What an Owner SENDS to enable it: the DPIA block and the region; the server stamps the rest.</summary>
+    public static string EnableRequestConfig(Guid signedOffBy, string reference = "DPIA-2026-007", string signedOffAtUtc = "2026-10-01T09:00:00Z") =>
+        JsonSerializer.Serialize(new
+        {
+            dpia = new { signedOffBy = signedOffBy.ToString(), signedOffAtUtc, reference },
+            dataResidency = new { region = "KSA" },
+            requireSelfieForConsented = false,
+            consentPolicyVersion = "1",
+        });
+
+    /// <summary>
+    /// Makes <paramref name="controller"/> act as a named platform Owner (a Guid subject, as real platform tokens carry)
+    /// on a deploy with <paramref name="residency"/>, and records that Owner as a platform user.
+    /// </summary>
+    public static async Task<T> AsPlatformOwnerAsync<T>(T controller, ZayraDbContext db, Guid ownerId, StorageResidency? residency = null,
+        string role = PlatformRoles.Owner) where T : ControllerBase
+    {
+        if (!await db.PlatformUsers.AnyAsync(u => u.Id == ownerId))
+        {
+            db.PlatformUsers.Add(new PlatformUser { Id = ownerId, Email = $"{ownerId:N}@platform.test", FullName = "Platform person", PasswordHash = "x", Role = role, IsActive = true });
+            await db.SaveChangesAsync();
+        }
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingletonResidency(residency ?? ResidentKsa);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("sub", ownerId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, ownerId.ToString()),
+            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Email, $"{ownerId:N}@platform.test"),
+            new Claim(ClaimTypes.Role, "PlatformAdmin"),
+            new Claim("is_platform_admin", "true"),
+            new Claim("platform_role", role),
+        ], "Test"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal, RequestServices = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services) },
+        };
+        return controller;
+    }
 
     /// <summary>The permissions each seeded role really holds, read once from AuthSeeder.</summary>
     private static readonly Lazy<Task<IReadOnlyDictionary<string, string[]>>> SeededRoles = new(async () =>
@@ -191,12 +263,19 @@ internal sealed class SelfieWorld
         result is ObjectResult { Value: { } body } && JsonSerializer.SerializeToElement(body).TryGetProperty("message", out var m) ? m.GetString() : null;
 }
 
-/// <summary>Document storage in memory: records what was stored and what was deleted.</summary>
+/// <summary>
+/// Document storage in memory: records what was stored and what was deleted. Its strict delete behaves like the real
+/// one (gone or absent = success; <see cref="FailDeletes"/> throws), and <see cref="TryDeleteAsync"/> can be made to
+/// RETURN false while keeping the object (<see cref="TryDeleteReturnsFalse"/>), the way the S3 adapter answers a 403.
+/// </summary>
 internal sealed class MemoryDocumentStorage : IDocumentStorage
 {
-    public Dictionary<string, byte[]> Objects { get; } = new(StringComparer.Ordinal);
-    public List<string> Deleted { get; } = [];
+    public System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> Objects { get; } = new(StringComparer.Ordinal);
+    public System.Collections.Concurrent.ConcurrentQueue<string> DeletedLog { get; } = new();
+    public List<string> Deleted => DeletedLog.ToList();
     public bool FailDeletes { get; set; }
+    public bool TryDeleteReturnsFalse { get; set; }
+    public bool FailPuts { get; set; }
 
     public async Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken)
     {
@@ -215,10 +294,41 @@ internal sealed class MemoryDocumentStorage : IDocumentStorage
 
     public Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
     {
+        if (TryDeleteReturnsFalse) return Task.FromResult(false);
         if (FailDeletes) throw new IOException("storage unavailable");
-        Deleted.Add(storageUrl);
-        return Task.FromResult(Objects.Remove(storageUrl));
+        DeletedLog.Enqueue(storageUrl);
+        return Task.FromResult(Objects.TryRemove(storageUrl, out _));
     }
+
+    public string TenantKey(Guid tenantId, string relativeName) => $"storage/documents/{tenantId:N}/{relativeName}";
+
+    public Task PutAtAsync(Guid tenantId, string storageKey, byte[] content, string contentType, CancellationToken ct = default)
+    {
+        if (FailPuts) throw new IOException("storage unavailable");
+        Assert.StartsWith($"storage/documents/{tenantId:N}/", storageKey);
+        Objects[storageKey] = content;
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteStrictAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
+    {
+        if (FailDeletes) throw new IOException("storage unavailable");
+        if (TryDeleteReturnsFalse) throw new IOException("403 Forbidden");
+        Assert.StartsWith($"storage/documents/{tenantId:N}/", storageUrl);
+        DeletedLog.Enqueue(storageUrl);
+        Objects.TryRemove(storageUrl, out _);
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>A store built before the strict delete existed: TryDelete answers false (as S3 does on a 403) and nothing else.</summary>
+internal sealed class LegacyFalseReturningStorage : IDocumentStorage
+{
+    public Dictionary<string, byte[]> Objects { get; } = new(StringComparer.Ordinal);
+    public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(Objects[storageUrl]);
+    public string ResolvePath(string storageUrl) => storageUrl;
+    public Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 internal sealed class NullNotifications : INotificationService
@@ -235,4 +345,10 @@ internal sealed class NullHttpClients : IHttpClientFactory
 internal sealed class NullAudit : IAuditService
 {
     public Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+internal static class SelfieServiceCollectionExtensions
+{
+    public static void AddSingletonResidency(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, StorageResidency residency) =>
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, residency);
 }

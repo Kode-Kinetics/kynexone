@@ -50,6 +50,8 @@ public static class DocumentStorageRegistration
     {
         var opts = ResolveAndValidate(configuration, isDevelopment);
         var useS3 = string.Equals(opts.Provider, "s3", StringComparison.OrdinalIgnoreCase);
+        // Where documents really land, checked against Storage:ResidencyAllowList (selfie attendance needs KSA).
+        services.AddSingleton(new StorageResidency(opts));
 
         if (useS3)
         {

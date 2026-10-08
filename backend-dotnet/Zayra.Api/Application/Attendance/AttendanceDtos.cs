@@ -251,6 +251,9 @@ public record AttendanceRawEventRequest(
 /// returned by POST /api/attendance/evidence/selfie — never a storage key.
 /// <para><see cref="VerificationMethod"/>, <see cref="ConfidenceScore"/> and <see cref="ClientBiometricVerified"/> are
 /// accepted so older clients still bind, and are IGNORED: the server stores what it verified itself.</para>
+/// <para><see cref="MockDetection"/> is <c>Supported</c> (Android: <see cref="LocationMocked"/> is meaningful) or
+/// <c>Unsupported</c> (iOS cannot detect a mocked location). Under an enforced geofence a punch/mobile request with
+/// neither field is from an old app and is refused.</para>
 /// </summary>
 public record WebPunchRequest(
     int EmployeeId,
@@ -263,10 +266,16 @@ public record WebPunchRequest(
     Guid? EvidenceId = null,
     string? VerificationMethod = null,
     decimal? ConfidenceScore = null,
-    bool? ClientBiometricVerified = null);
+    bool? ClientBiometricVerified = null,
+    string? MockDetection = null);
 
-/// <summary>What the server verified for a self-punch, handed to the write so it is stored with the raw event.</summary>
-public sealed record PunchVerification(string Method, Guid? EvidenceId, string? GeofenceSite, double? DistanceMeters)
+/// <summary>
+/// What the server verified for a punch, handed to the write so it is stored with the raw event.
+/// <see cref="GeofenceFellBackToAllSites"/> and <see cref="MockDetectionUnavailable"/> are audited with the punch: the
+/// employee matched no site of their own, or their phone (iOS) cannot report a mocked location.
+/// </summary>
+public sealed record PunchVerification(string Method, Guid? EvidenceId, string? GeofenceSite, double? DistanceMeters,
+    bool GeofenceFellBackToAllSites = false, bool MockDetectionUnavailable = false)
 {
     public static readonly PunchVerification Unverified = new(Zayra.Api.Models.AttendanceVerificationMethods.None, null, null, null);
 }

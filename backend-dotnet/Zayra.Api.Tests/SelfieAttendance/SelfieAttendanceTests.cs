@@ -34,9 +34,7 @@ public class SelfieAttendanceTests : PlatformTestBase
     public async Task FlagOff_Upload_IsRefused_AndNothingIsStored()
     {
         var w = await SelfieWorld.CreateAsync();
-        var c = Evidence(w, await w.EmployeeAsync(w.Caller, w.CallerUserId));
-
-        var result = await c.UploadSelfie(Form(SelfieJpeg()), default);
+        var result = await w.UploadAsync(await w.EmployeeAsync(w.Caller, w.CallerUserId), SelfieJpeg());
 
         Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(result).StatusCode);
         Assert.Equal("selfie_not_enabled", SelfieWorld.CodeOf(result));
@@ -50,7 +48,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         // A row written by any path other than the platform endpoint, without the two sign-offs, is treated as OFF.
         var w = await SelfieWorld.CreateAsync();
         await w.SetFlagAsync(SelfieWorld.SelfieKey, true, null);
-        Assert.False((await new AttendanceVerificationService(w.Db).GetPolicyAsync(w.TenantId, default)).SelfieEnabled);
+        Assert.False((await w.Verification.GetPolicyAsync(w.TenantId, default)).SelfieEnabled);
     }
 
     [Fact]
@@ -92,12 +90,18 @@ public class SelfieAttendanceTests : PlatformTestBase
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         await db.SaveChangesAsync();
-        var controller = CreateController(db);
+        var ownerId = Guid.NewGuid();
+        var controller = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, ownerId);
 
-        var result = await controller.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.SignedOffConfig()), default);
+        var result = await controller.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(ownerId)), default);
 
         Assert.IsType<OkObjectResult>(result);
-        Assert.True((await db.TenantFeatureFlags.SingleAsync(f => f.FeatureKey == FeatureKeys.SelfieAttendance)).IsEnabled);
+        var enabled = await db.TenantFeatureFlags.SingleAsync(f => f.FeatureKey == FeatureKeys.SelfieAttendance);
+        Assert.True(enabled.IsEnabled);
+        // The server stamped the actor, the time and where storage really is.
+        Assert.Contains($"\"confirmedBy\":\"{ownerId}\"", enabled.ConfigJson);
+        Assert.Contains("\"storageLocation\":\"s3.ksa-region.example.test\"", enabled.ConfigJson);
+        Assert.Empty(SelfieAttendanceConfig.MissingSignOffs(enabled.ConfigJson));
         var audit = await db.AdminAuditLogs.SingleAsync(a => a.EntityType == "FeatureFlag");
         Assert.Equal("FeatureEnabled", audit.Action);
         Assert.Contains("DPIA-2026-007", audit.NewValuesJson);
@@ -158,44 +162,44 @@ public class SelfieAttendanceTests : PlatformTestBase
     // ── Geofence on ───────────────────────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("web")]
-    [InlineData("mobile")]
-    public async Task Geofence_MockedLocation_IsRefused(string route)
+    [InlineData("Supported")]
+    [InlineData("Unsupported")]
+    [InlineData(null)]
+    public async Task Geofence_MockedLocation_IsRefused(string? mockDetection)
     {
         var w = await SelfieWorld.CreateAsync();
         await w.AddSiteAsync();
         await w.EnforceGeofenceAsync();
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await Punch(c, route, new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10, LocationMocked: true));
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10, LocationMocked: true, MockDetection: mockDetection), default);
 
         Assert.Equal("location_mocked", SelfieWorld.CodeOf(result.Result));
         Assert.Empty(w.Db.AttendanceRawEvents);
     }
 
     [Theory]
-    [InlineData("web", 150)]
-    [InlineData("mobile", 150)]
-    [InlineData("web", null)]
-    [InlineData("mobile", null)]
-    public async Task Geofence_PoorOrMissingAccuracy_IsRefused(string route, int? accuracy)
+    [InlineData("Supported", 150)]
+    [InlineData("Unsupported", 150)]
+    [InlineData("Supported", null)]
+    [InlineData("Unsupported", null)]
+    public async Task Geofence_PoorOrMissingAccuracy_IsRefused(string mockDetection, int? accuracy)
     {
         var w = await SelfieWorld.CreateAsync();
         await w.AddSiteAsync();
         await w.EnforceGeofenceAsync(maxAccuracy: 100);
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await Punch(c, route, new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: accuracy));
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: accuracy,
+            LocationMocked: mockDetection == "Supported" ? false : null, MockDetection: mockDetection), default);
 
         Assert.Equal("location_inaccurate", SelfieWorld.CodeOf(result.Result));
         Assert.Contains("100 m", SelfieWorld.MessageOf(result.Result));
         Assert.Empty(w.Db.AttendanceRawEvents);
     }
 
-    [Theory]
-    [InlineData("web")]
-    [InlineData("mobile")]
-    public async Task Geofence_InsideTheRadius_Passes_AndIsStoredAsGeofenceVerified(string route)
+    [Fact]
+    public async Task Geofence_InsideTheRadius_Passes_AndIsStoredAsGeofenceVerified()
     {
         var w = await SelfieWorld.CreateAsync();
         await w.AddSiteAsync();
@@ -203,7 +207,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
         // ~55 m north of the site, well inside 150 m.
-        var result = await Punch(c, route, new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat + 0.0005m, SelfieWorld.SiteLon, AccuracyMeters: 12, LocationMocked: false));
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat + 0.0005m, SelfieWorld.SiteLon, AccuracyMeters: 12, LocationMocked: false, MockDetection: "Supported"), default);
 
         var raw = Assert.IsType<AttendanceRawEvent>(Assert.IsType<OkObjectResult>(result.Result).Value);
         Assert.Equal(w.Caller.Id, raw.EmployeeId);
@@ -218,7 +222,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         await w.EnforceGeofenceAsync(allowMocked: true);
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10, LocationMocked: true), default);
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10, LocationMocked: true, MockDetection: "Supported"), default);
 
         Assert.IsType<OkObjectResult>(result.Result);
     }
@@ -231,7 +235,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         await w.EnforceGeofenceAsync();
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await c.WebPunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10), default);
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 10, LocationMocked: false, MockDetection: "Supported"), default);
 
         Assert.Equal("geofence_site_missing", SelfieWorld.CodeOf(result.Result));
     }
@@ -295,7 +299,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         var evidenceId = await UploadAsync(w);
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 8, LocationMocked: false, EvidenceId: evidenceId), default);
+        var result = await c.MobilePunch(new WebPunchRequest(0, "In", null, SelfieWorld.SiteLat, SelfieWorld.SiteLon, AccuracyMeters: 8, LocationMocked: false, EvidenceId: evidenceId, MockDetection: "Supported"), default);
 
         Assert.Equal(AttendanceVerificationMethods.SelfieAndGeofence, Assert.IsType<AttendanceRawEvent>(Assert.IsType<OkObjectResult>(result.Result).Value).VerificationMethod);
     }
@@ -312,12 +316,13 @@ public class SelfieAttendanceTests : PlatformTestBase
         var self = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
         Assert.Equal("evidence_not_found", SelfieWorld.CodeOf((await self.MobilePunch(new WebPunchRequest(0, "In", null, null, null, EvidenceId: colleaguesSelfie), default)).Result));
 
-        // An HR Manager allowed to punch for the colleague (attendance.write) cannot attach their OWN selfie to the
-        // colleague's punch: evidence binds to the employee the punch is recorded against (no buddy-punching).
+        // An HR Manager allowed to punch for the colleague (attendance.write) cannot attach any selfie to the colleague's
+        // punch — not their own, not the colleague's: kiosk and on-behalf punches never carry one (no buddy-punching).
         await ConsentAsync(w, w.Caller, w.CallerUserId);
         var hrsOwnSelfie = await UploadAsync(w, w.Caller, w.CallerUserId);
         var hr = w.Attendance(await w.RoleAsync("HR Manager", w.Caller, w.CallerUserId));
-        Assert.Equal("evidence_not_found", SelfieWorld.CodeOf((await hr.KioskPunch(new WebPunchRequest(w.Colleague.Id, "In", null, null, null, EvidenceId: hrsOwnSelfie), default)).Result));
+        Assert.Equal("evidence_not_accepted", SelfieWorld.CodeOf((await hr.KioskPunch(new WebPunchRequest(w.Colleague.Id, "In", null, null, null, EvidenceId: hrsOwnSelfie), default)).Result));
+        Assert.Equal("evidence_not_accepted", SelfieWorld.CodeOf((await hr.MobilePunch(new WebPunchRequest(w.Colleague.Id, "In", null, null, null, EvidenceId: colleaguesSelfie), default)).Result));
 
         Assert.Empty(w.Db.AttendanceRawEvents);
         Assert.All(w.Db.AttendanceEvidence, e => Assert.Null(e.UsedAtUtc));
@@ -349,14 +354,16 @@ public class SelfieAttendanceTests : PlatformTestBase
         var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
 
         // Upload without consent: refused.
-        var upload = await Evidence(w, user).UploadSelfie(Form(SelfieJpeg()), default);
+        var upload = await w.UploadAsync(user, SelfieJpeg());
         Assert.Equal("consent_required", SelfieWorld.CodeOf(upload));
         Assert.Empty(w.Db.AttendanceEvidence);
 
-        // Consent, upload, withdraw: the selfie taken under consent can no longer be used.
+        // Consent, upload, withdraw: the selfie taken under consent can no longer be used. (Storage is down here, so the
+        // unused selfie survives the withdrawal's immediate purge and the punch-time consent check is what refuses it.)
         await ConsentAsync(w, w.Caller, w.CallerUserId);
         var evidenceId = await UploadAsync(w);
-        Assert.IsType<OkObjectResult>(await Ess(w, user).WithdrawConsent(new WithdrawBiometricConsentRequest("Mobile"), default));
+        w.Storage.FailDeletes = true;
+        Assert.IsType<OkObjectResult>(await w.Ess(user).WithdrawConsent(new WithdrawBiometricConsentRequest("Mobile"), default));
         var punch = await w.Attendance(user).MobilePunch(new WebPunchRequest(0, "In", null, null, null, EvidenceId: evidenceId), default);
         Assert.Equal("consent_required", SelfieWorld.CodeOf(punch.Result));
         Assert.Empty(w.Db.AttendanceRawEvents);
@@ -384,7 +391,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         var source = SelfieJpeg(withGpsExif: true);
         Assert.True(Contains(source, Encoding.ASCII.GetBytes("Exif")));
 
-        var result = await Evidence(w, await w.EmployeeAsync(w.Caller, w.CallerUserId)).UploadSelfie(Form(source), default);
+        var result = await w.UploadAsync(await w.EmployeeAsync(w.Caller, w.CallerUserId), source);
 
         var created = Assert.IsAssignableFrom<ObjectResult>(result);
         Assert.Equal(201, created.StatusCode);
@@ -394,7 +401,9 @@ public class SelfieAttendanceTests : PlatformTestBase
         var row = await w.Db.AttendanceEvidence.SingleAsync();
         Assert.Equal(evidenceId, row.Id);
         Assert.Equal(w.Caller.Id, row.EmployeeId);
-        Assert.Equal(row.CreatedAtUtc.AddMinutes(10), row.ExpiresAtUtc);
+        // Ten minutes from when the file was stored (the row was reserved a moment earlier, before the body was read).
+        Assert.InRange(row.ExpiresAtUtc, row.CreatedAtUtc.AddMinutes(10), row.CreatedAtUtc.AddMinutes(10).AddSeconds(30));
+        Assert.Equal(AttendanceEvidencePurgeStates.Active, row.PurgeState);
         var stored = w.Storage.Objects[row.StorageKey];
         Assert.False(Contains(stored, Encoding.ASCII.GetBytes("Exif")), "the stored selfie must carry no EXIF block");
         Assert.False(Contains(stored, Encoding.ASCII.GetBytes("GPSKYNEX")), "the GPS payload must not survive");
@@ -412,7 +421,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         await ConsentAsync(w, w.Colleague, w.ColleagueUserId);
         await UploadAsync(w, w.Colleague, w.ColleagueUserId);
 
-        var eleventh = await Evidence(w, await w.EmployeeAsync(w.Caller, w.CallerUserId)).UploadSelfie(Form(SelfieJpeg()), default);
+        var eleventh = await w.UploadAsync(await w.EmployeeAsync(w.Caller, w.CallerUserId), SelfieJpeg());
 
         Assert.Equal(429, Assert.IsAssignableFrom<ObjectResult>(eleventh).StatusCode);
         Assert.Equal("selfie_rate_limited", SelfieWorld.CodeOf(eleventh));
@@ -427,7 +436,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         await EnableSelfieAsync(w);
         var kiosk = w.Principal("Kiosk Operator", w.CallerUserId, w.Caller.Id, ["attendance.kiosk"], "KioskOnly");
 
-        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(await Evidence(w, kiosk).UploadSelfie(Form(SelfieJpeg()), default)).StatusCode);
+        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(await w.UploadAsync(kiosk, SelfieJpeg())).StatusCode);
     }
 
     // ── Consent ───────────────────────────────────────────────────────────────────────────────
@@ -446,7 +455,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         Assert.Equal("selfie_required", SelfieWorld.CodeOf(required.Result));
 
         // ...and after withdrawal the same punch goes through, with nothing claimed as verified.
-        var withdrawn = await Ess(w, user).WithdrawConsent(null, default);
+        var withdrawn = await w.Ess(user).WithdrawConsent(null, default);
         Assert.IsType<OkObjectResult>(withdrawn);
         Assert.NotNull((await w.Db.BiometricConsents.SingleAsync()).WithdrawnAtUtc);
         var punch = await w.Attendance(user).MobilePunch(new WebPunchRequest(0, "In", null, null, null), default);
@@ -460,7 +469,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         var w = await SelfieWorld.CreateAsync();
         await EnableSelfieAsync(w);
         var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
-        var ess = Ess(w, user);
+        var ess = w.Ess(user);
 
         Assert.IsType<ConflictObjectResult>(await ess.GiveConsent(new GiveBiometricConsentRequest("0", "Mobile"), default));
         Assert.Equal(1, await w.Db.BiometricConsents.CountAsync());
@@ -484,7 +493,7 @@ public class SelfieAttendanceTests : PlatformTestBase
     public async Task VerificationView_TellsTheAppWhatApplies()
     {
         var w = await SelfieWorld.CreateAsync();
-        var ess = Ess(w, await w.EmployeeAsync(w.Caller, w.CallerUserId));
+        var ess = w.Ess(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
         var off = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await ess.GetAttendanceVerification(default)).Value);
         Assert.False(off.GetProperty("selfie").GetProperty("enabled").GetBoolean());
@@ -609,38 +618,29 @@ public class SelfieAttendanceTests : PlatformTestBase
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────
 
-    private static Task<ActionResult<AttendanceRawEvent>> Punch(AttendanceController c, string route, WebPunchRequest request) =>
-        route == "web" ? c.WebPunch(request, default) : c.MobilePunch(request, default);
-
-    private static AttendanceEvidenceController Evidence(SelfieWorld w, System.Security.Claims.ClaimsPrincipal user) =>
-        w.With(new AttendanceEvidenceController(w.Db, w.Storage), user);
-
-    private static EssAttendanceVerificationController Ess(SelfieWorld w, System.Security.Claims.ClaimsPrincipal user) =>
-        w.With(new EssAttendanceVerificationController(w.Db), user);
-
-    private static async Task EnableSelfieAsync(SelfieWorld w)
+    internal static async Task EnableSelfieAsync(SelfieWorld w)
     {
         await w.SetFlagAsync(SelfieWorld.SelfieKey, true, SelfieWorld.SignedOffConfig());
         await ConsentAsync(w, w.Caller, w.CallerUserId);
     }
 
-    private static async Task ConsentAsync(SelfieWorld w, Employee employee, Guid userId)
+    internal static async Task ConsentAsync(SelfieWorld w, Employee employee, Guid userId)
     {
-        var result = await Ess(w, await w.EmployeeAsync(employee, userId)).GiveConsent(new GiveBiometricConsentRequest("1", "Mobile"), default);
+        var result = await w.Ess(await w.EmployeeAsync(employee, userId)).GiveConsent(new GiveBiometricConsentRequest("1", "Mobile"), default);
         Assert.True(result is ObjectResult { StatusCode: 200 or 201 } or OkObjectResult, $"consent was not recorded: {SelfieWorld.MessageOf(result)}");
     }
 
-    private static Task<Guid> UploadAsync(SelfieWorld w) => UploadAsync(w, w.Caller, w.CallerUserId);
+    internal static Task<Guid> UploadAsync(SelfieWorld w) => UploadAsync(w, w.Caller, w.CallerUserId);
 
-    private static async Task<Guid> UploadAsync(SelfieWorld w, Employee employee, Guid userId)
+    internal static async Task<Guid> UploadAsync(SelfieWorld w, Employee employee, Guid userId)
     {
-        var result = await Evidence(w, await w.EmployeeAsync(employee, userId)).UploadSelfie(Form(SelfieJpeg()), default);
+        var result = await w.UploadAsync(await w.EmployeeAsync(employee, userId), SelfieJpeg());
         var created = Assert.IsAssignableFrom<ObjectResult>(result);
         Assert.True(created.StatusCode == 201, $"upload failed: {SelfieWorld.MessageOf(result)}");
         return JsonSerializer.SerializeToElement(created.Value).GetProperty("evidenceId").GetGuid();
     }
 
-    private static async Task<AttendanceEvidence> SeedUsedEvidenceAsync(SelfieWorld w, DateTime usedAt)
+    internal static async Task<AttendanceEvidence> SeedUsedEvidenceAsync(SelfieWorld w, DateTime usedAt)
     {
         var raw = new AttendanceRawEvent { TenantId = w.TenantId, EmployeeId = w.Caller.Id, PunchTimestampUtc = usedAt, PunchDirection = "In" };
         w.Db.AttendanceRawEvents.Add(raw);
@@ -649,15 +649,14 @@ public class SelfieAttendanceTests : PlatformTestBase
         {
             TenantId = w.TenantId, EmployeeId = w.Caller.Id, StorageKey = key, Sha256 = new string('a', 64), ByteSize = 3,
             CreatedAtUtc = usedAt.AddMinutes(-1), ExpiresAtUtc = usedAt.AddMinutes(9), UsedAtUtc = usedAt, UsedByRawEventId = raw.Id,
+            PurgeState = AttendanceEvidencePurgeStates.Active,
         };
         w.Db.AttendanceEvidence.Add(row);
         await w.Db.SaveChangesAsync();
         return row;
     }
 
-    private static SelfieUploadForm Form(byte[] bytes) => new() { File = FormFile(bytes) };
-
-    private static IFormFile FormFile(byte[] bytes) =>
+    internal static IFormFile FormFile(byte[] bytes) =>
         new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", "selfie.jpg") { Headers = new HeaderDictionary(), ContentType = "image/jpeg" };
 
     /// <summary>A real JPEG; optionally with an APP1 EXIF segment carrying a GPS-like payload after SOI.</summary>
@@ -674,7 +673,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         return jpeg.Take(2).Concat(app1).Concat(jpeg.Skip(2)).ToArray();
     }
 
-    private static bool Contains(byte[] haystack, byte[] needle)
+    internal static bool Contains(byte[] haystack, byte[] needle)
     {
         for (var i = 0; i + needle.Length <= haystack.Length; i++)
             if (haystack.AsSpan(i, needle.Length).SequenceEqual(needle)) return true;

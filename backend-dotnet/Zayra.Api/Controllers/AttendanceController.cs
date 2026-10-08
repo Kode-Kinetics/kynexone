@@ -142,7 +142,9 @@ public class AttendanceController : ControllerBase
     {
         var key = Request.Headers["X-Device-Key"].ToString();
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var result = await _attendance.IngestByDeviceKeyAsync(key, request, ip, ct);
+        DeviceIngestResult? result;
+        try { result = await _attendance.IngestByDeviceKeyAsync(key, request, ip, ct); }
+        catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
         return result is null ? Unauthorized(new { message = "Invalid or inactive device key." }) : Ok(result);
     }
 
@@ -173,6 +175,7 @@ public class AttendanceController : ControllerBase
             var raw = await _attendance.PushEventAsync(tenantId, request, Context(), ct);
             return Created($"/api/attendance/events/raw/{raw.Id}", raw);
         }
+        catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -301,17 +304,41 @@ public class AttendanceController : ControllerBase
     [HttpPost("punch/web")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> WebPunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Web punch", [OnBehalfPunchPermission], ct);
+        Punch(request, "Web punch", [OnBehalfPunchPermission], PunchChannel.SelfWeb, ct);
 
     [HttpPost("punch/mobile")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> MobilePunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Mobile app punch", [OnBehalfPunchPermission], ct);
+        Punch(request, "Mobile app punch", [OnBehalfPunchPermission], PunchChannel.SelfMobile, ct);
 
     [HttpPost("punch/kiosk")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public Task<ActionResult<AttendanceRawEvent>> KioskPunch(WebPunchRequest request, CancellationToken ct) =>
-        Punch(request, "Tablet/kiosk punch", [OnBehalfPunchPermission, KioskPunchPermission], ct);
+        Punch(request, "Tablet/kiosk punch", [OnBehalfPunchPermission, KioskPunchPermission], PunchChannel.Kiosk, ct);
+
+    /// <summary>
+    /// Employees the attendance geofence cannot place: active employees (within the caller's data scope) whose work
+    /// location and branch match no Setup → Locations site with coordinates and a radius, so their punches are checked
+    /// against EVERY geofenced site of the company (each such punch is audited). HR fixes them by setting the
+    /// employee's work location or branch. Empty when no geofenced site exists.
+    /// </summary>
+    [HttpGet("geofence/unmatched-employees")]
+    [HasPermission("attendance.read")]
+    public async Task<IActionResult> GeofenceUnmatchedEmployees(CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var rows = await _verification.UnmatchedEmployeesAsync(tenantId, scope.IsUnrestricted ? null : scope.AllowedEmployeeIds, ct);
+        var policy = await _verification.GetPolicyAsync(tenantId, ct);
+        return Ok(new
+        {
+            geofenceEnforced = policy.GeofenceEnforced,
+            count = rows.Count,
+            definition = "Active employees whose work location (code or name) and branch match no geofenced Location, so the "
+                         + "geofence falls back to every geofenced site of the company for their punches.",
+            employees = rows.Select(r => new { r.EmployeeId, r.EmployeeCode, r.Name, r.WorkLocation, r.BranchId }),
+        });
+    }
 
     [HttpPost("regularization")]
     public async Task<IActionResult> Regularization(RegularizationRequestDto request, CancellationToken ct)
@@ -517,7 +544,8 @@ public class AttendanceController : ControllerBase
     /// for someone else would write a wrong record without telling them. Data scope alone is not authority: an
     /// Auditor's or Payroll user's org-wide read scope, or a Manager's team, used to be enough to punch.
     /// </summary>
-    private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, string[] onBehalfPermissions, CancellationToken ct)
+    private async Task<ActionResult<AttendanceRawEvent>> Punch(WebPunchRequest request, string source, string[] onBehalfPermissions,
+        PunchChannel routeChannel, CancellationToken ct)
     {
         var tenantId = RequireTenant();
         var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
@@ -529,11 +557,14 @@ public class AttendanceController : ControllerBase
             if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(employeeId)) return Forbid();
         }
 
-        // Selfie attendance v2: the server decides what was verified. The geofence (when the tenant enforces it) and the
-        // evidence rules run on every self-punch route, including the kiosk, which has no fixed site of its own. Evidence
-        // must belong to the employee the punch is recorded against, so nobody can punch with someone else's selfie.
+        // Selfie attendance v2: the server decides what was verified. The kiosk is its own channel (geofenced, never a
+        // selfie); a web/mobile punch for someone else is on-behalf (no selfie, no geofence: the location is the
+        // operator's); otherwise it is the employee's own punch, where the selfie requirement and the geofence apply.
+        var channel = routeChannel == PunchChannel.Kiosk ? PunchChannel.Kiosk
+            : employeeId != self ? PunchChannel.OnBehalf
+            : routeChannel;
         var decision = await _verification.EvaluatePunchAsync(tenantId, employeeId, request.EvidenceId,
-            new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked), ct);
+            new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked, request.MockDetection), channel, ct);
         if (decision.Refusal is { } refusal) return BadRequest(refusal.Body);
 
         try { return Ok(await _attendance.PunchAsync(tenantId, request with { EmployeeId = employeeId }, source, Context(), ct, decision.Verification)); }

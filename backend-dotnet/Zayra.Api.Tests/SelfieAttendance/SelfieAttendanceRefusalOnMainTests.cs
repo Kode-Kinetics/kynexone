@@ -10,8 +10,8 @@ using Zayra.Api.Tests.Platform;
 namespace Zayra.Api.Tests.SelfieAttendance;
 
 /// <summary>
-/// The selfie-attendance v2 refusals that can be stated with main's own types, so they compile against main's production
-/// code — where every one of them FAILS (main has no geofence and no sign-off gate). Each refusal is paired with a positive
+/// The selfie-attendance v2 refusals that can be stated with main's own types (so they compile against main's production
+/// code, where every one of them FAILS: main has no geofence and no sign-off gate). Each refusal is paired with a positive
 /// control in the same test or the next, so no rule can pass by refusing everyone.
 /// </summary>
 public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
@@ -30,20 +30,35 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
             accuracyMeters = 10, locationMocked = false,
         }), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
 
+    /// <summary>
+    /// Review item 10: a browser cannot attest to a mocked location, so under an enforced geofence the employee's own
+    /// web punch is refused outright — even from inside the radius — with a plain pointer to the app.
+    /// </summary>
     [Fact]
-    public async Task Geofence_OnWebPunch_OutsideTheRadius_IsRefused_AndNothingIsRecorded()
+    public async Task Geofence_OnWebPunch_IsRefused_TheMobileAppIsRequired_EvenInsideTheRadius()
     {
         var w = await SelfieWorld.CreateAsync();
         await w.AddSiteAsync();
         await w.EnforceGeofenceAsync();
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        var result = await c.WebPunch(Outside(0), default);
-
-        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
-        Assert.Equal("outside_geofence", SelfieWorld.CodeOf(bad));
-        Assert.Contains("HQ office", SelfieWorld.MessageOf(bad));
+        foreach (var request in new[] { Outside(0), Outside(0) with { Latitude = SelfieWorld.SiteLat + 0.0005m } })
+        {
+            var bad = Assert.IsType<BadRequestObjectResult>((await c.WebPunch(request, default)).Result);
+            Assert.Equal("mobile_app_required", SelfieWorld.CodeOf(bad));
+            Assert.Equal("Your company requires attendance from the mobile app at your site.", SelfieWorld.MessageOf(bad));
+        }
         Assert.Empty(w.Db.AttendanceRawEvents);
+    }
+
+    [Fact]
+    public async Task Geofence_PositiveControl_WebPunchWithTheGeofenceOff_IsRecorded()
+    {
+        var w = await SelfieWorld.CreateAsync();
+        await w.AddSiteAsync();
+        var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
+
+        Assert.IsType<OkObjectResult>((await c.WebPunch(Outside(0), default)).Result);
     }
 
     [Fact]
@@ -55,7 +70,7 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
         var inside = Outside(0) with { Latitude = SelfieWorld.SiteLat + 0.0005m };
 
-        Assert.IsType<OkObjectResult>((await c.WebPunch(inside, default)).Result);
+        Assert.IsType<OkObjectResult>((await c.MobilePunch(inside, default)).Result);
         Assert.IsType<OkObjectResult>((await c.MobilePunch(inside with { PunchDirection = "Out" }, default)).Result);
         Assert.Equal(2, await w.Db.AttendanceRawEvents.CountAsync());
     }
@@ -90,14 +105,14 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Geofence_WithoutALocation_IsRefused_OnWebAndMobile()
+    public async Task Geofence_WithoutALocation_IsRefused_OnMobile_AndTheWebIsClosed()
     {
         var w = await SelfieWorld.CreateAsync();
         await w.AddSiteAsync();
         await w.EnforceGeofenceAsync();
         var c = w.Attendance(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        Assert.Equal("location_required", SelfieWorld.CodeOf((await c.WebPunch(new WebPunchRequest(0, "In", null, null, null), default)).Result));
+        Assert.Equal("mobile_app_required", SelfieWorld.CodeOf((await c.WebPunch(new WebPunchRequest(0, "In", null, null, null), default)).Result));
         Assert.Equal("location_required", SelfieWorld.CodeOf((await c.MobilePunch(new WebPunchRequest(0, "In", null, null, null), default)).Result));
         Assert.Empty(w.Db.AttendanceRawEvents);
     }
@@ -128,6 +143,7 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
         await db.SaveChangesAsync();
         var controller = CreateController(db);
 
+        await SelfieWorld.AsPlatformOwnerAsync(controller, db, SelfieWorld.SigningOwnerId);
         var none = await controller.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, null), default);
         var dpiaOnly = await controller.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, JsonSerializer.Serialize(new
         {
