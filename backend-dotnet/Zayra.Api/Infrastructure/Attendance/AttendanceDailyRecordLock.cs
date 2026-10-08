@@ -13,8 +13,10 @@ namespace Zayra.Api.Infrastructure.Attendance;
 /// two employees creating the tenant's first <c>DEFAULT</c> policy (unique <c>(tenant_id, code)</c>). Under the lock the
 /// second writer waits, then (READ COMMITTED: each statement sees what has committed) finds the first one's row.</para>
 /// <para><b>Deadlocks.</b> Every caller takes daily-record locks one at a time in one global order — employee id
-/// ascending, then work date ascending — or one employee-day per transaction; a punch takes exactly one. The policy lock
-/// is only ever taken in its own short transaction, never while a daily-record lock is held, and takes no other lock.</para>
+/// ascending, then work date ascending — or one employee-day per transaction; a punch takes exactly one; a processing-job
+/// item takes at most one employee-month. The policy lock is taken either in its own short transaction (which takes no
+/// other lock), or — HR's correction approval only — AFTER that approval's single daily-record lock. Nobody holding the
+/// policy lock ever waits for a daily-record lock, so no cycle can form.</para>
 /// Transaction-scoped (<c>pg_advisory_xact_lock</c>); on a non-relational provider (tests) the work simply runs.
 /// </summary>
 public static class AttendanceDailyRecordLock
