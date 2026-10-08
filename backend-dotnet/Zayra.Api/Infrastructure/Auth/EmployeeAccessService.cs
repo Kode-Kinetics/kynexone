@@ -20,9 +20,17 @@ namespace Zayra.Api.Infrastructure.Auth;
 public sealed record EmployeeAccessDto(
     int EmployeeId, string EmployeeName, string EmployeeCode, string WorkEmail, string State,
     DateTime? CodeExpiresAtUtc, string? CodeIssuedByName, DateTime? LastCodeExpiredAtUtc, DateTime? LastSignInAtUtc,
+    /// <summary>Codes the UI maps: stoppedReason left_company | disabled_by_admin; blockedReason = blockedCode
+    /// (company_email_domain_missing, email_belongs_to_existing_login, email_belongs_to_former_employee, …).</summary>
     string? StoppedReason, string? BlockedCode, string? BlockedReason, bool CanIssue,
     /// <summary>The workspace has a working email transport (codes are emailed instead of printed).</summary>
-    bool EmailDelivery);
+    bool EmailDelivery)
+{
+    /// <summary>Why <see cref="CanIssue"/> is false, as a code (awaiting_approval, cannot_issue_for_self, …); null otherwise.</summary>
+    public string? ReasonCode { get; init; }
+    public string? StoppedReasonText { get; init; }
+    public string? BlockedReasonText { get; init; }
+}
 
 /// <summary><c>Delivery</c>: "print" never emails — the codes come back (and are recorded as disclosed) even when the
 /// workspace can send email. Absent: emailed when a relay exists, otherwise returned.</summary>
@@ -93,6 +101,7 @@ public sealed class EmployeeAccessService
         public const string Privileged = "privileged_login";
         public const string ResetNeedsPermission = "reset_requires_permission";
         public const string Blocked = "blocked";
+        public const string AwaitingApproval = "awaiting_approval";
         public const string SeatLimit = "seat_limit";
     }
 
@@ -100,6 +109,7 @@ public sealed class EmployeeAccessService
     {
         Skip.NotFound => "Employee not found.",
         Skip.NotActive => "Activate the employee first.",
+        Skip.AwaitingApproval => "This new employee is waiting for approval. Give access after they are approved.",
         Skip.Stopped => "This employee's access is stopped.",
         Skip.SelfIssue => "You can't give yourself a sign-in code.",
         Skip.AboveCeiling => "This person has access you don't hold, so someone with more access must do this.",
@@ -143,20 +153,26 @@ public sealed class EmployeeAccessService
             issuerName = await ScopedBypass.TenantWide(_db.Users, tenantId, Why).AsNoTracking()
                 .Where(u => u.Id == issuer).Select(u => u.FullName).FirstOrDefaultAsync(ct);
 
-        var allowed = state.State switch
-        {
-            EmployeeAccessStates.NotStarted or EmployeeAccessStates.CodeGiven when facts.Login is not { IsActive: true } => canIssue,
-            EmployeeAccessStates.Active or EmployeeAccessStates.CodeGiven => canReset,
-            _ => false,
-        };
-        if (allowed && (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(facts.Status)
-                        || (caller.UserId is Guid me && facts.Login?.UserId == me)))
-            allowed = false;
+        var isReset = facts.Login is { IsActive: true };
+        var issuable = state.State is EmployeeAccessStates.NotStarted or EmployeeAccessStates.CodeGiven or EmployeeAccessStates.Active;
+        // Same order as issuing: awaiting approval, self, then the permission this button needs.
+        string? reasonCode = !issuable ? null
+            : string.Equals(facts.Status, EmployeeStatuses.Draft, StringComparison.Ordinal) ? Skip.AwaitingApproval
+            : !AuthCurrentEligibility.IsEmployeeLifecycleEligible(facts.Status) ? Skip.Blocked
+            : caller.UserId is Guid me && facts.Login?.UserId == me ? Skip.SelfIssue
+            : (isReset ? !canReset : !canIssue) ? Skip.ResetNeedsPermission
+            : null;
+        var allowed = issuable && reasonCode is null;
 
         return new EmployeeAccessDto(facts.EmployeeId, facts.EmployeeName, facts.EmployeeCode, facts.WorkEmail, state.State,
             state.CodeExpiresAtUtc, issuerName, state.LastCodeExpiredAtUtc, state.LastSignInAtUtc,
-            state.StoppedReason, state.BlockedCode, state.BlockedReason, allowed,
-            await _email.IsConfiguredAsync(tenantId, ct));
+            state.StoppedReason, state.BlockedCode, state.BlockedCode, allowed,
+            await _email.IsConfiguredAsync(tenantId, ct))
+        {
+            ReasonCode = reasonCode,
+            StoppedReasonText = state.StoppedText,
+            BlockedReasonText = state.BlockedReason,
+        };
     }
 
     // ── POST codes ─────────────────────────────────────────────────────────────────────────────────────
@@ -178,17 +194,32 @@ public sealed class EmployeeAccessService
         if (caller.UserId is not Guid callerId) throw new EmployeeAccessRequestException("caller_unknown", "Sign in again.");
 
         var nowUtc = DateTime.UtcNow;
-        // F1: an active login is reset only one at a time.
-        if (ids.Count > 1)
-        {
-            var states = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, ids, nowUtc, ct);
-            if (states.Values.Any(s => s.State.State is EmployeeAccessStates.Active or EmployeeAccessStates.CodeGiven && s.Facts.Login is { IsActive: true }))
-                throw new EmployeeAccessRequestException("reset_is_single",
-                    "Someone who already uses KynexOne is reset one person at a time. Remove them from the selection.");
-        }
         var single = ids.Count == 1;
         var callerCeiling = await PrivilegeCeilingGraph.TryLoadCallerAsync(_db, tenantId, callerId, ct)
             ?? throw new EmployeeAccessRequestException("caller_unknown", "Sign in again.");
+        // F1: an active login is reset only one at a time. Counted only among those that would actually be reset —
+        // the caller's own login and logins skipped as privileged or above the ceiling get their own skip reason.
+        if (!single)
+        {
+            var states = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, ids, nowUtc, ct);
+            var active = states.Values
+                .Where(x => x.Facts.Login is { IsActive: true } && x.Facts.Link is not null && x.Facts.Login.UserId != callerId
+                    && x.State.State is EmployeeAccessStates.Active or EmployeeAccessStates.CodeGiven)
+                .ToList();
+            if (active.Count > 0)
+            {
+                var graphs = (await PrivilegeCeilingGraph.LoadUsersAsync(_db, tenantId, active.Select(x => x.Facts.Login!.UserId).ToList(), ct))
+                    .ToDictionary(u => u.Id);
+                foreach (var x in active)
+                {
+                    if (!graphs.TryGetValue(x.Facts.Login!.UserId, out var g)) continue;
+                    if (await EmployeeLoginPrivilege.IsPrivilegedAsync(_db, tenantId, g, x.Facts.Link, x.Facts.EmployeeId, nowUtc, ct)) continue;
+                    if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(g, tenantId), AuthService.GetPermissions(g)) is not null) continue;
+                    throw new EmployeeAccessRequestException("reset_is_single",
+                        "Someone who already uses KynexOne is reset one person at a time. Remove them from the selection.");
+                }
+            }
+        }
         var tenantSlug = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Slug).FirstAsync(ct);
 
         var issued = new List<Pending>();
@@ -268,11 +299,13 @@ public sealed class EmployeeAccessService
                 case EmployeeAccessStates.Stopped: result = new(Skip.Stopped, null); return;
                 case EmployeeAccessStates.Blocked: result = new(Skip.Blocked, null, state.BlockedReason); return;
             }
+            // Refusal ORDER (UAT): awaiting approval, then self, then privileged, then the ceiling, then the reset permission.
+            if (string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.Ordinal)) { result = new(Skip.AwaitingApproval, null); return; }
             if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status)) { result = new(Skip.Blocked, null, SkipReason(Skip.NotActive)); return; }
             if (facts.Login?.UserId == callerId) { result = new(Skip.SelfIssue, null); return; }
             // A login already in use (active, or active with a live reset code) is a RESET (F1), whatever the state shows.
             var resetOfActive = facts.Login is { IsActive: true };
-            if (resetOfActive ? !canReset : !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
+            if (!resetOfActive && !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
             // Work-email setter rule for welcome codes (Integration Owner): it blocks the EMAIL channel only — the code is
             // issued, but printed and handed over in person; the disclosure makes the issuer its handler (30-day bar).
             var setterPrintOnly = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, callerId, token);
@@ -296,12 +329,13 @@ public sealed class EmployeeAccessService
             var user = (await PrivilegeCeilingGraph.LoadUsersAsync(_db, tenantId, new Guid[] { userId }, token)).Single();
 
             if (user.Id == callerId) { result = new(Skip.SelfIssue, null); return; }
-            if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(user, tenantId), AuthService.GetPermissions(user)) is not null)
-            { result = new(Skip.AboveCeiling, null); return; }
             var privileged = await EmployeeLoginPrivilege.IsPrivilegedAsync(_db, tenantId, user, link, employeeId, nowUtc, token);
             // A login with extra access is never RESET from here: a security administrator does it (P2 review).
             if (privileged && resetOfActive) { result = new(Skip.Privileged, null, PrivilegedResetReason); return; }
             if (privileged && !(single && canReset)) { result = new(Skip.Privileged, null); return; }
+            if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(user, tenantId), AuthService.GetPermissions(user)) is not null)
+            { result = new(Skip.AboveCeiling, null); return; }
+            if (resetOfActive && !canReset) { result = new(Skip.ResetNeedsPermission, null); return; }
             if (!resetOfActive && await SeatsFullAsync(tenantId, userId, nowUtc, token)) { result = new(Skip.SeatLimit, null); return; }
 
             // ONE LIVE CREDENTIAL (F3): the code supersedes any invitation, earlier code and unused reset link.
@@ -396,16 +430,40 @@ public sealed class EmployeeAccessService
         }
     }
 
+    // ── GET summary ────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Counts per access state over the caller's scope (the same set the Employees list shows: not deleted, not a former
+    /// employee), for the filter chips. One batched evaluation — a handful of set queries, no per-employee query.
+    /// </summary>
+    public async Task<Dictionary<string, int>> SummaryAsync(Guid tenantId, EntityScopeContext scope, IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct)
+    {
+        var exit = Zayra.Api.Controllers.ExitEmployeeStatuses.Exit;
+        var query = ScopedBypass.NullableTenantWide(_db.Employees, tenantId, Why).AsNoTracking()
+            .Where(e => !e.IsDeleted && !exit.Contains(e.Status));
+        if (!scope.IsGroupLevel)
+        {
+            var companies = scope.AccessibleCompanyIds;
+            query = query.Where(e => e.CompanyId.HasValue && companies.Contains(e.CompanyId.Value));
+        }
+        if (allowedEmployeeIds is not null) query = query.Where(e => allowedEmployeeIds.Contains(e.Id));
+        var ids = await query.Select(e => e.Id).ToListAsync(ct);
+        var evaluated = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, ids, DateTime.UtcNow, ct);
+        var counts = EmployeeAccessStates.All.ToDictionary(s => s, _ => 0, StringComparer.Ordinal);
+        foreach (var (_, value) in evaluated) counts[value.State.State]++;
+        return counts;
+    }
+
     // ── POST work-emails (backfill from IT) ─────────────────────────────────────────────────────────────
 
     public async Task<WorkEmailBackfillResponse> BackfillWorkEmailsAsync(Guid tenantId, WorkEmailBackfillRequest request,
-        EntityScopeContext scope, RequestContext caller, CancellationToken ct)
+        EntityScopeContext scope, RequestContext caller, CancellationToken ct, IReadOnlyCollection<int>? allowedEmployeeIds = null)
     {
         var rows = request.Rows ?? Array.Empty<WorkEmailBackfillRow>();
         if (rows.Count == 0) throw new EmployeeAccessRequestException("rows_required", "Add at least one row.");
         if (rows.Count > MaxBackfillRows) throw new EmployeeAccessRequestException("too_many", $"Send at most {MaxBackfillRows} rows at a time.");
 
-        var plan = await PlanBackfillAsync(tenantId, rows, scope, ct);
+        var plan = await PlanBackfillAsync(tenantId, rows, scope, allowedEmployeeIds, ct);
         if (request.DryRun || plan.Matched.Count == 0)
             return new WorkEmailBackfillResponse(plan.Matched, plan.NotFound, plan.WrongDomain, plan.Conflicts, 0);
 
@@ -414,7 +472,7 @@ public sealed class EmployeeAccessService
         var lateConflicts = new List<BackfillConflictDto>();
         foreach (var chunk in plan.Matched.Chunk(BackfillChunk))
         {
-            var (chunkSaved, chunkConflicts) = await ApplyBackfillChunkAsync(tenantId, chunk, scope, caller, ct);
+            var (chunkSaved, chunkConflicts) = await ApplyBackfillChunkAsync(tenantId, chunk, scope, allowedEmployeeIds, caller, ct);
             saved += chunkSaved;
             lateConflicts.AddRange(chunkConflicts);
         }
@@ -426,7 +484,8 @@ public sealed class EmployeeAccessService
 
     private sealed record BackfillPlan(List<BackfillMatchDto> Matched, List<string> NotFound, List<BackfillWrongDomainDto> WrongDomain, List<BackfillConflictDto> Conflicts);
 
-    private async Task<BackfillPlan> PlanBackfillAsync(Guid tenantId, IReadOnlyList<WorkEmailBackfillRow> rows, EntityScopeContext scope, CancellationToken ct)
+    private async Task<BackfillPlan> PlanBackfillAsync(Guid tenantId, IReadOnlyList<WorkEmailBackfillRow> rows, EntityScopeContext scope,
+        IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct)
     {
         var matched = new List<BackfillMatchDto>();
         var notFound = new List<string>();
@@ -443,7 +502,8 @@ public sealed class EmployeeAccessService
             .Where(e => codes.Contains(e.EmployeeCode) && !e.IsDeleted)
             .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.WorkEmail, e.CompanyId })
             .ToListAsync(ct);
-        var byCode = employees.Where(e => scope.CanAccessCompany(e.CompanyId))
+        // Outside the caller's companies (or data scope) an employee number simply isn't found.
+        var byCode = employees.Where(e => scope.CanAccessCompany(e.CompanyId) && (allowedEmployeeIds is null || allowedEmployeeIds.Contains(e.Id)))
             .GroupBy(e => e.EmployeeCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var companyIds = employees.Where(e => e.CompanyId.HasValue).Select(e => e.CompanyId!.Value).Distinct().ToList();
         var domains = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).AsNoTracking()
@@ -487,7 +547,8 @@ public sealed class EmployeeAccessService
     }
 
     private async Task<(int Saved, List<BackfillConflictDto> Conflicts)> ApplyBackfillChunkAsync(
-        Guid tenantId, IReadOnlyList<BackfillMatchDto> chunk, EntityScopeContext scope, RequestContext caller, CancellationToken ct)
+        Guid tenantId, IReadOnlyList<BackfillMatchDto> chunk, EntityScopeContext scope, IReadOnlyCollection<int>? allowedEmployeeIds,
+        RequestContext caller, CancellationToken ct)
     {
         var saved = 0;
         var conflicts = new List<BackfillConflictDto>();
@@ -502,7 +563,7 @@ public sealed class EmployeeAccessService
             var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, Why).TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(e => ids.Contains(e.Id) && !e.IsDeleted).OrderBy(e => e.Id).ToListAsync(token);
             // Re-validate under the lock: the plan was read without one.
-            var replan = await PlanBackfillAsync(tenantId, chunk.Select(m => new WorkEmailBackfillRow(m.EmployeeCode, m.NewEmail)).ToList(), scope, token);
+            var replan = await PlanBackfillAsync(tenantId, chunk.Select(m => new WorkEmailBackfillRow(m.EmployeeCode, m.NewEmail)).ToList(), scope, allowedEmployeeIds, token);
             conflicts.AddRange(replan.Conflicts);
             conflicts.AddRange(replan.WrongDomain.Select(w => new BackfillConflictDto(w.EmployeeCode, w.WorkEmail, EmployeeLoginProvisioner.BlockedCodes.WrongDomain)));
             var ctx = caller with { TenantId = tenantId };

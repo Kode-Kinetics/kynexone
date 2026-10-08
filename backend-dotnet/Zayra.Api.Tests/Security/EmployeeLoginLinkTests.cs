@@ -1392,11 +1392,27 @@ public sealed class EmployeeLoginLinkTests
             await db.SaveChangesAsync();
         }
 
-        // new.name@elsewhere.test is coerced onto the company domain → new.name@acme…, which collides: refused.
+        // UPDATED (employee-access contract §3: a foreign domain is refused, never coerced). A foreign-domain PATCH is
+        // refused (422 work_email_wrong_domain) and commits NOTHING: no work-email change, no setter row.
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var refused = Assert.IsType<UnprocessableEntityObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
+                new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be("work_email_wrong_domain");
+        }
+        await using (var verify = _fixture.CreateRetryingDb())
+        {
+            (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be(oldEmail);
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityName == "Employee" && x.EntityId == employeeId.ToString()
+                && x.Action == AccessManagementService.WorkEmailChangedAction)).Should().BeFalse();
+        }
+
+        // The same-domain edit to new.name@acme… collides with another login: refused, and nothing is committed part-way.
         await using (var db = _fixture.CreateRetryingDb())
             Assert.IsType<UnprocessableEntityObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
                 new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
-                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement($"new.name@{domain}") }), default));
         await using (var verify = _fixture.CreateRetryingDb())
         {
             (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be(oldEmail,
@@ -1405,7 +1421,7 @@ public sealed class EmployeeLoginLinkTests
                 && (x.Action == AccessManagementService.WorkEmailChangedAction || x.Action == "employee.work_email_domain_coerced"))).Should().BeFalse();
         }
 
-        // Without the collision the same coerced edit commits the address AND its setter row.
+        // Without the collision the same edit commits the address AND its setter row.
         await using (var db = _fixture.CreateRetryingDb())
         {
             var other = await db.Users.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.FullName == "Other");
@@ -1416,14 +1432,18 @@ public sealed class EmployeeLoginLinkTests
         await using (var db = _fixture.CreateRetryingDb())
             Assert.IsType<OkObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
                 new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
-                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement($"new.name@{domain}") }), default));
         await using (var verify = _fixture.CreateRetryingDb())
         {
             (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be($"new.name@{domain}");
             var setter = await WorkEmailSetterRule.GetAsync(verify, w.TenantId, employeeId, default);
             setter!.ActorUserId.Should().Be(w.AdminId);
-            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityId == employeeId.ToString() && x.Action == "employee.work_email_domain_coerced"))
-                .Should().BeTrue();
+            // Atomicity of the accepted PATCH: the address and its employee.work_email_changed row committed together.
+            // Metadata is a json column; compare in memory.
+            (await verify.AuditLogs.IgnoreQueryFilters().Where(x => x.EntityName == "Employee" && x.EntityId == employeeId.ToString()
+                    && x.Action == AccessManagementService.WorkEmailChangedAction).Select(x => x.Metadata).ToListAsync())
+                .Count(m => m != null && m.Contains($"new.name@{domain}")).Should().Be(1);
+            // A foreign domain is now refused outright (422 work_email_wrong_domain), so nothing is ever coerced.
         }
     }
 

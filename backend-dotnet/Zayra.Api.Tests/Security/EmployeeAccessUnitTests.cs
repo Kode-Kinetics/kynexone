@@ -143,6 +143,12 @@ public sealed class EmployeeAccessHttpTests
             .StatusCode.Should().Be(HttpStatusCode.Forbidden);
         // notifications.manage only: no employees.read either.
         (await SendAsync(HttpMethod.Get, "/api/employee-access/1", _fixture.TenantTokenWithPermission)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        // The summary is a read: employees.read is enough, and it names every state.
+        var summary = await SendAsync(HttpMethod.Get, "/api/employee-access/summary", _fixture.TenantTokenWithoutPermission);
+        summary.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await summary.Content.ReadFromJsonAsync<Dictionary<string, int>>();
+        body!.Keys.Should().BeEquivalentTo(["waiting_for_work_email", "not_started", "code_given", "active", "stopped", "blocked"]);
+        (await SendAsync(HttpMethod.Get, "/api/employee-access/summary", _fixture.TenantTokenWithPermission)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [Fact]

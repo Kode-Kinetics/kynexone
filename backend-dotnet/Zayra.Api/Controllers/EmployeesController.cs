@@ -5908,7 +5908,7 @@ public class EmployeesController : ControllerBase
             var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
             var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, employee.Id, ct);
             bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
-            // Wrong domain / '+' → WorkEmailRejectedException (422); blank stays blank (no derived address is saved).
+            // Wrong domain → WorkEmailRejectedException (422); blank stays blank (no derived address is saved).
             employee.WorkEmail = WorkEmailDeriver.Resolve(employee.WorkEmail, employee.EnglishName, employee.ArabicName,
                 domain, pattern, IsTaken, out _, out _);
         }
@@ -5919,6 +5919,7 @@ public class EmployeesController : ControllerBase
 
         // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
         var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, Context(), DateTime.UtcNow, ct);
+        // Added to the unit of work, never saved here (the hotfix's transaction rule).
         if (login.RenamedJson is not null) AddWorkEmailAudit(employee, "employee.work_email_renamed", login.RenamedJson);
         if (login.HeldJson is not null) AddWorkEmailAudit(employee, "employee.work_email_login_held", login.HeldJson);
         // A work email first set (or changed) on an employee with no login stages one, in this unit of work.

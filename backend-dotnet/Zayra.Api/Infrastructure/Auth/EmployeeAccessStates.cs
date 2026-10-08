@@ -77,9 +77,19 @@ public static class EmployeeAccessStates
         Guid? CodeIssuedBy = null,
         DateTime? LastCodeExpiredAtUtc = null,
         DateTime? LastSignInAtUtc = null,
+        /// <summary>A code the UI maps: <see cref="LeftCompany"/> or <see cref="DisabledByAdmin"/>.</summary>
         string? StoppedReason = null,
         string? BlockedCode = null,
-        string? BlockedReason = null);
+        /// <summary>Plain-English text for the blocked code (skip reasons, logs); the UI maps <see cref="BlockedCode"/>.</summary>
+        string? BlockedReason = null,
+        /// <summary>Plain-English text behind <see cref="StoppedReason"/>.</summary>
+        string? StoppedText = null);
+
+    public const string LeftCompany = "left_company";
+    public const string DisabledByAdmin = "disabled_by_admin";
+
+    /// <summary>Employment statuses that mean the person has left (the rest of the stopped statuses are a hold).</summary>
+    private static readonly string[] LeftStatuses = ["Terminated", EmployeeStatuses.Archived, "Exited"];
 
     public static Evaluation Evaluate(Facts f, DateTime nowUtc)
     {
@@ -88,13 +98,20 @@ public static class EmployeeAccessStates
 
         // ── stopped ──
         if (f.IsDeleted || f.IsMerged)
-            return new Evaluation(Stopped, StoppedReason: "The employee record was removed.");
+            return new Evaluation(Stopped, StoppedReason: LeftCompany, StoppedText: "The employee record was removed.");
         if (StoppedStatuses.Contains(f.Status, StringComparer.OrdinalIgnoreCase))
-            return new Evaluation(Stopped, StoppedReason: $"The employee's status is {f.Status}.");
+            return new Evaluation(Stopped,
+                StoppedReason: LeftStatuses.Contains(f.Status, StringComparer.OrdinalIgnoreCase) ? LeftCompany : DisabledByAdmin,
+                StoppedText: $"The employee's status is {f.Status}.");
         if (link is not null && !string.IsNullOrEmpty(link.LoginDisabledReason) && link.AccessMode == AccessModes.NoLogin)
-            return new Evaluation(Stopped, StoppedReason: link.LoginDisabledReason);
+            // Offboarding and lifecycle exits write these reasons (OffboardingController / StageCredentialInvalidation).
+            return new Evaluation(Stopped,
+                StoppedReason: link.LoginDisabledReason.StartsWith("Offboarding", StringComparison.Ordinal)
+                    || link.LoginDisabledReason.StartsWith("Employee lifecycle status", StringComparison.Ordinal)
+                    ? LeftCompany : DisabledByAdmin,
+                StoppedText: link.LoginDisabledReason);
         if (login is not null && login.Status is "Deactivated" or "Suspended" or "Locked")
-            return new Evaluation(Stopped, StoppedReason: login.Status == "Locked"
+            return new Evaluation(Stopped, StoppedReason: DisabledByAdmin, StoppedText: login.Status == "Locked"
                 ? "The sign-in was locked by an administrator."
                 : "The sign-in was switched off by an administrator.");
 
