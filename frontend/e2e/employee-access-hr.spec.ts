@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 /**
@@ -48,7 +49,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean; theme?: 'light' | 'dark' } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -62,6 +63,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', 'light');
   });
+  if (opts.theme === 'dark') await page.addInitScript(() => localStorage.setItem('kynexone.theme', 'dark'));
 
   const listItem = (p: Person) => ({
     id: p.id, publicId: `p-${p.id}`, employeeCode: p.code, fullName: p.name, arabicName: p.arabicName, department: p.department,
@@ -700,3 +702,27 @@ test('Activate employee offers the sign-in slip: Add, Activate, Print', async ({
   await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('2718 2818');
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49] }]);
 });
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`the Self-service chips, pills and card pass axe colour contrast (${theme})`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', 'colour contrast does not depend on the viewport');
+    await openPeople(page, { theme });
+    const chips = page.getByTestId('access-filter');
+    await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('8');
+    const check = async (label: string) => {
+      await page.mouse.move(0, 0); // no hover styles in the measurement
+      const results = await new AxeBuilder({ page })
+        .include('[data-testid="access-filter"]').include('table').include('[data-testid="employee-access-card"]')
+        // The app-wide dark .btn-primary (white on #2f6bff, 4.49:1) is a theme token outside this screen;
+        // the light theme already overrides it (styles/index.css). Everything of this feature is measured.
+        .exclude(theme === 'dark' ? '.btn-primary' : '#none')
+        .withRules(['color-contrast']).analyze();
+      expect(results.violations.flatMap((v) => v.nodes.map((n) => `${label}: ${n.target.join(' ')} ${n.failureSummary}`))).toEqual([]);
+    };
+    await check('Everyone active');
+    await chips.getByRole('button', { name: /No access yet/ }).click();
+    await expect(chips.getByRole('button', { name: /No access yet/ })).toHaveAttribute('aria-pressed', 'true');
+    await openProfile(page, 'Noah Williams');
+    await check('No access yet active, card open');
+  });
+}

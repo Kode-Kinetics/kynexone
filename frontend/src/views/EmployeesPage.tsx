@@ -1599,11 +1599,12 @@ export function EmployeesPage() {
                 type="button"
                 aria-pressed={accessFilter === state}
                 onClick={() => setAccessFilter(state)}
-                className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-sapphire bg-sapphire text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
+                className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
               >
                 {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
+                {/* Opaque badge colours keep the count at 4.5:1 or better on the active (blue) and inactive chip, light and dark. */}
                 {accessSummary && (state || everyoneCount !== null) && (
-                  <span className={`ms-1.5 rounded-full px-1.5 text-[11px] tabular-nums ${accessFilter === state ? 'bg-white/20' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`} data-testid="access-chip-count">
+                  <span className={`ms-1.5 rounded-full px-1.5 text-[11px] font-semibold tabular-nums ${accessFilter === state ? 'bg-white text-blue-800' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100'}`} data-testid="access-chip-count">
                     {state ? accessSummary[state] ?? 0 : everyoneCount}
                   </span>
                 )}
