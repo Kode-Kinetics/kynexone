@@ -20,6 +20,7 @@ import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
+import { buildEmployeeEditChanges, buildEmployeeEditSnapshot } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
 import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
@@ -49,7 +50,7 @@ import { Avatar } from '../components/Avatar';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
-import { EMPLOYEE_CREATE_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
+import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import {
@@ -81,6 +82,27 @@ import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFie
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
 type EditField = EmployeeEditField;
+
+function employeeEditStep(field: EditField): number {
+  if (field.key === 'salary') return 3;
+  if (field.key === 'workEmail' || field.section === 'Employment') return 1;
+  if (field.section === 'Payroll & Banking') return 2;
+  if (field.section === 'Compliance Documents') return 4;
+  return 0;
+}
+
+// GET masks these values independently of whether changing them requires approval.
+const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
+  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber',
+  'medicalInformation', 'disciplinaryRecords', 'terminationReason', 'passportIssueDate',
+  'passportExpiryDate', 'visaIssueDate', 'visaExpiryDate', 'residencyIssueDate',
+  'workPermitIssueDate', 'visaNumber', 'visaFileNumber', 'muqeemNumber', 'gosiReference',
+  'gosiFirstRegisteredOn', 'gosiCohort', 'qiwaContractNumber', 'emiratesId', 'laborCardNumber',
+  'qid', 'workPermitNumber', 'civilId', 'residencyNumber', 'idNumber',
+  'iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate',
+  'accountNumber', 'bankRoutingCode', 'socialInsuranceReference',
+]);
+const OPTIONAL_EXPIRY_EDIT_KEYS = new Set(['iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate']);
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
 // Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
@@ -257,7 +279,7 @@ export function EmployeesPage() {
   const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission, user } = useAuth();
+  const { hasPermission, hasRole, user } = useAuth();
   // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
   // "Access Denied" toast) for a background read they never asked for. The server still enforces the limit.
   const canReadUsage = hasPermission('security.manage');
@@ -311,6 +333,7 @@ export function EmployeesPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const detailRequestRef = useRef(0);
   // Live activation checklist for the open employee, plus the structured 422 to render inline
   // when an activation is refused (both drive the same ReadinessChecklist component).
   const [readiness, setReadiness] = useState<EmployeeReadiness | null>(null);
@@ -323,6 +346,9 @@ export function EmployeesPage() {
   const [transferReason, setTransferReason] = useState('');
   const [transferDepartment, setTransferDepartment] = useState('');
   const [editOpen, setEditOpen] = useState(false);
+  const [editEmployeeId, setEditEmployeeId] = useState<number | null>(null);
+  const [editStep, setEditStep] = useState(0);
+  const editFormRef = useRef<HTMLFormElement>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [editOriginal, setEditOriginal] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
@@ -537,6 +563,10 @@ export function EmployeesPage() {
   // Payroll, finance, compliance, managers, recruiters and auditors read people but cannot change
   // them; the buttons used to be shown to them anyway and only ever returned 403.
   const canWriteEmployees = hasPermission('employees.write');
+  // Match the existing update endpoint's role restriction as well as the page's write gate.
+  const canEditEmployees = canWriteEmployees && ['Admin', 'HR Manager', 'HR Officer', 'Payroll Officer'].some(hasRole);
+  const canReadSensitiveEmployees = hasPermission('employees.sensitive');
+  const employeeWindowSteps = canEditEmployees ? EMPLOYEE_EDIT_STEPS : EMPLOYEE_VIEW_STEPS;
   const canImportEmployees = hasPermission('employees.bulk_import');
 
   // Header select-all checkbox drives "select all on THIS page" (tri-state).
@@ -872,18 +902,25 @@ export function EmployeesPage() {
     }
   };
 
-  const openDetail = async (id: number, preserveTab = false) => {
+  const openDetail = async (id: number, preserveTab = false, openGuided = false) => {
+    const request = ++detailRequestRef.current;
+    setAutoEditId(openGuided ? id : null);
     setSelectedId(id);
     setDetailLoading(true);
     setBlockedPanel(null);
     if (!preserveTab) setActiveTab('personal');
     try {
-      setDetail(await employeesApi.get(id));
+      const employee = await employeesApi.get(id);
+      if (request !== detailRequestRef.current) return;
+      setDetail(employee);
       loadReadiness(id);
     } catch {
+      if (request !== detailRequestRef.current) return;
+      setDetail(null);
+      setAutoEditId(null);
       setError('Could not load employee detail from the API.');
     } finally {
-      setDetailLoading(false);
+      if (request === detailRequestRef.current) setDetailLoading(false);
     }
   };
 
@@ -1166,29 +1203,37 @@ export function EmployeesPage() {
 
   const openEdit = () => {
     if (!selectedEmployee) return;
-    const source = selectedEmployee as unknown as Record<string, unknown>;
-    const snapshot: Record<string, string> = {};
-    for (const f of editFields) {
-      const raw = source[f.key];
-      if (raw === null || raw === undefined) { snapshot[f.key] = ''; continue; }
-      snapshot[f.key] = f.type === 'date' ? String(raw).slice(0, 10) : String(raw);
-    }
+    const snapshot = buildEmployeeEditSnapshot(selectedEmployee, editFields, fieldCatalog, selectedEmployeeCountryCode);
     setEditOriginal(snapshot);
     setEditForm({ ...snapshot });
+    setEditEmployeeId(selectedEmployee.id);
     setEditNotice('');
+    setEditStep(0);
     setEditOpen(true);
+  };
+
+  const openEmployeeWindow = (id: number) => {
+    void openDetail(id, false, true);
   };
 
   // "Merge" from the create warning: once the existing record's detail has loaded, open it for
   // editing so the operator augments that person instead of creating a second record.
   useEffect(() => {
-    if (autoEditId && detail && detail.id === autoEditId) {
+    if (autoEditId && detail && detail.id === autoEditId && selectedId === autoEditId && !detailLoading) {
       openEdit();
       setAutoEditId(null);
     }
     // openEdit reads the freshly-loaded detail via selectedEmployee; safe to omit from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoEditId, detail]);
+  }, [autoEditId, detail, selectedId, detailLoading]);
+
+  // A country catalog may arrive after the detail. Add new fields without resetting draft edits.
+  useEffect(() => {
+    if (!editOpen || !selectedEmployee) return;
+    const additions = buildEmployeeEditSnapshot(selectedEmployee, editFields, fieldCatalog, selectedEmployeeCountryCode);
+    setEditOriginal((current) => ({ ...additions, ...current }));
+    setEditForm((current) => ({ ...additions, ...current }));
+  }, [editOpen, selectedEmployee, editFields, fieldCatalog, selectedEmployeeCountryCode]);
 
   // ── Detail-panel duplicate resolver ──
   // The open record carries a possible-duplicate flag when its readiness surfaces a dup:* item.
@@ -1285,13 +1330,76 @@ export function EmployeesPage() {
     }
   };
 
-  const editChangedKeys = Object.keys(editForm).filter((k) => editForm[k] !== editOriginal[k]);
+  // Older API builds omit these scalar dates. Never substitute the stale import mirror or
+  // offer a blank editor that could overwrite a saved value while the API rollout catches up.
+  const hasCurrentEditValue = (field: EditField) => !OPTIONAL_EXPIRY_EDIT_KEYS.has(field.key)
+    || (selectedEmployee as unknown as Record<string, unknown> | null)?.[field.key] !== undefined;
+  const canEditField = (field: EditField) => canEditEmployees && hasCurrentEditValue(field) && (canReadSensitiveEmployees || (!field.sensitive && !MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)));
+  const dirtyEditKeys = Object.keys(editForm).filter((key) => editForm[key] !== editOriginal[key]);
+  const editChangedKeys = editFields.filter((field) => canEditField(field) && dirtyEditKeys.includes(field.key)).map((field) => field.key);
+  const unavailableEditKeys = dirtyEditKeys.filter((key) => !editChangedKeys.includes(key));
+  const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
   const closeEditModal = () => {
-    if (editChangedKeys.length > 0 && !confirm('Discard unsaved employee changes?')) return;
+    if (editSaving) return;
+    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return;
     setEditOpen(false);
   };
+
+  const validateEditStep = (step: number) => {
+    if (unavailableEditKeys.length > 0) { setEditNotice(unavailableEditNotice); return false; }
+    if (!canEditEmployees) return true;
+    for (const field of editFields.filter((item) => employeeEditStep(item) === step && editChangedKeys.includes(item.key))) {
+      if (field.key === 'englishName' && !editForm[field.key]?.trim()) {
+        setEditNotice(t('Enter the employee’s English full name to continue.'));
+        return false;
+      }
+      if ((field.key === 'salary' || field.key === 'joiningDate') && !editForm[field.key]?.trim()) {
+        setEditNotice(field.key === 'salary' ? t('Salary cannot be empty. Enter an amount before continuing.') : t('Joining date cannot be empty. Choose a date before continuing.'));
+        return false;
+      }
+      if (field.key === 'workEmail') {
+        const domain = workEmailDomainProblem(editForm.workEmail, companies.find((company) => company.id === selectedEmployee?.companyId)?.emailDomain);
+        const problem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
+        if (domain || problem) {
+          setEditNotice(domain ? t('Work email must end in @{domain}.', { domain }) : t(problem!));
+          return false;
+        }
+      }
+      const input = editFormRef.current?.querySelector<HTMLInputElement | HTMLSelectElement>(`#edit-field-${field.key}`);
+      if (input && !input.checkValidity()) {
+        setEditNotice(input.validationMessage);
+        input.reportValidity();
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const changeEditStep = (step: number) => {
+    if (editSaving) return;
+    if (step > editStep && !validateEditStep(editStep)) return;
+    setEditNotice('');
+    setEditStep(step);
+  };
+
+  const editDisplayValue = (field: EditField, original = false) => {
+    if (!canReadSensitiveEmployees && MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)) return t('Restricted');
+    if (!hasCurrentEditValue(field)) return t('Not available');
+    const value = (original ? editOriginal : editForm)[field.key];
+    return value || t('Not provided');
+  };
+
+  const editReviewSections = EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => ({
+    title: step.label,
+    rows: editFields.filter((field) => employeeEditStep(field) === index).map((field): [string, string] => [
+      editChangedKeys.includes(field.key) && field.sensitive ? `${t(field.label)} · ${t('Approval')}` : field.label,
+      editChangedKeys.includes(field.key)
+        ? t('From {before} to {after}', { before: editDisplayValue(field, true), after: editDisplayValue(field) })
+        : editDisplayValue(field),
+    ]),
+  }));
 
   /** "Later" (or closing) after a successful add: open the new profile, where the Self-service card waits. */
   const finishCreated = (thenOpen = true) => {
@@ -1333,31 +1441,32 @@ export function EmployeesPage() {
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
-    setAutoEditId(employeeId);
-    openDetail(employeeId);
+    openEmployeeWindow(employeeId);
   };
 
   const saveEdit = async () => {
-    if (!selectedId || editChangedKeys.length === 0) return;
+    if (!canEditEmployees || editSaving || editStep !== 5 || !editEmployeeId || editEmployeeId !== selectedId || editEmployeeId !== selectedEmployee?.id || editChangedKeys.length === 0) return;
+    for (let step = 0; step < 5; step++) {
+      if (!validateEditStep(step)) { setEditStep(step); return; }
+    }
     if (editChangedKeys.includes('workEmail')) {
       const editDomain = workEmailDomainProblem(editForm.workEmail, companies.find((c) => c.id === selectedEmployee?.companyId)?.emailDomain);
       if (editDomain) { setEditNotice(t('Work email must end in @{domain}.', { domain: editDomain })); return; }
       const editEmailProblem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
       if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
     }
+    let changes: ReturnType<typeof buildEmployeeEditChanges>;
+    try {
+      changes = buildEmployeeEditChanges(editForm, editFields, editChangedKeys);
+    } catch (error) {
+      setEditNotice(error instanceof Error ? error.message : t('Could not save the changes. Please review the values and try again.'));
+      return;
+    }
     setEditSaving(true);
     setEditNotice('');
     setActionNotice('');
     try {
-      const changes: Record<string, unknown> = {};
-      for (const key of editChangedKeys) {
-        const field = editFields.find((f) => f.key === key)!;
-        const value = editForm[key].trim();
-        if (value === '') changes[key] = null;
-        else if (field.type === 'number') changes[key] = Number(value);
-        else changes[key] = value;
-      }
-      const res = await employeesApi.update(selectedId, new Date().toISOString().slice(0, 10), changes);
+      const res = await employeesApi.update(editEmployeeId, new Date().toISOString().slice(0, 10), changes);
       surfaceAdvisoryWarning(res.data);
       if (res.status === 202) {
         const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[]; alreadyPending?: boolean };
@@ -1852,7 +1961,7 @@ export function EmployeesPage() {
                     return (
                     <tr
                       key={employee.id}
-                      onClick={() => openDetail(employee.id)}
+                      onClick={() => openEmployeeWindow(employee.id)}
                       className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
@@ -1871,7 +1980,7 @@ export function EmployeesPage() {
                             <button
                               type="button"
                               aria-label={`Open profile for ${employee.fullName}`}
-                              onClick={(event) => { event.stopPropagation(); openDetail(employee.id); }}
+                              onClick={(event) => { event.stopPropagation(); openEmployeeWindow(employee.id); }}
                               className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
@@ -1934,7 +2043,7 @@ export function EmployeesPage() {
                     <p className="truncate font-bold text-slate-900 dark:text-white">{selectedEmployee.fullName}</p>
                     <p className="text-xs text-slate-500">{selectedEmployee.employeeCode} · {selectedEmployee.status}</p>
                   </div>
-                  {canWriteEmployees && <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
+                  {canEditEmployees && <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
                     <Pencil className="h-3.5 w-3.5" />
                     Edit
                   </button>}
@@ -2228,82 +2337,103 @@ export function EmployeesPage() {
       </div>
       )}
 
-      <Modal isOpen={editOpen} title={`Edit Employee — ${selectedEmployee?.fullName ?? ''}`} size="xl" onClose={closeEditModal} footer={
-        <>
-          <button type="button" onClick={() => setEditForm({ ...editOriginal })} disabled={editChangedKeys.length === 0} className="btn-secondary disabled:opacity-40">
-            Revert changes
-          </button>
-          <button type="button" onClick={closeEditModal} className="btn-secondary">Cancel</button>
-          <button type="button" onClick={saveEdit} disabled={editSaving || editChangedKeys.length === 0} className="btn-primary disabled:opacity-60">
-            {editSaving ? 'Saving...' : editChangedKeys.length > 0 ? `Save ${editChangedKeys.length} change${editChangedKeys.length === 1 ? '' : 's'}` : 'No changes'}
-          </button>
-        </>
-      }>
-        <div className="space-y-3">
-          {editNotice && (
-            <p className={`rounded-xl px-3 py-2.5 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] ${editNotice.startsWith('Submitted') ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20' : 'bg-red-50 text-red-600 ring-1 ring-red-100 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20'}`}>{editNotice}</p>
-          )}
-          <div className="grid gap-3 xl:grid-cols-2">
-            {[...new Set(editFields.map((f) => f.section))].map((section) => (
-            <fieldset key={section} className="rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)]">
-              <legend className="mb-2 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                {section}
-                {editFields.some((f) => f.section === section && f.sensitive) && (
-                  <InfoTip text="Fields marked 'approval' are sensitive (payroll/identity). Saving them submits a change request that an authorised approver must sign off before it takes effect." />
-                )}
-              </legend>
-              <div className="grid gap-2.5 sm:grid-cols-2 2xl:grid-cols-3">
-                {editFields.filter((f) => f.section === section).map((f) => {
-                  // Work email is the [editable local-part]@[locked company domain] widget, same as
-                  // the create modal — but with autoDerive OFF (never overwrite an existing address)
-                  // and self excluded from the uniqueness check.
-                  if (f.key === 'workEmail') {
-                    const editCompany = companies.find((c) => c.id === selectedEmployee?.companyId);
-                    return (
-                      <WorkEmailField
-                        key={f.key}
-                        label={f.label}
-                        value={editForm[f.key] ?? ''}
-                        onChange={(v) => setEditForm((p) => ({ ...p, [f.key]: v }))}
-                        englishName={editForm['englishName'] ?? selectedEmployee?.englishName ?? ''}
-                        arabicName={editForm['arabicName'] ?? selectedEmployee?.arabicName}
-                        companyId={selectedEmployee?.companyId}
-                        domain={editCompany?.emailDomain ?? ''}
-                        pattern={editCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
-                        excludeEmployeeId={selectedId ?? undefined}
-                        originalValue={editOriginal[f.key] ?? ''}
-                      />
-                    );
-                  }
-                  return (
-                  <label key={f.key} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                    <span className="flex items-center gap-1.5">
-                      {f.label}
-                      {f.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">approval</span>}
-                      {editForm[f.key] !== editOriginal[f.key] && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
-                    </span>
-                    {/* A select needs an option list. A non-null assertion here claimed one was always
-                        there; when the field catalogue began reaching this modal, a remote descriptor typed
-                        `select` with no options (the endpoint sends none) made it throw — and because these children are
-                        built during EmployeesPage's own render, the error boundary replaced the WHOLE People
-                        page. An optionless field falls back to a free-text input, which is what it was
-                        before the overlay. employeeFieldCatalog.optionsAwareType stops it upstream too. */}
-                    {f.type === 'select' && f.options && f.options.length > 0 ? (
-                      <select id={`edit-field-${f.key}`} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="select mt-1.5 w-full">
-                        <option value="">Select</option>
-                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    ) : (
-                      <input id={`edit-field-${f.key}`} type={f.type && f.type !== 'select' ? f.type : 'text'} value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="input mt-1.5 w-full" />
-                    )}
-                  </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-            ))}
+      <Modal isOpen={editOpen} title={canEditEmployees ? t('Edit Employee — {name}', { name: selectedEmployee?.fullName ?? '' }) : t('Employee record — {name}', { name: selectedEmployee?.fullName ?? '' })}
+        size="wizard" onClose={closeEditModal}
+        headerContent={<EmployeeCreateProgress steps={employeeWindowSteps} step={editStep} onStepChange={changeEditStep} busy={editSaving} />}
+        footer={
+          <div className="flex w-full items-center justify-between gap-3">
+            <button type="button" onClick={closeEditModal} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
+            <div className="flex items-center gap-2">
+              {editStep > 0 && <button type="button" onClick={() => changeEditStep(editStep - 1)} disabled={editSaving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
+              {editStep < EMPLOYEE_EDIT_STEPS.length - 1 ? (
+                <button type="button" onClick={() => changeEditStep(editStep + 1)} disabled={editSaving} className="btn-primary">
+                  {t('Next: {step}', { step: t(EMPLOYEE_EDIT_STEPS[editStep + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+                </button>
+              ) : canEditEmployees ? (
+                <button type="button" onClick={() => void saveEdit()} disabled={editSaving || editChangedKeys.length === 0 || unavailableEditKeys.length > 0} className="btn-primary disabled:opacity-60">
+                  {editSaving ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
+                  {t(editSaving ? 'Saving...' : 'Save changes')}
+                </button>
+              ) : <button type="button" onClick={closeEditModal} className="btn-primary">{t('Done')}</button>}
+            </div>
           </div>
-        </div>
+        }
+      >
+        <form ref={editFormRef} noValidate aria-busy={editSaving} className="space-y-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (editStep < EMPLOYEE_EDIT_STEPS.length - 1) changeEditStep(editStep + 1);
+          else void saveEdit();
+        }}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3 text-sm dark:border-white/10">
+            <span className="text-slate-500">{selectedEmployee?.employeeCode}</span>
+            <div className="flex flex-wrap items-center gap-3">
+              {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
+              <button type="button" onClick={closeEditModal} disabled={editSaving} className="text-sm font-semibold text-sapphire underline disabled:opacity-40">{t('Open full profile')}</button>
+            </div>
+          </div>
+          {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
+          {unavailableEditKeys.length > 0 && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{unavailableEditNotice}</p>}
+          {editNotice && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{editNotice}</p>}
+          {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => (
+            <EmployeeCreatePanel key={step.label} steps={employeeWindowSteps} step={index} activeStep={editStep}>
+              {index === 1 && <dl className="mb-5 grid gap-3 border-b border-slate-100 pb-4 text-sm sm:grid-cols-2 dark:border-white/10">
+                <div><dt className="text-slate-500">{t('Company')}</dt><dd className="mt-1 font-medium">{nameById(companies, selectedEmployee?.companyId, 'legalNameEn') || t('Not provided')}</dd></div>
+                <div><dt className="text-slate-500">{t('Branch')}</dt><dd className="mt-1 font-medium">{selectedEmployee?.branch || t('Not provided')}</dd></div>
+              </dl>}
+              {canEditEmployees && editFields.some((field) => employeeEditStep(field) === index && field.sensitive && canEditField(field)) && (
+                <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>
+              )}
+              <fieldset disabled={editSaving} className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
+                {editFields.filter((field) => employeeEditStep(field) === index).map((field) => {
+                  if (!canEditField(field)) return (
+                    <div key={field.key} className="text-sm">
+                      <p className="text-slate-500">{t(field.label)}</p>
+                      <p className="mt-2 min-h-10 rounded-lg bg-slate-50 px-3 py-2.5 text-slate-700 dark:bg-white/5 dark:text-slate-300">{editDisplayValue(field)}</p>
+                    </div>
+                  );
+                  if (field.key === 'workEmail') {
+                    const editCompany = companies.find((company) => company.id === selectedEmployee?.companyId);
+                    return <WorkEmailField key={field.key} label={field.label} value={editForm[field.key] ?? ''}
+                      onChange={(value) => setEditForm((current) => ({ ...current, [field.key]: value }))}
+                      englishName={editForm.englishName ?? selectedEmployee?.englishName ?? ''} arabicName={editForm.arabicName ?? selectedEmployee?.arabicName}
+                      companyId={selectedEmployee?.companyId} domain={editCompany?.emailDomain ?? ''}
+                      pattern={editCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+                      excludeEmployeeId={selectedId ?? undefined} originalValue={editOriginal[field.key] ?? ''} />;
+                  }
+                  return <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <span className="flex items-center gap-1.5">
+                      {t(field.label)}
+                      {field.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}
+                      {editChangedKeys.includes(field.key) && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}
+                    </span>
+                    {field.type === 'select' && field.options && field.options.length > 0 ? (
+                      <select id={`edit-field-${field.key}`} value={editForm[field.key] ?? ''} onChange={(event) => setEditForm((current) => ({ ...current, [field.key]: event.target.value }))} className="select mt-1.5 w-full">
+                        <option value="">{t('Select')}</option>
+                        {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    ) : <input id={`edit-field-${field.key}`} type={field.type && field.type !== 'select' ? field.type : 'text'} step={field.type === 'number' ? 'any' : undefined}
+                      value={editForm[field.key] ?? ''} onChange={(event) => setEditForm((current) => ({ ...current, [field.key]: event.target.value }))} className="input mt-1.5 w-full" />}
+                  </label>;
+                })}
+              </fieldset>
+              {index === 2 && canReadSensitiveEmployees && selectedEmployee?.payrollProfile && (
+                <div className="mt-5 border-t border-slate-100 pt-4 dark:border-white/10">
+                  <EmployeeCreateReview readOnly sections={[{ title: t('Payroll profile'), rows: [
+                    [t('Account number'), selectedEmployee.payrollProfile.accountNumber],
+                    [t('Payment method'), selectedEmployee.payrollProfile.paymentMethod],
+                    [t('Salary currency'), selectedEmployee.payrollProfile.salaryCurrency],
+                    [t('Payroll group'), selectedEmployee.payrollProfile.payrollGroup],
+                    [t('Salary structure reference'), selectedEmployee.payrollProfile.salaryStructureReference],
+                  ] }]} />
+                </div>
+              )}
+            </EmployeeCreatePanel>
+          ))}
+          <EmployeeCreatePanel steps={employeeWindowSteps} step={5} activeStep={editStep}>
+            {canEditEmployees && <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{editChangedKeys.length > 0 ? t('{count} fields changed. Review the before and after values before saving.', { count: editChangedKeys.length }) : t('No changes yet. You can return to any section to update it.')}</p>}
+            <EmployeeCreateReview sections={editReviewSections} onEdit={changeEditStep} readOnly={!canEditEmployees} busy={editSaving} />
+          </EmployeeCreatePanel>
+        </form>
       </Modal>
 
       <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
@@ -2790,6 +2920,7 @@ export function EmployeesPage() {
         onChooseDifferentDepartment={establishmentBlock?.refocusId ? () => {
           const refocusId = establishmentBlock.refocusId!;
           if (formOpen && refocusId === 'employee-form-department') changeCreateStep(1);
+          if (editOpen && refocusId === 'edit-field-department') changeEditStep(1);
           requestAnimationFrame(() => requestAnimationFrame(() => {
             const el = document.getElementById(refocusId);
             el?.scrollIntoView({ block: 'center' });

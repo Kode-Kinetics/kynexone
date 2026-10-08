@@ -6,6 +6,12 @@ import { useLocale } from '../contexts/LocaleContext';
 import { msg } from '../i18n/translations';
 import styles from './EmployeeCreateWizard.module.css';
 
+export type EmployeeWizardStep = {
+  label: string;
+  title: string;
+  description: string;
+};
+
 export const EMPLOYEE_CREATE_STEPS = [
   { label: msg('Profile'), title: msg('Start with the person'), description: msg('Add their name and contact details. Fields marked with an asterisk are required.') },
   { label: msg('Employment'), title: msg('Place them in the organization'), description: msg('Choose their company, role and reporting line, then confirm their joining details.') },
@@ -15,20 +21,36 @@ export const EMPLOYEE_CREATE_STEPS = [
   { label: msg('Review'), title: msg('Review employee details'), description: msg('Check the information below. You can edit any section before creating the employee.') },
 ] as const;
 
-export function EmployeeCreateProgress({ step, onStepChange, busy = false }: {
+export const EMPLOYEE_EDIT_STEPS = [
+  { label: msg('Profile'), title: msg('Review their profile'), description: msg('Check their name and contact details. Changes that require approval follow the existing approval process.') },
+  { label: msg('Employment'), title: msg('Review employment details'), description: msg('Review their company, role and reporting line, then confirm their employment details.') },
+  { label: msg('Payroll'), title: msg('Review payroll details'), description: msg('Check payment and bank details before saving your changes.') },
+  { label: msg('Salary'), title: msg('Review salary details'), description: msg('Review the recorded salary. Changes that require approval follow the existing approval process.') },
+  { label: msg('Identity'), title: msg('Review identity details'), description: msg('Review identity records and expiry dates for the employing company.') },
+  { label: msg('Review'), title: msg('Review employee changes'), description: msg('Check each section before saving. Changes that require approval follow the existing approval process.') },
+] as const;
+
+export const EMPLOYEE_VIEW_STEPS: readonly EmployeeWizardStep[] = EMPLOYEE_EDIT_STEPS.map((step) => ({
+  ...step,
+  title: step.label === 'Review' ? msg('Review employee details') : step.title,
+  description: msg('Browse the saved information for this section.'),
+}));
+
+export function EmployeeCreateProgress({ step, onStepChange, busy = false, steps = EMPLOYEE_CREATE_STEPS }: {
   step: number;
   onStepChange: (step: number) => void;
   busy?: boolean;
+  steps?: readonly EmployeeWizardStep[];
 }) {
   const { t } = useLocale();
   return (
     <nav className={styles.progress} aria-label={t('Employee setup progress')}>
       <p className={styles.mobileProgress} aria-live="polite" aria-atomic="true">
-        <span>{t('Step {step} of {total}', { step: step + 1, total: EMPLOYEE_CREATE_STEPS.length })}</span>
-        <strong>{t(EMPLOYEE_CREATE_STEPS[step].label)}</strong>
+        <span>{t('Step {step} of {total}', { step: step + 1, total: steps.length })}</span>
+        <strong>{t(steps[step].label)}</strong>
       </p>
       <ol className={styles.steps}>
-        {EMPLOYEE_CREATE_STEPS.map((item, index) => (
+        {steps.map((item, index) => (
           <li key={item.label} className={styles.stepItem} data-state={index < step ? 'complete' : index === step ? 'current' : 'upcoming'}>
             <button
               type="button"
@@ -52,17 +74,18 @@ export function EmployeeCreateProgress({ step, onStepChange, busy = false }: {
   );
 }
 
-export function EmployeeCreatePanel({ step, activeStep, children }: {
+export function EmployeeCreatePanel({ step, activeStep, children, steps = EMPLOYEE_CREATE_STEPS }: {
   step: number;
   activeStep: number;
   children: ReactNode;
+  steps?: readonly EmployeeWizardStep[];
 }) {
   const { t } = useLocale();
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const active = step === activeStep;
-  const item = EMPLOYEE_CREATE_STEPS[step];
+  const item = steps[step];
 
   useEffect(() => {
     if (!active) return;
@@ -104,10 +127,11 @@ export type EmployeeCreateReviewSection = {
   rows: Array<[string, string | number | undefined | null]>;
 };
 
-export function EmployeeCreateReview({ sections, onEdit, busy = false }: {
+export function EmployeeCreateReview({ sections, onEdit, busy = false, readOnly = false }: {
   sections: EmployeeCreateReviewSection[];
-  onEdit: (step: number) => void;
+  onEdit?: (step: number) => void;
   busy?: boolean;
+  readOnly?: boolean;
 }) {
   const { t } = useLocale();
   return (
@@ -116,10 +140,12 @@ export function EmployeeCreateReview({ sections, onEdit, busy = false }: {
         <section key={section.title} className={styles.reviewSection}>
           <div className={styles.reviewHeading}>
             <h4>{t(section.title)}</h4>
-            <button type="button" className={styles.editButton} disabled={busy} onClick={() => onEdit(index)} aria-label={t('Edit {section}', { section: t(section.title) })}>
-              <Pencil size={13} aria-hidden="true" />
-              {t('Edit')}
-            </button>
+            {!readOnly && onEdit && (
+              <button type="button" className={styles.editButton} disabled={busy} onClick={() => onEdit(index)} aria-label={t('Edit {section}', { section: t(section.title) })}>
+                <Pencil size={13} aria-hidden="true" />
+                {t('Edit')}
+              </button>
+            )}
           </div>
           <dl className={styles.reviewRows}>
             {section.rows.map(([label, value]) => (
