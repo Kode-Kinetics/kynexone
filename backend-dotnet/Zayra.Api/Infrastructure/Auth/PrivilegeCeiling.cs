@@ -99,6 +99,20 @@ public static class PrivilegeCeiling
             (baseline ?? Array.Empty<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase),
             (approverRoutes ?? Array.Empty<string>()).ToHashSet(StringComparer.Ordinal));
 
+    /// <summary>
+    /// What the caller may manage: what they hold, plus — for an Admin — the least-privilege keys Admin is not GIVEN by
+    /// default (<see cref="Zayra.Api.Infrastructure.Seed.AuthSeeder.AdminWithheldPermissions"/>, review 3). Withholding a
+    /// data-access key from Admin must not stop an Admin managing the HR users who hold it, editing their roles, or
+    /// granting it where the tenant decides; it only means Admin does not open that data by default.
+    /// </summary>
+    public static IReadOnlySet<string> Reach(Caller caller)
+    {
+        if (!caller.IsAdmin) return caller.Held;
+        var reach = new HashSet<string>(caller.Held, StringComparer.OrdinalIgnoreCase);
+        reach.UnionWith(Zayra.Api.Infrastructure.Seed.AuthSeeder.AdminWithheldPermissions);
+        return reach;
+    }
+
     /// <summary>The permissions in <paramref name="required"/> that <paramref name="held"/> lacks, sorted.</summary>
     public static IReadOnlyList<string> Missing(IReadOnlySet<string> held, IEnumerable<string> required) =>
         required
@@ -151,7 +165,7 @@ public static class PrivilegeCeiling
             return Refuse(Codes.AdminOnlyRole, role.Name);
         // The baseline every employee gets is always within reach: the Employee role can be given by anyone who
         // may manage access, whether or not they hold self-service permissions themselves.
-        var missing = Missing(caller.Held, role.Permissions.Where(p => !caller.Baseline.Contains(p)));
+        var missing = Missing(Reach(caller), role.Permissions.Where(p => !caller.Baseline.Contains(p)));
         return missing.Count > 0 ? Refuse(Codes.RoleAboveCeiling, role.Name, missing) : null;
     }
 
@@ -165,7 +179,7 @@ public static class PrivilegeCeiling
         if (caller.RoleIds.Contains(role.Id)) return Refuse(Codes.OwnRole, role.Name);
         if (role.IsSystem && !caller.IsAdmin) return Refuse(Codes.BuiltInRoleAdminOnly, role.Name);
         if (IsReservedName(role.NormalizedName, caller.ApproverRoutes) && !caller.IsAdmin) return Refuse(Codes.ReservedRoleName, role.Name);
-        var above = Missing(caller.Held, role.Permissions);
+        var above = Missing(Reach(caller), role.Permissions);
         if (above.Count > 0) return Refuse(Codes.RoleAboveCeiling, role.Name, above);
         return newPermissions is null ? null : GrantRefusal(caller, newPermissions);
     }
@@ -173,7 +187,7 @@ public static class PrivilegeCeiling
     /// <summary>Why the caller may not grant <paramref name="permissions"/> (to a new role or as an Allow override).</summary>
     public static Refusal? GrantRefusal(Caller caller, IEnumerable<string> permissions)
     {
-        var missing = Missing(caller.Held, permissions);
+        var missing = Missing(Reach(caller), permissions);
         return missing.Count > 0 ? Refuse(Codes.PermissionAboveCeiling, null, missing) : null;
     }
 
@@ -204,7 +218,7 @@ public static class PrivilegeCeiling
     {
         if (targetIsAdmin && !caller.IsAdmin) return Refuse(Codes.AdminTarget, "Admin");
         // Baseline self-service access (every employee's) never puts a user above the caller.
-        var missing = Missing(caller.Held, targetPermissions.Where(p => !caller.Baseline.Contains(p)));
+        var missing = Missing(Reach(caller), targetPermissions.Where(p => !caller.Baseline.Contains(p)));
         return missing.Count > 0 ? Refuse(Codes.TargetAboveCeiling, null, missing) : null;
     }
 
