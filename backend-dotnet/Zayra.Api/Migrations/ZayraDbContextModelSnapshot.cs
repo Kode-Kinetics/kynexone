@@ -3424,6 +3424,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at_utc");
 
+                    b.Property<string>("FailedReason")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("failed_reason");
+
                     b.Property<string>("PurgeState")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -3459,6 +3464,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("used_by_raw_event_id");
 
+                    b.Property<DateTime?>("WaiverCancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("waiver_cancelled_at_utc");
+
+                    b.Property<DateTime?>("WaiverConsumedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("waiver_consumed_at_utc");
+
+                    b.Property<Guid?>("WaiverRawEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("waiver_raw_event_id");
+
                     b.HasKey("Id");
 
                     b.HasIndex("EmployeeId");
@@ -3467,6 +3484,11 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")
                         .HasFilter("used_by_raw_event_id IS NOT NULL");
+
+                    b.HasIndex("WaiverRawEventId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_attendance_evidence__waiver_raw_event")
+                        .HasFilter("waiver_raw_event_id IS NOT NULL");
 
                     b.HasIndex("TenantId", "CreatedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__purge_due")
@@ -3477,6 +3499,10 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "UsedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__used_purge_due")
                         .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
+
+                    b.HasIndex("TenantId", "WaiverConsumedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__waived_punches")
+                        .HasFilter("waiver_consumed_at_utc IS NOT NULL");
 
                     b.HasIndex("TenantId", "EmployeeId", "CreatedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__employee_created");
@@ -3489,6 +3515,10 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
 
+                            t.HasCheckConstraint("ck_attendance_evidence__failed_never_active", "failed_reason IS NULL OR (purge_state <> 'Active' AND used_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__failed_reason", "failed_reason IS NULL OR failed_reason IN ('Busy','Storage')");
+
                             t.HasCheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Pending','Active','Purged')");
 
                             t.HasCheckConstraint("ck_attendance_evidence__purged_pair", "(purge_state = 'Purged') = (purged_at_utc IS NOT NULL)");
@@ -3496,6 +3526,12 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_attendance_evidence__used_pair", "(used_at_utc IS NULL) = (used_by_raw_event_id IS NULL)");
 
                             t.HasCheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "failed_reason IS NOT NULL OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_once", "waiver_consumed_at_utc IS NULL OR waiver_cancelled_at_utc IS NULL");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_pair", "(waiver_consumed_at_utc IS NULL) = (waiver_raw_event_id IS NULL)");
                         });
                 });
 
@@ -26763,6 +26799,11 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.AttendanceRawEvent", null)
                         .WithMany()
                         .HasForeignKey("UsedByRawEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.AttendanceRawEvent", null)
+                        .WithMany()
+                        .HasForeignKey("WaiverRawEventId")
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 

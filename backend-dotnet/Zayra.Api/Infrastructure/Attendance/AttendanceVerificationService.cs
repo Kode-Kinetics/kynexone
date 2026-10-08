@@ -58,6 +58,22 @@ public static class AttendanceRefusals
         "Your company asks for a selfie with each punch you make from the app. Take a selfie and try again.",
         "تطلب شركتك صورة ذاتية مع كل تسجيل حضور من التطبيق. التقط صورة وحاول مرة أخرى.");
 
+    /// <summary>
+    /// Review 3: the daily cap of server-failure waivers is used up. Still <c>selfie_required</c> (a client handles it
+    /// as such), with the plain message the decision fixed.
+    /// </summary>
+    public static readonly AttendanceRefusal SelfieRequiredTryAgain = new("selfie_required",
+        "Please try the selfie again in a moment.",
+        "يُرجى محاولة التقاط الصورة الذاتية مرة أخرى بعد قليل.");
+
+    /// <summary>
+    /// Review 3: another upload of this employee is still in flight (a Pending row younger than 60 s). Never waives a
+    /// required selfie: parallel uploads must not manufacture server failures.
+    /// </summary>
+    public static readonly AttendanceRefusal SelfieUploadInProgress = new("selfie_upload_in_progress",
+        "A selfie is already being sent. Wait a moment, then try again.",
+        "يجري إرسال صورة ذاتية بالفعل. انتظر قليلًا ثم حاول مرة أخرى.");
+
     public static readonly AttendanceRefusal RateLimited = new("selfie_rate_limited",
         "You have tried to upload 10 selfies in the last hour. Wait a little and try again.",
         "حاولت رفع 10 صور خلال الساعة الماضية. انتظر قليلًا وحاول مرة أخرى.");
@@ -66,7 +82,7 @@ public static class AttendanceRefusals
         "The server is busy processing other selfies. Try again in a few seconds, or record this punch without a selfie.",
         "الخادم مشغول بمعالجة صور أخرى. حاول مرة أخرى بعد بضع ثوانٍ، أو سجّل هذا الحضور بدون صورة.");
 
-    /// <summary>Storage refused or failed the write. The server's failure: a required selfie is waived for the next punch.</summary>
+    /// <summary>Storage refused or failed the write. The server's failure: it may waive a required selfie for one punch (review 3).</summary>
     public static readonly AttendanceRefusal SelfieStorageUnavailable = new("selfie_storage_unavailable",
         "Your selfie could not be saved because of a problem on our side. Record this punch without a selfie.",
         "تعذّر حفظ صورتك بسبب مشكلة لدينا. سجّل هذا الحضور بدون صورة.");
@@ -133,7 +149,8 @@ public static class AttendanceRefusals
 }
 
 /// <summary>
-/// The labels and photo references only the server's own punch decision may write (selfie attendance v2, review item 9).
+/// The labels and photo references (<c>evidence:</c>, and review 3's <c>waiver:</c>) only the server's own punch decision
+/// may write (selfie attendance v2, review item 9).
 /// events/push, CSV import and device ingest REFUSE them (decision: refuse, not rewrite — an integrator learns at once,
 /// and nothing is silently changed).
 /// </summary>
@@ -150,7 +167,9 @@ public static class ReservedVerificationLabels
 
     public static bool Violates(string? verificationMethod, string? photoReference) =>
         (verificationMethod is not null && Reserved.Contains(verificationMethod.Trim()))
-        || (photoReference is not null && photoReference.TrimStart().StartsWith(EvidencePhotoPrefix, StringComparison.OrdinalIgnoreCase));
+        || (photoReference is not null && (photoReference.TrimStart().StartsWith(EvidencePhotoPrefix, StringComparison.OrdinalIgnoreCase)
+                                           // Review 3: a waived punch's reference is the server's too.
+                                           || photoReference.TrimStart().StartsWith(SelfieWaivers.PhotoReferencePrefix, StringComparison.OrdinalIgnoreCase)));
 }
 
 /// <summary>
@@ -426,25 +445,38 @@ public sealed class AttendanceVerificationService
     public static readonly TimeSpan EvidenceLifetime = TimeSpan.FromMinutes(10);
     public const int MaxUploadsPerHour = 10;
 
-    /// <summary>Audit action written when the upload failed on the server's side (busy, or storage). Keyed by employee.</summary>
+    /// <summary>Audit action written when the upload failed on the server's side (busy, or storage). Keyed by employee.
+    /// A record for people, never read back to decide anything: the waiver lives on the attempt's own row (review 3).</summary>
     public const string SelfieServerFailureAction = "attendance.selfie.server_failure";
     /// <summary>Audit action written when a required selfie was waived for a punch because of such a failure.</summary>
     public const string SelfieRequirementWaivedAction = "attendance.selfie.requirement_waived";
     public const string EmployeeEntity = "Employee";
-    public const string ServerFailureBusy = "busy";
-    public const string ServerFailureStorage = "storage_error";
-    /// <summary>A server failure waives the requirement for one punch within this window (the evidence lifetime).</summary>
-    public static readonly TimeSpan ServerFailureWaiverWindow = EvidenceLifetime;
+
+    /// <summary>
+    /// Review 3, item 8 (no behaviour change by default): once the app build that sends <c>X-Client-Platform</c> is the
+    /// minimum version, the platform team sets this to true and <c>mockDetection: "Unsupported"</c> WITHOUT the header is
+    /// refused under the geofence (<c>app_update_required</c>). Read on every punch, so a configuration reload applies it.
+    /// </summary>
+    public const string RequirePlatformHeaderForUnsupportedKey = "Attendance:RequirePlatformHeaderForUnsupported";
 
     private readonly ZayraDbContext _db;
     private readonly StorageResidency _residency;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
 
     /// <param name="residency">Where this deploy stores documents. Without one nothing is resident, so selfie attendance is OFF.</param>
-    public AttendanceVerificationService(ZayraDbContext db, StorageResidency? residency = null)
+    /// <param name="configuration">Read for <see cref="RequirePlatformHeaderForUnsupportedKey"/> (absent = false).</param>
+    public AttendanceVerificationService(ZayraDbContext db, StorageResidency? residency = null,
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
     {
         _db = db;
         _residency = residency ?? StorageResidency.Unconfigured;
+        _configuration = configuration;
     }
+
+    /// <summary>Whether "Unsupported" without an X-Client-Platform header is refused under the geofence (default false).</summary>
+    public bool RequirePlatformHeaderForUnsupported =>
+        _configuration is not null
+        && bool.TryParse(_configuration[RequirePlatformHeaderForUnsupportedKey], out var on) && on;
 
     public StorageResidency Residency => _residency;
 
@@ -605,6 +637,10 @@ public sealed class AttendanceVerificationService
                 // accepted as before, and the audit records the platform as unknown.
                 if (mockUnavailable && location.Platform is { IsAndroid: true })
                     return GeofenceCheck.Refuse(AttendanceRefusals.MockDetectionRequired);
+                // Review 3, item 8: off by default. Once the header-sending app build is the minimum version, the
+                // platform team switches this on and an app that sends no platform header must update.
+                if (mockUnavailable && location.Platform?.Header is null && RequirePlatformHeaderForUnsupported)
+                    return GeofenceCheck.Refuse(AttendanceRefusals.AppUpdateRequired);
             }
             else if (location.Mocked == true)
             {
@@ -679,10 +715,18 @@ public sealed class AttendanceVerificationService
         else if (policy.RequireSelfieForConsented
                  && await ActiveConsentAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct) is not null)
         {
-            // The server failing must never block attendance (review 2, item 7): after a busy or storage failure on
-            // this employee's upload, one punch goes through without the selfie, recorded None and audited.
-            waivedReason = await UnconsumedServerFailureAsync(tenantId, employeeId, DateTime.UtcNow, ct);
-            if (waivedReason is null) return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequired);
+            // The server failing must never block attendance (review 2, item 7), and a waiver is one specific failed
+            // attempt (review 3): an unused, uncancelled server failure of THIS employee from the last 10 minutes, at most
+            // two a day. This is the pre-check; the punch's own transaction re-checks and consumes it under the
+            // per-employee advisory lock (AttendanceService), so two concurrent punches cannot both use it.
+            // The legacy route writes its punch without the waiver step, so it never uses one.
+            if (channel == PunchChannel.SelfMobileLegacy) return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequired);
+            var nowUtc = DateTime.UtcNow;
+            var waiver = await SelfieWaivers.FindOpenAsync(_db, tenantId, employeeId, nowUtc, ct);
+            if (waiver is null) return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequired);
+            if (await SelfieWaivers.CapReachedAsync(_db, tenantId, employeeId, nowUtc, ct))
+                return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequiredTryAgain);
+            waivedReason = SelfieWaivers.Describe(waiver.FailedReason);
         }
 
         var geo = await CheckGeofenceAsync(tenantId, employeeId, location, policy, ct, channel);
@@ -700,27 +744,6 @@ public sealed class AttendanceVerificationService
             waivedReason));
     }
 
-    /// <summary>
-    /// The reason of the employee's most recent server-side upload failure (busy, storage) within
-    /// <see cref="ServerFailureWaiverWindow"/> that no punch has used as a waiver yet, or null. A waiver row written
-    /// after the failure consumes it.
-    /// </summary>
-    public async Task<string?> UnconsumedServerFailureAsync(Guid tenantId, int employeeId, DateTime nowUtc, CancellationToken ct)
-    {
-        var since = nowUtc - ServerFailureWaiverWindow;
-        var key = employeeId.ToString(CultureInfo.InvariantCulture);
-        var latest = await _db.AttendanceAuditLogs.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EntityName == EmployeeEntity && a.EntityId == key && a.CreatedAtUtc >= since
-                        && (a.Action == SelfieServerFailureAction || a.Action == SelfieRequirementWaivedAction))
-            .OrderByDescending(a => a.CreatedAtUtc)
-            .Select(a => new { a.Action, a.MetadataJson })
-            .FirstOrDefaultAsync(ct);
-        if (latest is null || latest.Action != SelfieServerFailureAction) return null;
-        var reason = SelfieAttendanceConfig.TryParse(latest.MetadataJson)?["reason"] is JsonValue v && v.TryGetValue<string>(out var r) ? r : null;
-        return reason is ServerFailureBusy ? "The selfie service was busy, so the required selfie was waived for this punch."
-            : "Selfie storage failed, so the required selfie was waived for this punch.";
-    }
-
     /// <summary>The evidence rule, shared by the pre-check and the re-check inside the punch transaction.</summary>
     public static AttendanceRefusal? EvidenceRefusal(
         int? ownerEmployeeId, DateTime? usedAtUtc, string? purgeState, DateTime? expiresAtUtc, int punchEmployeeId, DateTime nowUtc)
@@ -732,5 +755,87 @@ public sealed class AttendanceVerificationService
         if (purgeState != AttendanceEvidencePurgeStates.Active || expiresAtUtc is null || expiresAtUtc <= nowUtc)
             return AttendanceRefusals.EvidenceExpired;
         return null;
+    }
+}
+
+/// <summary>
+/// The server-failure waiver (review 3). A waiver is ONE specific failed upload attempt: an <c>attendance_evidence</c>
+/// row with <see cref="AttendanceEvidence.FailedReason"/> set, which the upload sets only when the failure was the
+/// server's (busy, storage) and the employee had no other attempt in flight. It is open while it is unused, not
+/// cancelled by a later successful upload, and younger than <see cref="Window"/>. At most <see cref="DailyCap"/> are
+/// used per employee per tenant-local calendar day. <c>attendance_audit_logs</c> are never read to decide any of it.
+/// </summary>
+public static class SelfieWaivers
+{
+    /// <summary>A waiver can be used within this long of the failed attempt (the evidence lifetime).</summary>
+    public static readonly TimeSpan Window = AttendanceVerificationService.EvidenceLifetime;
+    /// <summary>Waivers one employee may use per tenant-local calendar day.</summary>
+    public const int DailyCap = 2;
+    /// <summary>Another Pending attempt younger than this is "in flight": a new upload is refused while it lasts.</summary>
+    public static readonly TimeSpan InFlight = TimeSpan.FromSeconds(60);
+    /// <summary>The raw event's <c>PhotoReference</c> prefix of a waived punch (reserved: integrations may not write it).</summary>
+    public const string PhotoReferencePrefix = "waiver:";
+
+    /// <summary>The employee's open waiver (newest first), or null. Pass <paramref name="tracked"/> inside the punch transaction.</summary>
+    public static Task<AttendanceEvidence?> FindOpenAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime nowUtc,
+        CancellationToken ct, bool tracked = false)
+    {
+        var since = nowUtc - Window;
+        var rows = tracked ? db.AttendanceEvidence : db.AttendanceEvidence.AsNoTracking();
+        return rows
+            .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since
+                        && e.FailedReason != null && e.WaiverConsumedAtUtc == null && e.WaiverCancelledAtUtc == null)
+            .OrderByDescending(e => e.CreatedAtUtc).ThenBy(e => e.Id)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>Whether the employee has used <see cref="DailyCap"/> waivers on the tenant-local day of <paramref name="nowUtc"/>.</summary>
+    public static async Task<bool> CapReachedAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime nowUtc, CancellationToken ct) =>
+        await UsedTodayAsync(db, tenantId, employeeId, nowUtc, ct) >= DailyCap;
+
+    /// <summary>How many waivers the employee used on the tenant-local day of <paramref name="nowUtc"/>.</summary>
+    public static async Task<int> UsedTodayAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime nowUtc, CancellationToken ct)
+    {
+        var (start, end) = await TodayAsync(db, tenantId, nowUtc, ct);
+        // A waiver is used within Window of its attempt, so created_at_utc bounds the scan (ix_attendance_evidence__employee_created).
+        var createdFrom = start - Window;
+        return await db.AttendanceEvidence.AsNoTracking()
+            .CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc >= createdFrom && e.CreatedAtUtc < end
+                             && e.WaiverConsumedAtUtc >= start && e.WaiverConsumedAtUtc < end, ct);
+    }
+
+    /// <summary>The tenant-local calendar day containing <paramref name="nowUtc"/>, as a UTC [start, end) window.</summary>
+    public static async Task<(DateTime Start, DateTime End)> TodayAsync(ZayraDbContext db, Guid tenantId, DateTime nowUtc, CancellationToken ct)
+    {
+        var tz = TenantTimeZone.FromId(await db.TenantLocalizationSettings.AsNoTracking()
+            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+        var today = TenantTimeZone.LocalDate(tz, nowUtc);
+        return (TenantTimeZone.LocalDayStartUtc(tz, today), TenantTimeZone.LocalDayStartUtc(tz, today.AddDays(1)));
+    }
+
+    /// <summary>The plain reason recorded with a waived punch.</summary>
+    public static string Describe(string? failedReason) => failedReason == SelfieUploadFailureReasons.Busy
+        ? "The selfie service was busy, so the required selfie was waived for this punch."
+        : "Selfie storage failed, so the required selfie was waived for this punch.";
+
+    /// <summary>
+    /// Inside the punch transaction (the caller's), under the per-employee advisory lock: re-checks the waiver rules and
+    /// marks the open waiver used by <paramref name="raw"/> (staged for the caller's single save, with the raw event).
+    /// Throws <see cref="AttendanceRefusalException"/> when no waiver is open any more, or the daily cap is reached —
+    /// so of two concurrent punches only one can use a waiver.
+    /// </summary>
+    public static async Task<AttendanceEvidence> ConsumeAsync(ZayraDbContext db, Guid tenantId, int employeeId, AttendanceRawEvent raw,
+        DateTime nowUtc, CancellationToken ct)
+    {
+        await Zayra.Api.Controllers.SelfieConsentLock.AcquireInCurrentTransactionAsync(db, tenantId, employeeId, ct);
+        var waiver = await FindOpenAsync(db, tenantId, employeeId, nowUtc, ct, tracked: true)
+                     ?? throw new AttendanceRefusalException(AttendanceRefusals.SelfieRequired);
+        if (await CapReachedAsync(db, tenantId, employeeId, nowUtc, ct))
+            throw new AttendanceRefusalException(AttendanceRefusals.SelfieRequiredTryAgain);
+        waiver.WaiverConsumedAtUtc = nowUtc;
+        waiver.WaiverRawEventId = raw.Id;
+        raw.VerificationMethod = AttendanceVerificationMethods.None;
+        raw.PhotoReference = PhotoReferencePrefix + waiver.Id;
+        return waiver;
     }
 }

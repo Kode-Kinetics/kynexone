@@ -467,10 +467,27 @@ public class AttendanceService : IAttendanceService
                     clientPlatform = verification.ClientPlatform ?? "unknown",
                     reason = "the device reported mockDetection = Unsupported (iOS cannot detect a simulated location)",
                 }), ct);
-        if (verification?.SelfieRequirementWaivedReason is { } waived)
+        if (verification?.SelfieRequirementWaivedReason is not null)
+        {
+            // Review 3: the waiver is one specific failed upload attempt, used inside THIS transaction under the
+            // per-employee advisory lock (re-checked: unused, uncancelled, < 10 minutes old, the daily cap), and marked
+            // used with this raw event in the same save. Of two concurrent punches only one can use it.
+            AttendanceEvidence waiver;
+            try { waiver = await SelfieWaivers.ConsumeAsync(_db, tenantId, employee.Id, raw, DateTime.UtcNow, ct); }
+            catch (AttendanceRefusalException)
+            {
+                // Nothing of this punch may be saved by a later save on the same context.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
             await Audit(tenantId, context, AttendanceVerificationService.SelfieRequirementWaivedAction, AttendanceVerificationService.EmployeeEntity,
                 employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                JsonSerializer.Serialize(new { employeeId = employee.Id, rawEventId = raw.Id, verificationMethod = verification.Method, reason = waived }), ct);
+                JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id, rawEventId = raw.Id, verificationMethod = raw.VerificationMethod,
+                    waiverAttemptId = waiver.Id, failedReason = waiver.FailedReason, reason = SelfieWaivers.Describe(waiver.FailedReason),
+                }), ct);
+        }
         if (verification?.EvidenceId is Guid evidenceId)
             await ConsumeEvidenceAsync(tenantId, employee.Id, evidenceId, raw, verification, context, ct);
         try { await _db.SaveChangesAsync(ct); }

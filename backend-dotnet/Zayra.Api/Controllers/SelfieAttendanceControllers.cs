@@ -109,8 +109,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// </list>
     /// An attempt refused before anything reached storage (bad input, decode failure, busy) deletes its Pending row, so
     /// only attempts that reached storage count toward the hourly limit. A Pending row whose upload never completed is
-    /// purged (with any file) after an hour. Busy and storage failures are recorded so a REQUIRED selfie is waived for
-    /// the employee's next punch: the server failing never blocks attendance.
+    /// purged (with any file) after an hour. Only one attempt per employee may be in flight (review 3): another Pending
+    /// attempt younger than 60 s answers 409 <c>selfie_upload_in_progress</c>, which never waives anything. A busy or
+    /// storage failure with nothing else in flight is kept on the attempt's own row as a waiver, so a REQUIRED selfie is
+    /// waived for one punch (at most two a day): the server failing never blocks attendance.
     /// </summary>
     [HttpPost("selfie")]
     [Consumes("multipart/form-data")]
@@ -137,7 +139,14 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         byte[] jpeg;
         try
         {
-            var (prepared, inputRefusal) = await ReadAndPrepareAsync(tenantId, employeeId, ct);
+            var (prepared, inputRefusal, busy) = await ReadAndPrepareAsync(ct);
+            if (busy)
+            {
+                // The server's failure: kept as this attempt's waiver when nothing else was in flight (review 3).
+                var punchWithoutSelfie = await RecordServerFailureAsync(tenantId, employeeId, SelfieUploadFailureReasons.Busy, attempt!, policy);
+                Response.Headers.RetryAfter = "5";
+                return StatusCode(StatusCodes.Status429TooManyRequests, AttendanceRefusals.SelfieBusy.BodyWith(punchWithoutSelfie));
+            }
             if (inputRefusal is not null)
             {
                 // Nothing reached storage: the attempt does not count (review 2, item 7).
@@ -157,10 +166,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // The row stays Pending (it reached storage, so it counts, and is unusable); the purge deletes any partial
-            // file within the hour. Try now too. The failure waives a required selfie for the next punch.
+            // file within the hour. Try now too. The failure is this attempt's waiver when nothing else was in flight.
             try { await _storage.DeleteStrictAsync(tenantId, attempt!.StorageKey, CancellationToken.None); } catch { /* the purge retries */ }
-            await RecordServerFailureAsync(tenantId, employeeId, AttendanceVerificationService.ServerFailureStorage, attempt!.Id);
-            return StatusCode(StatusCodes.Status503ServiceUnavailable, AttendanceRefusals.SelfieStorageUnavailable.BodyWith(punchWithoutSelfie: true));
+            var punchWithoutSelfie = await RecordServerFailureAsync(tenantId, employeeId, SelfieUploadFailureReasons.Storage, attempt!, policy);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, AttendanceRefusals.SelfieStorageUnavailable.BodyWith(punchWithoutSelfie));
         }
 
         return await ActivateAsync(tenantId, employeeId, policy.ConsentPolicyVersion, attempt, sha256, jpeg.Length, ct);
@@ -170,7 +179,7 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// Reads the body and turns it into the sanitised JPEG, or the refusal to return. JPEG only, by magic bytes, BEFORE
     /// any decode: a PNG decodes at full size whatever its file size, which is how a small instance runs out of memory.
     /// </summary>
-    private async Task<(byte[]? Jpeg, IActionResult? Refusal)> ReadAndPrepareAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    private async Task<(byte[]? Jpeg, IActionResult? Refusal, bool Busy)> ReadAndPrepareAsync(CancellationToken ct)
     {
         IFormFile? file;
         try
@@ -178,12 +187,12 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             var form = await Request.ReadFormAsync(ct);
             file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
         }
-        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge) { return (null, TooLarge()); }
-        catch (InvalidDataException ex) when (ex.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)) { return (null, TooLarge()); }
-        catch (InvalidDataException) { return (null, Invalid()); }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge) { return (null, TooLarge(), false); }
+        catch (InvalidDataException ex) when (ex.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)) { return (null, TooLarge(), false); }
+        catch (InvalidDataException) { return (null, Invalid(), false); }
         if (file is null || file.Length <= 0)
-            return (null, BadRequest(Refusal("selfie_missing", "Take a selfie first, then try again.", "التقط صورة ذاتية أولًا ثم حاول مرة أخرى.")));
-        if (file.Length > MaxRequestBytes) return (null, TooLarge());
+            return (null, BadRequest(Refusal("selfie_missing", "Take a selfie first, then try again.", "التقط صورة ذاتية أولًا ثم حاول مرة أخرى.")), false);
+        if (file.Length > MaxRequestBytes) return (null, TooLarge(), false);
 
         byte[] source;
         await using (var input = file.OpenReadStream())
@@ -192,22 +201,17 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             await input.CopyToAsync(buffer, ct);
             source = buffer.ToArray();
         }
-        if (!IsJpeg(source)) return (null, Invalid());
+        if (!IsJpeg(source)) return (null, Invalid(), false);
 
-        if (!await _gate.EnterAsync(SelfieImageGate.DefaultWait, ct))
-        {
-            await RecordServerFailureAsync(tenantId, employeeId, AttendanceVerificationService.ServerFailureBusy, null);
-            Response.Headers.RetryAfter = "5";
-            return (null, StatusCode(StatusCodes.Status429TooManyRequests, AttendanceRefusals.SelfieBusy.BodyWith(punchWithoutSelfie: true)));
-        }
-        try { return (ProfilePhotoProcessor.ToSanitisedJpeg(source, MaxSourcePixels, DecodeLongEdge), null); }
+        if (!await _gate.EnterAsync(SelfieImageGate.DefaultWait, ct)) return (null, null, true);
+        try { return (ProfilePhotoProcessor.ToSanitisedJpeg(source, MaxSourcePixels, DecodeLongEdge), null, false); }
         catch (ImageTooLargeException)
         {
             return (null, BadRequest(Refusal("selfie_too_large",
                 "The photo is larger than 16 megapixels. Take it again with the app's camera.",
-                "الصورة أكبر من 16 ميغابكسل. التقطها مرة أخرى بكاميرا التطبيق.")));
+                "الصورة أكبر من 16 ميغابكسل. التقطها مرة أخرى بكاميرا التطبيق.")), false);
         }
-        catch (InvalidDataException) { return (null, Invalid()); }
+        catch (InvalidDataException) { return (null, Invalid(), false); }
         finally { _gate.Exit(); }
     }
 
@@ -224,8 +228,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
 
     /// <summary>
     /// Reserves one upload attempt: under the per-employee advisory lock (<see cref="SelfieConsentLock"/>), re-checks
-    /// consent (a withdrawal takes the same lock), counts the employee's attempts in the last hour and, below the limit,
-    /// inserts the Pending row with its storage key derived from its id. Commits before the body is read.
+    /// consent (a withdrawal takes the same lock), refuses while another attempt of the employee is in flight (a Pending
+    /// row younger than 60 s that has not failed: review 3, one upload in flight per employee), counts the employee's
+    /// attempts that reached storage in the last hour and, below the limit, inserts the Pending row with its storage key
+    /// derived from its id. Commits before the body is read.
     /// </summary>
     private async Task<(AttendanceEvidence? Attempt, IActionResult? Refusal)> ReserveAttemptAsync(
         Guid tenantId, int employeeId, string policyVersion, CancellationToken ct)
@@ -236,6 +242,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         {
             null => (attempt, null),
             { Code: "consent_required" } => (null, StatusCode(StatusCodes.Status403Forbidden, refusal.Body)),
+            // Never carries punchWithoutSelfie: a second upload in flight must not manufacture a waiver (review 3).
+            { Code: "selfie_upload_in_progress" } => (null, Conflict(refusal.Body)),
             _ => (null, StatusCode(StatusCodes.Status429TooManyRequests, refusal.Body)),
         };
     }
@@ -245,8 +253,14 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         if (await Verification.ActiveConsentAsync(tenantId, employeeId, policyVersion, ct) is null)
             return (null, AttendanceRefusals.ConsentRequired);
         var now = DateTime.UtcNow;
+        var inFlightSince = now - SelfieWaivers.InFlight;
+        if (await Db.AttendanceEvidence.AnyAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId
+                && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null && e.CreatedAtUtc > inFlightSince, ct))
+            return (null, AttendanceRefusals.SelfieUploadInProgress);
         var since = now.AddHours(-1);
-        var attempts = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since, ct);
+        // A busy attempt is kept (as a possible waiver) but never reached storage, so it does not count (review 2, item 7).
+        var attempts = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since
+                                                                   && (e.FailedReason == null || e.FailedReason != SelfieUploadFailureReasons.Busy), ct);
         if (attempts >= AttendanceVerificationService.MaxUploadsPerHour) return (null, AttendanceRefusals.RateLimited);
 
         var id = Guid.NewGuid();
@@ -278,15 +292,49 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     }
 
     /// <summary>
-    /// Records a server-side failure (busy, or storage) for the employee. A punch that REQUIRES a selfie is then
-    /// allowed once without one, recorded None and audited with this reason (AttendanceVerificationService).
+    /// Records a server-side failure (busy, or storage) of <paramref name="attempt"/>, under the per-employee advisory
+    /// lock (review 3). When the employee had NO other attempt in flight, the attempt becomes a waiver
+    /// (<see cref="AttendanceEvidence.FailedReason"/>): one later punch of theirs may go through without the required
+    /// selfie, within 10 minutes, at most twice a day (<see cref="SelfieWaivers"/>). A busy attempt wrote no file, so it is
+    /// closed Purged at once; a storage failure stays Pending for the sweeper (a partial file may exist). A failure while
+    /// another attempt was in flight waives nothing: a busy one is deleted (it never counted), a storage one stays Pending.
+    /// Returns whether the app may offer to punch without a selfie (<c>punchWithoutSelfie</c>): always where the selfie is
+    /// optional; where it is required, only when this failure is a waiver and today's cap is not used up.
     /// </summary>
-    private async Task RecordServerFailureAsync(Guid tenantId, int employeeId, string reason, Guid? evidenceId)
+    private async Task<bool> RecordServerFailureAsync(Guid tenantId, int employeeId, string reason, AttendanceEvidence attempt,
+        AttendanceVerificationPolicy policy)
     {
-        Db.ChangeTracker.Clear();
-        Audit(tenantId, AttendanceVerificationService.SelfieServerFailureAction, AttendanceVerificationService.EmployeeEntity, employeeId.ToString(),
-            new { employeeId, reason, evidenceId });
-        await Db.SaveChangesAsync(CancellationToken.None);
+        var none = CancellationToken.None;
+        var waiver = await SelfieConsentLock.RunAsync(Db, tenantId, employeeId, async () =>
+        {
+            var row = await Db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == attempt.Id
+                && e.PurgeState == AttendanceEvidencePurgeStates.Pending, none);
+            var now = DateTime.UtcNow;
+            var inFlightSince = now - SelfieWaivers.InFlight;
+            var otherInFlight = await Db.AttendanceEvidence.AnyAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.Id != attempt.Id
+                && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null && e.CreatedAtUtc > inFlightSince, none);
+            var granted = row is not null && !otherInFlight;
+            if (row is not null)
+            {
+                if (granted) row.FailedReason = reason;
+                if (reason == SelfieUploadFailureReasons.Busy)
+                {
+                    if (granted)
+                    {
+                        // Nothing was written to storage: nothing to sweep.
+                        row.PurgeState = AttendanceEvidencePurgeStates.Purged;
+                        row.PurgedAtUtc = now;
+                    }
+                    else Db.AttendanceEvidence.Remove(row);
+                }
+            }
+            Audit(tenantId, AttendanceVerificationService.SelfieServerFailureAction, AttendanceVerificationService.EmployeeEntity, employeeId.ToString(),
+                new { employeeId, reason, evidenceId = attempt.Id, waiverGranted = granted, otherAttemptInFlight = otherInFlight });
+            await Db.SaveChangesAsync(none);
+            return granted;
+        }, none);
+        if (!policy.RequireSelfieForConsented) return true;
+        return waiver && !await SelfieWaivers.CapReachedAsync(Db, tenantId, employeeId, DateTime.UtcNow, none);
     }
 
     /// <summary>
@@ -309,8 +357,14 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             row.Sha256 = sha256;
             row.ByteSize = byteSize;
             row.ExpiresAtUtc = now + AttendanceVerificationService.EvidenceLifetime;
+            // Review 3: the employee could take a selfie after all, so any open server-failure waiver is cancelled.
+            var open = await Db.AttendanceEvidence
+                .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.FailedReason != null
+                            && e.WaiverConsumedAtUtc == null && e.WaiverCancelledAtUtc == null)
+                .ToListAsync(ct);
+            foreach (var waiver in open) waiver.WaiverCancelledAtUtc = now;
             Audit(tenantId, "attendance.selfie.uploaded", "AttendanceEvidence", row.Id.ToString(),
-                new { employeeId, sha256, byteSize, expiresAtUtc = row.ExpiresAtUtc });
+                new { employeeId, sha256, byteSize, expiresAtUtc = row.ExpiresAtUtc, waiversCancelled = open.Select(w => w.Id) });
             await Db.SaveChangesAsync(ct);
             return (row, (AttendanceRefusal?)null);
         }, ct);
@@ -358,17 +412,28 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
 
     /// <summary>
     /// HR's review view: the stored selfie behind one punch, as a JPEG stream. Requires
-    /// <see cref="ViewPermission"/> (privileged, so MFA); the punch's employee inside the caller's data scope; never the
-    /// caller's own record (HR does not review themselves); and the evidence Active and not purged. Every view is
-    /// audited (who, whose, which punch, when). <c>Cache-Control: no-store</c>; the storage key is never returned.
+    /// <see cref="ViewPermission"/> (privileged, so MFA; NOT held by Admin by default, review 3); the punch's employee
+    /// inside the caller's data scope; never the caller's own record (HR does not review themselves); and the evidence
+    /// Active and not purged. Every view is audited (who, whose, which punch, when), and so is every REFUSED attempt
+    /// (review 3: missing permission, outside scope, own record — who, which punch, why). <c>Cache-Control: no-store</c>;
+    /// the storage key is never returned. The permission is checked here rather than by an attribute so a refusal for
+    /// it can be audited too.
     /// </summary>
     [HttpGet("{rawEventId:guid}/selfie")]
-    [HasPermission(ViewPermission)]
     public async Task<IActionResult> ViewSelfie(Guid rawEventId, CancellationToken ct)
     {
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId)) return Unauthorized();
         Response.Headers.CacheControl = "no-store";
         Response.Headers.Pragma = "no-cache";
+        var callerUserId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var uid) ? uid : (Guid?)null;
+
+        if (!User.HasPermission(ViewPermission))
+        {
+            await AuditRefusedViewAsync(tenantId, callerUserId, rawEventId, null, ViewRefusalReasons.MissingPermission);
+            return StatusCode(StatusCodes.Status403Forbidden, Refusal("evidence_permission_required",
+                "Opening a stored selfie needs the selfie-review permission. Ask your HR administrator.",
+                "يتطلب فتح الصورة الذاتية المحفوظة صلاحية مراجعة الصور الذاتية. تواصل مع مسؤول الموارد البشرية."));
+        }
 
         var raw = await Db.AttendanceRawEvents.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.Id == rawEventId)
@@ -376,13 +441,19 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             .FirstOrDefaultAsync(ct);
         if (raw?.EmployeeId is not int employeeId) return NotFound(NoSelfie);
         var scope = await _scope.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(employeeId)) return NotFound(NoSelfie); // outside scope answers like a missing punch
-        var callerUserId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var uid) ? uid : (Guid?)null;
+        if (!scope.CanAccessEmployee(employeeId))
+        {
+            await AuditRefusedViewAsync(tenantId, callerUserId, rawEventId, employeeId, ViewRefusalReasons.OutsideScope);
+            return NotFound(NoSelfie); // outside scope answers like a missing punch
+        }
         if (scope.CallerEmployeeId == employeeId
             || await Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.CallerIsSubjectAsync(Db, tenantId, callerUserId, employeeId, ct))
+        {
+            await AuditRefusedViewAsync(tenantId, callerUserId, rawEventId, employeeId, ViewRefusalReasons.OwnRecord);
             return StatusCode(StatusCodes.Status403Forbidden, Refusal("evidence_own_record",
                 "You cannot review the selfie on your own punch. Another HR reviewer must open it.",
                 "لا يمكنك مراجعة الصورة الذاتية المرفقة بتسجيلك أنت. يجب أن يفتحها مراجع آخر من الموارد البشرية."));
+        }
 
         var evidence = await Db.AttendanceEvidence.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.UsedByRawEventId == rawEventId && e.EmployeeId == employeeId
@@ -400,6 +471,25 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         await Db.SaveChangesAsync(ct);
         Response.Headers["X-Content-Type-Options"] = "nosniff";
         return File(bytes, EssUploadPolicy.Jpeg);
+    }
+
+    /// <summary>Audit action of a refused attempt to open a stored selfie (review 3).</summary>
+    public const string ViewRefusedAction = "attendance.selfie.view_refused";
+
+    /// <summary>Why a selfie view was refused, as the audit records it.</summary>
+    public static class ViewRefusalReasons
+    {
+        public const string MissingPermission = "missing_permission";
+        public const string OutsideScope = "outside_scope";
+        public const string OwnRecord = "own_record";
+    }
+
+    /// <summary>Writes the refused-view audit row (who, which punch, whose when known, why). Never blocks the refusal.</summary>
+    private async Task AuditRefusedViewAsync(Guid tenantId, Guid? viewerUserId, Guid rawEventId, int? employeeId, string reason)
+    {
+        Audit(tenantId, ViewRefusedAction, "AttendanceRawEvent", rawEventId.ToString(),
+            new { viewerUserId, rawEventId, employeeId, reason, refusedAtUtc = DateTime.UtcNow });
+        await Db.SaveChangesAsync(CancellationToken.None);
     }
 
     private static readonly object NoSelfie = new
@@ -420,6 +510,20 @@ public static class SelfieConsentLock
 {
     public static string Key(Guid tenantId, int employeeId) => $"attendance-evidence-upload:{tenantId:N}:{employeeId}";
 
+    /// <summary>
+    /// Takes the same lock inside the caller's ALREADY OPEN transaction (the punch write, review 3: a waiver is used
+    /// under it). Released when that transaction ends. A no-op on a non-relational provider (tests).
+    /// </summary>
+    public static async Task AcquireInCurrentTransactionAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        if (!db.Database.IsRelational()) return;
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("The selfie advisory lock must be taken inside the punch transaction.");
+        if (!(db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase)) return;
+        var lockKey = Key(tenantId, employeeId);
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({lockKey}, 0))", ct);
+    }
+
     public static async Task<T> RunAsync<T>(ZayraDbContext db, Guid tenantId, int employeeId, Func<Task<T>> work, CancellationToken ct)
     {
         if (!db.Database.IsRelational()) return await work();
@@ -429,11 +533,7 @@ public static class SelfieConsentLock
             // A retried attempt starts clean.
             db.ChangeTracker.Clear();
             await using var tx = await db.Database.BeginTransactionAsync(ct);
-            if ((db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
-            {
-                var lockKey = Key(tenantId, employeeId);
-                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({lockKey}, 0))", ct);
-            }
+            await AcquireInCurrentTransactionAsync(db, tenantId, employeeId, ct);
             var result = await work();
             await tx.CommitAsync(ct);
             return result;
@@ -526,7 +626,8 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
     /// <summary>
     /// Withdraws the caller's consent. Always possible — with the feature off, with no write permission, and when there
     /// is nothing open (a no-op that still answers 200). Afterwards the caller punches without a selfie.
-    /// <para>Review item 8: the caller's UNUSED selfies (Active or Pending) are then deleted at once, strictly (every
+    /// <para>Review item 8: the caller's UNUSED selfies (Active, or Pending for 2 minutes or more — a younger Pending row
+    /// may be an upload in flight and is left to it and the 1-hour sweeper, review 3) are then deleted at once, strictly (every
     /// version, confirmed). A selfie a punch already used keeps its retention window, because it backs a pay record
     /// (docs/schema/OWNERSHIP_AND_RETENTION.md). A delete storage cannot confirm leaves that row for the purge job,
     /// which runs every 15 minutes and deletes an unused selfie of an employee with no open consent at once, so it is
@@ -567,12 +668,19 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
 
     private async Task<(int Deleted, int Awaiting)> PurgeUnusedSelfiesAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {
+        // Review 3, item 9: a Pending row younger than 2 minutes may be an upload still in flight. It is NOT marked Purged
+        // here (that would let the upload write its file afterwards and, if it then crashed, leave a face image behind a
+        // Purged row that nothing sweeps). It stays Pending: the upload's own consent re-check under the advisory lock
+        // discards it, and if the upload died the 1-hour sweeper deletes its file. It counts as awaiting deletion.
+        var inFlightBefore = DateTime.UtcNow - InFlightPendingGrace;
         var unused = await Db.AttendanceEvidence
             .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.UsedAtUtc == null
                         && (e.PurgeState == AttendanceEvidencePurgeStates.Active || e.PurgeState == AttendanceEvidencePurgeStates.Pending))
             .ToListAsync(ct);
-        if (unused.Count == 0) return (0, 0);
-        if (_storage is null) return (0, unused.Count);
+        var inFlight = unused.Count(e => e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.CreatedAtUtc > inFlightBefore);
+        unused = unused.Where(e => !(e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.CreatedAtUtc > inFlightBefore)).ToList();
+        if (unused.Count == 0) return (0, inFlight);
+        if (_storage is null) return (0, unused.Count + inFlight);
 
         var purger = new SelfieEvidencePurger(Db, _storage);
         var deleted = 0;
@@ -590,8 +698,11 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
                 _log?.LogWarning(ex, "Selfie {EvidenceId} could not be confirmed deleted on consent withdrawal; the purge job will retry.", evidence.Id);
             }
         }
-        return (deleted, unused.Count - deleted);
+        return (deleted, unused.Count - deleted + inFlight);
     }
+
+    /// <summary>A Pending row younger than this may belong to an upload still in flight; a withdrawal leaves it Pending.</summary>
+    public static readonly TimeSpan InFlightPendingGrace = TimeSpan.FromMinutes(2);
 
     private async Task<Dictionary<string, object?>> BuildViewAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {

@@ -61,6 +61,38 @@ public class AttendanceEvidence : ITenantOwned
     public string PurgeState { get; set; } = AttendanceEvidencePurgeStates.Pending;
 
     public DateTime? PurgedAtUtc { get; set; }
+
+    /// <summary>
+    /// Set when this upload attempt failed on the SERVER's side (<see cref="SelfieUploadFailureReasons"/>: the image
+    /// slot stayed busy, or storage failed the write) while the employee had no other attempt in flight. Such an attempt
+    /// is a server-failure WAIVER (review 3): where the tenant requires a selfie, it lets exactly one of the employee's own
+    /// punches through without one, within 10 minutes, at most twice per employee per tenant-local day. Null for every
+    /// other attempt — including a server failure that happened while another attempt was in flight, which waives nothing.
+    /// </summary>
+    public string? FailedReason { get; set; }
+
+    /// <summary>When a punch used this attempt's waiver. Set with <see cref="WaiverRawEventId"/>, in the punch's own
+    /// transaction under the per-employee advisory lock (CHECK: the pair is set together; a waiver is used once).</summary>
+    public DateTime? WaiverConsumedAtUtc { get; set; }
+
+    /// <summary>The raw punch the waiver let through (recorded <c>VerificationMethod = None</c>, <c>PhotoReference =
+    /// waiver:&lt;this id&gt;</c>). Unique: one waiver, one punch.</summary>
+    public Guid? WaiverRawEventId { get; set; }
+
+    /// <summary>When a later SUCCESSFUL upload by the same employee cancelled this open waiver (they could take a selfie
+    /// after all). A cancelled waiver can no longer be used.</summary>
+    public DateTime? WaiverCancelledAtUtc { get; set; }
+}
+
+/// <summary>Values of <c>attendance_evidence.failed_reason</c> (CHECK <c>ck_attendance_evidence__failed_reason</c>).</summary>
+public static class SelfieUploadFailureReasons
+{
+    /// <summary>The process-wide image slot stayed busy for 3 s; nothing reached storage (the row is Purged at once).</summary>
+    public const string Busy = "Busy";
+    /// <summary>Storage refused or failed the write; a partial file may exist, so the row stays Pending for the sweeper.</summary>
+    public const string Storage = "Storage";
+
+    public static readonly IReadOnlyList<string> All = [Busy, Storage];
 }
 
 /// <summary>Values of <c>attendance_evidence.purge_state</c> (CHECK <c>ck_attendance_evidence__purge_state</c>).</summary>
@@ -136,6 +168,7 @@ public static class AttendanceVerificationMethods
 public static class SelfieAttendanceModelConfiguration
 {
     public const string PurgeStatesIn = "('Pending','Active','Purged')";
+    public const string FailureReasonsIn = "('Busy','Storage')";
     public const string ChannelsIn = "('Mobile','Web')";
 
     public static void Configure(ModelBuilder modelBuilder)
@@ -153,6 +186,15 @@ public static class SelfieAttendanceModelConfiguration
                 // Only an Active selfie can have been used by a punch.
                 t.HasCheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
                 t.HasCheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
+                // Review 3: the server-failure waiver is one specific failed attempt.
+                t.HasCheckConstraint("ck_attendance_evidence__failed_reason", "failed_reason IS NULL OR failed_reason IN " + FailureReasonsIn);
+                // A failed attempt never became a usable selfie.
+                t.HasCheckConstraint("ck_attendance_evidence__failed_never_active", "failed_reason IS NULL OR (purge_state <> 'Active' AND used_at_utc IS NULL)");
+                // Used by one punch: the time and the punch are set together.
+                t.HasCheckConstraint("ck_attendance_evidence__waiver_pair", "(waiver_consumed_at_utc IS NULL) = (waiver_raw_event_id IS NULL)");
+                // Only a failed attempt carries a waiver, and a waiver is either used or cancelled, never both.
+                t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "failed_reason IS NOT NULL OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
+                t.HasCheckConstraint("ck_attendance_evidence__waiver_once", "waiver_consumed_at_utc IS NULL OR waiver_cancelled_at_utc IS NULL");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.StorageKey).HasMaxLength(500).IsRequired();
@@ -160,9 +202,13 @@ public static class SelfieAttendanceModelConfiguration
             entity.Property(x => x.ContentType).HasMaxLength(64).IsRequired();
             entity.Property(x => x.PurgeState).HasMaxLength(16).HasDefaultValue(AttendanceEvidencePurgeStates.Pending);
             entity.Property(x => x.UsedAtUtc).IsConcurrencyToken();
+            entity.Property(x => x.FailedReason).HasMaxLength(16);
             entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<AttendanceRawEvent>().WithMany().HasForeignKey(x => x.UsedByRawEventId).OnDelete(DeleteBehavior.Restrict);
-            // Serves the upload rate limit: COUNT(*) of one employee's upload attempts in the last hour.
+            entity.HasOne<AttendanceRawEvent>().WithMany().HasForeignKey(x => x.WaiverRawEventId).OnDelete(DeleteBehavior.Restrict);
+            // Serves the upload rate limit (COUNT(*) of one employee's upload attempts in the last hour), the one-upload-in-
+            // flight check (a Pending row of the employee younger than 60 s), and the waiver lookups (the employee's open
+            // waiver from the last 10 minutes; the waivers used today, bounded by created_at_utc).
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__employee_created");
             // Serves the purge: the scheduler's SELECT DISTINCT tenant_id over not-yet-purged rows that can be due, and
@@ -173,12 +219,21 @@ public static class SelfieAttendanceModelConfiguration
                 .HasDatabaseName("ix_attendance_evidence__purge_due")
                 .HasFilter("purge_state IN ('Pending','Active')")
                 .IncludeProperties(x => x.UsedAtUtc);
-            // Serves the purge's USED-selfie queries (review 2, item 2): one tenant's used, not-yet-purged rows ordered by
-            // used_at_utc, past the 120-day fallback or inside one locked payroll month. Its own index so those rows can
-            // be read in due order without sorting every unpurged row of the tenant.
+            // Serves the purge's USED-selfie queries (review 2, item 2; review 3, item 5): one tenant's used, not-yet-purged
+            // rows ordered by used_at_utc, due by the 120-day fallback (months locked < 90 days ago excluded) or inside one
+            // payroll month locked 90+ days ago. Its own index so those rows are read without sorting every unpurged row.
             entity.HasIndex(x => new { x.TenantId, x.UsedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__used_purge_due")
                 .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
+            // Serves HR's waived-punches report (review 3): one tenant's used waivers in a date range, newest first.
+            entity.HasIndex(x => new { x.TenantId, x.WaiverConsumedAtUtc })
+                .HasDatabaseName("ix_attendance_evidence__waived_punches")
+                .HasFilter("waiver_consumed_at_utc IS NOT NULL");
+            // One waiver per punch; serves punch -> waiver lookups and backs the FK.
+            entity.HasIndex(x => x.WaiverRawEventId)
+                .HasDatabaseName("ux_attendance_evidence__waiver_raw_event")
+                .IsUnique()
+                .HasFilter("waiver_raw_event_id IS NOT NULL");
             // One evidence row per punch; serves punch -> selfie lookups and backs the FK.
             entity.HasIndex(x => x.UsedByRawEventId)
                 .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")

@@ -418,6 +418,76 @@ public class AttendanceController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Review 3: the punches a server-failure waiver let through without a REQUIRED selfie (recorded
+    /// <c>VerificationMethod = None</c>, <c>PhotoReference = waiver:&lt;attempt id&gt;</c>), newest first, within the
+    /// caller's data scope, over <paramref name="from"/>..<paramref name="to"/> (tenant-local dates; default the last 30
+    /// days, at most a year). Each row names the punch (drill down through the raw punch log), the failed upload attempt
+    /// that waived it and why it failed, so HR reviews the exceptions first. Read from the attempt rows, never the audit log.
+    /// </summary>
+    [HttpGet("selfie/waived-punches")]
+    [HasPermission("attendance.read")]
+    public async Task<IActionResult> SelfieWaivedPunches([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var tz = TenantTimeZone.FromId(await _db.TenantLocalizationSettings.AsNoTracking()
+            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+        var today = TenantTimeZone.LocalDate(tz, DateTime.UtcNow);
+        var fromDate = from ?? today.AddDays(-30);
+        var toDate = to ?? today;
+        if (toDate < fromDate || toDate.DayNumber - fromDate.DayNumber > 366)
+            return BadRequest(new { message = "Choose a date range of at most one year, with 'from' before 'to'." });
+        var start = TenantTimeZone.LocalDayStartUtc(tz, fromDate);
+        var end = TenantTimeZone.LocalDayStartUtc(tz, toDate.AddDays(1));
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+
+        var waived = await (
+                from e in _db.AttendanceEvidence.AsNoTracking()
+                join r in _db.AttendanceRawEvents.AsNoTracking() on e.WaiverRawEventId equals (Guid?)r.Id
+                where e.TenantId == tenantId && r.TenantId == tenantId
+                      && e.WaiverConsumedAtUtc >= start && e.WaiverConsumedAtUtc < end
+                select new
+                {
+                    rawEventId = r.Id,
+                    employeeId = e.EmployeeId,
+                    punchedAtUtc = r.PunchTimestampUtc,
+                    punchDirection = r.PunchDirection,
+                    source = r.Source,
+                    verificationMethod = r.VerificationMethod,
+                    failedAttemptId = e.Id,
+                    failedReason = e.FailedReason,
+                    failedAtUtc = e.CreatedAtUtc,
+                    waiverUsedAtUtc = e.WaiverConsumedAtUtc,
+                })
+            .OrderByDescending(x => x.waiverUsedAtUtc).ThenBy(x => x.rawEventId)
+            .ToListAsync(ct);
+        waived = waived.Where(w => scope.CanAccessEmployee(w.employeeId)).ToList();
+        var employeeIds = waived.Select(w => w.employeeId).Distinct().ToList();
+        var names = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
+            .ToDictionaryAsync(e => e.Id, ct);
+        var punches = waived.Select(w => new
+        {
+            w.rawEventId, w.employeeId,
+            employeeCode = names.TryGetValue(w.employeeId, out var n) ? n.EmployeeCode : string.Empty,
+            name = names.TryGetValue(w.employeeId, out var n2) ? n2.FullName : string.Empty,
+            w.punchedAtUtc, w.punchDirection, w.source, w.verificationMethod,
+            w.failedAttemptId, w.failedReason, w.failedAtUtc, w.waiverUsedAtUtc,
+        }).ToList();
+        return Ok(new
+        {
+            from = fromDate,
+            to = toDate,
+            count = punches.Count,
+            employees = employeeIds.Count,
+            definition = "Punches recorded without the selfie your company requires, because the employee's selfie upload failed "
+                         + "on our side just before (the server was busy, or storage failed). Each failed upload waives at most one "
+                         + "punch, within 10 minutes, and at most two a day per employee; the punch is recorded with no verification.",
+            punches,
+        });
+    }
+
     private static string PlatformOf(string? metadataJson)
     {
         try
@@ -647,16 +717,15 @@ public class AttendanceController : ControllerBase
         }
 
         // Selfie attendance v2: the server decides what was verified.
-        //  - The kiosk channel (geofenced, never a selfie) is for a caller who HOLDS attendance.kiosk: a KioskOnly login
-        //    or an operator. Anyone else posting to punch/kiosk gets the route they would otherwise use (review 2,
-        //    item 1): their own punch is SelfMobile, with every mobile rule (mock detection, accuracy, the selfie
-        //    requirement). It is not refused: old app builds may still call the kiosk route for a self punch.
+        //  - punch/kiosk for the caller's OWN record is the kiosk channel (geofenced, never a selfie) only for a KioskOnly
+        //    sign-in (the access_mode claim the token carries; review 3, item 4). Anyone else's own punch there — an HR
+        //    Manager or an Admin who holds attendance.kiosk included — gets every mobile rule (mock detection, accuracy,
+        //    the selfie requirement): SelfMobile. It is not refused: old app builds may still call the kiosk route.
+        //  - punch/kiosk for SOMEONE ELSE stays the kiosk channel for a holder of attendance.kiosk (the on-behalf kiosk
+        //    punch); with only attendance.write it is an ordinary on-behalf punch.
         //  - A web/mobile punch for someone else is on-behalf (no selfie, no geofence: the location is the operator's).
         //  - Otherwise it is the employee's own punch, where the selfie requirement and the geofence apply.
-        var channel = routeChannel == PunchChannel.Kiosk && User.HasPermission(KioskPunchPermission) ? PunchChannel.Kiosk
-            : employeeId != self ? PunchChannel.OnBehalf
-            : routeChannel == PunchChannel.Kiosk ? PunchChannel.SelfMobile
-            : routeChannel;
+        var channel = ResolvePunchChannel(routeChannel, employeeId == self, User.FindFirstValue("access_mode"), User.HasPermission(KioskPunchPermission));
         var platform = ClientPlatform.From(Request.Headers[ClientPlatform.HeaderName].ToString(), Request.Headers.UserAgent.ToString());
         var decision = await _verification.EvaluatePunchAsync(tenantId, employeeId, request.EvidenceId,
             new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked, request.MockDetection, platform),
@@ -667,6 +736,14 @@ public class AttendanceController : ControllerBase
         catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+    /// <summary>Which rules a punch gets (see <see cref="Punch"/>). Public for the tests that pin review 3, item 4.</summary>
+    public static PunchChannel ResolvePunchChannel(PunchChannel routeChannel, bool ownRecord, string? accessMode, bool holdsKioskPermission) =>
+        routeChannel == PunchChannel.Kiosk
+            ? ownRecord
+                ? accessMode == AccessModes.KioskOnly ? PunchChannel.Kiosk : PunchChannel.SelfMobile
+                : holdsKioskPermission ? PunchChannel.Kiosk : PunchChannel.OnBehalf
+            : ownRecord ? routeChannel : PunchChannel.OnBehalf;
+
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
 
