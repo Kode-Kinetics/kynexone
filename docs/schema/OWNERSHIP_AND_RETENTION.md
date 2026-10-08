@@ -363,6 +363,18 @@ RLS: shape (a) for all three, plus the company-scope predicate for the two tier-
 | `employee_entitlements` | S | Labour-law evidence of the package agreed for each term. Anonymise with the employee only after the S minimum. |
 | `contract_renewal_cases` | S | Evidence of a renewal decision, its notice and its Qiwa outcome. The referenced Qiwa evidence and notice documents must be retained at least as long. |
 
+### T. Selfie attendance and biometric consent (selfie attendance v2)
+
+**Owner:** HR Core Engineering · **Approved by:** HR Core lead + **DPO** (biometric personal data; both retention rows
+below are the DPO's) + **Platform Engineering** for the storage residency the `selfie_attendance` flag attests. RLS:
+shape (a) for both (live bridge: the `ITenantOwned` query filter). The feature cannot be switched on for a tenant until
+the owner's DPIA sign-off and KSA data-residency confirmation are recorded on the flag.
+
+| Table | Class | Note |
+|---|---|---|
+| `attendance_evidence` | E | `retention_policies` row: `rule_key = attendance.selfie-evidence`, `trigger_event = RecordDate`, `disposition = Anonymise` (personal payload only). The image blob is purged **90 days after the punch's payroll month is locked**, or at **work date + 120 days** when no run has locked that month, or **24 hours after upload** when no punch used it. The envelope row and its `sha256` are kept (`purge_state = 'Purged'`). Applied by `SelfieEvidencePurgeJobHandler` (on by default; idempotent; one `retention_purge_audits` row per purge). |
+| `biometric_consents` | S (minimum) | `retention_policies` row: `trigger_event = Separation`, `minimum_retention_months = 84`, `disposition = Keep` until then. Kept for the employment period plus the statutory minimum: the lawful basis for every selfie taken. Withdrawal closes a row; it never deletes one. |
+
 ---
 
 ## 4. What the DPO must still decide

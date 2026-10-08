@@ -825,6 +825,41 @@ the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 
 ---
 
+## T. Selfie attendance and biometric consent (selfie attendance v2, live bridge)
+
+Not part of the 76. Two tables shipped on the **live** EF schema (migration
+`20261008000500_AddSelfieEvidenceAndBiometricConsent`) behind the platform-only opt-in flag `selfie_attendance`, which
+cannot be switched on until the owner's DPIA sign-off and KSA data-residency confirmation are recorded on it. Capability:
+an employee self-punch may carry a server-checked, single-use selfie; no existing table can hold a single-use evidence
+token with its own purge lifecycle (`employee_documents` are kept as HR records; `attendance_raw_events.photo_reference`
+is a free device string), nor a per-version consent with withdrawal. Plain (not composite) FKs: `employees` and
+`attendance_raw_events` carry no `(tenant_id, id)` key on the live schema. RLS is a target rule — the live bridge uses
+the `ITenantOwned` query filter. Tenant policy (sign-offs, `requireSelfieForConsented`, `consentPolicyVersion`; the
+geofence's `geofenceEnforced`/`maxAccuracyMeters`/`allowMockedLocation` on the sibling flag `attendance_geofence`) lives
+in `tenant_feature_flags.config_json`: configuration nobody queries.
+
+### `attendance_evidence`
+- **Purpose** — one selfie an employee uploaded for a punch: the envelope of a re-encoded, EXIF-free JPEG in document storage, its SHA-256, the opaque single-use evidence id the punch sends (never the storage key), its 10-minute expiry and the punch that used it. No face matching is performed.
+- **Tier** E · **Domain** Attendance · **RLS** shape (a)
+- **Keys** — `employee_id` (always the uploader's own linked employee), `storage_key` (server-only), `sha256` `character(64)`, `content_type`, `byte_size`, `created_at_utc`, `expires_at_utc`, `used_at_utc` (EF concurrency token: the use is a conditional UPDATE), `used_by_raw_event_id`, `purge_state` (`Active`/`Purged`), `purged_at_utc`
+- **Rel** — `employee_id → employees` (N:1, RESTRICT), `used_by_raw_event_id → attendance_raw_events` (1:1, RESTRICT, unique where not null)
+- **Constraint** — `ck_attendance_evidence__purge_state` (`Active`,`Purged`), `__purged_pair` (Purged ⇔ `purged_at_utc`), `__used_pair` (`used_at_utc` ⇔ `used_by_raw_event_id`), `__byte_size` (> 0), `__expiry` (expires after created).
+- **Indexes** — `ix_attendance_evidence__employee_created` (upload rate limit: one employee's uploads in the last hour), `ix_attendance_evidence__purge_due` (partial, Active: the purge scan), `ux_attendance_evidence__used_by_raw_event` (one selfie per punch; punch → selfie), `IX_attendance_evidence_employee_id` (EF FK index: the RESTRICT check).
+- **Lifecycle** — written by `POST /api/attendance/evidence/selfie` (≤ 10 per employee per hour); marked used by the punch in the same SaveChanges as the raw event; blob deleted and `purge_state` flipped by `SelfieEvidencePurgeJobHandler`, which writes `retention_purge_audits`. The row is never deleted.
+- **Retention** `E` — blob 90 days after the punch's payroll month is locked, or work date + 120 days with no locked run, or 24 h after an unused upload; envelope + `sha256` kept.
+
+### `biometric_consents`
+- **Purpose** — an employee's consent to selfie attendance, per consent-text version, with the channel it was given on and its withdrawal. Without open consent for the current version the employee punches without a selfie (the non-biometric alternative) and is never blocked.
+- **Tier** E · **Domain** Attendance · **RLS** shape (a)
+- **Keys** — `employee_id`, `policy_version`, `given_at_utc`, `withdrawn_at_utc`, `channel` (`Mobile`/`Web`)
+- **Rel** — `employee_id → employees` (N:1, RESTRICT)
+- **Constraint** — `ck_biometric_consents__channel` (`Mobile`,`Web`), `__withdrawn_after_given`, `__policy_version` (non-empty); at most one open row per employee (`ux_biometric_consents__one_open_per_employee`, partial on `withdrawn_at_utc IS NULL`).
+- **Indexes** — `ux_biometric_consents__one_open_per_employee` (is there open consent), `ix_biometric_consents__employee_history` (one employee's history), `IX_biometric_consents_employee_id` (EF FK index: the RESTRICT check).
+- **Lifecycle** — given and withdrawn only by the employee (`/api/ess/biometric-consent`); withdrawal is always possible. Consent to an older version is closed when the employee agrees to the current one. Never updated otherwise, never deleted by the product.
+- **Retention** — employment period plus the statutory minimum (class `S` minimum, 84 months from separation): the proof of lawful basis for every selfie taken.
+
+---
+
 ## Views (not tables)
 
 | View | Definition | Replaces |
