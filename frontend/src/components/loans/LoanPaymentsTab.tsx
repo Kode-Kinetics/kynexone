@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { loanErrorMessage, localDateToday, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
+import { useFormat } from '../../hooks/useFormat';
 
 function batchAmounts(batch: LoanPaymentBatch) {
   const sum = (...statuses: string[]) => batch.lines.reduce((total, line) => {
@@ -35,7 +36,10 @@ export function LoanPaymentsTab({ onChanged }: { onChanged: () => void }) {
   const [lineOutcome, setLineOutcome] = useState<'Paid' | 'Failed' | 'Cancelled'>('Paid');
   const [lineReason, setLineReason] = useState('');
   const [payment, setPayment] = useState({ paidDate: localDateToday(), reference: '', repaymentStartDate: '' });
-  const fmt = (value: number, currency = currencyCode) => value.toLocaleString('en-US', { style: 'currency', currency });
+  // A null currency (a loan carried in before it was stamped) falls back to the tenant's; the shared formatter
+  // never throws on an unknown code, where toLocaleString took the whole tab down.
+  const fx = useFormat();
+  const fmt = (value: number, currency?: string | null) => fx.plain.money(value, currency || currencyCode);
 
   const load = useCallback(async () => {
     setLoading(true);
