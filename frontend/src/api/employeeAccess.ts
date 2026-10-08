@@ -65,6 +65,8 @@ export interface IssuedWelcomeCode {
    * email always gets "print" for that employee, even when the company can email.
    */
   delivery?: 'email' | 'print';
+  /** Why a printed code is printed: the issuer set this work email, the company can't email, or HR asked to print. */
+  printReason?: 'setter' | 'no_email' | 'requested' | null;
 }
 
 export interface SkippedWelcomeCode {
@@ -90,7 +92,11 @@ export interface WorkEmailRow {
 
 /** POST api/employee-access/work-emails */
 export interface WorkEmailBackfillResult {
-  matched: Array<{ employeeId: number; employeeCode: string; employeeName: string; oldEmail: string | null; newEmail: string }>;
+  matched: Array<{
+    employeeId: number; employeeCode: string; employeeName: string; oldEmail: string | null; newEmail: string;
+    /** On a save: each row's state afterwards, and whether the caller may give access now. */
+    accessState?: EmployeeAccessState; canIssue?: boolean; reasonCode?: string | null;
+  }>;
   notFound: string[];
   wrongDomain: Array<{ employeeCode: string; workEmail: string; expectedDomain: string }>;
   /**

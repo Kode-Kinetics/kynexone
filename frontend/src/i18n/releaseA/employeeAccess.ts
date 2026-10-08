@@ -58,6 +58,8 @@ const en: Record<string, string> = {
   "You set this person's work email, so another HR colleague must give access.":
     "You set this person's work email, so another HR colleague must give access.",
   "Use Reset sign-in on the person's profile.": "Use Reset sign-in on the person's profile.",
+  'Reset sign-in is done one person at a time, from their profile.': 'Reset sign-in is done one person at a time, from their profile.',
+  'Waiting for approval, so not included: {n}.': 'Waiting for approval, so not included: {n}.',
   "Your company's KynexOne plan is full.": "Your company's KynexOne plan is full.",
   "Ask an HR Manager to reset this person's sign-in.": "Ask an HR Manager to reset this person's sign-in.",
   'Waiting for approval. You can give access once {name} is approved.': 'Waiting for approval. You can give access once {name} is approved.',
@@ -173,6 +175,8 @@ const ar: Record<string, string> = {
   "You set this person's work email, so another HR colleague must give access.":
     'أنت من أدخل البريد الوظيفي لهذا الموظف، لذا يجب أن يمنح الدخول زميل آخر في الموارد البشرية.',
   "Use Reset sign-in on the person's profile.": 'استخدم إعادة ضبط الدخول من ملف الموظف.',
+  'Reset sign-in is done one person at a time, from their profile.': 'تتم إعادة ضبط الدخول لموظف واحد في كل مرة، من ملفه.',
+  'Waiting for approval, so not included: {n}.': 'بانتظار الاعتماد، لذا لم يُدرَجوا: {n}.',
   "Your company's KynexOne plan is full.": 'اكتمل عدد المستخدمين في باقة KynexOne الخاصة بشركتك.',
   "Ask an HR Manager to reset this person's sign-in.": 'اطلب من مدير الموارد البشرية إعادة ضبط دخول هذا الموظف.',
   'Waiting for approval. You can give access once {name} is approved.': 'بانتظار الاعتماد. يمكنك منح الدخول بعد اعتماد {name}.',

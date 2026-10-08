@@ -91,9 +91,11 @@ export function EmployeeAccessCard({
   // "Print sign-in slip" second), if this person may press it.
   const emailing = !!access.emailDelivery;
   // Something the API (or this screen) says stands in the way: the one sentence replaces the button.
-  const waitingReason = isSelf && access.state !== 'stopped' && access.state !== 'blocked' ? 'cannot_issue_for_self'
-    : access.reasonCode && skipReasonKey(access.reasonCode) ? access.reasonCode
-      : null;
+  // Only people who can give access see why they can't right now; everyone else sees the state alone.
+  const waitingReason = !canIssue || access.state === 'stopped' || access.state === 'blocked' ? null
+    : isSelf ? 'cannot_issue_for_self'
+      : !access.canIssue && access.reasonCode && skipReasonKey(access.reasonCode) ? access.reasonCode
+        : null;
   const replacesCode = access.state === 'code_given';
   let primary: { label: string; delivery?: 'email' | 'print'; run?: () => void } | null = null;
   let secondary: { label: string; delivery: 'print' } | null = null;

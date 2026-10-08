@@ -95,14 +95,19 @@ export function useWelcomeCodes(onFinished?: () => void) {
     const printable = batch.result.issued.filter(isPrintable);
     const emailed = batch.result.issued.filter(wasEmailed);
     if (printable.length > 0) {
-      // Why these are printed: the company cannot email at all, or (it can) this person typed their work emails.
-      const companyEmails = batch.companyEmails || emailed.length > 0;
-      // The API's deliveryMessage marks codes it would only print (the person who typed the work email
-      // hands the slip over), even when HR pressed Print anyway; it is shown in our words, never raw.
-      const note: PrintNote = batch.result.deliveryMessage && companyEmails ? 'enteredByYou'
-        : !companyEmails ? 'noEmail'
-          : 'none';
-      view = <SignInSlips issued={printable} skipped={skipped} names={batch.names} emailedCount={emailed.length} note={note} timeZone={defaultTimezone} onClose={close} />;
+      // Why these are printed, from each item's printReason: "setter" (you typed their work email, so
+      // you hand the slip over), "no_email" (the company can't email), "requested" (HR chose Print: no note).
+      const reasons = new Set(printable.map((p) => p.printReason));
+      const notes: PrintNote[] = [];
+      if (reasons.has('setter')) notes.push('enteredByYou');
+      if (reasons.has('no_email')) notes.push('noEmail');
+      if (reasons.has(undefined) || reasons.has(null)) {
+        // An API without printReason: the older rule.
+        const companyEmails = batch.companyEmails || emailed.length > 0;
+        if (!companyEmails) notes.push('noEmail');
+        else if (batch.result.deliveryMessage) notes.push('enteredByYou');
+      }
+      view = <SignInSlips issued={printable} skipped={skipped} names={batch.names} emailedCount={emailed.length} notes={[...new Set(notes)]} timeZone={defaultTimezone} onClose={close} />;
     } else {
       view = (
         <Modal isOpen title={t('Sign-in slips')} size="md" onClose={close}

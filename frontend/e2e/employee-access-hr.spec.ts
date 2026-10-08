@@ -15,7 +15,7 @@ type State = 'waiting_for_work_email' | 'not_started' | 'code_given' | 'active' 
 
 interface Person {
   id: number; code: string; name: string; arabicName: string; email: string; state: State;
-  department: string; branch: string; blockedCode?: string; stoppedReason?: string; issuer?: string; reasonCode?: string;
+  department: string; branch: string; blockedCode?: string; stoppedReason?: string; issuer?: string; reasonCode?: string; leaver?: boolean;
 }
 
 const PEOPLE: Person[] = [
@@ -26,6 +26,7 @@ const PEOPLE: Person[] = [
   { id: 46, code: 'EMP-0046', name: 'Hamad Qahtani', arabicName: 'حمد القحطاني', email: 'hamad.qahtani@evostel.com', state: 'stopped', department: 'Sales', branch: 'Jeddah', stoppedReason: 'left_company' },
   { id: 47, code: 'EMP-0047', name: 'Fatima Zahrani', arabicName: 'فاطمة الزهراني', email: 'fatima.zahrani@evostel.com', state: 'blocked', department: 'Legal', branch: 'Riyadh HQ', blockedCode: 'company_email_domain_missing' },
   { id: 48, code: 'EMP-0048', name: 'Khalid Noor', arabicName: 'خالد نور', email: 'khalid.noor@evostel.com', state: 'not_started', department: 'IT', branch: 'Riyadh HQ' },
+  { id: 51, code: 'EMP-0051', name: 'Ali Former', arabicName: 'علي السابق', email: 'ali.former@evostel.com', state: 'stopped', department: 'Sales', branch: 'Jeddah', stoppedReason: 'left_company', leaver: true },
   { id: 49, code: 'EMP-0049', name: 'Rana Saeed', arabicName: 'رنا سعيد', email: 'rana.saeed@evostel.com', state: 'not_started', department: 'IT', branch: 'Riyadh HQ', reasonCode: 'awaiting_approval' },
 ];
 
@@ -47,7 +48,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; selfEmployeeId?: number; path?: string } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -64,7 +65,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
 
   const listItem = (p: Person) => ({
     id: p.id, publicId: `p-${p.id}`, employeeCode: p.code, fullName: p.name, arabicName: p.arabicName, department: p.department,
-    designation: 'Officer', branch: p.branch, status: p.state === 'stopped' ? 'Resigned' : 'Active', profileCompletenessScore: 90,
+    designation: 'Officer', branch: p.branch, status: p.leaver ? 'Terminated' : p.state === 'stopped' ? 'Resigned' : 'Active', profileCompletenessScore: 90,
     iqamaNumber: '', readinessState: 'Ready', activationBlockersCount: 0, workEmail: p.email || null, accessState: p.state,
   });
   const detail = (p: Person) => ({
@@ -107,10 +108,18 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
           if (id === 48 && !opts.emailDelivery) { skipped.push({ employeeId: id, reasonCode: 'seat_limit', reason: 'English server text' }); continue; }
           const printIt = !emailIt || id === 48;
           if (id === 48) deliveryMessage = 'English server text';
-          if (!['not_started', 'code_given', 'active'].includes(p.state)) { skipped.push({ employeeId: id, reasonCode: p.state, reason: 'English server text' }); continue; }
+          // The server's per-person reasons (the screen sends every selected id).
+          const skip = (reasonCode: string) => skipped.push({ employeeId: id, reasonCode, reason: 'English server text' });
+          if (id === opts.selfEmployeeId) { skip('cannot_issue_for_self'); continue; }
+          if ((p as Person).reasonCode === 'awaiting_approval') { skip('awaiting_approval'); continue; }
+          if (p.state === 'waiting_for_work_email') { skip('waiting_for_work_email'); continue; }
+          if (p.state === 'stopped' || p.state === 'blocked') { skip(p.state); continue; }
+          if (p.state === 'active' && opts.noReset) { skip('reset_requires_permission'); continue; }
+          if (p.state === 'active' && ids.length > 1) { skip('reset_is_single'); continue; }
+          const printReason = !printIt ? null : id === 48 && opts.emailDelivery ? 'setter' : opts.emailDelivery ? 'requested' : 'no_email';
           issued.push({
             employeeId: id, employeeName: p.name, arabicName: p.arabicName || null, employeeCode: p.code, username: p.email,
-            department: p.department, site: p.branch, ...(printIt ? { code: CODES[id] } : {}), delivery: printIt ? 'print' : 'email', expiresAtUtc: EXPIRES, tenantSlug: 'evostel',
+            department: p.department, site: p.branch, ...(printIt ? { code: CODES[id] } : {}), delivery: printIt ? 'print' : 'email', printReason, expiresAtUtc: EXPIRES, tenantSlug: 'evostel',
           });
           if (p.state === 'not_started' && people.includes(p as Person)) (p as Person).state = 'code_given';
         }
@@ -122,11 +131,17 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
         const sara = people.find((p) => p.id === 45)!;
         if (!dryRun) { sara.email = 'sara.ali@evostel.com'; sara.state = 'not_started'; }
         return json({
-          matched: [{ employeeId: 45, employeeCode: 'EMP-0045', employeeName: 'Sara Ali', oldEmail: null, newEmail: 'sara.ali@evostel.com' }],
+          matched: [
+            { employeeId: 45, employeeCode: 'EMP-0045', employeeName: 'Sara Ali', oldEmail: null, newEmail: 'sara.ali@evostel.com',
+              ...(dryRun || opts.backfillWithoutState ? {} : { accessState: 'not_started', canIssue: true }) },
+            // A draft hire still waiting for approval: saved, but not offered for access yet.
+            { employeeId: 49, employeeCode: 'EMP-0049', employeeName: 'Rana Saeed', oldEmail: 'rana.saeed@evostel.com', newEmail: 'rana.saeed@evostel.com',
+              ...(dryRun || opts.backfillWithoutState ? {} : { accessState: 'not_started', canIssue: false, reasonCode: 'awaiting_approval' }) },
+          ],
           notFound: ['E1044'],
           wrongDomain: [{ employeeCode: 'EMP-0060', workEmail: 'someone@gmail.com', expectedDomain: 'evostel.com' }],
           conflicts: [{ employeeCode: 'EMP-0044', workEmail: 'o.saleh@evostel.com', reason: 'username_differs', username: 'omar.saleh@evostel.com' }],
-          saved: dryRun ? 0 : 1,
+          saved: dryRun ? 0 : 2,
         });
       }
       if (pathname === '/api/employees/derive-work-email') {
@@ -153,7 +168,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     if (pathname === '/api/auth/me') return json({
       id: 'hr-1', tenantId: 't1', email: 'hr@evostel.com', fullName: 'Hana HR', roles: ['HR Manager'], accountType: 'Group', isGroupScope: true, companies: [],
       employeeId: opts.selfEmployeeId,
-      permissions: ['employees.read', 'employees.write', 'employees.approve', 'employees.access.issue', ...(opts.noReset ? [] : ['employees.access.reset'])],
+      permissions: ['employees.read', 'employees.write', 'employees.approve', ...(opts.noIssue ? [] : ['employees.access.issue']), ...(opts.noReset || opts.noIssue ? [] : ['employees.access.reset'])],
     });
     if (pathname === '/api/employees') {
       listQueries.push(url.search);
@@ -161,7 +176,9 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
       const search = (url.searchParams.get('search') ?? '').toLowerCase();
       const status = url.searchParams.get('status');
       if (status) return json({ items: [], total: 0, page: 1, pageSize: 100 });
-      const items = people.filter((p) => (!access || access.split(',').includes(p.state)) && p.name.toLowerCase().includes(search)).map(listItem);
+      // Leavers are listed only under the "Access stopped" filter (the default list excludes former staff).
+      const items = people.filter((p) => (!access || access.split(',').includes(p.state)) && (!p.leaver || !!access?.includes('stopped'))
+        && p.name.toLowerCase().includes(search)).map(listItem);
       return json({ items, total: items.length, page: Number(url.searchParams.get('page') ?? 1), pageSize: 25 });
     }
     if (pathname === '/api/employee-access/summary') {
@@ -342,16 +359,17 @@ test('bulk print skips anyone already using KynexOne and says why', async ({ pag
   await bulk.click();
   const confirm = page.getByRole('dialog').filter({ has: page.getByTestId('bulk-print-confirm') });
   await expect(confirm.getByText('Some selected employees already have a code. Their old codes will stop working. Continue?')).toBeVisible();
-  await confirm.getByRole('button', { name: 'Print sign-in slips (2)' }).click();
+  await confirm.getByRole('button', { name: 'Print sign-in slips (4)' }).click();
 
   const slips = page.getByTestId('sign-in-slips');
   await expect(slips.getByTestId('sign-in-slip')).toHaveCount(2);
   // Never an active employee in a bulk request, and nobody the screen already knows cannot get a code.
-  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42, 43], delivery: 'print' }]);
+  // Every selected id is sent; the server explains anyone it skips.
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42, 43, 44, 45], delivery: 'print' }]);
   await expect(page.getByRole('button', { name: /Email sign-in codes/ })).toHaveCount(0);
   await expect(slips.getByTestId('slips-summary')).toHaveText('Slips ready: 2. Skipped: 2.');
   const skipped = slips.getByTestId('skipped-list');
-  await expect(skipped.getByRole('listitem').filter({ hasText: 'Omar Saleh' })).toContainText("Use Reset sign-in on the person's profile.");
+  await expect(skipped.getByRole('listitem').filter({ hasText: 'Omar Saleh' })).toContainText('Reset sign-in is done one person at a time, from their profile.');
   await expect(skipped.getByRole('listitem').filter({ hasText: 'Sara Ali' })).toContainText('No work email yet.');
   // Sorted by site, then department, then name: both Riyadh HQ; Finance before Sales.
   await expect(slips.getByTestId('slip-code')).toHaveText(['1900 4433', '4821 7730']);
@@ -451,7 +469,7 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   ].join('\n'));
   await expect(dialog.getByTestId('work-emails-row-count')).toHaveText('4 rows found.');
   await dialog.getByRole('button', { name: 'Check the list' }).click();
-  await expect(dialog.getByTestId('work-emails-preview')).toHaveText('Ready: 1 · Not found: 1 · Wrong email ending: 1 · Already used: 1');
+  await expect(dialog.getByTestId('work-emails-preview')).toHaveText('Ready: 2 · Not found: 1 · Wrong email ending: 1 · Already used: 1');
   await expect(dialog.getByText('No employee has the number E1044.')).toBeVisible();
   await expect(dialog.getByText('someone@gmail.com does not end in @evostel.com.')).toBeVisible();
   await expect(dialog.getByText("This person already signs in with omar.saleh@evostel.com; their sign-in won't change.")).toBeVisible();
@@ -459,8 +477,9 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   if (testInfo.project.name === 'desktop') await dialog.screenshot({ path: testInfo.outputPath('add-work-emails.png') });
   expect((writes.at(-1)!.body as { dryRun: boolean }).dryRun).toBe(true);
 
-  await dialog.getByRole('button', { name: 'Save (1)' }).click();
-  await expect(dialog.getByTestId('work-emails-saved')).toContainText('1 work email saved.');
+  await dialog.getByRole('button', { name: 'Save (2)' }).click();
+  await expect(dialog.getByTestId('work-emails-saved')).toContainText('2 work emails saved.');
+  await expect(dialog.getByTestId('work-emails-awaiting')).toHaveText('Waiting for approval, so not included: 1.');
   await expect(dialog.getByText('Give access to these employees now (1)?')).toBeVisible();
   expect((writes.at(-1)!.body as { dryRun: boolean }).dryRun).toBe(false);
   await dialog.getByRole('button', { name: 'Print sign-in slips (1)' }).click();
@@ -542,7 +561,7 @@ test('Add work emails offers Email beside Print when the company can email', asy
   const dialog = page.getByRole('dialog');
   await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara.ali@evostel.com');
   await dialog.getByRole('button', { name: 'Check the list' }).click();
-  await dialog.getByRole('button', { name: 'Save (1)' }).click();
+  await dialog.getByRole('button', { name: 'Save (2)' }).click();
   await expect(dialog.getByRole('button', { name: 'Print sign-in slips (1)' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Email sign-in codes (1)' }).click();
   await expect(page.getByTestId('welcome-codes-summary')).toContainText('Sign-in codes emailed: 1.');
@@ -588,6 +607,35 @@ test('without the reset permission, a bulk skip never points at Reset sign-in', 
   await expect(page.getByText("Use Reset sign-in on the person's profile.")).toHaveCount(0);
 });
 
+test('a bulk print shows each skipped person\'s own reason', async ({ page }) => {
+  await openPeople(page, { selfEmployeeId: 42 });
+  for (const name of ['Noah Williams', 'Omar Saleh']) await page.getByRole('checkbox', { name: `Select ${name}` }).check();
+  await page.getByRole('button', { name: 'Print sign-in slips (2)' }).click();
+  const skipped = page.getByTestId('welcome-codes-summary').getByTestId('skipped-list');
+  await expect(skipped.getByRole('listitem').filter({ hasText: 'Noah Williams' })).toContainText("You can't give access to yourself.");
+  await expect(skipped.getByRole('listitem').filter({ hasText: 'Omar Saleh' })).toContainText('Reset sign-in is done one person at a time, from their profile.');
+  await expect(page.getByText("Ask an HR Manager to reset this person's sign-in.")).toHaveCount(0);
+});
+
+test('someone who cannot give access sees the state only, without reasons or buttons', async ({ page }) => {
+  await openPeople(page, { noIssue: true });
+  const card = await openProfile(page, 'Rana Saeed');
+  await expect(card.getByText('No access yet', { exact: true })).toBeVisible();
+  await expect(card.getByTestId('access-reason')).toHaveCount(0);
+  await expect(card.getByRole('button')).toHaveCount(0);
+});
+
+test('the Access stopped filter lists leavers with the stopped card and no action', async ({ page }) => {
+  const { listQueries } = await openPeople(page);
+  await expect(page.getByRole('button', { name: 'Open profile for Ali Former' })).toHaveCount(0);
+  await page.getByTestId('access-filter').getByRole('button', { name: /Access stopped/ }).click();
+  const card = await openProfile(page, 'Ali Former');
+  await expect(card.getByText('Access stopped', { exact: true })).toBeVisible();
+  await expect(card.getByTestId('access-detail')).toHaveText('Access stopped because the employee has left the company.');
+  await expect(card.getByRole('button')).toHaveCount(0);
+  expect(listQueries.some((q) => new URLSearchParams(q).get('access') === 'stopped')).toBe(true);
+});
+
 test('my own profile says I cannot give myself access', async ({ page }) => {
   await openPeople(page, { selfEmployeeId: 42 });
   const card = await openProfile(page, 'Noah Williams');
@@ -606,7 +654,7 @@ test('the Self-service chips show counts, and no usage call is made without perm
   const { requested } = await openPeople(page);
   const chips = page.getByTestId('access-filter');
   await expect(chips.getByRole('button', { name: /No access yet/ }).getByTestId('access-chip-count')).toHaveText('3');
-  await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('8');
+  await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('9');
   expect(requested).not.toContain('/api/tenant-admin/usage');
   await expect(page.getByText('Access Denied')).toHaveCount(0);
 });
@@ -619,4 +667,17 @@ test('approving a new hire offers their sign-in slip', async ({ page }) => {
   await status.getByRole('button', { name: 'Print sign-in slip' }).click();
   await expect(page.getByTestId('sign-in-slip')).toHaveCount(1);
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49], delivery: 'print' }]);
+});
+
+test('Add work emails falls back to each status when the save response has no state', async ({ page }) => {
+  const { requested } = await openPeople(page, { backfillWithoutState: true });
+  await page.getByTestId('access-filter').getByRole('button', { name: 'Waiting for work email' }).click();
+  await page.getByRole('button', { name: 'Add work emails' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara.ali@evostel.com');
+  await dialog.getByRole('button', { name: 'Check the list' }).click();
+  await dialog.getByRole('button', { name: 'Save (2)' }).click();
+  await expect(dialog.getByText('Give access to these employees now (1)?')).toBeVisible();
+  await expect(dialog.getByTestId('work-emails-awaiting')).toHaveText('Waiting for approval, so not included: 1.');
+  expect(requested).toContain('/api/employee-access/49');
 });

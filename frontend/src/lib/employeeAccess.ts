@@ -175,7 +175,7 @@ export const SKIP_REASON_KEYS: Record<string, string> = {
   seat_limit: "Your company's KynexOne plan is full.",
   // Reset sign-in is one person at a time, from their profile (never bulk).
   active: "Use Reset sign-in on the person's profile.",
-  reset_is_single: "Use Reset sign-in on the person's profile.",
+  reset_is_single: 'Reset sign-in is done one person at a time, from their profile.',
   reset_requires_permission: "Ask an HR Manager to reset this person's sign-in.",
   awaiting_approval: 'Waiting for approval. You can give access once {name} is approved.',
 };

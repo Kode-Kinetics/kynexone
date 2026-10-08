@@ -2,10 +2,10 @@
 
 import { useRef, useState } from 'react';
 import { FileUp } from 'lucide-react';
-import { employeeAccessApi, MAX_WORK_EMAIL_ROWS, type WorkEmailBackfillResult } from '../../api/employeeAccess';
+import { employeeAccessApi, MAX_WORK_EMAIL_ROWS, type EmployeeAccessDto, type WorkEmailBackfillResult } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
-import { CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, parseWorkEmailRows, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
+import { BULK_PRINTABLE_STATES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, parseWorkEmailRows, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
 import { Modal } from '../Modal';
 import { fill, Ltr } from './fill';
 
@@ -19,15 +19,14 @@ const PASTE_EXAMPLE = 'EMP-0042\tnoah.williams@company.com';
  * as a CSV. Check (dry run) → "Ready · Not found · Wrong email ending · Already used" → Save →
  * "Give access to these employees now?" → the print flow.
  */
-export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, checkEmailDelivery }: {
+export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: {
   isOpen: boolean;
   onClose: () => void;
   /** The list changed; refresh it. */
   onSaved: () => void;
   /** `print` always prints; `email` lets the server email where it may (the rest still print). */
   onGiveAccess: (employeeIds: number[], names: Record<number, string>, delivery: 'print' | 'email', companyEmails: boolean) => void;
-  /** Whether the company can email codes, read from one saved employee's access status. */
-  checkEmailDelivery: (employeeId: number) => Promise<boolean>;
+
 }) {
   const { t } = useLocale();
   const [text, setText] = useState('');
@@ -36,6 +35,9 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
   const [saved, setSaved] = useState<WorkEmailBackfillResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [canEmail, setCanEmail] = useState(false);
+  // After saving: who can be given access now, and how many still wait for approval (from each status).
+  const [eligibleIds, setEligibleIds] = useState<number[]>([]);
+  const [awaitingCount, setAwaitingCount] = useState(0);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const parsed = parseWorkEmailRows(text);
@@ -45,7 +47,7 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
     .map((row) => ({ row, key: workEmailProblemKey(workEmailLocalProblem(row.workEmail)) }))
     .filter((x): x is { row: typeof x.row; key: string } => !!x.key);
 
-  const reset = () => { setText(''); setStep('input'); setPreview(null); setSaved(null); setError(''); setBusy(false); setCanEmail(false); };
+  const reset = () => { setText(''); setStep('input'); setPreview(null); setSaved(null); setError(''); setBusy(false); setCanEmail(false); setEligibleIds([]); setAwaitingCount(0); };
   const close = () => { reset(); onClose(); };
 
   const explain = (e: unknown) => {
@@ -73,14 +75,43 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
     try {
       const result = await employeeAccessApi.saveWorkEmails(parsed.rows, false);
       setSaved(result);
-      const first = result.matched[0]?.employeeId;
-      setCanEmail(first ? await checkEmailDelivery(first).catch(() => false) : false);
+      await sortOutEligible(result.matched);
       setStep('saved');
       onSaved();
     } catch (e) {
       setError(explain(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Who can be given access now. The save response says so per row (accessState + canIssue); an API
+   * without those fields falls back to reading each saved employee's status, 20 at a time.
+   */
+  const sortOutEligible = async (rows: WorkEmailBackfillResult['matched']) => {
+    const ids = rows.map((r) => r.employeeId);
+    if (rows.length > 0 && rows.every((r) => r.accessState !== undefined && r.canIssue !== undefined)) {
+      const eligible = rows.filter((r) => r.canIssue && BULK_PRINTABLE_STATES.has(r.accessState!)).map((r) => r.employeeId);
+      setEligibleIds(eligible);
+      setAwaitingCount(rows.filter((r) => r.reasonCode === 'awaiting_approval').length);
+      // Email delivery is a company fact: one status read answers it.
+      setCanEmail(eligible.length > 0 ? await employeeAccessApi.get(eligible[0]).then((a) => !!a.emailDelivery).catch(() => false) : false);
+      return;
+    }
+    try {
+      const statuses: EmployeeAccessDto[] = [];
+      for (let i = 0; i < ids.length; i += 20) {
+        statuses.push(...await Promise.all(ids.slice(i, i + 20).map((id) => employeeAccessApi.get(id))));
+      }
+      setEligibleIds(statuses.filter((s) => s.canIssue && BULK_PRINTABLE_STATES.has(s.state)).map((s) => s.employeeId));
+      setAwaitingCount(statuses.filter((s) => s.reasonCode === 'awaiting_approval').length);
+      setCanEmail(statuses.some((s) => !!s.emailDelivery));
+    } catch {
+      // Statuses unavailable: offer everyone saved; the server still skips (and explains) anyone it must.
+      setEligibleIds(ids);
+      setAwaitingCount(0);
+      setCanEmail(false);
     }
   };
 
@@ -117,21 +148,21 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
     footer = (
       <>
         <button type="button" onClick={close} className="btn-secondary">{t('Not now')}</button>
-        {savedRows.length > 0 && (['email', 'print'] as const).filter((d) => d === 'print' || canEmail).map((delivery) => (
+        {eligibleIds.length > 0 && (['email', 'print'] as const).filter((d) => d === 'print' || canEmail).map((delivery) => (
           <button
             key={delivery}
             type="button"
             className={delivery === 'print' ? 'btn-primary' : 'btn-secondary'}
             onClick={() => {
-              const ids = savedRows.map((r) => r.employeeId);
-              const names = Object.fromEntries(savedRows.map((r) => [r.employeeId, r.employeeName]));
+              const ids = [...eligibleIds];
+              const names = Object.fromEntries(savedRows.filter((r) => ids.includes(r.employeeId)).map((r) => [r.employeeId, r.employeeName]));
               close();
               onGiveAccess(ids, names, delivery, canEmail);
             }}
           >
             {delivery === 'print'
-              ? t('Print sign-in slips ({n})', { n: savedRows.length })
-              : t('Email sign-in codes ({n})', { n: savedRows.length })}
+              ? t('Print sign-in slips ({n})', { n: eligibleIds.length })
+              : t('Email sign-in codes ({n})', { n: eligibleIds.length })}
           </button>
         ))}
       </>
@@ -227,7 +258,8 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
         {step === 'saved' && saved && (
           <div className="space-y-2" data-testid="work-emails-saved">
             <p className="font-semibold text-slate-900 dark:text-white">{t('{count, plural, one {# work email saved.} other {# work emails saved.}}', { count: savedCount })}</p>
-            {savedRows.length > 0 && <p>{t('Give access to these employees now ({n})?', { n: savedRows.length })}</p>}
+            {eligibleIds.length > 0 && <p>{t('Give access to these employees now ({n})?', { n: eligibleIds.length })}</p>}
+            {awaitingCount > 0 && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="work-emails-awaiting">{t('Waiting for approval, so not included: {n}.', { n: awaitingCount })}</p>}
           </div>
         )}
       </div>
