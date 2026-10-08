@@ -324,6 +324,9 @@ public class AuthSeeder : IAuthSeeder
             ("attendance.kiosk", "Attendance", "Use kiosk-only attendance capture"),
             ("attendance.bulk_import", "Attendance", "Bulk import attendance data"),
             ("attendance.lock", "Attendance", "Lock/unlock attendance periods"),
+            // Selfie attendance v2: HR opens the stored selfie behind a punch (audited, MFA). HR Director and HR Manager
+            // get it through their attendance.* grant; the tenant's HR decides who else may.
+            ("attendance.evidence.view", "Attendance", "View the stored selfie behind a punch (each view is audited)"),
             // Leave
             ("leave.read", "Leave", "Read leave requests and balances"),
             ("leave.write", "Leave", "Submit and manage leave requests"),

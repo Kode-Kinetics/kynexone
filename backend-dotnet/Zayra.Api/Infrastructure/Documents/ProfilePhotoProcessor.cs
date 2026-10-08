@@ -48,7 +48,10 @@ public static class ProfilePhotoProcessor
             throw new ImageTooLargeException(info.Width, info.Height, maxSourcePixels);
 
         using var decoded = DecodeDownsampled(codec, Math.Max(decodeLongEdge, MaxEdge));
-        using var upright = ApplyOrigin(decoded, codec.EncodedOrigin);
+        // TopLeft (no rotation, the common case) uses the decoded bitmap as it is: no second full-size copy.
+        var rotated = codec.EncodedOrigin == SKEncodedOrigin.TopLeft ? null : ApplyOrigin(decoded, codec.EncodedOrigin);
+        using var rotatedOwner = rotated;
+        var upright = rotated ?? decoded;
 
         var scale = Math.Min(1.0, (double)MaxEdge / Math.Max(upright.Width, upright.Height));
         var width = Math.Max(1, (int)Math.Round(upright.Width * scale));
@@ -104,11 +107,12 @@ public static class ProfilePhotoProcessor
         return bitmap;
     }
 
-    /// <summary>Bakes the EXIF orientation into the pixels (the tag itself is discarded).</summary>
+    /// <summary>
+    /// Bakes a non-TopLeft EXIF orientation into a NEW bitmap (the tag itself is discarded). Never called for TopLeft:
+    /// the caller uses the decoded bitmap directly, so an upright photo is never copied.
+    /// </summary>
     private static SKBitmap ApplyOrigin(SKBitmap src, SKEncodedOrigin origin)
     {
-        if (origin == SKEncodedOrigin.TopLeft) return src.Copy();
-
         var swap = origin is SKEncodedOrigin.LeftTop or SKEncodedOrigin.RightTop
             or SKEncodedOrigin.RightBottom or SKEncodedOrigin.LeftBottom;
         var w = swap ? src.Height : src.Width;

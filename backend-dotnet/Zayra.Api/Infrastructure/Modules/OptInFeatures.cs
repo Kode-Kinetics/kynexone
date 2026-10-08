@@ -32,10 +32,12 @@ public static class OptInFeatures
                 "/api/ess/renewal-offer",  // R6 employee acceptance
             ],
             // Selfie attendance: only the upload is a route of its own. Consent withdrawal and the ESS read stay
-            // reachable when it is off (withdrawing is always possible); punches check the flag in code.
+            // reachable when it is off (withdrawing is always possible); punches check the flag in code. HR's review
+            // view (GET /api/attendance/evidence/{rawEventId}/selfie) stays reachable too: a stored selfie backs a pay
+            // record for its whole retention window, whatever the flag says now.
             [FeatureKeys.SelfieAttendance] =
             [
-                "/api/attendance/evidence",
+                "/api/attendance/evidence/selfie",
             ],
             // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
             [FeatureKeys.PunchGeofence] = [],

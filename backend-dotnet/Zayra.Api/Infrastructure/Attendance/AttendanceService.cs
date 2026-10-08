@@ -380,6 +380,9 @@ public class AttendanceService : IAttendanceService
     /// by the server's own punch decision (<see cref="PunchAsync"/>), so a caller-supplied one is REFUSED here
     /// (<see cref="ReservedVerificationLabels"/>), never stored and never rewritten.
     /// </summary>
+    /// <summary>Audit action of an enforced punch whose phone reported it cannot detect a mocked location (the HR report reads it).</summary>
+    public const string MockDetectionUnavailableAction = "attendance.geofence.mock_detection_unavailable";
+
     public Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
     {
         if (ReservedVerificationLabels.Violates(request.VerificationMethod, request.PhotoReference))
@@ -455,8 +458,19 @@ public class AttendanceService : IAttendanceService
             await Audit(tenantId, context, "attendance.geofence.fallback_all_sites", "AttendanceRawEvent", raw.Id.ToString(),
                 JsonSerializer.Serialize(new { employeeId = employee.Id, site = verification.GeofenceSite, reason = "no geofenced site matches the employee's work location or branch" }), ct);
         if (verification is { MockDetectionUnavailable: true })
-            await Audit(tenantId, context, "attendance.geofence.mock_detection_unavailable", "AttendanceRawEvent", raw.Id.ToString(),
-                JsonSerializer.Serialize(new { employeeId = employee.Id, site = verification.GeofenceSite, reason = "the device reported mockDetection = Unsupported (iOS cannot detect a simulated location)" }), ct);
+            await Audit(tenantId, context, MockDetectionUnavailableAction, "AttendanceRawEvent", raw.Id.ToString(),
+                JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id,
+                    site = verification.GeofenceSite,
+                    // android never reaches here (refused); "unknown" is an app that sent no X-Client-Platform header.
+                    clientPlatform = verification.ClientPlatform ?? "unknown",
+                    reason = "the device reported mockDetection = Unsupported (iOS cannot detect a simulated location)",
+                }), ct);
+        if (verification?.SelfieRequirementWaivedReason is { } waived)
+            await Audit(tenantId, context, AttendanceVerificationService.SelfieRequirementWaivedAction, AttendanceVerificationService.EmployeeEntity,
+                employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsonSerializer.Serialize(new { employeeId = employee.Id, rawEventId = raw.Id, verificationMethod = verification.Method, reason = waived }), ct);
         if (verification?.EvidenceId is Guid evidenceId)
             await ConsumeEvidenceAsync(tenantId, employee.Id, evidenceId, raw, verification, context, ct);
         try { await _db.SaveChangesAsync(ct); }

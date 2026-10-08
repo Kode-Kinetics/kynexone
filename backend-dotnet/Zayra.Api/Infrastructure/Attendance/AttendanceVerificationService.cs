@@ -14,6 +14,9 @@ namespace Zayra.Api.Infrastructure.Attendance;
 public sealed record AttendanceRefusal(string Code, string Message, string MessageAr)
 {
     public object Body => new { code = Code, message = Message, messageAr = MessageAr };
+
+    /// <summary>The body plus <c>punchWithoutSelfie</c>: true when the failure was the server's, so the app should punch without a selfie.</summary>
+    public object BodyWith(bool punchWithoutSelfie) => new { code = Code, message = Message, messageAr = MessageAr, punchWithoutSelfie };
 }
 
 /// <summary>Raised inside the punch write when evidence fails its re-check under the transaction (a race, or expiry).</summary>
@@ -60,8 +63,26 @@ public static class AttendanceRefusals
         "حاولت رفع 10 صور خلال الساعة الماضية. انتظر قليلًا وحاول مرة أخرى.");
 
     public static readonly AttendanceRefusal SelfieBusy = new("selfie_busy",
-        "The server is busy processing other selfies. Try again in a few seconds.",
-        "الخادم مشغول بمعالجة صور أخرى. حاول مرة أخرى بعد بضع ثوانٍ.");
+        "The server is busy processing other selfies. Try again in a few seconds, or record this punch without a selfie.",
+        "الخادم مشغول بمعالجة صور أخرى. حاول مرة أخرى بعد بضع ثوانٍ، أو سجّل هذا الحضور بدون صورة.");
+
+    /// <summary>Storage refused or failed the write. The server's failure: a required selfie is waived for the next punch.</summary>
+    public static readonly AttendanceRefusal SelfieStorageUnavailable = new("selfie_storage_unavailable",
+        "Your selfie could not be saved because of a problem on our side. Record this punch without a selfie.",
+        "تعذّر حفظ صورتك بسبب مشكلة لدينا. سجّل هذا الحضور بدون صورة.");
+
+    /// <summary>The stored upload was purged before it could be activated (e.g. a withdrawal and a new consent in between).</summary>
+    public static readonly AttendanceRefusal UploadInterrupted = new("selfie_upload_interrupted",
+        "Your selfie could not be saved. Take it again.",
+        "تعذّر حفظ صورتك. التقطها مرة أخرى.");
+
+    /// <summary>
+    /// The punch said <c>mockDetection: "Unsupported"</c> from an Android phone (its X-Client-Platform header or its
+    /// User-Agent), which CAN report a simulated location (review 2, item 11).
+    /// </summary>
+    public static readonly AttendanceRefusal MockDetectionRequired = new("mock_detection_required",
+        "Android phones can report a simulated location, but this app did not check. Update the KynexOne app and try again.",
+        "تستطيع هواتف أندرويد الإبلاغ عن الموقع الوهمي، لكن التطبيق لم يتحقق من ذلك. حدّث تطبيق KynexOne وحاول مرة أخرى.");
 
     public static readonly AttendanceRefusal LocationRequired = new("location_required",
         "Your location is needed to punch. Turn on location for the app and try again.",
@@ -209,6 +230,10 @@ public static class SelfieAttendanceConfig
         return root.ToJsonString();
     }
 
+    /// <summary>The storage location the server stamped when the flag was enabled (<see cref="StorageResidency.Canonical"/>).</summary>
+    public static string? StampedStorageLocation(string? configJson) =>
+        Text(TryParse(configJson)?["dataResidency"] as JsonObject, "storageLocation");
+
     /// <summary>The DPIA's signedOffBy, when it parses.</summary>
     public static Guid? SignedOffBy(string? configJson) =>
         Text(TryParse(configJson)?["dpia"] as JsonObject, "signedOffBy") is { } s && Guid.TryParse(s, out var id) ? id : null;
@@ -312,7 +337,38 @@ public sealed record UnmatchedGeofenceEmployee(int EmployeeId, string EmployeeCo
 /// The location facts a self-punch carries. Accuracy, the mock flag and whether the platform can detect a mock at all
 /// (<see cref="MockDetection"/>: <c>Supported</c> on Android, <c>Unsupported</c> on iOS) are the device's report.
 /// </summary>
-public sealed record PunchLocation(decimal? Latitude, decimal? Longitude, decimal? AccuracyMeters, bool? Mocked, string? MockDetection = null);
+public sealed record PunchLocation(decimal? Latitude, decimal? Longitude, decimal? AccuracyMeters, bool? Mocked, string? MockDetection = null,
+    ClientPlatform? Platform = null);
+
+/// <summary>
+/// The phone platform a punch came from, as far as the server can tell (review 2, item 11): the app's
+/// <c>X-Client-Platform</c> header (<c>android</c> | <c>ios</c>) and the User-Agent. <see cref="IsAndroid"/> when
+/// EITHER says Android (an Android phone can report a simulated location, so "Unsupported" is refused from it).
+/// <see cref="Header"/> is null for an app built before the header existed.
+/// </summary>
+public sealed record ClientPlatform(string? Header, bool UserAgentSaysAndroid, bool UserAgentSaysIos)
+{
+    public const string HeaderName = "X-Client-Platform";
+    public const string Android = "android";
+    public const string Ios = "ios";
+
+    public bool IsAndroid => Header == Android || UserAgentSaysAndroid;
+
+    /// <summary>What the audit records: android, ios, or unknown (no header, and a User-Agent that says neither).</summary>
+    public string Describe => IsAndroid ? Android : Header == Ios || UserAgentSaysIos ? Ios : "unknown";
+
+    public static ClientPlatform From(string? header, string? userAgent)
+    {
+        var h = header?.Trim().ToLowerInvariant();
+        var ua = userAgent ?? string.Empty;
+        return new ClientPlatform(
+            h is Android or Ios ? h : null,
+            // React Native on Android sends okhttp's agent; a browser or WebView on Android says "Android".
+            ua.Contains("Android", StringComparison.OrdinalIgnoreCase) || ua.StartsWith("okhttp", StringComparison.OrdinalIgnoreCase),
+            ua.Contains("iPhone", StringComparison.OrdinalIgnoreCase) || ua.Contains("iPad", StringComparison.OrdinalIgnoreCase)
+                || ua.Contains("CFNetwork", StringComparison.OrdinalIgnoreCase));
+    }
+}
 
 /// <summary>Values of the punch request's <c>mockDetection</c>.</summary>
 public static class MockDetectionModes
@@ -353,7 +409,7 @@ public sealed record PunchVerificationDecision(AttendanceRefusal? Refusal, Punch
 
 /// <summary>Outcome of the geofence check for one punch.</summary>
 public sealed record GeofenceCheck(AttendanceRefusal? Refusal, bool Verified, string? Site, double? Distance,
-    bool FellBackToAllSites = false, bool MockDetectionUnavailable = false)
+    bool FellBackToAllSites = false, bool MockDetectionUnavailable = false, string? ClientPlatform = null)
 {
     public static readonly GeofenceCheck NotEnforced = new(null, false, null, null);
     public static GeofenceCheck Refuse(AttendanceRefusal refusal) => new(refusal, false, null, null);
@@ -369,6 +425,16 @@ public sealed class AttendanceVerificationService
 {
     public static readonly TimeSpan EvidenceLifetime = TimeSpan.FromMinutes(10);
     public const int MaxUploadsPerHour = 10;
+
+    /// <summary>Audit action written when the upload failed on the server's side (busy, or storage). Keyed by employee.</summary>
+    public const string SelfieServerFailureAction = "attendance.selfie.server_failure";
+    /// <summary>Audit action written when a required selfie was waived for a punch because of such a failure.</summary>
+    public const string SelfieRequirementWaivedAction = "attendance.selfie.requirement_waived";
+    public const string EmployeeEntity = "Employee";
+    public const string ServerFailureBusy = "busy";
+    public const string ServerFailureStorage = "storage_error";
+    /// <summary>A server failure waives the requirement for one punch within this window (the evidence lifetime).</summary>
+    public static readonly TimeSpan ServerFailureWaiverWindow = EvidenceLifetime;
 
     private readonly ZayraDbContext _db;
     private readonly StorageResidency _residency;
@@ -392,15 +458,19 @@ public sealed class AttendanceVerificationService
         var selfie = flags.FirstOrDefault(f => f.FeatureKey == FeatureKeys.SelfieAttendance);
         var geofence = flags.FirstOrDefault(f => f.FeatureKey == FeatureKeys.PunchGeofence);
 
-        // Defence in depth, on EVERY read: a selfie row without both sign-offs is OFF however it was written, and so is
-        // one on a deploy whose storage is not on the KSA allow-list (the region typed into the flag proves nothing).
+        // Defence in depth, on EVERY read: a selfie row without both sign-offs is OFF however it was written; so is one
+        // on a deploy whose storage (configured endpoint/region AND the bucket's own reported region) is not on the KSA
+        // allow-list; and so is one whose storage has MOVED since the flag was enabled (the location stamped then).
         string? offReason = null;
         if (selfie is not null)
         {
             if (SelfieAttendanceConfig.MissingSignOffs(selfie.ConfigJson) is { Count: > 0 })
                 offReason = "Selfie attendance is switched on for this company, but its DPIA sign-off or data-residency confirmation is incomplete, so it is treated as off.";
-            else if (_residency.Check(SelfieAttendanceConfig.RequiredRegion) is { Resident: false } verdict)
+            else if (await _residency.CheckAsync(SelfieAttendanceConfig.RequiredRegion, ct) is var verdict && !verdict.Resident)
                 offReason = "Selfie attendance is treated as off: " + verdict.Reason;
+            else if (!string.Equals(SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson), verdict.Location, StringComparison.OrdinalIgnoreCase))
+                offReason = $"Selfie attendance is treated as off: document storage has moved since it was switched on (now {verdict.Location}, "
+                            + $"then {SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson) ?? "not recorded"}). A platform Owner must switch it on again.";
         }
         var selfieOn = selfie is not null && offReason is null;
         var (enforced, maxAccuracy, allowMocked) = PunchGeofenceConfig.Parse(geofence?.ConfigJson);
@@ -530,6 +600,11 @@ public sealed class AttendanceVerificationService
                 if (detection == MockDetectionModes.Supported && location.Mocked is null)
                     return GeofenceCheck.Refuse(AttendanceRefusals.AppUpdateRequired);
                 mockUnavailable = detection == MockDetectionModes.Unsupported;
+                // "Unsupported" is only the device's word: an Android phone (by its platform header or User-Agent) CAN
+                // detect a mock, so it is refused. With no header and an inconclusive User-Agent (an old app) it is
+                // accepted as before, and the audit records the platform as unknown.
+                if (mockUnavailable && location.Platform is { IsAndroid: true })
+                    return GeofenceCheck.Refuse(AttendanceRefusals.MockDetectionRequired);
             }
             else if (location.Mocked == true)
             {
@@ -545,10 +620,11 @@ public sealed class AttendanceVerificationService
             .Select(s => (Site: s, Distance: HaversineMeters((double)lat, (double)lon, (double)s.Latitude, (double)s.Longitude)))
             .OrderBy(x => x.Distance - (double)x.Site.RadiusMeters)
             .First();
+        var platform = location.Platform?.Describe ?? "unknown";
         return nearest.Distance <= (double)nearest.Site.RadiusMeters
-            ? new GeofenceCheck(null, true, nearest.Site.Name, nearest.Distance, resolution.FellBackToAllSites, mockUnavailable)
+            ? new GeofenceCheck(null, true, nearest.Site.Name, nearest.Distance, resolution.FellBackToAllSites, mockUnavailable, platform)
             : new GeofenceCheck(AttendanceRefusals.OutsideGeofence(nearest.Site.Name, nearest.Distance, nearest.Site.RadiusMeters),
-                false, nearest.Site.Name, nearest.Distance, resolution.FellBackToAllSites, mockUnavailable);
+                false, nearest.Site.Name, nearest.Distance, resolution.FellBackToAllSites, mockUnavailable, platform);
     }
 
     /// <summary>
@@ -585,6 +661,7 @@ public sealed class AttendanceVerificationService
             return PunchVerificationDecision.Refuse(AttendanceRefusals.MobileAppRequired);
 
         var selfie = false;
+        string? waivedReason = null;
         if (hasEvidence)
         {
             var id = evidenceId!.Value;
@@ -602,19 +679,46 @@ public sealed class AttendanceVerificationService
         else if (policy.RequireSelfieForConsented
                  && await ActiveConsentAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct) is not null)
         {
-            return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequired);
+            // The server failing must never block attendance (review 2, item 7): after a busy or storage failure on
+            // this employee's upload, one punch goes through without the selfie, recorded None and audited.
+            waivedReason = await UnconsumedServerFailureAsync(tenantId, employeeId, DateTime.UtcNow, ct);
+            if (waivedReason is null) return PunchVerificationDecision.Refuse(AttendanceRefusals.SelfieRequired);
         }
 
         var geo = await CheckGeofenceAsync(tenantId, employeeId, location, policy, ct, channel);
         if (geo.Refusal is not null) return PunchVerificationDecision.Refuse(geo.Refusal);
 
         return new PunchVerificationDecision(null, new PunchVerification(
-            AttendanceVerificationMethods.From(selfie, geo.Verified),
+            // A waived punch is recorded None: nothing about the employee was verified, whatever the geofence said.
+            waivedReason is not null ? AttendanceVerificationMethods.None : AttendanceVerificationMethods.From(selfie, geo.Verified),
             selfie ? evidenceId : null,
             geo.Site,
             geo.Distance,
             geo.FellBackToAllSites,
-            geo.MockDetectionUnavailable));
+            geo.MockDetectionUnavailable,
+            geo.ClientPlatform,
+            waivedReason));
+    }
+
+    /// <summary>
+    /// The reason of the employee's most recent server-side upload failure (busy, storage) within
+    /// <see cref="ServerFailureWaiverWindow"/> that no punch has used as a waiver yet, or null. A waiver row written
+    /// after the failure consumes it.
+    /// </summary>
+    public async Task<string?> UnconsumedServerFailureAsync(Guid tenantId, int employeeId, DateTime nowUtc, CancellationToken ct)
+    {
+        var since = nowUtc - ServerFailureWaiverWindow;
+        var key = employeeId.ToString(CultureInfo.InvariantCulture);
+        var latest = await _db.AttendanceAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EntityName == EmployeeEntity && a.EntityId == key && a.CreatedAtUtc >= since
+                        && (a.Action == SelfieServerFailureAction || a.Action == SelfieRequirementWaivedAction))
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => new { a.Action, a.MetadataJson })
+            .FirstOrDefaultAsync(ct);
+        if (latest is null || latest.Action != SelfieServerFailureAction) return null;
+        var reason = SelfieAttendanceConfig.TryParse(latest.MetadataJson)?["reason"] is JsonValue v && v.TryGetValue<string>(out var r) ? r : null;
+        return reason is ServerFailureBusy ? "The selfie service was busy, so the required selfie was waived for this punch."
+            : "Selfie storage failed, so the required selfie was waived for this punch.";
     }
 
     /// <summary>The evidence rule, shared by the pre-check and the re-check inside the punch transaction.</summary>
