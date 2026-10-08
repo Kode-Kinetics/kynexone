@@ -187,24 +187,25 @@ public sealed class SelfieReview2PostgresTests
 }
 
 /// <summary>
-/// Review 2, item 4, against a real S3 implementation (MinIO in a container): a strict delete on a VERSIONED bucket
-/// leaves no version and no delete marker behind, and the bucket's region and versioning are read from storage itself.
+/// Review 2, item 4, against a real S3 implementation in a container: a strict delete on a VERSIONED bucket leaves no
+/// version and no delete marker behind, and the bucket's region and versioning are read from storage itself.
+/// LocalStack's S3, pinned: MinIO stopped publishing its free container images, so CI could no longer pull them.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class SelfieMinioStrictDeleteTests : IAsyncLifetime
 {
-    private const string AccessKey = "selfie-minio";
-    private const string SecretKey = "selfie-minio-secret-key";
+    private const string AccessKey = "test";
+    private const string SecretKey = "test";
+    /// <summary>A non-default region, so the bucket's own reported region is a real value to read back.</summary>
+    private const string BucketRegion = "eu-central-1";
     private readonly IContainer _minio = new ContainerBuilder()
-        .WithImage("minio/minio:latest")
-        .WithCommand("server", "/data")
-        .WithEnvironment("MINIO_ROOT_USER", AccessKey)
-        .WithEnvironment("MINIO_ROOT_PASSWORD", SecretKey)
-        .WithPortBinding(9000, true)
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(9000).ForPath("/minio/health/live")))
+        .WithImage("localstack/localstack:3.8")
+        .WithEnvironment("SERVICES", "s3")
+        .WithPortBinding(4566, true)
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPort(4566).ForPath("/_localstack/health")))
         .Build();
 
-    private string Endpoint => $"http://{_minio.Hostname}:{_minio.GetMappedPublicPort(9000)}";
+    private string Endpoint => $"http://{_minio.Hostname}:{_minio.GetMappedPublicPort(4566)}";
 
     public Task InitializeAsync() => _minio.StartAsync();
     public async Task DisposeAsync() => await _minio.DisposeAsync();
@@ -220,7 +221,7 @@ public sealed class SelfieMinioStrictDeleteTests : IAsyncLifetime
     {
         var bucket = $"selfie-{Guid.NewGuid():N}"[..30];
         using var s3 = Client();
-        await s3.PutBucketAsync(bucket);
+        await s3.PutBucketAsync(new PutBucketRequest { BucketName = bucket, BucketRegionName = BucketRegion });
         if (versioned)
             await s3.PutBucketVersioningAsync(new PutBucketVersioningRequest
             {
