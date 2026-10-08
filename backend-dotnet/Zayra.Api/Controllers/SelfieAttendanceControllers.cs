@@ -79,6 +79,22 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// <summary>The permission that lets HR open a stored selfie (privileged: needs MFA).</summary>
     public const string ViewPermission = "attendance.evidence.view";
 
+    /// <summary>
+    /// The hard server deadline on one upload's body read, decode and storage write together. Past it the attempt is
+    /// released (it does not count) and the answer is 408 <c>selfie_upload_timeout</c>, which never waives anything.
+    /// <para>It is tied to two other constants, and a test asserts both: it must stay below
+    /// <see cref="SelfieWaivers.InFlight"/> (60 s), so a drip-fed body cannot outlive the window in which its reservation
+    /// blocks a second upload; and below <see cref="EssAttendanceVerificationController.InFlightPendingGrace"/>
+    /// (2 minutes), so a withdrawal never marks Purged a Pending row whose upload can still write its file.</para>
+    /// </summary>
+    public static readonly TimeSpan UploadDeadline = TimeSpan.FromSeconds(45);
+
+    /// <summary>How long a storage delete after a timed-out write may take before the row is left to the sweeper.</summary>
+    private static readonly TimeSpan TimeoutCleanupLimit = TimeSpan.FromSeconds(10);
+
+    /// <summary>This controller's deadline: <see cref="UploadDeadline"/>, shortened only by tests.</summary>
+    internal TimeSpan Deadline { get; init; } = UploadDeadline;
+
     private readonly IDocumentStorage _storage;
     private readonly SelfieImageGate _gate;
     private readonly IDataScopeService _scope;
@@ -136,10 +152,17 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         var (attempt, refusal) = await ReserveAttemptAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct);
         if (refusal is not null) return refusal;
 
+        // The hard deadline (UploadDeadline) on the body read, the decode and the storage write together: a drip-fed body
+        // must not outlive the 60 s in which its reservation blocks a second upload, nor the waiver logic built on it.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(Deadline);
+        var work = deadline.Token;
+        bool TimedOut() => deadline.IsCancellationRequested && !ct.IsCancellationRequested;
+
         byte[] jpeg;
         try
         {
-            var (prepared, inputRefusal, busy) = await ReadAndPrepareAsync(ct);
+            var (prepared, inputRefusal, busy) = await ReadAndPrepareAsync(work);
             if (busy)
             {
                 // The server's failure: kept as this attempt's waiver when nothing else was in flight (review 3).
@@ -149,11 +172,18 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             }
             if (inputRefusal is not null)
             {
-                // Nothing reached storage: the attempt does not count (review 2, item 7).
+                // Nothing reached storage: the attempt does not count (review 2, item 7). This includes a body cut off by
+                // the network (selfie_upload_incomplete), which is never recorded as a server failure.
                 await ReleaseAttemptAsync(attempt!);
                 return inputRefusal;
             }
             jpeg = prepared!;
+        }
+        catch (OperationCanceledException) when (TimedOut())
+        {
+            // Nothing reached storage: released, so it does not count; a timeout is never a waivable server failure.
+            await ReleaseAttemptAsync(attempt!);
+            return UploadTimeout();
         }
         catch (OperationCanceledException)
         {
@@ -162,7 +192,12 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         }
 
         var sha256 = Convert.ToHexString(SHA256.HashData(jpeg)).ToLowerInvariant();
-        try { await _storage.PutAtAsync(tenantId, attempt!.StorageKey, jpeg, EssUploadPolicy.Jpeg, ct); }
+        try { await _storage.PutAtAsync(tenantId, attempt!.StorageKey, jpeg, EssUploadPolicy.Jpeg, work); }
+        catch (OperationCanceledException) when (TimedOut())
+        {
+            await ReleaseTimedOutWriteAsync(tenantId, attempt!);
+            return UploadTimeout();
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // The row stays Pending (it reached storage, so it counts, and is unusable); the purge deletes any partial
@@ -188,6 +223,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
         }
         catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge) { return (null, TooLarge(), false); }
+        // The connection dropped or the body ended early (Kestrel's BadHttpRequestException, an IOException such as
+        // "Unexpected end of Stream"): the network's failure, not the server's — released by the caller, never waived.
+        catch (BadHttpRequestException) { return (null, Incomplete(), false); }
+        catch (IOException) { return (null, Incomplete(), false); }
         catch (InvalidDataException ex) when (ex.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)) { return (null, TooLarge(), false); }
         catch (InvalidDataException) { return (null, Invalid(), false); }
         if (file is null || file.Length <= 0)
@@ -195,12 +234,15 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         if (file.Length > MaxRequestBytes) return (null, TooLarge(), false);
 
         byte[] source;
-        await using (var input = file.OpenReadStream())
-        using (var buffer = new MemoryStream((int)file.Length))
+        try
         {
+            await using var input = file.OpenReadStream();
+            using var buffer = new MemoryStream((int)file.Length);
             await input.CopyToAsync(buffer, ct);
             source = buffer.ToArray();
         }
+        catch (BadHttpRequestException) { return (null, Incomplete(), false); }
+        catch (IOException) { return (null, Incomplete(), false); }
         if (!IsJpeg(source)) return (null, Invalid(), false);
 
         if (!await _gate.EnterAsync(SelfieImageGate.DefaultWait, ct)) return (null, null, true);
@@ -225,6 +267,30 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     private ObjectResult TooLarge() => StatusCode(StatusCodes.Status413PayloadTooLarge, Refusal("selfie_too_large",
         "The selfie is larger than 8 MB. Take it again at a lower resolution.",
         "حجم الصورة أكبر من 8 ميغابايت. التقطها مرة أخرى بدقة أقل."));
+
+    private ObjectResult Incomplete() => BadRequest(AttendanceRefusals.SelfieUploadIncomplete.Body);
+
+    private ObjectResult UploadTimeout() => StatusCode(StatusCodes.Status408RequestTimeout, AttendanceRefusals.SelfieUploadTimeout.Body);
+
+    /// <summary>
+    /// The deadline fired during the storage write, so a partial file may exist at the attempt's key. The file is deleted
+    /// strictly (bounded by <see cref="TimeoutCleanupLimit"/>); once that is confirmed, the attempt is released and does
+    /// not count. If storage cannot confirm the delete, the row is left Pending — never released while a file may remain —
+    /// and the 1-hour sweeper deletes the file. Either way it is not a server failure and waives nothing.
+    /// </summary>
+    private async Task ReleaseTimedOutWriteAsync(Guid tenantId, AttendanceEvidence attempt)
+    {
+        try
+        {
+            using var cleanup = new CancellationTokenSource(TimeoutCleanupLimit);
+            await _storage.DeleteStrictAsync(tenantId, attempt.StorageKey, cleanup.Token).WaitAsync(TimeoutCleanupLimit);
+        }
+        catch (Exception)
+        {
+            return; // the sweeper's
+        }
+        await ReleaseAttemptAsync(attempt);
+    }
 
     /// <summary>
     /// Reserves one upload attempt: under the per-employee advisory lock (<see cref="SelfieConsentLock"/>), re-checks
@@ -310,7 +376,9 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             var row = await Db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == attempt.Id
                 && e.PurgeState == AttendanceEvidencePurgeStates.Pending, none);
             var now = DateTime.UtcNow;
-            var inFlightSince = now - SelfieWaivers.InFlight;
+            // ANY not-failed Pending attempt of the employee from the last hour counts as in flight here, not just the
+            // last 60 s: an attempt still Pending after 60 s has not finished, and a failure beside it waives nothing.
+            var inFlightSince = now - SelfieWaivers.FailureInFlightLookback;
             var otherInFlight = await Db.AttendanceEvidence.AnyAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.Id != attempt.Id
                 && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null && e.CreatedAtUtc > inFlightSince, none);
             var granted = row is not null && !otherInFlight;
@@ -339,7 +407,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
 
     /// <summary>
     /// Flips the stored attempt to Active under the advisory lock, once consent is confirmed still open and the row is
-    /// still Pending. Otherwise (consent withdrawn during the upload, or the row purged meanwhile) the file just written
+    /// still Pending. Otherwise (consent withdrawn during the upload — also when it was then given again, since the open
+    /// consent must date from at or before the attempt — or the row purged meanwhile) the file just written
     /// is deleted strictly; if storage cannot confirm that delete, the row is left — or put back — Pending, never
     /// Purged, so the 1-hour sweeper retries it.
     /// </summary>
@@ -349,7 +418,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         var (activated, refusal) = await SelfieConsentLock.RunAsync(Db, tenantId, employeeId, async () =>
         {
             var row = await Db.AttendanceEvidence.FirstAsync(e => e.TenantId == tenantId && e.Id == attempt.Id, ct);
-            var consentOpen = await Verification.ActiveConsentAsync(tenantId, employeeId, policyVersion, ct) is not null;
+            // The open consent must be the one the photo was taken under: given at or before the attempt was reserved. A
+            // withdrawal and a NEW consent while the photo uploaded leave consent open, but not for this photo — discard it.
+            var consent = await Verification.ActiveConsentAsync(tenantId, employeeId, policyVersion, ct);
+            var consentOpen = consent is not null && consent.GivenAtUtc <= row.CreatedAtUtc;
             if (row.PurgeState != AttendanceEvidencePurgeStates.Pending || !consentOpen)
                 return ((AttendanceEvidence?)null, consentOpen ? AttendanceRefusals.UploadInterrupted : AttendanceRefusals.ConsentRequired);
             var now = DateTime.UtcNow;
@@ -701,7 +773,12 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
         return (deleted, unused.Count - deleted + inFlight);
     }
 
-    /// <summary>A Pending row younger than this may belong to an upload still in flight; a withdrawal leaves it Pending.</summary>
+    /// <summary>
+    /// A Pending row younger than this may belong to an upload still in flight; a withdrawal leaves it Pending. It must
+    /// stay safely above <see cref="AttendanceEvidenceController.UploadDeadline"/> (45 s): an upload can write its file
+    /// for at most that long after it reserved, so a row older than this grace can no longer gain a file, and marking it
+    /// Purged cannot orphan one. A test asserts deadline &lt; grace.
+    /// </summary>
     public static readonly TimeSpan InFlightPendingGrace = TimeSpan.FromMinutes(2);
 
     private async Task<Dictionary<string, object?>> BuildViewAsync(Guid tenantId, int employeeId, CancellationToken ct)

@@ -93,6 +93,23 @@ public static class AttendanceRefusals
         "تعذّر حفظ صورتك. التقطها مرة أخرى.");
 
     /// <summary>
+    /// The upload did not finish within the server's deadline (body read, decode and storage write together;
+    /// <c>AttendanceEvidenceController.UploadDeadline</c>). The attempt is released, so it does not count, and it is NOT a
+    /// server failure: it never waives a required selfie (a slow or drip-fed body must not manufacture a waiver).
+    /// </summary>
+    public static readonly AttendanceRefusal SelfieUploadTimeout = new("selfie_upload_timeout",
+        "Sending your selfie took too long, so it was not saved. Check your connection and take it again.",
+        "استغرق إرسال صورتك وقتًا طويلًا فلم تُحفظ. تحقّق من اتصالك والتقطها مرة أخرى.");
+
+    /// <summary>
+    /// The connection dropped while the selfie was being sent (the body ended early). The attempt is released, so it does
+    /// not count, and it never waives a required selfie: the network failing is not the server failing.
+    /// </summary>
+    public static readonly AttendanceRefusal SelfieUploadIncomplete = new("selfie_upload_incomplete",
+        "Your selfie did not arrive completely, so it was not saved. Check your connection and take it again.",
+        "لم تصل صورتك كاملة فلم تُحفظ. تحقّق من اتصالك والتقطها مرة أخرى.");
+
+    /// <summary>
     /// The punch said <c>mockDetection: "Unsupported"</c> from an Android phone (its X-Client-Platform header or its
     /// User-Agent), which CAN report a simulated location (review 2, item 11).
     /// </summary>
@@ -771,8 +788,20 @@ public static class SelfieWaivers
     public static readonly TimeSpan Window = AttendanceVerificationService.EvidenceLifetime;
     /// <summary>Waivers one employee may use per tenant-local calendar day.</summary>
     public const int DailyCap = 2;
-    /// <summary>Another Pending attempt younger than this is "in flight": a new upload is refused while it lasts.</summary>
+    /// <summary>
+    /// Another Pending attempt younger than this is "in flight": a new upload is refused while it lasts. Kept above
+    /// <c>AttendanceEvidenceController.UploadDeadline</c> (45 s), so an upload is cut off before its reservation stops
+    /// counting as in flight (asserted by a test).
+    /// </summary>
     public static readonly TimeSpan InFlight = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// When a busy or storage failure is judged for a waiver, ANY not-failed Pending attempt of the employee younger than
+    /// this counts as "another attempt in flight", so the failure waives nothing. Wider than <see cref="InFlight"/> on
+    /// purpose: an attempt still Pending after 60 s has not finished (it may be stalled, or its process died), and the
+    /// 1-hour sweeper (<see cref="SelfieEvidenceRetention.AbandonedPending"/>) is what closes it.
+    /// </summary>
+    public static readonly TimeSpan FailureInFlightLookback = SelfieEvidenceRetention.AbandonedPending;
     /// <summary>The raw event's <c>PhotoReference</c> prefix of a waived punch (reserved: integrations may not write it).</summary>
     public const string PhotoReferencePrefix = "waiver:";
 
