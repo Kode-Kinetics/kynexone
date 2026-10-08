@@ -532,6 +532,10 @@ public class AccessController : ControllerBase
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         catch (WorkEmailSetterRefusedException ex) { return SetterRefused(ex); }
+        catch (WorkEmailConfirmationRequiredException ex)
+        {
+            return BadRequest(new { error = ex.Code, code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
+        }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

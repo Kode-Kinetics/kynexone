@@ -51,6 +51,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [statusError, setStatusError] = useState('');
   const [reason, setReason] = useState('');
+  const [emailConfirmed, setEmailConfirmed] = useState(false);
+  const confirmId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -116,7 +118,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
   // A new employee starts a new question: forget the previous answer, error and outcome.
   useEffect(() => {
-    setStatus(null); setStatusError(''); setError(''); setOutcome(null); setCopied(false);
+    setStatus(null); setStatusError(''); setError(''); setOutcome(null); setCopied(false); setEmailConfirmed(false);
     if (!employee) return;
     let current = true;
     setLoadingStatus(true);
@@ -158,7 +160,10 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (!reason.trim()) { setError(t('Give a reason. It is kept in the audit trail.')); return; }
     setSubmitting(true); setError('');
     try {
-      const linked = await usersApi.linkExistingLogin({ employeeId: status.employeeId, userId, reason: reason.trim() });
+      const linked = await usersApi.linkExistingLogin({
+        employeeId: status.employeeId, userId, reason: reason.trim(),
+        ...(status.workEmailChangedAfterCreation ? { confirmedWorkEmail: emailConfirmed } : {}),
+      });
       setOutcome({ kind: 'linked', employeeName: status.employeeName, linked });
       onChanged();
     } catch (e: unknown) {
@@ -171,7 +176,10 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (!status) return;
     setSubmitting(true); setError('');
     try {
-      const invitation = await usersApi.inviteEmployee({ employeeId: status.employeeId, accessMode: 'ESSOnly' });
+      const invitation = await usersApi.inviteEmployee({
+        employeeId: status.employeeId, accessMode: 'ESSOnly',
+        ...(status.workEmailChangedAfterCreation ? { confirmedWorkEmail: emailConfirmed } : {}),
+      });
       setOutcome({ kind: 'invited', invitation });
       onChanged();
     } catch (e: unknown) {
@@ -231,7 +239,9 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     <div className="flex justify-end gap-2">
       <button type="button" onClick={onClose} className={btnSecondary}>{outcome ? t('Close') : t('Cancel')}</button>
       {action && (
-        <button type="button" onClick={action.run} disabled={submitting || (action.needsReason && !reason.trim())} className={btnPrimary}>
+        <button type="button" onClick={action.run}
+          disabled={submitting || (action.needsReason && !reason.trim()) || (!!status?.workEmailChangedAfterCreation && !emailConfirmed)}
+          className={btnPrimary}>
           {submitting ? t('Working…') : action.label}
         </button>
       )}
@@ -305,10 +315,18 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
               <dd className="break-all text-slate-800 dark:text-slate-200">{status.linkedLogin?.email ?? t('No linked login')}</dd>
             </dl>
             {explanation && <p className="text-sm text-slate-700 dark:text-slate-300">{explanation}</p>}
-            {action && status.workEmailSetBy && status.workEmailSetAtUtc && (
-              <p data-testid="work-email-set-by" className="text-xs text-slate-500 dark:text-slate-400">
-                {t('Work email set by {name} on {date}.', { name: status.workEmailSetBy, date: status.workEmailSetAtUtc.slice(0, 10) })}
-              </p>
+            {action && status.workEmailChangedAfterCreation && (
+              <div data-testid="work-email-confirmation" className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-900/20">
+                {status.workEmailSetBy && status.workEmailSetAtUtc && (
+                  <p data-testid="work-email-set-by" className="text-xs text-slate-600 dark:text-slate-400">
+                    {t('Work email set by {name} on {date}.', { name: status.workEmailSetBy, date: status.workEmailSetAtUtc.slice(0, 10) })}
+                  </p>
+                )}
+                <label htmlFor={confirmId} className="flex items-start gap-2 text-slate-800 dark:text-slate-200">
+                  <input id={confirmId} type="checkbox" checked={emailConfirmed} onChange={(e) => setEmailConfirmed(e.target.checked)} className="mt-0.5" />
+                  <span>{t('I confirmed this email address with {name}.', { name })}</span>
+                </label>
+              </div>
             )}
             {resetNotice && (
               <p data-testid="link-will-reset-credential" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">

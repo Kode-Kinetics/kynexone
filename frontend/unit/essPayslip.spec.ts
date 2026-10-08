@@ -58,9 +58,9 @@ test('self-service payslip links open a page an employee can access', () => {
   const root = join(__dirname, '..');
   const ess = readFileSync(join(root, 'src/views/EmployeeSelfServicePage.tsx'), 'utf8');
   expect(ess).not.toMatch(/['"]\/payroll['"]/);
-  // "View Payslip" button, Last Payslip card and the "My Payslips" quick link.
-  expect(ess.match(/router\.push\(ESS_PAYSLIPS_PATH\)/g)?.length).toBe(2);
-  expect(ess).toMatch(/label: 'My Payslips', path: ESS_PAYSLIPS_PATH/);
+  // "View Payslip" button and the Last Payslip tile; the Pay tab is in routes/essSections.ts.
+  expect(ess.match(/href=\{ESS_PAYSLIPS_PATH\}/g)?.length).toBe(2);
+  expect(readFileSync(join(root, 'src/routes/essSections.ts'), 'utf8')).toMatch(/label: 'My Payslips', tab: 'Payslips', path: '\/ess\/payslips'/);
 
   const page = readFileSync(join(root, 'app/(dashboard)', ESS_PAYSLIPS_PATH.slice(1), 'page.tsx'), 'utf8');
   expect(page).toMatch(/<PermissionGate permissions=\{\['ess\.read'\]\}>/);

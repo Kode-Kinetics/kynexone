@@ -40,7 +40,7 @@ const employees = [
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean } = {}) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean; emailChanged?: boolean } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -100,6 +100,7 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string; cr
       matchingLogin: { userId: noah.id, email: noah.email, status: 'Active', accessMode: 'FullPortal', isActive: true },
       nextAction: 'link_existing', reason: null, willResetCredential: !!opts.credentialReset,
       workEmailSetBy: 'Hana Haddad', workEmailSetAtUtc: '2026-10-01T09:00:00Z',
+      workEmailChangedAfterCreation: !!opts.emailChanged,
     });
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
@@ -150,8 +151,8 @@ test('an existing login is linked to its employee record from the user row', asy
   const status = dialog.getByTestId('employee-login-status');
   await expect(status.getByText(`The login ${noah.email} uses Noah Williams's work email.`, { exact: false })).toBeVisible();
   await expect(dialog.getByTestId('link-will-reset-credential')).toHaveCount(0);
-  // Who set the address every credential goes to, said above the action.
-  await expect(dialog.getByTestId('work-email-set-by')).toHaveText('Work email set by Hana Haddad on 2026-10-01.');
+  // The work email was set when the record was created: no confirmation, no "set by" line.
+  await expect(dialog.getByTestId('work-email-confirmation')).toHaveCount(0);
   const linkButton = dialog.getByRole('button', { name: 'Link this login', exact: true });
   await expect(linkButton).toBeDisabled(); // A reason is required before anything is sent.
   expect(writes).toEqual([]);
@@ -199,6 +200,28 @@ test('a login an administrator had handled is linked with a fresh password invit
   await dialog.getByRole('button', { name: 'Copy link', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Link copied', exact: true })).toBeVisible();
   expect(writes).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('a work email changed after the record was created must be confirmed with the person before linking', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page, { emailChanged: true });
+  const row = page.getByRole('row').filter({ hasText: noah.email });
+  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('work-email-set-by')).toHaveText('Work email set by Hana Haddad on 2026-10-01.');
+  await dialog.getByLabel('Reason (kept in the audit trail)').fill('Work email corrected by HR');
+  const linkButton = dialog.getByRole('button', { name: 'Link this login', exact: true });
+  await expect(linkButton).toBeDisabled(); // not until the address is confirmed
+  await dialog.getByLabel('I confirmed this email address with Noah Williams.').check();
+  await linkButton.click();
+
+  await expect(dialog.getByRole('status')).toContainText('Linked to Noah Williams.');
+  expect(writes).toEqual([{
+    method: 'POST',
+    path: '/api/access/employee-logins/link-existing',
+    body: { employeeId: 42, userId: noah.id, reason: 'Work email corrected by HR', confirmedWorkEmail: true },
+  }]);
   expect(errors).toEqual([]);
 });
 

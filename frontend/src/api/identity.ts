@@ -55,6 +55,8 @@ export interface EmployeeLoginStatus {
   /** Who last set the employee's work email (every credential is sent there), and when (UTC ISO). */
   workEmailSetBy?: string | null;
   workEmailSetAtUtc?: string | null;
+  /** The work email was changed after the record was created and there is no activated login: confirm it first. */
+  workEmailChangedAfterCreation?: boolean;
 }
 
 export interface EmployeeLoginLinkResult {
@@ -324,7 +326,7 @@ export const usersApi = {
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),
 
-  inviteEmployee: (body: { employeeId: number; accessMode: string; roles?: string[]; invitationHours?: number }) =>
+  inviteEmployee: (body: { employeeId: number; accessMode: string; confirmedWorkEmail?: boolean; roles?: string[]; invitationHours?: number }) =>
     client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
 
   /** Where one employee record stands on the way to Self-Service, and the one next step. */
@@ -332,7 +334,7 @@ export const usersApi = {
     client.get<EmployeeLoginStatus>(`/api/access/employee-logins/${employeeId}`).then(r => r.data),
 
   /** Links an existing, active login to the employee record whose work email it carries. */
-  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string }) =>
+  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string; confirmedWorkEmail?: boolean }) =>
     client.post<EmployeeLoginLinkResult>('/api/access/employee-logins/link-existing', body).then(r => r.data),
 };
 

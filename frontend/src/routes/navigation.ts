@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
+import { essNavItems } from './essSections';
 
 export const navigationGroups: NavGroup[] = [
   {
@@ -39,15 +40,9 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
       { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
+      // Every login is an employee first: one entry opens the employee's own workspace, whose
+      // sections (pay, leave, requests, benefits) live inside it (routes/essSections.ts).
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },
-      { label: 'My Payslips', icon: FileText, path: '/ess/payslips', requiredPermissions: ['ess.read'] },
-      { label: 'My Leave', icon: ClipboardList, path: '/ess/leave', requiredPermissions: ['ess.read'] },
-      { label: 'My Overtime', icon: TimerReset, path: '/ess/overtime', requiredPermissions: ['ess.read'], requiredFeatureKey: 'overtime' },
-      { label: 'My HR Requests', icon: Headphones, path: '/ess/requests', requiredPermissions: ['ess.read'] },
-      { label: 'My Benefits', icon: HeartPulse, path: '/ess/benefits', requiredPermissions: ['ess.read'] },
-      // Release A (release_a opt-in flag): the employee's own package and deductions.
-      { label: 'My package', icon: WalletCards, path: '/ess/package', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
-      { label: 'My deductions', icon: FileText, path: '/ess/deductions', requiredPermissions: ['ess.read'], requiredFeatureKey: 'release_a' },
     ],
   },
   {
@@ -114,6 +109,9 @@ export const navigationGroups: NavGroup[] = [
 
 export const navigationItems = navigationGroups.flatMap((g) => g.items);
 
+/** Everything the command palette can open: the menu plus the Self-Service workspace's own pages. */
+export const commandNavigationItems = [...navigationItems, ...essNavItems];
+
 /**
  * One-line explanations shown when a menu entry is hovered or focused: what the screen is for,
  * in the words an HR admin would use. Keyed by path so the menu definition above stays compact.
@@ -121,12 +119,7 @@ export const navigationItems = navigationGroups.flatMap((g) => g.items);
 export const navigationHints: Record<string, string> = {
   '/dashboard': 'Today at a glance: payroll, attendance, approvals and document expiries.',
   '/group': 'Headcount, payroll and compliance across every company in the group.',
-  '/ess': 'Your own payslips, leave balance, requests and documents.',
-  '/ess/payslips': 'Your payslips by month, with every line and a PDF to download.',
-  '/ess/leave': 'Your leave balances and requests. Apply for leave and cancel a request still waiting for approval.',
-  '/ess/overtime': 'Request overtime you have worked and follow it through approval.',
-  '/ess/requests': 'Ask HR for something, follow your requests, and reply to HR on each one.',
-  '/ess/benefits': 'The benefits you are enrolled in and what they cover.',
+  '/ess': 'Your own workspace: payslips, leave, overtime, HR requests, letters and benefits.',
   '/people': 'Employee records: profiles, contracts, documents and job history.',
   '/people/new-hires': 'Accepted offers and prepared hires waiting to be approved and activated as employees.',
   '/org-chart': 'Who reports to whom, by department and manager.',
@@ -142,8 +135,6 @@ export const navigationHints: Record<string, string> = {
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
   '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
-  '/ess/package': 'Your pay and the benefits fixed for your contract year.',
-  '/ess/deductions': 'What is deducted from your pay, why, and what is left to repay.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
