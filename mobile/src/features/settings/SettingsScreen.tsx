@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { reloadAppAsync } from 'expo';
@@ -17,7 +17,8 @@ import { setLanguage } from '@/config/i18n';
 import { useAuthStore } from '@/auth/authStore';
 import { APP_VERSION } from '@/config';
 import { FEATURES } from '@/config/features';
-import { notificationsApi } from '@/api/services';
+import { notificationsApi, selfieAttendanceApi } from '@/api/services';
+import type { AttendanceVerification } from '@/features/attendance/selfieAttendance';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { ThemePreference } from '@/theme/tokens';
 import {
@@ -46,6 +47,16 @@ export default function SettingsScreen() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushSaving, setPushSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [verification, setVerification] = useState<AttendanceVerification | null>(null);
+  // Selfie consent must stay reachable (to withdraw) whenever the tenant uses selfies or a consent is on record.
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    selfieAttendanceApi.getVerification()
+      .then((value) => { if (active) setVerification(value); })
+      .catch((error) => console.warn('[Settings] Selfie attendance settings unavailable:', error));
+    return () => { active = false; };
+  }, []));
+  const showSelfieRow = verification != null && (verification.selfie.enabled || verification.selfie.consent != null);
   useEffect(() => {
     let active = true;
     if (!FEATURES.NOTIFICATION_PREFERENCES) return () => { active = false; };
@@ -216,8 +227,17 @@ export default function SettingsScreen() {
             title="Calendar"
             subtitle="Gregorian default · Hijri support planned"
             onPress={() => Alert.alert('Calendar', 'Hijri calendar selection is being prepared for a future release.')}
-            isLast
+            isLast={!showSelfieRow}
           />
+          {showSelfieRow ? (
+            <SettingRow
+              icon="camera-outline"
+              title={t('selfie.settingsRow.title')}
+              subtitle={verification?.selfie.consent ? t('selfie.settingsRow.on') : t('selfie.settingsRow.off')}
+              onPress={() => navigation.navigate('SelfieConsent')}
+              isLast
+            />
+          ) : null}
         </SettingsSection>
         <SettingsSection title="About">
           <SettingRow

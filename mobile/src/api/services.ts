@@ -8,6 +8,7 @@
 // FeatureUnavailableError and the screen hides/disables the control
 // (see src/config/features.ts).
 
+import { Platform } from 'react-native';
 import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
 import { tokenStorage, userStorage, appStorage } from '@/storage';
 import { APP_CONFIG } from '@/config';
@@ -31,6 +32,17 @@ import {
   type MfaPrompt,
 } from '@/auth/mfaFlow';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
+import {
+  buildLocationFields,
+  buildPunchBody,
+  cacheIsFresh,
+  isSelfieBusy,
+  parseAttendanceVerification,
+  SELFIE_BUSY_RETRY_MS,
+  type AttendanceVerification,
+  type PunchDirection,
+  type VerificationCacheEntry,
+} from '@/features/attendance/selfieAttendance';
 import type {
   AuthUser,
   AuthTokens,
@@ -764,32 +776,116 @@ export const dashboardApi = {
 };
 
 // ---- Attendance ----
-export const attendanceApi = {
-  async punch(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
-    const employeeId = await requireEmployeeId();
-    const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
-    const result = await apiPost<any>('/attendance/punch/mobile', {
-      employeeId,
-      punchDirection: direction,
-      locationName: payload.location ? 'Mobile GPS' : 'Mobile',
-      latitude: payload.location?.latitude,
-      longitude: payload.location?.longitude,
-    });
-    return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+/** The punch pre-check for a login with no employee link, carrying the server's code so it maps to plain words. */
+async function requirePunchEmployee(): Promise<void> {
+  if (await getCurrentEmployeeId()) return;
+  throw Object.assign(new Error('Your login is not linked to an employee record. Please contact HR.'), { code: 'employee_not_linked' });
+}
+
+function punchDirection(punchType: MobilePunchPayload['punchType']): PunchDirection {
+  return punchType === 'CLOCK_OUT' || punchType === 'BREAK_OUT' ? 'Out' : 'In';
+}
+
+// ---- Selfie attendance v2 (discovery, consent, evidence) ----
+// Every call acts on the caller's own linked employee; none takes an employee id.
+
+let verificationCache: VerificationCacheEntry | null = null;
+
+async function verificationCacheKey(): Promise<string> {
+  const user = await userStorage.getUser();
+  return `${user?.tenantId ?? ''}:${user?.employeeId ?? ''}:${user?.id ?? ''}`;
+}
+
+async function storeVerification(raw: unknown): Promise<AttendanceVerification> {
+  const value = parseAttendanceVerification(raw);
+  verificationCache = { key: await verificationCacheKey(), at: Date.now(), value };
+  return value;
+}
+
+export const selfieAttendanceApi = {
+  /** GET /ess/attendance-verification, cached in memory for a minute (JSON only; images are never cached). */
+  async getVerification(options: { force?: boolean } = {}): Promise<AttendanceVerification> {
+    const key = await verificationCacheKey();
+    if (!options.force && cacheIsFresh(verificationCache, key, Date.now())) return verificationCache!.value;
+    return storeVerification(await apiGet<unknown>('/ess/attendance-verification'));
   },
 
-  /** Kiosk route remains authenticated and is always called for the signed-in employee. */
+  /** The last answer for this sign-in, if still fresh; lets a screen render without a spinner. */
+  async peekVerification(): Promise<AttendanceVerification | null> {
+    const key = await verificationCacheKey();
+    return cacheIsFresh(verificationCache, key, Date.now()) ? verificationCache!.value : null;
+  },
+
+  clearVerificationCache(): void {
+    verificationCache = null;
+  },
+
+  /** POST /ess/biometric-consent. 201 new, 200 already recorded; both answer the discovery body. */
+  async giveConsent(policyVersion: string): Promise<AttendanceVerification> {
+    return storeVerification(await apiPost<unknown>('/ess/biometric-consent', { policyVersion, channel: 'Mobile' }));
+  },
+
+  /** POST /ess/biometric-consent/withdraw. Always allowed, idempotent; answers the discovery body. */
+  async withdrawConsent(): Promise<AttendanceVerification> {
+    return storeVerification(await apiPost<unknown>('/ess/biometric-consent/withdraw', { channel: 'Mobile' }));
+  },
+
+  /**
+   * POST /attendance/evidence/selfie (multipart, one `file` part, JPEG ≤ 5 MB). The server re-encodes
+   * the image and strips EXIF/GPS; the app sends the camera file as captured. Returns the opaque,
+   * single-use evidence id (10 minutes, this employee only).
+   */
+  async uploadSelfie(uri: string): Promise<{ evidenceId: string; expiresAtUtc: string }> {
+    const send = () => {
+      const form = new FormData();
+      form.append('file', filePart({ uri, name: 'attendance-selfie.jpg', mimeType: 'image/jpeg' }));
+      return apiPost<any>('/attendance/evidence/selfie', form, { ...MULTIPART, timeout: 60_000 });
+    };
+    let result: any;
+    try {
+      result = await send();
+    } catch (error) {
+      // The server answers a fast 429 when its image processing is busy: retry once after ~2 s, then
+      // let the caller show "Selfie processing is busy". The hourly limit (selfie_rate_limited) is not retried.
+      if (!isSelfieBusy(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, SELFIE_BUSY_RETRY_MS));
+      result = await send();
+    }
+    const evidenceId = String(result?.evidenceId ?? '');
+    if (!evidenceId) throw new Error('The selfie upload returned no evidence id.');
+    return { evidenceId, expiresAtUtc: String(result?.expiresAtUtc ?? '') };
+  },
+};
+
+export const attendanceApi = {
+  /**
+   * POST /attendance/punch/mobile for the signed-in employee only (employeeId 0: the server resolves
+   * the caller's own link). Sends latitude, longitude, accuracy and the mocked flag for the server-side
+   * geofence, and the selfie evidence id when there is one. No verification claim is sent: the server
+   * decides what was verified.
+   */
+  async punch(payload: MobilePunchPayload): Promise<{ recordId: string; message: string; verificationMethod: string }> {
+    await requirePunchEmployee();
+    const direction = punchDirection(payload.punchType);
+    const result = await apiPost<any>('/attendance/punch/mobile', buildPunchBody({
+      direction,
+      locationName: payload.location ? 'Mobile GPS' : 'Mobile',
+      location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
+      evidenceId: payload.evidenceId,
+    }));
+    return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded`, verificationMethod: String(result?.verificationMethod ?? 'None') };
+  },
+
+  /** Kiosk route remains authenticated and is always called for the signed-in employee. Never carries a selfie. */
   async punchKiosk(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
-    const employeeId = await requireEmployeeId();
-    const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
-    const result = await apiPost<any>('/attendance/punch/kiosk', {
-      employeeId,
-      punchDirection: direction,
+    await requirePunchEmployee();
+    const direction = punchDirection(payload.punchType);
+    const result = await apiPost<any>('/attendance/punch/kiosk', buildPunchBody({
+      direction,
       locationName: payload.location ? 'KynexOne Kiosk GPS' : 'KynexOne Kiosk',
-      latitude: payload.location?.latitude,
-      longitude: payload.location?.longitude,
-    });
-    return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+      location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
+    }));
+    return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded` };
   },
 
   /** Caller-scoped raw events make a just-recorded kiosk punch immediately visible. */
