@@ -37,13 +37,14 @@ test('an Arabic device language follows an explicit choice and precedes tenant d
   expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'ar' }), notLoaded)).toBe('ar');
 });
 
-test('before first paint, the boot script applies the same order', () => {
-  const boot = (entries: Record<string, string>, languages: string[]) => {
+test('before first paint on the sign-in page, the boot script applies the same order', () => {
+  const boot = (entries: Record<string, string>, languages: string[], pathname = '/login') => {
     const html = { lang: 'en', dir: 'ltr' };
-    new Function('localStorage', 'document', 'navigator', LOCALE_BOOT)(
+    new Function('localStorage', 'document', 'navigator', 'location', LOCALE_BOOT)(
       { getItem: (k: string) => entries[k] ?? null, setItem: (k: string, v: string) => { entries[k] = v; } },
       { documentElement: html },
       { languages, language: languages[0] },
+      { pathname },
     );
     return html;
   };
@@ -51,4 +52,6 @@ test('before first paint, the boot script applies the same order', () => {
   expect(boot({ [LOCALE_CHOICE_KEY]: 'en' }, ['ar-SA'])).toEqual({ lang: 'en', dir: 'ltr' });
   expect(boot({ [TENANT_LOCALE_KEY]: 'ar' }, ['en-US'])).toEqual({ lang: 'ar', dir: 'rtl' });
   expect(boot({}, ['en-US'])).toEqual({ lang: 'en', dir: 'ltr' });
+  // Signed-in pages are not the sign-in page: the device language is not consulted there.
+  expect(boot({ [TENANT_LOCALE_KEY]: 'en' }, ['ar-SA'], '/ess')).toEqual({ lang: 'en', dir: 'ltr' });
 });

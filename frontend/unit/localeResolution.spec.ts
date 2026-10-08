@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { LEGACY_LOCALE_KEY, LOCALE_BOOT, LOCALE_CHOICE_KEY, TENANT_LOCALE_KEY } from '../src/i18n/localeBoot';
+import { DEVICE_LANGUAGE_PATHS, LEGACY_LOCALE_KEY, LOCALE_BOOT, LOCALE_CHOICE_KEY, TENANT_LOCALE_KEY } from '../src/i18n/localeBoot';
 import { resolveLocale, tenantDefaultLocale } from '../src/i18n/localeResolution';
 
 /**
@@ -14,12 +14,19 @@ const store = (entries: Record<string, string>) => ({
   set: (k: string, v: string) => { entries[k] = v; },
 });
 
-/** Runs LOCALE_BOOT against a fake localStorage (`entries`, mutated) and <html>; returns what it set. */
-function boot(entries: Record<string, string>) {
+/**
+ * Runs LOCALE_BOOT against a fake localStorage (`entries`, mutated), <html>, navigator and location;
+ * returns what it set. Node has a real global `navigator`, so one is always passed (empty by default)
+ * to keep the host's language out of the result.
+ */
+function boot(entries: Record<string, string>, opts: { languages?: string[]; pathname?: string } = {}) {
   const html = { lang: 'en', dir: 'ltr' };
-  new Function('localStorage', 'document', LOCALE_BOOT)(
+  const languages = opts.languages ?? [];
+  new Function('localStorage', 'document', 'navigator', 'location', LOCALE_BOOT)(
     { getItem: (k: string) => entries[k] ?? null, setItem: (k: string, v: string) => { entries[k] = v; } },
     { documentElement: html },
+    { languages, language: languages[0] ?? '' },
+    { pathname: opts.pathname ?? '/dashboard' },
   );
   return html;
 }
@@ -89,6 +96,38 @@ test.describe('UI language resolution', () => {
     expect(tenantDefaultLocale({ loaded: true, defaultLanguage: 'fr' })).toBeNull();
     expect(resolveLocale(store({}), { loaded: true, defaultLanguage: 'fr' })).toBe('en');
     expect(tenantDefaultLocale({ loaded: true, defaultLanguage: 'ar-SA' })).toBe('ar');
+  });
+
+  test('signed in, an Arabic device does not override an English tenant: /dashboard → en', () => {
+    const arabicPhone = ['ar-SA', 'en-US'];
+    // Signed-in pages (AppLayout's LocaleProvider) pass no device languages.
+    expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'en' }), { loaded: true, defaultLanguage: 'en' })).toBe('en');
+    expect(resolveLocale(store({}), { loaded: false })).toBe('en');
+    // Before paint on any signed-in path, the cached tenant default decides, not the device.
+    for (const pathname of ['/dashboard', '/ess', '/employees/42', '/', '/login-help']) {
+      expect(boot({ [TENANT_LOCALE_KEY]: 'en' }, { languages: arabicPhone, pathname }), pathname).toEqual({ lang: 'en', dir: 'ltr' });
+      expect(boot({}, { languages: arabicPhone, pathname }), pathname).toEqual({ lang: 'en', dir: 'ltr' });
+    }
+    // And an Arabic tenant stays Arabic there.
+    expect(boot({ [TENANT_LOCALE_KEY]: 'ar' }, { languages: ['en-US'], pathname: '/dashboard' })).toEqual({ lang: 'ar', dir: 'rtl' });
+  });
+
+  test('on /login and /welcome, an Arabic device starts in Arabic over a cached English tenant', () => {
+    expect(DEVICE_LANGUAGE_PATHS).toEqual(['/login', '/welcome']);
+    for (const pathname of ['/login', '/welcome', '/login/']) {
+      expect(boot({ [TENANT_LOCALE_KEY]: 'en' }, { languages: ['ar-SA', 'en-US'], pathname }), pathname).toEqual({ lang: 'ar', dir: 'rtl' });
+      expect(boot({}, { languages: ['ar'], pathname }), pathname).toEqual({ lang: 'ar', dir: 'rtl' });
+      // An English device leaves the tenant default in charge.
+      expect(boot({ [TENANT_LOCALE_KEY]: 'ar' }, { languages: ['en-US'], pathname }), pathname).toEqual({ lang: 'ar', dir: 'rtl' });
+    }
+    // LoginPage and WelcomePage pass the device languages to resolveLocale.
+    expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'en' }), { loaded: false }, ['ar-SA'])).toBe('ar');
+  });
+
+  test('an explicit choice still wins on /login', () => {
+    expect(boot({ [LOCALE_CHOICE_KEY]: 'en' }, { languages: ['ar-SA'], pathname: '/login' })).toEqual({ lang: 'en', dir: 'ltr' });
+    expect(boot({ [LOCALE_CHOICE_KEY]: 'ar' }, { languages: ['en-US'], pathname: '/login' })).toEqual({ lang: 'ar', dir: 'rtl' });
+    expect(resolveLocale(store({ [LOCALE_CHOICE_KEY]: 'en' }), { loaded: false }, ['ar-SA'])).toBe('en');
   });
 
   test('the boot script ignores junk in storage', () => {

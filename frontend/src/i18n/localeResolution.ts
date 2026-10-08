@@ -4,7 +4,10 @@
  *
  *   1. the user's explicit choice (LOCALE_CHOICE_KEY), written by the language switcher and by
  *      finishing /welcome in a language;
- *   1b. the device's language when it is Arabic (navigator.languages[0] = ar-*): see deviceLocale;
+ *   1b. ON THE SIGN-IN PAGES ONLY (/login, /welcome: DEVICE_LANGUAGE_PATHS), the device's language
+ *       when it is Arabic (navigator.languages[0] = ar-*): see deviceLocale. Nothing is known about
+ *       the person there yet. Signed-in pages skip this step, so an Arabic phone does not override
+ *       an English tenant's default for someone who never chose Arabic;
  *   2. the tenant's default language, but only once the tenant's settings have LOADED — before
  *      that, the settings are placeholders ('en'), and acting on them flipped an Arabic tenant
  *      RTL → LTR → RTL and overwrote the cached tenant language with 'en';
@@ -65,8 +68,10 @@ export function deviceLocale(languages: readonly string[] | null | undefined): L
 }
 
 /**
- * `device`: navigator.languages, passed by LocaleProvider everywhere (and mirrored by LOCALE_BOOT
- * before first paint). It ranks after the explicit choice and before tenant defaults.
+ * `device`: navigator.languages, passed by LocaleProvider only when `preferDeviceLanguage` is set
+ * (LoginPage, WelcomePage), and mirrored by LOCALE_BOOT on DEVICE_LANGUAGE_PATHS before first
+ * paint. When given, it ranks after the explicit choice and before tenant defaults; omitted, the
+ * order is choice → tenant default (loaded) → cached tenant default → English.
  */
 export function resolveLocale(store: LocaleStore, tenant: TenantLanguage, device?: readonly string[] | null): LocaleCode {
   migrateLegacyChoice(store);

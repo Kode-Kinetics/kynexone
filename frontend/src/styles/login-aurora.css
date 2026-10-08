@@ -916,6 +916,8 @@
 }
 .lx-link:hover { color: var(--lx-cyan-soft); text-decoration: underline; }
 .lx-link:active { transform: scale(0.96); }
+/* A standalone link on its own row of the form ("Sign in with Company ID"): text width, at the start edge. */
+.lx-link-row { align-self: flex-start; }
 
 .lx-tag {
   display: inline-flex; align-items: center; gap: 4px;

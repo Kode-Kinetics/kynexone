@@ -44,7 +44,16 @@ const Ctx = createContext<LocaleCtx>({
   t: (k, p) => translate('en', k, p),
 });
 
-export function LocaleProvider({ children }: { children: React.ReactNode }) {
+/**
+ * `preferDeviceLanguage`: ONLY the unauthenticated sign-in pages (LoginPage, WelcomePage) set it, so
+ * an Arabic device starts them in Arabic before anything is known about the person. Signed-in pages
+ * (AppLayout) leave it off and keep the tenant's default language in charge after an explicit choice.
+ * LOCALE_BOOT mirrors this through DEVICE_LANGUAGE_PATHS.
+ */
+export function LocaleProvider({ children, preferDeviceLanguage = false }: {
+  children: React.ReactNode;
+  preferDeviceLanguage?: boolean;
+}) {
   const { settings, loaded } = useTenantSettingsContext();
   const defaultLanguage = settings.defaultLanguage;
   const [locale, setLocaleState] = useState<LocaleCode>('en');
@@ -58,14 +67,15 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
     const tenant = { loaded, defaultLanguage };
     const fromTenant = tenantDefaultLocale(tenant);
     if (fromTenant) storage.set(TENANT_LOCALE_KEY, fromTenant);
-    // With no explicit choice, an Arabic device starts in Arabic (i18n/localeResolution.ts).
-    const device = typeof navigator !== 'undefined'
+    // On the sign-in pages only, with no explicit choice, an Arabic device starts in Arabic
+    // (i18n/localeResolution.ts).
+    const device = preferDeviceLanguage && typeof navigator !== 'undefined'
       ? (navigator.languages?.length ? navigator.languages : [navigator.language])
       : null;
     const next = resolveLocale(storage, tenant, device);
     setLocaleState(next);
     applyDocument(next);
-  }, [loaded, defaultLanguage]);
+  }, [loaded, defaultLanguage, preferDeviceLanguage]);
 
   /** The language switcher: the only writer of the user's explicit choice. */
   const setLocale = useCallback((code: LocaleCode) => {

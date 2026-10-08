@@ -23,14 +23,24 @@ export const LEGACY_LOCALE_KEY = 'kynexone-locale';
 export const TENANT_LOCALE_KEY = 'kynexone-tenant-locale';
 
 /**
- * Apply the stored language's direction BEFORE first paint: the user's choice, else an Arabic
- * device language (localeResolution.deviceLocale), else the cached tenant default, else English. Keep the code list and the rtl map in step with LOCALE_METADATA in
- * src/i18n/translations.ts — today `ar` is the only right-to-left locale there.
+ * The only pages where the device's language may outrank the cached tenant default: signing in and
+ * redeeming a welcome code, where nothing is known about the person yet. Once signed in, the tenant's
+ * default language decides (after an explicit choice), as it always has. LoginPage and WelcomePage
+ * pass `preferDeviceLanguage` to LocaleProvider; LOCALE_BOOT checks location.pathname against this.
+ */
+export const DEVICE_LANGUAGE_PATHS = ['/login', '/welcome'] as const;
+
+/**
+ * Apply the stored language's direction BEFORE first paint: the user's choice, else (on
+ * DEVICE_LANGUAGE_PATHS only) an Arabic device language (localeResolution.deviceLocale), else the
+ * cached tenant default, else English. Keep the code list and the rtl map in step with
+ * LOCALE_METADATA in src/i18n/translations.ts — today `ar` is the only right-to-left locale there.
  */
 export const LOCALE_BOOT = `(function(){try{
 var s=localStorage,c=s.getItem('${LOCALE_CHOICE_KEY}'),o=s.getItem('${LEGACY_LOCALE_KEY}');
 if(c==null&&o&&/^(ar|fr|es)$/.test(o)){c=o;s.setItem('${LOCALE_CHOICE_KEY}',o);}
-var n=typeof navigator!=='undefined'?((navigator.languages&&navigator.languages[0])||navigator.language||''):'';
+var p=typeof location!=='undefined'?String(location.pathname||'').replace(/[/]+$/,''):'';
+var n=${JSON.stringify(DEVICE_LANGUAGE_PATHS)}.indexOf(p)>=0&&typeof navigator!=='undefined'?((navigator.languages&&navigator.languages[0])||navigator.language||''):'';
 var v=/^ar(-|$)/i.test(n)?'ar':null;
 var l=c||v||s.getItem('${TENANT_LOCALE_KEY}')||'en';
 if(!/^(en|ar|fr|es)$/.test(l))l='en';

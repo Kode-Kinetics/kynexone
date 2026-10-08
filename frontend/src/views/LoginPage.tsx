@@ -13,7 +13,7 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
+import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
 import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
 import { dateLocale } from '../lib/format';
@@ -69,7 +69,7 @@ type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'reset-notice';
  */
 export function LoginPage() {
   return (
-    <LocaleProvider>
+    <LocaleProvider preferDeviceLanguage>
       <LoginCard />
     </LocaleProvider>
   );
@@ -145,6 +145,14 @@ function LoginCard() {
     setFocusWorkspace((n) => n + 1);
   };
 
+  /** Asked for by the person: their email's domain belongs to another company, or they just know it. */
+  const signInWithWorkspace = () => {
+    setShowWorkspace(true);
+    setTenantLocked(false);
+    setError('');
+    setFocusWorkspace((n) => n + 1);
+  };
+
   const workspaceArg = () => (showWorkspace ? normalizeWorkspace(tenantSlug) || undefined : undefined);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -168,8 +176,8 @@ function LoginCard() {
     // lagged behind a deploy) stays invisible.
     catch (err: any) {
       const status = err?.response?.status;
-      const code = err?.response?.data?.code;
-      if (status === 400 && code === 'workspace_required') { askForWorkspace(); return; }
+      // This API's `workspace_required`, or the previous API's "TenantSlug is required" validation problem.
+      if (isWorkspaceRequired(err)) { askForWorkspace(); return; }
       // Someone typed the 8-digit welcome code from their slip into the Password box. That is the
       // most natural mistake on a first sign-in, so take them where the code works. Only AFTER the
       // sign-in failed (an 8-digit password is still a password), and the email and code travel in
@@ -267,7 +275,7 @@ function LoginCard() {
       if (res?.emailDeliveryConfigured === false) setNoEmailDelivery(true);
       else setInfo(t('If this email has an account, a reset link is on its way to it.'));
     } catch (err: any) {
-      if (err?.response?.status === 400 && err?.response?.data?.code === 'workspace_required') askForWorkspace();
+      if (isWorkspaceRequired(err)) askForWorkspace();
       else if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
       else setError(t('The reset link could not be sent. Try again in a moment.'));
     }
@@ -429,6 +437,12 @@ function LoginCard() {
                             onChange={e => setTenantSlug(e.target.value)}
                             className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" required />
                         </Field>
+                      )}
+                      {/* The way in when the email alone cannot find the company (its domain is another
+                          company's, or a shared one): in words, and only while the field is hidden. */}
+                      {!showWorkspace && (
+                        <button type="button" className="lx-link lx-link-row" dir="auto" onClick={signInWithWorkspace}
+                          data-testid="login-use-company-id">{t('Sign in with Company ID')}</button>
                       )}
 
                       <Feedback error={error} info={info} />

@@ -9,7 +9,7 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
+import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
 import {
   consumeWelcomeFragment, DEFAULT_MIN_PASSWORD_LENGTH, formatWelcomeCode, hasArabicLetters, isWelcomeCode,
   normalizeWelcomeCode, passwordChecks,
@@ -44,7 +44,7 @@ type Step = 'code' | 'password';
  */
 export function WelcomePage() {
   return (
-    <LocaleProvider>
+    <LocaleProvider preferDeviceLanguage>
       <WelcomeCard />
     </LocaleProvider>
   );
@@ -183,7 +183,8 @@ function WelcomeCard() {
         setError(t('This code no longer works. It may have expired or already been used. Ask HR for a new one.'));
       } else if (status === 400 && reason === 'password_policy') {
         setError(t("Your password doesn't meet the rules above."));
-      } else if (status === 400 && reason === 'workspace_required') {
+      } else if (isWorkspaceRequired(err)) {
+        // `workspace_required`, or an older API's "TenantSlug is required" validation problem.
         setShowWorkspace(true);
         setError(t("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is."));
         setFocusWorkspace((n) => n + 1);
