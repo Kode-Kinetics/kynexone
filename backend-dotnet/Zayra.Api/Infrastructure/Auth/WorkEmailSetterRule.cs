@@ -23,6 +23,14 @@ namespace Zayra.Api.Infrastructure.Auth;
 public static class WorkEmailSetterRule
 {
     public const string SetByCallerCode = "work_email_set_by_caller";
+
+    /// <summary>
+    /// THE RULE BLOCKS THE EMAIL CHANNEL, NOT THE CREDENTIAL. A setter can still issue an invitation, a resend, a
+    /// credential-rotating link or a reset link (a single-admin tenant, an HR officer inviting the people they added),
+    /// but it is NEVER emailed to the address they typed: the link is handed back to them, recorded as a disclosure
+    /// (so they become a credential handler of the login), and this is what they are told.
+    /// </summary>
+    public const string HandOverMessage = "You entered this work email, so hand the link over in person.";
     public const string SetByHandlerCode = "work_email_set_by_handler";
 
     public const string SetByCallerMessage =
@@ -126,15 +134,38 @@ public static class WorkEmailSetterRule
             throw new WorkEmailSetterRefusedException(SetByCallerCode, SetByCallerMessage, SetByCallerMessageAr);
     }
 
+    /// <summary>
+    /// Every living employee of the tenant this login belongs to: its live EmployeeUserAccounts mappings UNION the
+    /// legacy <c>Employee.UserAccountId</c> pointer (a state the link and work-email guards still support).
+    /// </summary>
+    public static async Task<IReadOnlyList<int>> EmployeesOfLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, CancellationToken ct)
+    {
+        var mapped = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
+            .Where(x => x.UserId == userId && !x.IsDeleted)
+            .Select(x => x.EmployeeId)
+            .ToListAsync(ct);
+        var pointed = await ScopedBypass.NullableTenantWide(db.Employees, tenantId, Why).AsNoTracking()
+            .Where(x => x.UserAccountId == userId && !x.IsDeleted)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        return mapped.Concat(pointed).Distinct().ToList();
+    }
+
+    /// <summary>True when the caller set the work email of any employee the login belongs to (live link or legacy pointer).</summary>
+    public static async Task<bool> IsCallerSetterForLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, Guid? callerUserId, CancellationToken ct)
+    {
+        if (callerUserId is null) return false;
+        var employeeIds = await EmployeesOfLoginAsync(db, tenantId, userId, ct);
+        foreach (var employeeId in employeeIds)
+            if (await IsCallerSetterAsync(db, tenantId, employeeId, callerUserId, ct)) return true;
+        return false;
+    }
+
     /// <summary>The same refusal for a credential issued against a LOGIN: checked for every employee the login is live-linked to.</summary>
     public static async Task ThrowIfCallerIsSetterForLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, Guid? callerUserId, CancellationToken ct)
     {
         if (callerUserId is null) return;
-        var employeeIds = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
-            .Where(x => x.UserId == userId && !x.IsDeleted)
-            .Select(x => x.EmployeeId)
-            .Distinct()
-            .ToListAsync(ct);
+        var employeeIds = await EmployeesOfLoginAsync(db, tenantId, userId, ct);
         foreach (var employeeId in employeeIds)
             await ThrowIfCallerIsSetterAsync(db, tenantId, employeeId, callerUserId, ct);
     }

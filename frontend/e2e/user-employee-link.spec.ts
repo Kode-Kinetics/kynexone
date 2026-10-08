@@ -40,7 +40,7 @@ const employees = [
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean; emailChanged?: boolean } = {}) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean; emailChanged?: boolean; handOver?: boolean } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -73,8 +73,10 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string; cr
           userId: '22222222-2222-2222-2222-222222222222', employeeId: 43, email: 'layla.haddad@kkdemo.com', accessMode: 'ESSOnly',
           status: 'Invited', invitationExpiresAtUtc: '2026-10-10T09:00:00Z',
           invitationUrl: 'https://app.example.test/accept-invitation?tenant=kkdemo&token=abc123',
-          emailDeliveryConfigured: false, emailSent: false,
-          deliveryMessage: 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
+          emailDeliveryConfigured: !!opts.handOver, emailSent: false, handOverInPerson: !!opts.handOver,
+          deliveryMessage: opts.handOver
+            ? 'You entered this work email, so hand the link over in person.'
+            : 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
         }, 201);
       }
       return json({}); // Never touch a real account.
@@ -244,6 +246,17 @@ test('an employee with no login is invited, and the link is copyable when no ema
 
   expect(writes).toEqual([{ method: 'POST', path: '/api/access/employee-logins/invite', body: { employeeId: 43, accessMode: 'ESSOnly' } }]);
   await page.screenshot({ path: testInfo.outputPath('employee-invited.png') });
+  expect(errors).toEqual([]);
+});
+
+test('an invitation for a work email the admin entered is handed over in person, never emailed', async ({ page }) => {
+  const { errors } = await openUserManagement(page, { handOver: true });
+  await page.getByRole('button', { name: 'Invite employee', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await pickEmployee(page, 'Layla Haddad');
+  await dialog.getByRole('button', { name: 'Send self-service invitation', exact: true }).click();
+  await expect(dialog.getByText('You entered this work email, so hand the link over in person.')).toBeVisible();
+  await expect(dialog.getByLabel('Invitation link', { exact: true })).toHaveValue('https://app.example.test/accept-invitation?tenant=kkdemo&token=abc123');
   expect(errors).toEqual([]);
 });
 

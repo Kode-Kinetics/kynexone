@@ -1104,7 +1104,42 @@ public sealed class EmployeeLoginLinkTests
             await db.SaveChangesAsync();
         }
 
-        var expectedCode = changedBy == "caller" ? WorkEmailSetterRule.SetByCallerCode : EmployeeLinkRefusals.WorkEmailParty;
+        if (changedBy == "caller")
+        {
+            // The caller set the work email the link rests on. Even with no credential handler, their link ALWAYS
+            // rotates the credential: the person sets their own password from an invitation the caller hands over in
+            // person (never emailed), and that disclosure makes the caller a credential handler.
+            var refreshTokenId = await AddRefreshTokenAsync(login);
+            await using (var db = _fixture.CreateRetryingDb())
+            {
+                var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+                status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+                status.WillResetCredential.Should().BeTrue("the setter's link resets the password");
+            }
+            await using (var db = _fixture.CreateRetryingDb())
+                Ok<EmployeeLoginStatusDto>((await Controller(db, w, peer).EmployeeLoginStatus(employeeId, default)).Result)
+                    .WillResetCredential.Should().BeFalse("a peer who set nothing links this handler-free login as it is");
+            EmployeeLoginLinkResultDto linked;
+            await using (var db = _fixture.CreateRetryingDb())
+                linked = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                    new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+            linked.CredentialReset.Should().BeTrue();
+            linked.HandOverInPerson.Should().BeTrue();
+            linked.EmailSent.Should().BeFalse();
+            linked.InvitationUrl.Should().Contain("/accept-invitation");
+            linked.DeliveryMessage.Should().Be(WorkEmailSetterRule.HandOverMessage);
+            await using var verify = _fixture.CreateRetryingDb();
+            var rotated = await verify.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == login);
+            rotated.IsActive.Should().BeFalse();
+            rotated.PasswordHash.Should().NotBe("test-only-hash");
+            (await verify.RefreshTokens.SingleAsync(x => x.Id == refreshTokenId)).RevokedAtUtc.Should().NotBeNull();
+            (await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.LinkCredentialResetAction
+                && x.EntityId == login.ToString())).Metadata.Should().Contain("linked_by_work_email_setter");
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == login.ToString() && x.UserId == w.AdminId)).Should().BeTrue("the setter now holds a credential");
+            return;
+        }
+        var expectedCode = EmployeeLinkRefusals.WorkEmailParty;
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
@@ -1133,27 +1168,35 @@ public sealed class EmployeeLoginLinkTests
     // ── WorkEmailSetterRule: whoever set the work email never issues or binds a credential for it ─────────
 
     [Fact]
-    public async Task TheWorkEmailSetter_CannotInviteOrResendAnInvitation_ButAnotherAdministratorCan()
+    public async Task TheWorkEmailSetter_InvitesAndResends_ByHandOnly_AndBecomesACredentialHandler()
     {
         var w = await SeedAsync();
         var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("invitee"));
         await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
 
+        EmployeeLoginInvitationDto first;
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+            first = AssertHandedOver((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == first.UserId.ToString() && x.UserId == w.AdminId)).Should().BeTrue("the setter held the link");
+        // Anyone else's invitation is delivered normally (here: no transport, so disclosed — but not a hand-over).
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<CreatedResult>((await Controller(db, w, peer).InviteEmployeeLogin(
+        {
+            var created = Assert.IsType<CreatedResult>((await Controller(db, w, peer).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+            Assert.IsType<EmployeeLoginInvitationDto>(created.Value).HandOverInPerson.Should().BeFalse();
+        }
         // A resend is an invitation too.
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+            AssertHandedOver((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
     }
 
     [Fact]
-    public async Task TheWorkEmailSetter_CannotIssueAResetLinkForTheLinkedLogin()
+    public async Task TheWorkEmailSetter_GetsTheResetLinkForTheLinkedLogin_ByHandOnly()
     {
         var w = await SeedAsync();
         var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
@@ -1164,9 +1207,17 @@ public sealed class EmployeeLoginLinkTests
         await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
 
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused(await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default));
+        {
+            var body = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(
+                await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default)).Value);
+            body.GetProperty("handOverInPerson").GetBoolean().Should().BeTrue();
+            body.GetProperty("emailSent").GetBoolean().Should().BeFalse();
+            body.GetProperty("resetUrl").GetString().Should().Contain("/reset-password");
+            body.GetProperty("message").GetString().Should().Be(WorkEmailSetterRule.HandOverMessage);
+        }
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<OkObjectResult>(await Controller(db, w, peer).IssuePasswordResetLink(login, default));
+            JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await Controller(db, w, peer).IssuePasswordResetLink(login, default)).Value)
+                .GetProperty("handOverInPerson").GetBoolean().Should().BeFalse();
     }
 
     /// <summary>For a hire made from a draft, the drafter who typed the address is a setter as well as the approver.</summary>
@@ -1182,12 +1233,13 @@ public sealed class EmployeeLoginLinkTests
         foreach (var setter in new[] { drafter, approver })
         {
             await using var db = _fixture.CreateRetryingDb();
-            AssertSetterRefused((await Controller(db, w, setter).InviteEmployeeLogin(
+            AssertHandedOver((await Controller(db, w, setter).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
         }
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
-                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+            Assert.IsType<EmployeeLoginInvitationDto>(Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result).Value)
+                .HandOverInPerson.Should().BeFalse();
     }
 
     [Fact]
@@ -1234,7 +1286,7 @@ public sealed class EmployeeLoginLinkTests
 
     /// <summary>
     /// The setter check is read UNDER the employee row lock that work-email edits take: while the row is held, the
-    /// setter's work-email change commits; the invitation, released, must see it and refuse.
+    /// setter's work-email change commits; the invitation, released, must see it and hand the link over (not email it).
     /// </summary>
     [Fact]
     public async Task TheInvitationReadsTheWorkEmailSetter_UnderTheEmployeeRowLock()
@@ -1288,7 +1340,7 @@ public sealed class EmployeeLoginLinkTests
         await lockTransaction.CommitAsync();
 
         // ...and the invitation, once it holds the row, sees it.
-        AssertSetterRefused((await invite).Result);
+        AssertHandedOver((await invite).Result);
     }
 
     [Fact]
@@ -1447,6 +1499,112 @@ public sealed class EmployeeLoginLinkTests
         }
     }
 
+    /// <summary>
+    /// The initial work-email marker commits with the employee. A failure later in the same create (forced here on
+    /// the save that writes the history row) rolls the employee back too — no employee is ever left without its
+    /// setter, which would otherwise let its creator issue its credentials unnoticed.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ACreatedEmployee_NeverCommitsWithoutItsWorkEmailSetterMarker(bool manualCode)
+    {
+        var w = await SeedAsync();
+        var email = Email("atomic.hire");
+        var code = $"ATOM-{Guid.NewGuid():N}"[..18];
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+            .AddInterceptors(new FailOnEmployeeHistory())
+            .Options))
+        {
+            var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(db, new AuditService(db), new UnusedStorage(), TestNotifications.For(db));
+            var create = () => service.CreateAsync(w.TenantId, new Zayra.Api.Application.Employees.EmployeeCreateRequest(
+                EmployeeCode: manualCode ? code : null, ManualEmployeeCode: manualCode, EnglishName: "Atomic Hire", ArabicName: null,
+                PreferredName: null, Gender: "Male", DateOfBirth: null, Nationality: "Saudi", MaritalStatus: null,
+                PersonalEmail: null, WorkEmail: email, MobileNumber: null, ProfilePhotoUrl: null,
+                CompanyId: w.CompanyA, BranchId: null, DepartmentId: null, DesignationId: null, GradeId: null,
+                CostCenterId: null, JobTitle: null, ReportingManagerEmployeeId: null, SecondLevelManagerEmployeeId: null,
+                EmploymentType: "Full-time", ContractType: "Unlimited", JoiningDate: DateTime.UtcNow.Date,
+                ConfirmationDate: null, ProbationStartDate: null, ProbationEndDate: null, NoticePeriodDays: null,
+                WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null, LeavePolicyCode: null,
+                AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null),
+                new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), default);
+            (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Be(FailOnEmployeeHistory.Message);
+        }
+
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.Employees.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.WorkEmail == email))
+            .Should().BeFalse("the failed create must not leave an employee behind without its work-email setter");
+    }
+
+    private sealed class FailOnEmployeeHistory : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public const string Message = "forced failure after the employee insert";
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<EmployeeHistory>().Any(e => e.State == EntityState.Added))
+                throw new InvalidOperationException(Message);
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A retried link on a login whose credential rotation still waits for the person reissues the invitation: a fresh
+    /// token supersedes the old one, delivered under the same rules — not the idempotent no-op that left a lost
+    /// delivery unrecoverable.
+    /// </summary>
+    [Fact]
+    public async Task ARetriedRotatingLink_ReissuesTheInvitation_AndSupersedesTheOldOne()
+    {
+        var w = await SeedAsync();
+        var creator = await AddUserAsync(w, Email("creator"), ["Admin"], groupScope: true);
+        var email = Email("retried");
+        Guid login;
+        await using (var db = _fixture.CreateRetryingDb())
+            login = Assert.IsType<AuthUserDto>(Assert.IsType<CreatedAtActionResult>((await Controller(db, w, creator)
+                .CreateUser(new CreateUserRequest(email, "Retried", Password, ["Reporting"]), default)).Result).Value).Id;
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        EmployeeLoginLinkResultDto first, retry;
+        await using (var db = _fixture.CreateRetryingDb())
+            first = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+        first.CredentialReset.Should().BeTrue();
+        await using (var db = _fixture.CreateRetryingDb())
+            retry = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "the first response was lost"), default)).Result);
+
+        retry.AlreadyLinked.Should().BeTrue();
+        retry.CredentialReset.Should().BeTrue("a pending rotation is reissued on retry");
+        retry.InvitationUrl.Should().Contain("/accept-invitation").And.NotBe(first.InvitationUrl);
+        retry.DeliveryMessage.Should().NotBeNullOrWhiteSpace();
+
+        static string TokenOf(string url) => Uri.UnescapeDataString(url[(url.IndexOf("#token=", StringComparison.Ordinal) + "#token=".Length)..]);
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var stale = () => Auth(db).AcceptInvitationAsync(new AcceptInvitationRequest(TokenOf(first.InvitationUrl!), PersonsNewPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+            await stale.Should().ThrowAsync<UnauthorizedAccessException>("the reissued invitation supersedes the first");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            await Auth(db).AcceptInvitationAsync(new AcceptInvitationRequest(TokenOf(retry.InvitationUrl!), PersonsNewPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+        (await SignInAsync(w, email, PersonsNewPassword)).FindFirstValue("employee_id").Should().Be(employeeId.ToString());
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == login.ToString() && x.UserId == w.AdminId)).Should().Be(2, "each delivery that handed back a link is recorded");
+
+        // Once the person has accepted, a retry is the plain idempotent answer again.
+        await using (var db = _fixture.CreateRetryingDb())
+            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "again"), default)).Result).CredentialReset.Should().BeFalse();
+    }
+
     private static EmployeesController Employees(ZayraDbContext db, World w)
     {
         var audit = new AuditService(db);
@@ -1472,13 +1630,15 @@ public sealed class EmployeeLoginLinkTests
         };
     }
 
-    private static void AssertSetterRefused(IActionResult? result)
+    /// <summary>The setter's invitation: issued, never emailed, the link handed back with the hand-over sentence.</summary>
+    private static EmployeeLoginInvitationDto AssertHandedOver(IActionResult? result)
     {
-        var refused = Assert.IsType<ObjectResult>(result);
-        refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-        var body = JsonSerializer.SerializeToElement(refused.Value);
-        body.GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.SetByCallerCode);
-        body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+        var invite = Assert.IsType<EmployeeLoginInvitationDto>(Assert.IsType<CreatedResult>(result).Value);
+        invite.HandOverInPerson.Should().BeTrue();
+        invite.EmailSent.Should().BeFalse();
+        invite.InvitationUrl.Should().Contain("/accept-invitation");
+        invite.DeliveryMessage.Should().Be(WorkEmailSetterRule.HandOverMessage);
+        return invite;
     }
 
     private async Task<DateTime> AddWorkEmailSetterAsync(World w, int employeeId, Guid actor, Guid? draftedBy = null, string? oldWorkEmail = null)

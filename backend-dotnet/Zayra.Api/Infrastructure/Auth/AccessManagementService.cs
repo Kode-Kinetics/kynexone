@@ -266,6 +266,8 @@ public class AccessManagementService : IAccessManagementService
         string? issuedEmail = null;
         string? issuedNormalizedEmail = null;
         Guid[]? issuedRoleIds = null;
+        // WorkEmailSetterRule, decided under the employee row lock: the caller set the work email → never emailed.
+        var handOverInPerson = false;
 
         async Task<EmployeeLoginInvitationDto?> ReconcileCommittedInvitationAsync(CancellationToken ct)
         {
@@ -354,7 +356,10 @@ public class AccessManagementService : IAccessManagementService
                 committed.InvitationExpiresAtUtc,
                 string.IsNullOrEmpty(invitationToken)
                     ? string.Empty
-                    : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken));
+                    : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken)) with
+            {
+                HandOverInPerson = handOverInPerson,
+            };
         }
 
         async Task<bool> IssueOnceAsync(CancellationToken ct)
@@ -370,9 +375,9 @@ public class AccessManagementService : IAccessManagementService
                 throw new InvalidOperationException(
                     "Login invitations are available only for active or invited employees.");
             // WorkEmailSetterRule, read UNDER the employee row lock that every work-email edit also takes: the
-            // invitation goes to the work email, so whoever set it never sends one, and a changed address with no
-            // activated login behind it needs the caller's confirmation.
-            await WorkEmailSetterRule.ThrowIfCallerIsSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+            // invitation goes to the work email, so whoever set it never has it EMAILED (it is handed back to them to
+            // pass on in person), and a changed address with no activated login behind it needs their confirmation.
+            handOverInPerson = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
             await WorkEmailSetterRule.ThrowIfConfirmationMissingAsync(_db, tenantId, employee.Id, request.ConfirmedWorkEmail, ct);
             // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var employeeLinks = await _db.EmployeeUserAccounts.IgnoreQueryFilters()
@@ -782,6 +787,7 @@ public class AccessManagementService : IAccessManagementService
         return Status(null, matching, EmployeeLoginNextActions.LinkExisting, null) with
         {
             WillResetCredential = await HasCredentialHandlersAsync(tenantId, user.Id, cancellationToken)
+                || await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, cancellationToken)
         };
     }
 
@@ -920,11 +926,54 @@ public class AccessManagementService : IAccessManagementService
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GroupAdminRequired());
             ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
 
-            // Idempotent: this exact link already live → answer it and write nothing.
+            // Idempotent: this exact link already live → answer it and write nothing...
             var sameLink = employeeLinks.FirstOrDefault(x => x.UserId == user.Id);
             if (sameLink is not null && employeeLinks.Count == 1 && employee.UserAccountId == user.Id)
             {
                 result = ToLinkResult(employee.Id, user, sameLink, alreadyLinked: true);
+                // ...EXCEPT a link whose credential rotation is still waiting for the person: its invitation was
+                // delivered after the commit, so a lost delivery (crash, cancellation, failed disclosure) would leave
+                // no way to finish. A retry reissues it — a fresh token supersedes the old one — and the controller
+                // delivers it under the same rules (emailed when allowed, else handed over and recorded).
+                if (sameLink is { RequiresPasswordSetup: true, InvitationAcceptedAtUtc: null }
+                    && !user.IsActive
+                    && await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+                        .AnyAsync(x => x.Action == LinkCredentialResetAction && x.EntityName == "User" && x.EntityId == user.Id.ToString(), ct))
+                {
+                    if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
+                        throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.EmployeeNotEligible(employee.Status));
+                    if (await WorkEmailSetterRule.RequiresConfirmationAsync(_db, tenantId, employee.Id, ct) && !request.ConfirmedWorkEmail)
+                        throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.ConfirmWorkEmail());
+                    sameLink.Status = "Invited";
+                    sameLink.InvitationTokenHash = rotationTokenHash;
+                    sameLink.InvitedAtUtc = linkedAtUtc;
+                    sameLink.InvitationExpiresAtUtc = rotationExpiresAtUtc;
+                    sameLink.UpdatedAtUtc = linkedAtUtc;
+                    sameLink.UpdatedBy = context.UserId;
+                    var reissuedBySetter = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+                    _db.AuditLogs.Add(AuthAuditEntry.Create(
+                        credentialResetAuditId,
+                        linkedAtUtc,
+                        LinkCredentialResetAction,
+                        "User",
+                        user.Id.ToString(),
+                        context with { TenantId = tenantId },
+                        System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            employeeId = employee.Id,
+                            invitationExpiresAtUtc = rotationExpiresAtUtc,
+                            reason = "rotation_invitation_reissued_on_retry",
+                            supersededPreviousInvitation = true
+                        })));
+                    await _db.SaveChangesAsync(ct);
+                    result = ToLinkResult(employee.Id, user, sameLink, alreadyLinked: true) with
+                    {
+                        CredentialReset = true,
+                        InvitationExpiresAtUtc = rotationExpiresAtUtc,
+                        InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
+                        HandOverInPerson = reissuedBySetter,
+                    };
+                }
                 return true;
             }
 
@@ -943,7 +992,11 @@ public class AccessManagementService : IAccessManagementService
             if (confirmationRequired && !request.ConfirmedWorkEmail)
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.ConfirmWorkEmail());
             // Someone other than the person has held a credential for this login: the link rotates it (below).
-            var rotateCredential = await HasCredentialHandlersAsync(tenantId, user.Id, ct);
+            // ...and so does a link made by whoever set the employee's work email (WorkEmailSetterRule): the identity
+            // evidence is theirs, so the person proves the address by setting their own password from an invitation
+            // handed over in person (recorded as disclosed — the caller becomes a credential handler).
+            var callerIsSetter = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+            var rotateCredential = callerIsSetter || await HasCredentialHandlersAsync(tenantId, user.Id, ct);
             var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
 
             // The Employee role: what Self-Service needs. Every other role the login holds is kept as it is.
@@ -1079,7 +1132,7 @@ public class AccessManagementService : IAccessManagementService
                         employeeId = employee.Id,
                         invitationExpiresAtUtc = rotationExpiresAtUtc,
                         mfaCleared,
-                        reason = "credential_handled_by_administrator"
+                        reason = callerIsSetter ? "linked_by_work_email_setter" : "credential_handled_by_administrator"
                     })));
             }
 
@@ -1117,6 +1170,8 @@ public class AccessManagementService : IAccessManagementService
                 result = result with
                 {
                     CredentialReset = true,
+                    // The caller set the work email: the rotation invitation is handed back, never emailed.
+                    HandOverInPerson = callerIsSetter,
                     InvitationExpiresAtUtc = rotationExpiresAtUtc,
                     // The controller emails it, or hands it back (and records that) when no email went out.
                     InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
@@ -1283,7 +1338,6 @@ public class AccessManagementService : IAccessManagementService
         // login it now matches; nor may the login itself have set it; nor anyone who has handled its credentials.
         var setter = await WorkEmailSetterRule.GetAsync(_db, tenantId, employeeId, ct);
         if (setter is null) return null;
-        if (setter.Includes(caller)) return EmployeeLinkRefusals.WorkEmailSetByCaller();
         if (setter.Includes(user.Id)) return EmployeeLinkRefusals.WorkEmailChangedByParty();
         if ((await CredentialHandlersAsync(tenantId, user.Id, ct)).Overlaps(setter.UserIds))
             return EmployeeLinkRefusals.WorkEmailSetByHandler();
@@ -2001,8 +2055,9 @@ public class AccessManagementService : IAccessManagementService
             throw new InvalidOperationException(
                 $"This account is {user.Status.ToLowerInvariant()}. Restore access first, then send a reset link.");
 
-        // WorkEmailSetterRule: the reset link goes to the login's address, which a linked employee's work email set.
-        await WorkEmailSetterRule.ThrowIfCallerIsSetterForLoginAsync(_db, tenantId, user.Id, context.UserId, cancellationToken);
+        // WorkEmailSetterRule: the reset link goes to the login's address, which a linked employee's work email set —
+        // a caller who set it is handed the link (to pass on in person), never has it emailed.
+        var handOverInPerson = await WorkEmailSetterRule.IsCallerSetterForLoginAsync(_db, tenantId, user.Id, context.UserId, cancellationToken);
 
         // PRIVILEGE CEILING: with no mail transport the link comes back to the caller, so a reset link for a user
         // above you is a takeover of their account.
@@ -2061,7 +2116,10 @@ public class AccessManagementService : IAccessManagementService
             user.FullName,
             resetToken,
             AuthLinkBuilder.ResetPassword(_appUrl, tenant.Slug, resetToken),
-            expiresAtUtc);
+            expiresAtUtc)
+        {
+            HandOverInPerson = handOverInPerson,
+        };
     }
 
     public async Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)

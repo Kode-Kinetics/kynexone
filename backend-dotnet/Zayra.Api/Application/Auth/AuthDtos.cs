@@ -69,7 +69,12 @@ public record EmployeeLoginInvitationDto(
     // "invited — tell them to check their inbox" over a workspace with no SMTP configured.
     bool EmailDeliveryConfigured = false,
     bool EmailSent = false,
-    string DeliveryMessage = "");
+    string DeliveryMessage = "")
+{
+    /// <summary>The caller set this employee's work email (WorkEmailSetterRule): the link is never emailed — it is
+    /// returned to the caller to hand over in person, and that disclosure is recorded.</summary>
+    public bool HandOverInPerson { get; init; }
+}
 
 /// <summary>A login as the employee-link screen shows it: who, what state, what access mode.</summary>
 public record LinkedLoginDto(Guid UserId, string Email, string Status, string AccessMode, bool IsActive);
@@ -139,6 +144,8 @@ public record EmployeeLoginLinkResultDto(
     public bool EmailSent { get; init; }
     /// <summary>What happened to the invitation, in plain words. Empty when the credential was not reset.</summary>
     public string DeliveryMessage { get; init; } = string.Empty;
+    /// <summary>The caller set the employee's work email: the rotation invitation was not emailed but handed back.</summary>
+    public bool HandOverInPerson { get; init; }
 }
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
@@ -349,7 +356,11 @@ public record AdminPasswordResetLinkDto(
     string FullName,
     string ResetToken,
     string ResetUrl,
-    DateTime ExpiresAtUtc);
+    DateTime ExpiresAtUtc)
+{
+    /// <summary>The caller set a linked employee's work email: the link is never emailed, only handed back.</summary>
+    public bool HandOverInPerson { get; init; }
+}
 
 public record UserListQuery(string? Search, string? Status, string? Role, int Page = 1, int PageSize = 30);
 

@@ -366,7 +366,8 @@ public class AccessController : ControllerBase
             var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId.Value, cancellationToken);
             var emailSent = false;
             var captured = false;
-            if (emailDeliveryConfigured)
+            // WorkEmailSetterRule: the caller set the address this link would go to — never email it.
+            if (emailDeliveryConfigured && !link.HandOverInPerson)
             {
                 try
                 {
@@ -393,7 +394,9 @@ public class AccessController : ControllerBase
                 }
             }
 
-            var message = emailSent
+            var message = link.HandOverInPerson
+                ? WorkEmailSetterRule.HandOverMessage
+                : emailSent
                 ? $"Reset link accepted by the mail server for {link.Email}. It can be used once and expires at {link.ExpiresAtUtc:HH:mm} UTC."
                 : captured
                     ? "This server is in test delivery mode, so the email was captured and not sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
@@ -433,11 +436,11 @@ public class AccessController : ControllerBase
                 // Withheld once the user has it in their inbox; there is no reason for a second copy
                 // to sit in an admin's browser or in an API log.
                 resetUrl = emailSent ? null : link.ResetUrl,
+                handOverInPerson = link.HandOverInPerson,
                 message
             });
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.password_reset_link_issued", "User", userId.ToString()); }
-        catch (WorkEmailSetterRefusedException ex) { return SetterRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -531,7 +534,6 @@ public class AccessController : ControllerBase
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-        catch (WorkEmailSetterRefusedException ex) { return SetterRefused(ex); }
         catch (WorkEmailConfirmationRequiredException ex)
         {
             return BadRequest(new { error = ex.Code, code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
@@ -575,7 +577,7 @@ public class AccessController : ControllerBase
             // The link rotated the credential: deliver the fresh invitation exactly as the invite endpoint does.
             var delivered = await AttachInvitationDeliveryAsync(tenantId.Value, new EmployeeLoginInvitationDto(
                 linked.UserId, linked.EmployeeId, linked.Email, linked.AccessMode, linked.Status, string.Empty,
-                linked.InvitationExpiresAtUtc, linked.InvitationUrl), cancellationToken);
+                linked.InvitationExpiresAtUtc, linked.InvitationUrl) { HandOverInPerson = linked.HandOverInPerson }, cancellationToken);
             if (!delivered.EmailSent)
                 await RecordInvitationLinkDisclosedAsync(tenantId.Value, linked.UserId, linked.EmployeeId,
                     delivered.EmailDeliveryConfigured, linked.InvitationExpiresAtUtc, "link_credential_reset", cancellationToken);
@@ -595,10 +597,6 @@ public class AccessController : ControllerBase
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
-
-    /// <summary>A credential refused by the work-email setter rule: 403 with its code, in both languages.</summary>
-    private ObjectResult SetterRefused(WorkEmailSetterRefusedException ex) =>
-        StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Code, code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
 
     /// <summary>
     /// An invitation link was handed back to the caller instead of reaching the invitee: the caller has held a
@@ -627,6 +625,15 @@ public class AccessController : ControllerBase
             return invite with
             {
                 DeliveryMessage = "This person was given employee access without a portal login, so no invitation was sent."
+            };
+
+        // WorkEmailSetterRule: the caller set the address — the invitation is handed back, never emailed.
+        if (invite.HandOverInPerson)
+            return invite with
+            {
+                EmailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken),
+                EmailSent = false,
+                DeliveryMessage = WorkEmailSetterRule.HandOverMessage,
             };
 
         var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken);

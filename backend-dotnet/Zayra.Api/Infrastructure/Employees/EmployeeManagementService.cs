@@ -188,13 +188,17 @@ public class EmployeeManagementService : IEmployeeManagementService
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
+                // The initial work email is a work-email change like any other (two-person rule): its marker commits
+                // in the SAME transaction as the employee, so no employee ever exists without its setter.
+                if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
+                    _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(employee, tenantId, context, DateTime.UtcNow, "create"));
                 await _db.SaveChangesAsync(cancellationToken);
                 return true;
             }, cancellationToken);
-        if (!request.ManualEmployeeCode && _db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+        if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
         {
-            // The generated code and the employee land in ONE transaction, so the ID-rule lock is held until the code
-            // is committed (the establishment guard joins this transaction on its lockable path).
+            // ONE transaction for the whole create: the generated code under the ID-rule lock (held until the code is
+            // committed), the employee, and its work-email setter marker (the establishment guard joins it).
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
@@ -212,12 +216,6 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
-        // The initial work email is a work-email change like any other (two-person rule for linking).
-        if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
-        {
-            _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(employee, tenantId, context, DateTime.UtcNow, "create"));
-            await _db.SaveChangesAsync(cancellationToken);
-        }
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match

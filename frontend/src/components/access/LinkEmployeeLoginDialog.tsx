@@ -36,6 +36,8 @@ const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
 const LOGIN_CREDENTIAL_HANDLED_BY_CALLER = 'login_credential_handled_by_caller';
 const WORK_EMAIL_CHANGED_BY_PARTY = 'work_email_changed_by_party';
 const WORK_EMAIL_SET_BY_CALLER = 'work_email_set_by_caller';
+/** The server's delivery sentence when the caller entered the work email (never emailed; worded here for Arabic). */
+const HAND_OVER_IN_PERSON = 'You entered this work email, so hand the link over in person.';
 const WORK_EMAIL_SET_BY_HANDLER = 'work_email_set_by_handler';
 /** The lifecycle states that can hold a login (AuthCurrentEligibility). */
 const LINKABLE_STATUSES = ['Active', 'Invited'] as const;
@@ -367,7 +369,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
             </div>
             {outcome.linked.deliveryMessage && (
               <p className={`text-sm ${outcome.linked.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
-                {outcome.linked.deliveryMessage}
+                {outcome.linked.handOverInPerson ? t(HAND_OVER_IN_PERSON) : outcome.linked.deliveryMessage}
               </p>
             )}
             {outcome.linked.invitationUrl && !outcome.linked.emailSent && (
@@ -403,7 +405,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         {outcome?.kind === 'invited' && (
           <div role="status" className="space-y-3">
             <p className={`text-sm ${outcome.invitation.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
-              {outcome.invitation.deliveryMessage}
+              {outcome.invitation.handOverInPerson ? t(HAND_OVER_IN_PERSON) : outcome.invitation.deliveryMessage}
             </p>
             {outcome.invitation.invitationUrl && !outcome.invitation.emailSent && (
               <div>

@@ -74,6 +74,8 @@ export interface EmployeeLoginLinkResult {
   invitationUrl?: string | null;
   emailSent?: boolean;
   deliveryMessage?: string;
+  /** The caller entered this employee's work email: the invitation was never emailed — hand it over in person. */
+  handOverInPerson?: boolean;
 }
 
 /** POST /api/access/employee-logins/invite. `invitationUrl` must be shared by hand when `emailSent` is false. */
@@ -88,6 +90,8 @@ export interface EmployeeLoginInvitation {
   emailDeliveryConfigured: boolean;
   emailSent: boolean;
   deliveryMessage: string;
+  /** The caller entered this employee's work email: the link was never emailed — hand it over in person. */
+  handOverInPerson?: boolean;
 }
 
 export interface UserAccess {
