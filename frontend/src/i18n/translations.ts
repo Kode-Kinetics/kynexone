@@ -1,6 +1,7 @@
 import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
+import { essWorkspace } from './essWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1160,7 +1161,6 @@ const en: Dict = {
   'Request leave': 'Request leave',
   '{hours} h {minutes} min': '{hours} h {minutes} min',
   'Your account can view self-service but cannot send requests. Ask HR if you need to.': 'Your account can view self-service but cannot send requests. Ask HR if you need to.',
-  'Back to Self-Service': 'Back to Self-Service',
   'Sending…': 'Sending…',
   'Send for approval': 'Send for approval',
   'Reason (required)': 'Reason (required)',
@@ -1246,6 +1246,9 @@ const en: Dict = {
   'Row {row}: {problem}': 'Row {row}: {problem}',
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.',
+
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.en,
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
@@ -2366,7 +2369,7 @@ const ar: Dict = {
   'No upcoming items or alerts.': 'لا توجد عناصر قادمة أو تنبيهات.',
   'Leave from {start} to {end}': 'إجازة من {start} إلى {end}',
   '{type}, {days} days': '{type}، {days} يوم',
-  '{document} is expiring': 'ينتهي {document} قريباً',
+  '{document} is expiring': 'تنتهي صلاحية {document} قريباً',
   'Expires on {date}': 'ينتهي في {date}',
   'Expiry date not set': 'لم يُحدَّد تاريخ الانتهاء',
   'Alert': 'تنبيه',
@@ -2397,7 +2400,6 @@ const ar: Dict = {
   'Request leave': 'اطلب إجازة',
   '{hours} h {minutes} min': '{hours} س {minutes} د',
   'Your account can view self-service but cannot send requests. Ask HR if you need to.': 'يمكن لحسابك عرض الخدمة الذاتية لكن لا يمكنه إرسال الطلبات. تواصل مع الموارد البشرية إذا احتجت إلى ذلك.',
-  'Back to Self-Service': 'العودة إلى الخدمة الذاتية',
   'Sending…': 'جارٍ الإرسال…',
   'Send for approval': 'إرسال للاعتماد',
   'Reason (required)': 'السبب (مطلوب)',
@@ -2484,6 +2486,9 @@ const ar: Dict = {
   'Row {row}: {problem}': 'الصف {row}: {problem}',
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'لم يُستورد أي شيء. شغّل هذا الفحص عملية الاستيراد نفسها ثم تراجع عنها، لذلك يعرض بالضبط ما سيفعله الاستيراد.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'صفوف يجب تصحيحها: {count}. راجع الصفوف المعلّمة «مرفوض». الاستيراد يتم كاملاً أو لا يتم، فلن يُستورد شيء حتى يُصحَّح الملف.',
+
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.ar,
 
   ...releaseA.ar,
 };

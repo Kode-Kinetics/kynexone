@@ -106,8 +106,10 @@ public class NavigationPageGateParityTests
         target.Should().NotBeNullOrEmpty();
 
         var ess = File.ReadAllText(Locate("frontend/src/views/EmployeeSelfServicePage.tsx"));
-        Regex.Matches(ess, @"router\.push\(ESS_PAYSLIPS_PATH\)").Count.Should().Be(2, "the View Payslip button and the Last Payslip card");
-        ess.Should().Contain("label: 'My Payslips', path: ESS_PAYSLIPS_PATH");
+        Regex.Matches(ess, @"href=\{ESS_PAYSLIPS_PATH\}").Count.Should().Be(2, "the View Payslip button and the Last Payslip tile");
+        // The Pay tab inside the Self-Service workspace (the sidebar keeps one Self-Service entry).
+        File.ReadAllText(Locate("frontend/src/routes/essSections.ts"))
+            .Should().Contain("label: 'My Payslips', tab: 'Payslips', path: '/ess/payslips'");
         Regex.IsMatch(ess, @"['""]/payroll['""]").Should().BeFalse("self-service must never link to the payroll team's screen");
 
         var page = Path.Combine(Locate("frontend/app"), "(dashboard)", target.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "page.tsx");
@@ -119,11 +121,12 @@ public class NavigationPageGateParityTests
     }
 
     /// <summary>
-    /// Every link on the self-service page (each <c>router.push(…)</c> and each quick-link <c>path:</c>) must open
-    /// a page the seeded Employee role can access. "Apply Leave", "OT Request" and "My Requests" went to
+    /// Every link on the self-service overview, and every tab of the Self-Service workspace, must open a
+    /// page the seeded Employee role can access. "Apply Leave", "OT Request" and "My Requests" went to
     /// /leave, /overtime and /hr-requests, HR's screens gated on leave.*, overtime.* and approvals.*, and every
     /// employee who clicked was sent to "Access Denied". A link may name a path literally or through an
-    /// <c>ESS_*_PATH</c> constant from the self-service libraries; both are resolved here.
+    /// <c>ESS_*_PATH</c> constant from the self-service libraries; both are resolved here, as are links that
+    /// add a query (<c>`${ESS_REQUESTS_PATH}?open=…`</c>).
     /// </summary>
     [Fact]
     public void EverySelfServiceLink_OpensAPageTheEmployeeRoleCanAccess()
@@ -135,24 +138,33 @@ public class NavigationPageGateParityTests
         employeePerms.Should().Contain("ess.read").And.NotContain(new[] { "leave.read", "leave.write", "overtime.read", "overtime.write", "approvals.read" });
 
         var constants = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var lib in new[] { "frontend/src/lib/essPayslip.ts", "frontend/src/lib/essSelfService.ts" })
+        foreach (var lib in new[] { "frontend/src/lib/essPayslip.ts", "frontend/src/lib/essSelfService.ts", "frontend/src/routes/essSections.ts" })
             foreach (Match m in Regex.Matches(File.ReadAllText(Locate(lib)), @"export const (?<name>ESS_[A-Z_]+_PATH)\s*=\s*'(?<path>/[^']+)'"))
                 constants[m.Groups["name"].Value] = m.Groups["path"].Value;
-        constants.Keys.Should().Contain(new[] { "ESS_PAYSLIPS_PATH", "ESS_LEAVE_PATH", "ESS_OVERTIME_PATH", "ESS_REQUESTS_PATH" });
+        constants.Keys.Should().Contain(new[] { "ESS_PAYSLIPS_PATH", "ESS_LEAVE_PATH", "ESS_OVERTIME_PATH", "ESS_REQUESTS_PATH", "ESS_DOCUMENTS_PATH" });
+        string Resolve(Match m) => m.Groups["literal"].Success
+            ? m.Groups["literal"].Value
+            : constants.TryGetValue(m.Groups["constant"].Value, out var path) ? path : $"<unknown constant {m.Groups["constant"].Value}>";
 
+        // The overview: href={ESS_X_PATH}, href: ESS_X_PATH, `${ESS_X_PATH}?…`, and literal hrefs (also inside a condition).
         var ess = File.ReadAllText(Locate("frontend/src/views/EmployeeSelfServicePage.tsx"));
-        var targets = Regex.Matches(ess, @"(?:router\.push\(|\bpath:\s*)(?:'(?<literal>/[^']*)'|(?<constant>ESS_[A-Z_]+_PATH))")
-            .Select(m => m.Groups["literal"].Success
-                ? m.Groups["literal"].Value
-                : constants.TryGetValue(m.Groups["constant"].Value, out var path) ? path : $"<unknown constant {m.Groups["constant"].Value}>")
-            .Select(p => p.Split('?')[0])
-            .Distinct()
-            .ToList();
+        var linkPattern = @"href=\{(?<constant>ESS_[A-Z_]+_PATH)\}|href:\s*(?<constant>ESS_[A-Z_]+_PATH)\b|\$\{(?<constant>ESS_[A-Z_]+_PATH)\}|href=\{(?:[^{}]*\?\s*)?'(?<literal>/[^']*)'";
+        var overview = Regex.Matches(ess, linkPattern).Select(Resolve).ToList();
+        // Any other href on the overview must be one of the known pass-throughs (a tile's or an action's own href),
+        // or a link would escape this check.
+        Regex.Matches(ess, @"href=\{(?!ESS_[A-Z_]+_PATH\}|`\$\{ESS_[A-Z_]+_PATH\}|a\.href\}|item\.action\.href\}|href\}|[^{}]*\?\s*'/)").Should().BeEmpty(
+            "every self-service link must name its target literally or through an ESS_*_PATH constant");
+        ess.Should().NotContain("router.push(", "the overview navigates with links, each checked here");
+
+        // The workspace tabs (routes/essSections.ts): every page an employee can be offered.
+        var sections = File.ReadAllText(Locate("frontend/src/routes/essSections.ts"));
+        var tabs = Regex.Matches(sections, @"\bpath:\s*(?:'(?<literal>/[^']*)'|(?<constant>ESS_[A-Z_]+_PATH)\b)").Select(Resolve).ToList();
+        tabs.Should().Contain(new[] { "/ess", "/ess/payslips", "/ess/leave", "/ess/overtime", "/ess/requests", "/ess/documents", "/ess/benefits" },
+            "the parser must still see the workspace's tabs");
+
+        var targets = overview.Concat(tabs).Select(p => p.Split('?')[0]).Distinct().ToList();
         targets.Should().Contain(new[] { "/ess/payslips", "/ess/leave", "/ess/overtime", "/ess/requests" },
             "the parser must still see the self-service buttons and quick links");
-        // A router.push with a computed argument other than the quick-link loop variable would escape this check.
-        Regex.Matches(ess, @"router\.push\((?!'|ESS_[A-Z_]+_PATH\)|path\))").Should().BeEmpty(
-            "every self-service link must name its target literally or through an ESS_*_PATH constant");
 
         var appRoot = Path.Combine(Locate("frontend/app"), "(dashboard)");
         var denied = new List<string>();
@@ -166,7 +178,7 @@ public class NavigationPageGateParityTests
             if (!gatePerms.Overlaps(employeePerms))
                 denied.Add($"{target}: the page admits [{string.Join(", ", gatePerms)}], none of which the Employee role holds");
         }
-        denied.Should().BeEmpty("every self-service link must open for an ordinary employee");
+        denied.Should().BeEmpty("every self-service link and workspace tab must open for an ordinary employee");
     }
 
     private static HashSet<string> Parse(string list) =>
