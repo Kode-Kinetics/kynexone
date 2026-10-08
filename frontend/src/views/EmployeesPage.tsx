@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
 import { describeApiError } from '../lib/apiError';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
@@ -48,6 +49,7 @@ import { Avatar } from '../components/Avatar';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
+import { EMPLOYEE_CREATE_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import {
@@ -251,6 +253,7 @@ interface EmployeeUsageData {
 }
 
 export function EmployeesPage() {
+  const wizardFormat = useFormat();
   const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
@@ -298,6 +301,9 @@ export function EmployeesPage() {
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
+  const [formStep, setFormStep] = useState(0);
+  const createFormRef = useRef<HTMLFormElement>(null);
+  const createErrorRef = useRef<HTMLParagraphElement>(null);
   const [form, setForm] = useState<EmployeeCreateRequest>(emptyEmployee());
   const [formOriginal, setFormOriginal] = useState<EmployeeCreateRequest>(emptyEmployee());
   const [formError, setFormError] = useState('');
@@ -902,6 +908,7 @@ export function EmployeesPage() {
       };
       next.complianceRecords = complianceRecordsForCountry(fieldCatalog, defaultCompany.countryCode);
     }
+    setFormStep(0);
     setForm(next);
     setFormOriginal(next);
     setFormError('');
@@ -961,9 +968,100 @@ export function EmployeesPage() {
       return { ...current, complianceRecords };
     });
 
+  // Step checks reuse the create rules. Activation-only requirements remain advisory.
+  const validateCreateStep = (step: number) => {
+    let message = '';
+    if (step === 0 && !form.englishName.trim()) message = t('Enter the employee’s English full name to continue.');
+    if (step === 1) {
+      const domainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
+      const emailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
+      if (domainProblem) message = t('Work email must end in @{domain}.', { domain: domainProblem });
+      else if (emailProblem) message = t(emailProblem);
+    }
+    if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
+    if (step === 1 && selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
+      message = 'Selected designation is restricted to a different grade.';
+    }
+    if (step === 3 && selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
+      message = `Salary package must be within ${selectedGrade.currency} ${wizardFormat.number(selectedGrade.minSalary)} - ${wizardFormat.number(selectedGrade.maxSalary)} for ${selectedGrade.code}.`;
+    }
+    const invalid = createFormRef.current?.querySelector<HTMLInputElement>(`[data-employee-step="${step}"] input:invalid`);
+    if (!message && invalid) message = `${invalid.closest('label')?.querySelector('span')?.textContent?.trim() || 'This field'}: ${invalid.validationMessage}`;
+    if (!message) return true;
+    setFormStep(step);
+    setFormError(message);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (step === 0 && !form.englishName.trim()) document.getElementById('employee-create-name')?.focus();
+      else if (invalid) invalid.focus();
+      else createErrorRef.current?.focus();
+    }));
+    return false;
+  };
+
+  const changeCreateStep = (step: number) => {
+    if (saving) return;
+    setFormError('');
+    setDuplicateWarning([]);
+    setFormStep(step);
+  };
+
+  const nextCreateStep = () => {
+    if (saving || !validateCreateStep(formStep)) return;
+    changeCreateStep(Math.min(formStep + 1, EMPLOYEE_CREATE_STEPS.length - 1));
+  };
+
+  useEffect(() => {
+    if (formError || duplicateWarning.length) {
+      createErrorRef.current?.focus();
+      createFormRef.current?.parentElement?.scrollTo({ top: 0 });
+    }
+  }, [formError, duplicateWarning]);
+
+  const createReviewSections: Array<{ title: string; rows: Array<[string, string | number | undefined | null]> }> = [
+    { title: 'Profile', rows: [
+      ['English full name', form.englishName], ['Arabic full name', form.arabicName],
+      ['Preferred name', form.preferredName], ['Employee code', form.employeeCode || t('Assigned automatically')],
+      ['Manual override', form.manualEmployeeCode ? 'Yes' : 'No'], ['Gender', form.gender],
+      ['Nationality', form.nationality], ['Date of birth', form.dateOfBirth],
+      ['Marital status', form.maritalStatus], ['Personal email', form.personalEmail], ['Mobile number', form.mobileNumber],
+    ] },
+    { title: 'Employment', rows: [
+      ['Company', nameById(companies, form.companyId, 'legalNameEn')], ['Branch', nameById(branches, form.branchId, 'nameEn')],
+      ['Department', nameById(departments, form.departmentId, 'nameEn')], ['Line manager', selectedLineManager?.fullName],
+      ['Designation', nameById(designations, form.designationId, 'titleEn')], ['Grade', selectedGrade?.name],
+      ['Cost center', nameById(costCenters, form.costCenterId, 'name')], ['Job title', form.jobTitle],
+      ['Employment type', form.employmentType], ['Contract type', form.contractType],
+      ['Joining date', form.joiningDate], ['Work location', form.workLocation], ['Work email', form.workEmail],
+    ] },
+    { title: 'Payroll', rows: [
+      ['Bank name', form.payrollProfile?.bankName], ['IBAN', form.payrollProfile?.iban],
+      ['Account number', form.payrollProfile?.accountNumber], ['Bank routing / sort code', form.payrollProfile?.bankRoutingCode],
+      ['MOL ID / National labour number', form.payrollProfile?.molId],
+      ['Salary currency', form.payrollProfile?.salaryCurrency || currencyCode], ['Payment method', form.payrollProfile?.paymentMethod],
+      ['Payroll group', form.payrollProfile?.payrollGroup], ['Salary structure reference', form.payrollProfile?.salaryStructureReference],
+    ] },
+    { title: 'Salary', rows: [
+      ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
+      ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
+      ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
+      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction], ['Salary structure code', form.salaryBreakdown?.salaryStructureCode],
+      ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
+      ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
+      ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
+    ] },
+    { title: 'Identity', rows: (form.complianceRecords ?? []).flatMap((record): Array<[string, string | undefined | null]> => [
+      [record.fieldLabel, record.fieldValue || (record.isRequired ? t('Missing · check readiness after creation') : undefined)],
+      [`${record.fieldLabel} · expiry`, record.expiryDate],
+    ]) },
+  ];
+
   // `acknowledgeDuplicate` = the operator clicked "Create anyway" on the duplicate warning; it skips
   // the advisory pre-check and sends the audited override so the server proceeds past its 409 backstop.
   const saveEmployee = async (acknowledgeDuplicate = false) => {
+    if (saving || formStep !== EMPLOYEE_CREATE_STEPS.length - 1) return;
+    for (let step = 0; step < formStep; step++) {
+      if (!validateCreateStep(step)) return;
+    }
     setError('');
     setFormError('');
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
@@ -1212,6 +1310,7 @@ export function EmployeesPage() {
   };
 
   const closeCreateModal = () => {
+    if (saving) return;
     if (createdEmployee) { finishCreated(); return; }
     if (formChanged && !confirm('Discard this employee draft?')) return;
     setFormOpen(false);
@@ -1223,12 +1322,14 @@ export function EmployeesPage() {
   // "View existing" opens the matched record; "Merge" abandons the draft and opens that record for
   // editing (augment the existing person instead of creating a second). Both discard the draft.
   const viewExistingFromCreate = (employeeId: number) => {
+    if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
     openDetail(employeeId);
   };
   const mergeFromCreate = (employeeId: number) => {
+    if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
@@ -2205,7 +2306,9 @@ export function EmployeesPage() {
         </div>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'xl'} onClose={closeCreateModal} footer={createdEmployee ? (
+      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
+        headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={saving} />}
+        footer={createdEmployee ? (
         <>
           <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
           {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue && !skipReasonKey(createdEmployee.access.reasonCode))) && (
@@ -2229,23 +2332,31 @@ export function EmployeesPage() {
           )}
         </>
       ) : (
-        <>
-          <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
-          {/* Disabled ONLY on the same predicate the warning above renders, and never silently: the
-              tooltip repeats that warning's sentence and aria-describedby points a screen reader at
-              the warning itself, so the reason is never left to be guessed. */}
-          <button
-            type="button"
-            onClick={() => saveEmployee()}
-            disabled={saving || formCompanyMissingCountry}
-            title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
-            aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
-            className="btn-primary disabled:opacity-60"
-          >
-            {saving ? 'Saving...' : 'Create Employee'}
-          </button>
-        </>
-      )}>
+          <div className="flex w-full items-center justify-between gap-3">
+            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary disabled:opacity-60">Cancel</button>
+            <div className="flex items-center gap-2">
+              {formStep > 0 && <button type="button" onClick={() => changeCreateStep(formStep - 1)} disabled={saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
+              {formStep < EMPLOYEE_CREATE_STEPS.length - 1 ? (
+                <button type="button" onClick={nextCreateStep} className="btn-primary">
+                  {t('Next: {step}', { step: t(EMPLOYEE_CREATE_STEPS[formStep + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => saveEmployee()}
+                  disabled={saving || formCompanyMissingCountry}
+                  title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+                  aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+                  className="btn-primary disabled:opacity-60"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
+                  {saving ? 'Creating…' : 'Create Employee'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      >
         {createdEmployee ? (
           <div className="space-y-2 py-2 text-sm text-slate-700 dark:text-slate-200" data-testid="employee-added">
             <p className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
@@ -2259,9 +2370,13 @@ export function EmployeesPage() {
             )}
           </div>
         ) : (
-        <div className="space-y-3">
+        <form ref={createFormRef} noValidate aria-busy={saving} className="space-y-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (formStep < EMPLOYEE_CREATE_STEPS.length - 1) nextCreateStep();
+          else void saveEmployee();
+        }}>
           {formError && (
-            <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+            <p ref={createErrorRef} tabIndex={-1} role="alert" className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{formError}</p>
           )}
 
           {/* HOME JURISDICTION BLOCK — exception-first, at the top of the form rather than buried in the
@@ -2319,8 +2434,8 @@ export function EmployeesPage() {
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
-                          <button type="button" onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
-                          <button type="button" onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
+                          <button type="button" disabled={saving} onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
+                          <button type="button" disabled={saving} onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
                         </div>
                       </div>
                     ) : (
@@ -2330,7 +2445,7 @@ export function EmployeesPage() {
                 ))}
               </ul>
               <div className="mt-2.5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
+                <button type="button" disabled={saving} onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
                 {/* Same submit, so the same country block applies — "Create anyway" overrides the
                     duplicate warning, never the missing-country refusal the server would return. */}
                 <button
@@ -2346,8 +2461,8 @@ export function EmployeesPage() {
               </div>
             </div>
           )}
-          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-          <Section title="Master Profile" wide>
+          <EmployeeCreatePanel step={0} activeStep={formStep}>
+          <Section title="Personal details">
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2355,7 +2470,7 @@ export function EmployeesPage() {
               Manual override
             </label>
             </div>
-            <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
+            <Input label="English full name" inputId="employee-create-name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
             <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
             <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
@@ -2364,20 +2479,12 @@ export function EmployeesPage() {
             <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
-            <WorkEmailField
-              label={t('Work email')}
-              value={form.workEmail ?? ''}
-              onChange={(v) => setField('workEmail', v)}
-              englishName={form.englishName}
-              arabicName={form.arabicName}
-              companyId={form.companyId}
-              domain={selectedFormCompany?.emailDomain ?? ''}
-              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
-              suggest
-            />
+
           </Section>
 
-          <Section title="Employment Details">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={1} activeStep={formStep}>
+          <Section title="Employment details">
             <Lookup
               label="Company"
               value={form.companyId ?? ''}
@@ -2408,6 +2515,7 @@ export function EmployeesPage() {
                 <InfoTip text="Auto-selected from the Department master manager. HR can override when the hierarchy requires an exception." fieldKey="employees.line_manager" />
               </span>
               <select
+                aria-label="Line manager"
                 value={form.reportingManagerEmployeeId ? String(form.reportingManagerEmployeeId) : ''}
                 onChange={(e) => setField('reportingManagerEmployeeId', e.target.value ? Number(e.target.value) : undefined)}
                 className="select mt-1.5 w-full"
@@ -2437,9 +2545,22 @@ export function EmployeesPage() {
             <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
             <Input label="Joining date" value={form.joiningDate ?? ''} onChange={(v) => setField('joiningDate', v)} type="date" info="First working day. Used for probation tracking, leave accrual and end-of-service (EOSB) calculations." infoKey="employees.joining_date" />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
+            <WorkEmailField
+              label={t('Work email')}
+              value={form.workEmail ?? ''}
+              onChange={(v) => setField('workEmail', v)}
+              englishName={form.englishName}
+              arabicName={form.arabicName}
+              companyId={form.companyId}
+              domain={selectedFormCompany?.emailDomain ?? ''}
+              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+              suggest
+            />
           </Section>
 
-          <Section title="Payroll Profile">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={2} activeStep={formStep}>
+          <Section title="Bank & payment details">
             <Input label="Bank name" value={form.payrollProfile?.bankName ?? ''} onChange={(v) => setPayrollField('bankName', v)} />
             <Input label="IBAN" ltr value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
             <Input label="Account number" ltr value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
@@ -2451,7 +2572,9 @@ export function EmployeesPage() {
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
           </Section>
 
-          <Section title="Salary Structure Breakdown">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={3} activeStep={formStep}>
+          <Section title="Salary & allowances">
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
             <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
@@ -2469,7 +2592,10 @@ export function EmployeesPage() {
             </div>
           </Section>
 
-          <Section title="Identity & GCC Compliance">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={4} activeStep={formStep}>
+          <p className="mb-5 text-sm text-slate-600 dark:text-slate-300">{t('Fields marked * may be needed for activation. Add the details you have; remaining requirements are checked after creation.')}</p>
+          <Section title="Identity & compliance">
             {(form.complianceRecords ?? []).length === 0 && (
               formCompanyMissingCountry ? (
                 // The full explanation is the alert at the top of the form (it is what disables Create
@@ -2500,8 +2626,14 @@ export function EmployeesPage() {
               );
             })}
           </Section>
-          </div>
-        </div>
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={5} activeStep={formStep}>
+            <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
+            <p className="mt-5 text-sm text-slate-600 dark:text-slate-300">{t('Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.')}</p>
+          </EmployeeCreatePanel>
+          {/* A native submit target lets Enter advance the active screen. */}
+          <button type="submit" hidden disabled={saving} tabIndex={-1}>Continue</button>
+        </form>
         )}
       </Modal>
 
@@ -2656,9 +2788,13 @@ export function EmployeesPage() {
         employeeName={establishmentBlock?.employeeName}
         onClose={() => setEstablishmentBlock(null)}
         onChooseDifferentDepartment={establishmentBlock?.refocusId ? () => {
-          const el = document.getElementById(establishmentBlock.refocusId!);
-          el?.scrollIntoView({ block: 'center' });
-          el?.focus();
+          const refocusId = establishmentBlock.refocusId!;
+          if (formOpen && refocusId === 'employee-form-department') changeCreateStep(1);
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const el = document.getElementById(refocusId);
+            el?.scrollIntoView({ block: 'center' });
+            el?.focus();
+          }));
         } : undefined}
       />
     </div>
@@ -2887,6 +3023,7 @@ function WorkEmailField({
         <>
           <input
             type="email"
+            aria-label={label}
             value={value}
             onChange={(e) => { setTouched(true); onChange(e.target.value); }}
             placeholder="name@company.com"
@@ -2978,27 +3115,30 @@ function WorkEmailField({
 // routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
 // letter+digit run and strands the country code at the wrong end; `field-ltr` (see
 // src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
-function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+function Input({ label, value, onChange, inputId, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+  const generatedId = useId();
+  const controlId = inputId ?? generatedId;
   return (
-    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
-          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
+          <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
+        <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );
 }
 
 function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
+  const controlId = useId();
   return (
-    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
+      <select id={controlId} value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
