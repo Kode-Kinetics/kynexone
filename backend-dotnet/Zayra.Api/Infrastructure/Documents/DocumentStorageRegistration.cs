@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Zayra.Api.Infrastructure.Documents;
@@ -50,20 +51,49 @@ public static class DocumentStorageRegistration
     {
         var opts = ResolveAndValidate(configuration, isDevelopment);
         var useS3 = string.Equals(opts.Provider, "s3", StringComparison.OrdinalIgnoreCase);
+        // Where documents really land, checked against Storage:ResidencyAllowList (selfie attendance needs KSA): the
+        // configured endpoint/region AND the region the bucket reports (read at startup, cached).
+        services.AddHostedService<StorageResidencyStartupProbe>();
 
         if (useS3)
         {
             // CreatePrimitives + the S3DocumentStorage ctor are internal but live in this assembly.
             var primitives = S3DocumentStorage.CreatePrimitives(opts);
+            services.AddSingleton(new StorageResidency(opts, ct => primitives.GetBucketRegionAsync(opts.Bucket, ct)));
             services.AddSingleton(opts);
             services.AddScoped<IDocumentStorage>(sp =>
                 new S3DocumentStorage(primitives, opts, sp.GetRequiredService<ILogger<S3DocumentStorage>>()));
         }
         else
         {
+            services.AddSingleton(new StorageResidency(opts));
             services.AddScoped<IDocumentStorage, LocalDocumentStorage>();
         }
 
         return services;
     }
+}
+
+/// <summary>
+/// Reads the bucket's own region once at startup (and logs the residency verdict), so the first selfie request does
+/// not pay for it. A failure is not fatal: the check is retried on the next read and treated as not resident meanwhile.
+/// </summary>
+internal sealed class StorageResidencyStartupProbe(StorageResidency residency, ILogger<StorageResidencyStartupProbe> log) : IHostedService
+{
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            var verdict = await residency.CheckAsync(StorageResidency.Ksa, timeout.Token);
+            log.LogInformation("Storage residency ({Jurisdiction}): {Resident} — {Reason}", verdict.Jurisdiction, verdict.Resident, verdict.Reason);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            log.LogWarning(ex, "Storage residency could not be checked at startup; it is checked again on first use.");
+        }
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

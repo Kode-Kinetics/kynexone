@@ -2,6 +2,7 @@ import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
+import { attendanceEvidence } from './attendanceEvidence';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1249,6 +1250,8 @@ const en: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.en,
+  // HR's selfie review on the Attendance page — see ./attendanceEvidence.
+  ...attendanceEvidence.en,
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
@@ -2489,6 +2492,8 @@ const ar: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.ar,
+  // HR's selfie review on the Attendance page — see ./attendanceEvidence.
+  ...attendanceEvidence.ar,
 
   ...releaseA.ar,
 };

@@ -57,17 +57,24 @@ const confinedTo = (
   },
 });
 
+/** AuthSeeder.AdminWithheldPermissions: the keys the Admin role is NOT given by default (review 3). */
+export const ADMIN_WITHHELD: string[] = ['attendance.evidence.view'];
+
 export const ROLE_POLICY: PolicyRule[] = [
   {
-    id: 'admin-holds-everything',
-    why: 'The tenant Admin is the break-glass role; AuthSeeder backfills it with every permission on boot.',
-    keys: [],
+    id: 'admin-holds-everything-but-withheld',
+    why: 'The tenant Admin is the break-glass role; AuthSeeder backfills it with every permission on boot, except '
+      + 'AuthSeeder.AdminWithheldPermissions (least-privilege data access it does not get by default).',
+    keys: ADMIN_WITHHELD,
     violations: (roles, catalog) => {
       const admin = roles.get('Admin');
       if (!admin) return [];
-      return catalog.filter((key) => !admin.has(key)).map((key) => `Admin lacks ${key}`);
+      return catalog.filter((key) => !admin.has(key) && !ADMIN_WITHHELD.includes(key)).map((key) => `Admin lacks ${key}`);
     },
   },
+  mustLack('admin-does-not-open-selfies', 'Admin', ADMIN_WITHHELD,
+    'Review 3: an administrator administers access and does not by default open employees\' stored face images '
+    + '(PDPL). HR Director and HR Manager hold attendance.evidence.view through attendance.*; the tenant may grant it to anyone.'),
   onlyHeldBy('security-manage-is-admin-only', 'security.manage', ['Admin'],
     'security.manage opens RBAC, user and override management (AccessController); a second holder can grant itself anything.'),
   onlyHeldBy('payroll-lock-is-controller-tier', 'payroll.lock', ['Admin', 'Finance Approver'],

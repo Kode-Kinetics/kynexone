@@ -18,6 +18,7 @@ import {
   getLastNotificationResponseAsync,
   getNotificationRoute,
 } from '@/features/notifications/pushNotifications';
+import { sweepSelfieCache } from '@/features/attendance/selfieFiles';
 
 function openFromNotification(data: Record<string, unknown> | undefined) {
   const { route, params } = getNotificationRoute(data);
@@ -41,6 +42,11 @@ function AppContent() {
       promptRestartIfNeeded().catch((error) => console.warn('[i18n] Restart prompt failed:', error));
     });
     return () => task.cancel();
+  }, []);
+
+  // Selfie photos never stay on the phone: delete any left behind by a crash or a kill mid-capture.
+  useEffect(() => {
+    void sweepSelfieCache();
   }, []);
 
   useEffect(() => {

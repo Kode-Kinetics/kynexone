@@ -375,23 +375,40 @@ public class AttendanceService : IAttendanceService
         return logs;
     }
 
-    public async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    /// <summary>
+    /// events/push and CSV import. The selfie/geofence labels and <c>evidence:</c> photo references are written only
+    /// by the server's own punch decision (<see cref="PunchAsync"/>), so a caller-supplied one is REFUSED here
+    /// (<see cref="ReservedVerificationLabels"/>), never stored and never rewritten.
+    /// </summary>
+    /// <summary>Audit action of an enforced punch whose phone reported it cannot detect a mocked location (the HR report reads it).</summary>
+    public const string MockDetectionUnavailableAction = "attendance.geofence.mock_detection_unavailable";
+
+    public Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    {
+        if (ReservedVerificationLabels.Violates(request.VerificationMethod, request.PhotoReference))
+            throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
+        return PushEventAsync(tenantId, request, context, ct, verification: null);
+    }
+
+    private async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct,
+        PunchVerification? verification)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await PushEventCoreAsync(tenantId, request, context, ct);
+            return await PushEventCoreAsync(tenantId, request, context, ct, verification);
 
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
             await using var transaction = await _db.Database.BeginTransactionAsync(
                 System.Data.IsolationLevel.ReadCommitted, ct);
-            var created = await PushEventCoreAsync(tenantId, request, context, ct);
+            var created = await PushEventCoreAsync(tenantId, request, context, ct, verification);
             await transaction.CommitAsync(ct);
             return created;
         });
     }
 
-    private async Task<AttendanceRawEvent> PushEventCoreAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    private async Task<AttendanceRawEvent> PushEventCoreAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct,
+        PunchVerification? verification = null)
     {
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, request.EmployeeCode, ct);
         if (employee is null) throw new InvalidOperationException("Employee could not be mapped from attendance event.");
@@ -435,8 +452,79 @@ public class AttendanceService : IAttendanceService
         };
         _db.AttendanceRawEvents.Add(raw);
         await Audit(tenantId, context, "attendance.raw_event.created", "AttendanceRawEvent", raw.Id.ToString(), ct);
-        await _db.SaveChangesAsync(ct);
+        // Review item 10: each use of the tenant-wide site fallback, and each enforced punch from a phone that cannot
+        // detect a mocked location (iOS), is audited with the punch so HR can see and fix it.
+        if (verification is { GeofenceFellBackToAllSites: true })
+            await Audit(tenantId, context, "attendance.geofence.fallback_all_sites", "AttendanceRawEvent", raw.Id.ToString(),
+                JsonSerializer.Serialize(new { employeeId = employee.Id, site = verification.GeofenceSite, reason = "no geofenced site matches the employee's work location or branch" }), ct);
+        if (verification is { MockDetectionUnavailable: true })
+            await Audit(tenantId, context, MockDetectionUnavailableAction, "AttendanceRawEvent", raw.Id.ToString(),
+                JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id,
+                    site = verification.GeofenceSite,
+                    // android never reaches here (refused); "unknown" is an app that sent no X-Client-Platform header.
+                    clientPlatform = verification.ClientPlatform ?? "unknown",
+                    reason = "the device reported mockDetection = Unsupported (iOS cannot detect a simulated location)",
+                }), ct);
+        if (verification?.SelfieRequirementWaivedReason is not null)
+        {
+            // Review 3: the waiver is one specific failed upload attempt, used inside THIS transaction under the
+            // per-employee advisory lock (re-checked: unused, uncancelled, < 10 minutes old, the daily cap), and marked
+            // used with this raw event in the same save. Of two concurrent punches only one can use it.
+            AttendanceEvidence waiver;
+            try { waiver = await SelfieWaivers.ConsumeAsync(_db, tenantId, employee.Id, raw, DateTime.UtcNow, ct); }
+            catch (AttendanceRefusalException)
+            {
+                // Nothing of this punch may be saved by a later save on the same context.
+                _db.ChangeTracker.Clear();
+                throw;
+            }
+            await Audit(tenantId, context, AttendanceVerificationService.SelfieRequirementWaivedAction, AttendanceVerificationService.EmployeeEntity,
+                employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id, rawEventId = raw.Id, verificationMethod = raw.VerificationMethod,
+                    waiverAttemptId = waiver.Id, failedReason = waiver.FailedReason, reason = SelfieWaivers.Describe(waiver.FailedReason),
+                }), ct);
+        }
+        if (verification?.EvidenceId is Guid evidenceId)
+            await ConsumeEvidenceAsync(tenantId, employee.Id, evidenceId, raw, verification, context, ct);
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) when (verification?.EvidenceId is not null)
+        {
+            // Another punch marked the same evidence used between our read and this write (the UPDATE carries
+            // WHERE used_at_utc IS NULL). Nothing of this punch was written: the raw row and the update share one save.
+            throw new AttendanceRefusalException(AttendanceRefusals.EvidenceUsed);
+        }
         return raw;
+    }
+
+    /// <summary>
+    /// Marks one selfie evidence row used by <paramref name="raw"/>, in the same SaveChanges as the raw event. The rule is
+    /// re-checked here (the controller's check ran before the transaction), and the row's UsedAtUtc concurrency token makes
+    /// the UPDATE conditional on it still being unused, so the id is single-use even under concurrent punches.
+    /// </summary>
+    private async Task ConsumeEvidenceAsync(Guid tenantId, int employeeId, Guid evidenceId, AttendanceRawEvent raw,
+        PunchVerification verification, RequestContext context, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var evidence = await _db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == evidenceId, ct);
+        var refusal = AttendanceVerificationService.EvidenceRefusal(
+            evidence?.EmployeeId, evidence?.UsedAtUtc, evidence?.PurgeState, evidence?.ExpiresAtUtc, employeeId, now);
+        if (refusal is not null) throw new AttendanceRefusalException(refusal);
+        evidence!.UsedAtUtc = now;
+        evidence.UsedByRawEventId = raw.Id;
+        raw.PhotoReference = $"evidence:{evidence.Id}";
+        await Audit(tenantId, context, "attendance.selfie.punch_with_evidence", "AttendanceRawEvent", raw.Id.ToString(),
+            JsonSerializer.Serialize(new
+            {
+                employeeId,
+                evidenceId = evidence.Id,
+                verificationMethod = verification.Method,
+                geofenceSite = verification.GeofenceSite,
+                distanceMeters = verification.DistanceMeters is double d ? Math.Round(d, 1) : (double?)null,
+            }), ct);
     }
 
     private static string HashKey(string key) =>
@@ -474,6 +562,10 @@ public class AttendanceService : IAttendanceService
         _db.AttendanceDeviceSyncLogs.Add(syncLog);
 
         var punches = request.Punches ?? Array.Empty<DeviceIngestPunch>();
+        // A device never writes the server's selfie/geofence labels or an evidence: reference: the whole batch is
+        // refused before anything is stored (review item 9: refuse, not rewrite).
+        if (punches.Any(p => ReservedVerificationLabels.Violates(p.VerificationMethod, p.PhotoReference)))
+            throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
         int accepted = 0, duplicates = 0, unmatched = 0;
         var matchedEmployees = new Dictionary<int, Employee>();
         var affectedDates = new HashSet<DateOnly>();
@@ -710,15 +802,18 @@ public class AttendanceService : IAttendanceService
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
-    public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct)
+    public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct,
+        PunchVerification? verification = null)
     {
         var punchedAtUtc = DateTime.UtcNow;
+        // Selfie attendance v2 rule 4: the stored method is what the SERVER verified (None, Geofence, Selfie,
+        // Selfie+Geofence). The request's VerificationMethod, ConfidenceScore and ClientBiometricVerified are never read.
+        verification ??= PunchVerification.Unverified;
         var raw = await PushEventAsync(tenantId,
             new AttendanceRawEventRequest(request.EmployeeId, null, null, source, punchedAtUtc,
                 request.PunchDirection, request.LocationName, request.Latitude, request.Longitude,
-                context.IpAddress, null, null, "",
-                source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null),
-            context, ct);
+                context.IpAddress, null, null, "", verification.Method, null),
+            context, ct, verification);
 
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, null, ct)
             ?? throw new InvalidOperationException("Employee could not be mapped from attendance event.");

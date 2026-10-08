@@ -10,4 +10,13 @@ public sealed class StorageOptions
     public string SecretKey { get; set; } = string.Empty;
     public string Region { get; set; } = "auto";           // AWS region; "auto" = R2
     public int SignedUrlExpiryMinutes { get; set; } = 60;
+
+    /// <summary>
+    /// Where this deploy's storage is allowed to count as resident, per jurisdiction: the endpoint host (or configured
+    /// region) AND the region the bucket reports, e.g. <c>Storage:ResidencyAllowList:KSA:0 = s3.&lt;ksa-endpoint-host&gt;</c>
+    /// and <c>Storage:ResidencyAllowList:KSA:1 = &lt;ksa-region&gt;</c>. Both must be listed. EMPTY by default — no region
+    /// is hard-coded, so nothing is resident until the operator lists the location of a bucket that really is in the
+    /// jurisdiction (an owner spend decision). Read by <see cref="StorageResidency"/>.
+    /// </summary>
+    public Dictionary<string, string[]> ResidencyAllowList { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

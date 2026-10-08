@@ -22,6 +22,7 @@ export type AppRoute =
   | 'Approvals'
   | 'Team'
   | 'KioskPunch'
+  | 'SelfieConsent'
   | 'Account';
 
 const ROUTE_SURFACE: Record<AppRoute, MobileSurface> = {
@@ -42,6 +43,8 @@ const ROUTE_SURFACE: Record<AppRoute, MobileSurface> = {
   Approvals: 'approvals',
   Team: 'team',
   KioskPunch: 'kioskPunch',
+  // Consent to selfie attendance lives beside Settings (More stack); withdrawal must always be reachable.
+  SelfieConsent: 'settings',
   Account: 'account',
 };
 

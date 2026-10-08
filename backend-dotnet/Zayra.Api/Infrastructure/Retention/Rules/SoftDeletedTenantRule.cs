@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
@@ -178,9 +179,15 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
             throw new BackgroundJobPermanentFailureException(
                 $"Tenant {tenant.Id} is not past its recovery window at application time. Refusing to erase it.");
 
+        // Files first (review item 4): erasing attendance_evidence rows would orphan the selfie images they point at.
+        // Every file not already confirmed deleted is strictly deleted, all versions; one that cannot be confirmed
+        // throws here, before any row is touched, and the item is retried.
+        var selfieFiles = await SelfieEvidenceErasure.DeleteAllFilesAsync(
+            TenantRows<AttendanceEvidence>(ctx), ctx.Services.GetService<Zayra.Api.Infrastructure.Documents.IDocumentStorage>(), ctx.TenantId, ct);
+
         var erased = await EraseAsync(ctx, ct);
         tenant.PurgedAtUtc = nowUtc;
-        return new { erasedRowsByTable = erased, totalRows = erased.Values.Sum(), tenantShellRetained = true };
+        return new { erasedRowsByTable = erased, totalRows = erased.Values.Sum(), selfieFilesDeleted = selfieFiles, tenantShellRetained = true };
     }
 
     /// <summary>

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { I18nManager, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
@@ -66,7 +66,7 @@ export function ScreenHero({
           contentStyle={styles.backButton}
           style={styles.backShell}
         >
-          <Ionicons name="chevron-back" size={20} color={theme.colors.primary} />
+          <Ionicons name={I18nManager.isRTL ? 'chevron-forward' : 'chevron-back'} size={20} color={theme.colors.primary} />
           <Text style={[theme.typography.caption, styles.backLabel, { color: theme.colors.textSecondary }]}>
             {backLabel}
           </Text>

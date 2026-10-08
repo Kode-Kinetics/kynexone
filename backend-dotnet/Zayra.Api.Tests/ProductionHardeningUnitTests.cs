@@ -60,7 +60,7 @@ public class ProductionHardeningUnitTests
     public void Storage_Production_S3FullyConfigured_RegistersS3()
     {
         var cfg = Config(("Storage:Provider", "s3"), ("Storage:Bucket", "b"),
-            ("Storage:AccessKey", "ak"), ("Storage:SecretKey", "sk"), ("Storage:Region", "me-central-1"));
+            ("Storage:AccessKey", "ak"), ("Storage:SecretKey", "sk"), ("Storage:Region", "eu-west-1"));
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddDocumentStorage(cfg, isDevelopment: false);

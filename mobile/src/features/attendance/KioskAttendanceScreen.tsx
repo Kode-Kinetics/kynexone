@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, RefreshControl, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import * as Location from 'expo-location';
+import { useTranslation } from 'react-i18next';
 import { attendanceApi } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { getDeviceInfo } from '@/utils/device';
@@ -9,9 +10,12 @@ import { formatTime } from '@/utils/date';
 import { COLORS } from '@/config';
 import type { GeoLocation, TodayAttendance } from '@/types';
 import { kioskPunchLabel, nextKioskPunch } from './kioskPolicy';
+import { mapPunchRefusal, refusalText } from './selfieAttendance';
 
 export default function KioskAttendanceScreen() {
   const { user } = useAuthStore();
+  const { t, i18n } = useTranslation();
+  const tx = t as unknown as (key: string) => string;
   const [attendance, setAttendance] = useState<TodayAttendance | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -42,6 +46,7 @@ export default function KioskAttendanceScreen() {
           latitude: current.coords.latitude,
           longitude: current.coords.longitude,
           accuracy: current.coords.accuracy ?? undefined,
+          mocked: typeof current.mocked === 'boolean' ? current.mocked : undefined,
           timestamp: current.timestamp,
         };
       }
@@ -54,8 +59,13 @@ export default function KioskAttendanceScreen() {
       });
       await load();
       Alert.alert('Attendance recorded', punchType === 'CLOCK_IN' ? 'You are clocked in.' : 'You are clocked out.');
-    } catch (error: any) {
-      Alert.alert('Punch failed', error?.response?.data?.message ?? 'Could not record attendance. Please try again.');
+    } catch (error) {
+      // The kiosk route runs the same server-side geofence: show its reason and the next step.
+      const refusal = mapPunchRefusal(error, i18n.language);
+      const message = refusalText(refusal, tx);
+      Alert.alert(tx(refusal.titleKey), message, refusal.action === 'open_settings'
+        ? [{ text: tx('selfie.punch.openSettings'), onPress: () => void Linking.openSettings() }, { text: tx('selfie.punch.ok'), style: 'cancel' }]
+        : [{ text: tx('selfie.punch.ok') }]);
     } finally {
       setSubmitting(false);
     }

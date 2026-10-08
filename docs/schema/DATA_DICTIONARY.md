@@ -825,6 +825,41 @@ the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 
 ---
 
+## T. Selfie attendance and biometric consent (selfie attendance v2, live bridge)
+
+Not part of the 76. Two tables shipped on the **live** EF schema (migration
+`20261008000500_AddSelfieEvidenceAndBiometricConsent`) behind the platform-only opt-in flag `selfie_attendance`, which
+cannot be switched on until the owner's DPIA sign-off and KSA data-residency confirmation are recorded on it. Capability:
+an employee self-punch may carry a server-checked, single-use selfie; no existing table can hold a single-use evidence
+token with its own purge lifecycle (`employee_documents` are kept as HR records; `attendance_raw_events.photo_reference`
+is a free device string), nor a per-version consent with withdrawal. Plain (not composite) FKs: `employees` and
+`attendance_raw_events` carry no `(tenant_id, id)` key on the live schema. RLS is a target rule — the live bridge uses
+the `ITenantOwned` query filter. Tenant policy (sign-offs, `requireSelfieForConsented`, `consentPolicyVersion`; the
+geofence's `geofenceEnforced`/`maxAccuracyMeters`/`allowMockedLocation` on the sibling flag `attendance_geofence`) lives
+in `tenant_feature_flags.config_json`: configuration nobody queries.
+
+### `attendance_evidence`
+- **Purpose** — one selfie an employee uploaded for a punch: the envelope of a re-encoded, EXIF-free JPEG in document storage, its SHA-256, the opaque single-use evidence id the punch sends (never the storage key), its 10-minute expiry and the punch that used it. No face matching is performed.
+- **Tier** E · **Domain** Attendance · **RLS** shape (a)
+- **Keys** — `employee_id` (always the uploader's own linked employee), `storage_key` (server-only, derived from the row id before the upload), `sha256` `character(64)` and `byte_size` (null only while `Pending`), `content_type`, `created_at_utc` (the attempt), `expires_at_utc`, `used_at_utc` (EF concurrency token: the use is a conditional UPDATE), `used_by_raw_event_id`, `purge_state` (`Pending`/`Active`/`Purged`), `purged_at_utc`; the server-failure waiver (review 3): `failed_reason` (`Busy`/`Storage`, set only when the failure was the server's and no other attempt of the employee was in flight), `waiver_consumed_at_utc` + `waiver_raw_event_id` (the one punch that used it), `waiver_cancelled_at_utc` (a later successful upload)
+- **Rel** — `employee_id → employees` (N:1, RESTRICT), `used_by_raw_event_id → attendance_raw_events` (1:1, RESTRICT, unique where not null), `waiver_raw_event_id → attendance_raw_events` (1:1, RESTRICT, unique where not null)
+- **Constraint** — `ck_attendance_evidence__purge_state` (`Pending`,`Active`,`Purged`), `__purged_pair` (Purged ⇔ `purged_at_utc`), `__used_pair` (`used_at_utc` ⇔ `used_by_raw_event_id`), `__active_payload` (Active ⇒ `sha256` and `byte_size`), `__used_was_active` (a used row is never Pending), `__byte_size` (null or > 0), `__expiry` (expires after created), `__failed_reason` (`Busy`,`Storage`), `__failed_never_active` (a failed attempt is never Active or used), `__waiver_pair` (`waiver_consumed_at_utc` ⇔ `waiver_raw_event_id`), `__waiver_needs_failure` (only a failed attempt is used or cancelled as a waiver), `__waiver_once` (used or cancelled, never both).
+- **Indexes** — `ix_attendance_evidence__employee_created` (one employee's attempts by time: the upload rate limit, the one-upload-in-flight check, the open waiver of the last 10 minutes and the waivers used today), `ix_attendance_evidence__waived_punches` (`tenant_id, waiver_consumed_at_utc`, partial on used waivers: HR's waived-punches report), `ux_attendance_evidence__waiver_raw_event` (one waiver per punch; backs the FK), `ix_attendance_evidence__purge_due` (`tenant_id, created_at_utc` INCLUDE `used_at_utc`, partial on `Pending`/`Active`: the scheduler's DISTINCT tenant scan, and one tenant's Pending rows past 1 h and unused rows past 24 h), `ix_attendance_evidence__used_purge_due` (`tenant_id, used_at_utc`, partial on `Active` and used: one tenant's used rows in due order, due by the 120-day fallback (excluding months locked less than 90 days ago, whose rows wait for lock + 90) or inside one payroll month locked 90+ days ago — each purge query has its own limit and returns only due rows, so none starves another), `ux_attendance_evidence__used_by_raw_event` (one selfie per punch; punch → selfie, and HR's `hasSelfie`/view lookup), `IX_attendance_evidence_employee_id` (EF FK index: the RESTRICT check).
+- **Lifecycle** — `POST /api/attendance/evidence/selfie` inserts it `Pending` under a per-employee advisory lock (consent re-checked under it; one upload in flight per employee — another `Pending` row younger than 60 s answers `selfie_upload_in_progress`; ≤ 10 attempts that reached storage per employee per hour, counted before the body is read; an attempt refused for bad input deletes its row; a busy attempt is kept `Purged` with `failed_reason = Busy`, a storage failure stays `Pending` with `failed_reason = Storage` — each then a waiver: one punch of the employee may use it within 10 minutes, at most 2 a tenant-local day, marked used in the punch's own transaction under the same lock; a later successful upload cancels it), stores the file at the key derived from the id, then flips it `Active` under the same lock after re-checking consent (a withdrawal takes that lock too); marked used by the punch in the same SaveChanges as the raw event; blob strictly deleted (every version, confirmed) and `purge_state` flipped by `SelfieEvidencePurgeJobHandler` (which writes `retention_purge_audits`), by consent withdrawal (unused rows), and before tenant erasure. Once a file may exist the row is never deleted by the product (only by tenant erasure, after its file); the only row deleted is a Pending attempt refused for bad input before anything reached storage (or a busy one while another attempt was in flight). `attendance_audit_logs` are never read to decide a waiver.
+- **Retention** `E` — blob 90 days after the punch's payroll month is locked, or work date + 120 days with no locked run, or 24 h after an unused upload (at once when the employee has no open consent), or 1 h after an upload that never completed, or at once when consent is withdrawn (unused only; a `Pending` row younger than 2 minutes may be an upload in flight and is left to it and the 1-hour sweeper); the purge runs every 15 minutes; envelope + `sha256` kept. HR opens a stored selfie only through `GET /api/attendance/evidence/{rawEventId}/selfie` (`attendance.evidence.view` — not held by Admin by default — scoped, never one's own record, every view and every refused attempt audited). The failed-attempt rows and their waiver columns follow the row (kept with it).
+
+### `biometric_consents`
+- **Purpose** — an employee's consent to selfie attendance, per consent-text version, with the channel it was given on and its withdrawal. Without open consent for the current version the employee punches without a selfie (the non-biometric alternative) and is never blocked.
+- **Tier** E · **Domain** Attendance · **RLS** shape (a)
+- **Keys** — `employee_id`, `policy_version`, `given_at_utc`, `withdrawn_at_utc`, `channel` (`Mobile`/`Web`)
+- **Rel** — `employee_id → employees` (N:1, RESTRICT)
+- **Constraint** — `ck_biometric_consents__channel` (`Mobile`,`Web`), `__withdrawn_after_given`, `__policy_version` (non-empty); at most one open row per employee (`ux_biometric_consents__one_open_per_employee`, partial on `withdrawn_at_utc IS NULL`).
+- **Indexes** — `ux_biometric_consents__one_open_per_employee` (is there open consent), `ix_biometric_consents__employee_history` (one employee's history), `IX_biometric_consents_employee_id` (EF FK index: the RESTRICT check).
+- **Lifecycle** — given and withdrawn only by the employee (`/api/ess/biometric-consent`); withdrawal is always possible. Consent to an older version is closed when the employee agrees to the current one. Never updated otherwise, never deleted by the product.
+- **Retention** — employment period plus the statutory minimum (class `S` minimum, 84 months from separation): the proof of lawful basis for every selfie taken.
+
+---
+
 ## Views (not tables)
 
 | View | Definition | Replaces |
