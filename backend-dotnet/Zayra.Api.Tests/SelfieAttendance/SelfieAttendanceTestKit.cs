@@ -55,11 +55,17 @@ internal sealed class SelfieWorld
     public SelfieImageGate Gate { get; init; } = new();
 
     public const string KsaEndpoint = "https://s3.ksa-region.example.test";
+    /// <summary>A neutral placeholder for an in-Kingdom bucket region (no real region is named anywhere).</summary>
+    public const string KsaBucketRegion = "ksa-region-placeholder";
+    /// <summary>Endpoint listed AND the bucket reports a listed region: resident.</summary>
     public static readonly StorageResidency ResidentKsa = new(new StorageOptions
     {
         Provider = "s3", Bucket = "b", Endpoint = KsaEndpoint, Region = "auto",
-        ResidencyAllowList = new(StringComparer.OrdinalIgnoreCase) { ["KSA"] = ["s3.ksa-region.example.test"] },
-    });
+        ResidencyAllowList = new(StringComparer.OrdinalIgnoreCase) { ["KSA"] = ["s3.ksa-region.example.test", KsaBucketRegion] },
+    }, _ => Task.FromResult<string?>(KsaBucketRegion));
+    /// <summary>What the platform endpoint stamps for <see cref="ResidentKsa"/> (endpoint, bucket and the bucket's region).</summary>
+    public static readonly string LocalLocation = StorageResidency.Canonical("local", "", "local");
+    public static readonly string ResidentKsaLocation = StorageResidency.Canonical("s3.ksa-region.example.test", "b", KsaBucketRegion);
 
     public AttendanceVerificationService Verification => new(Db, Residency);
 
@@ -185,10 +191,10 @@ internal sealed class SelfieWorld
     public static readonly Guid SigningOwnerId = Guid.Parse("0b1d0b1d-0000-4000-8000-000000000001");
 
     /// <summary>Both owner sign-offs as the platform endpoint STORES them (the residency block server-stamped).</summary>
-    public static string SignedOffConfig(bool requireSelfieForConsented = false) => JsonSerializer.Serialize(new
+    public static string SignedOffConfig(bool requireSelfieForConsented = false, string? storageLocation = null) => JsonSerializer.Serialize(new
     {
         dpia = new { signedOffBy = SigningOwnerId.ToString(), signedOffAtUtc = "2026-10-01T09:00:00Z", reference = "DPIA-2026-007" },
-        dataResidency = new { region = "KSA", confirmedBy = SigningOwnerId.ToString(), confirmedAtUtc = "2026-10-01T09:05:00Z", storageLocation = "s3.ksa-region.example.test" },
+        dataResidency = new { region = "KSA", confirmedBy = SigningOwnerId.ToString(), confirmedAtUtc = "2026-10-01T09:05:00Z", storageLocation = storageLocation ?? ResidentKsaLocation },
         requireSelfieForConsented,
         consentPolicyVersion = "1",
     });
