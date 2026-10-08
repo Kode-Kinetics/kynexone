@@ -48,6 +48,10 @@ export const selfieEn = {
     unavailable: 'We couldn’t load your selfie attendance settings. Check your connection and try again.',
     requiredNote: 'Your company asks employees who agreed to attach a selfie to each punch they make from the app.',
   },
+  demo: {
+    label: 'Demo',
+    notice: 'Demo: photos are stored outside Saudi Arabia and deleted automatically 7 days after they are taken.',
+  },
   card: {
     consentNeeded: 'Your company offers selfie attendance. Read what it means before deciding.',
     consentNeededAction: 'Read and decide',
@@ -253,6 +257,10 @@ export const selfieAr: typeof selfieEn = {
     featureOff: 'لا تستخدم شركتك الحضور بالصورة الذاتية. لا يُلتقط أي شيء.',
     unavailable: 'تعذّر تحميل إعدادات الحضور بالصورة الذاتية. تحقّق من اتصالك وحاول مرة أخرى.',
     requiredNote: 'تطلب شركتك من الموظفين الموافقين إرفاق صورة ذاتية بكل تسجيل حضور يجرونه من التطبيق.',
+  },
+  demo: {
+    label: 'عرض تجريبي',
+    notice: 'عرض تجريبي: تُحفظ الصور خارج المملكة العربية السعودية وتُحذف تلقائيًا بعد 7 أيام من التقاطها.',
   },
   card: {
     consentNeeded: 'تتيح شركتك الحضور بالصورة الذاتية. اطّلع على ما يعنيه قبل أن تقرر.',
