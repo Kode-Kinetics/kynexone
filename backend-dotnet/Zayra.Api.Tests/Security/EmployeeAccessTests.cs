@@ -467,7 +467,9 @@ public sealed class EmployeeAccessTests
         bulk.Issued.Select(i => i.EmployeeId).Should().BeEquivalentTo([report, setBySelf], "the setter rule forces print, it does not skip");
         bulk.Issued.Single(i => i.EmployeeId == setBySelf).Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
         Reason(await IssueAsync(w, w.HrOfficerId, [self], canReset: true), self).Should().Be(EmployeeAccessService.Skip.SelfIssue);
-        Reason(bulk, above).Should().Be(EmployeeAccessService.Skip.AboveCeiling);
+        // ORDER (UAT): privileged is reported before the ceiling; the ceiling still holds on the one-at-a-time path.
+        Reason(bulk, above).Should().Be(EmployeeAccessService.Skip.Privileged);
+        Reason(await IssueAsync(w, w.HrManagerId, [above], canReset: true), above).Should().Be(EmployeeAccessService.Skip.AboveCeiling);
         Reason(bulk, manager).Should().Be(EmployeeAccessService.Skip.Privileged);
         bulk.Skipped.Should().NotContain(x => x.ReasonCode == WorkEmailSetterRule.SetByCallerCode);
 
@@ -608,6 +610,87 @@ public sealed class EmployeeAccessTests
         await using var db = _fx.CreateDb();
         await Assert.ThrowsAsync<WorkEmailInvalidCharactersException>(() => Employees(db).CreateAsync(
             w.TenantId, Hire("Char Test", $"{local}@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
+    }
+
+    [Fact]
+    public async Task RefusalOrder_SelfBeforePrivileged_AndActiveSkipsNeverTripResetIsSingle()
+    {
+        var w = await SeedAsync();
+        var self = await AddEmployeeAsync(w, await EmailOfAsync(w.HrOfficerId));
+        await AddLinkAsync(w, self, w.HrOfficerId);
+        var admin = await AddEmployeeAsync(w, await EmailOfAsync(w.AdminId));
+        await AddLinkAsync(w, admin, w.AdminId);
+        var response = await IssueAsync(w, w.HrOfficerId, [self, admin]);
+        response.Issued.Should().BeEmpty();
+        Reason(response, self).Should().Be(EmployeeAccessService.Skip.SelfIssue);
+        Reason(response, admin).Should().Be(EmployeeAccessService.Skip.Privileged);
+    }
+
+    [Fact]
+    public async Task ADraftEmployee_IsAwaitingApproval_OnTheCardAndInBulk()
+    {
+        var w = await SeedAsync();
+        var draft = await AddEmployeeAsync(w, $"draft.person@{w.Domain}", status: EmployeeStatuses.Draft);
+        var dto = await GetAsync(w, draft, w.HrOfficerId);
+        dto!.CanIssue.Should().BeFalse();
+        dto.ReasonCode.Should().Be(EmployeeAccessService.Skip.AwaitingApproval);
+        Reason(await IssueAsync(w, w.HrOfficerId, [draft]), draft).Should().Be(EmployeeAccessService.Skip.AwaitingApproval);
+    }
+
+    [Fact]
+    public async Task Summary_CountsEachStateInTheCallersScope_AndReasonsAreCodes()
+    {
+        var w = await SeedAsync();
+        await AddEmployeeAsync(w, "");
+        await AddEmployeeAsync(w, "");
+        var given = await AddStagedAsync(w, $"sum.given@{w.Domain}");
+        await AddStagedAsync(w, $"sum.ns@{w.Domain}");
+        var blocked = await AddEmployeeAsync(w, "x@nodomain.test", companyId: w.OtherCompanyId);
+        var suspended = await AddStagedAsync(w, $"sum.susp@{w.Domain}");
+        await IssueAsync(w, w.HrOfficerId, [given]);
+        await using (var db = _fx.CreateDb())
+        {
+            var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == suspended);
+            (await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == link.UserId)).Status = "Suspended";
+            await db.SaveChangesAsync();
+        }
+        await using var check = _fx.CreateDb();
+        var all = await Service(check).SummaryAsync(w.TenantId, EntityScopeContext.GroupLevel, null, default);
+        all.Should().BeEquivalentTo(new Dictionary<string, int>
+        {
+            ["waiting_for_work_email"] = 2, ["not_started"] = 1, ["code_given"] = 1, ["active"] = 0, ["stopped"] = 1, ["blocked"] = 1,
+        });
+        var scoped = await Service(check).SummaryAsync(w.TenantId, EntityScopeContext.ForCompanies(new[] { w.OtherCompanyId }), null, default);
+        scoped.Values.Sum().Should().Be(1);
+        scoped["blocked"].Should().Be(1);
+
+        var stoppedDto = await GetAsync(w, suspended, w.HrOfficerId);
+        stoppedDto!.StoppedReason.Should().Be("disabled_by_admin");
+        var blockedDto = await GetAsync(w, blocked, w.HrOfficerId);
+        blockedDto!.BlockedReason.Should().Be("company_email_domain_missing");
+        blockedDto.BlockedReasonText.Should().NotBeNullOrWhiteSpace();
+        var left = await AddStagedAsync(w, $"sum.left@{w.Domain}");
+        await UpdateEmployeeAsync(left, e => e.Status = "Terminated");
+        (await GetAsync(w, left, w.HrOfficerId))!.StoppedReason.Should().Be("left_company");
+    }
+
+    [Fact]
+    public async Task Backfill_ByACompanyScopedHrOfficer_OnlyReachesTheirCompanies()
+    {
+        var w = await SeedAsync();
+        await AddEmployeeAsync(w, "", code: "SC-MINE");
+        await AddEmployeeAsync(w, "", code: "SC-OTHER", companyId: w.OtherCompanyId);
+        await using var db = _fx.CreateDb();
+        var result = await Service(db).BackfillWorkEmailsAsync(w.TenantId,
+            new WorkEmailBackfillRequest([new("SC-MINE", $"mine.sc@{w.Domain}"), new("SC-OTHER", $"other.sc@{w.Domain}")], DryRun: true),
+            EntityScopeContext.ForCompanies(new[] { w.CompanyId }), Ctx(w.HrOfficerId, w.TenantId), default);
+        result.Matched.Select(m => m.EmployeeCode).Should().BeEquivalentTo(["SC-MINE"]);
+        result.NotFound.Should().BeEquivalentTo(["SC-OTHER"]);
+        // Another tenant's employee number is never found either.
+        var other = await SeedAsync();
+        await AddEmployeeAsync(other, "", code: "SC-FOREIGN");
+        (await Service(db).BackfillWorkEmailsAsync(w.TenantId, new WorkEmailBackfillRequest([new("SC-FOREIGN", $"f@{w.Domain}")], DryRun: true),
+            EntityScopeContext.GroupLevel, Ctx(w.HrOfficerId, w.TenantId), default)).NotFound.Should().BeEquivalentTo(["SC-FOREIGN"]);
     }
 
     [Fact]

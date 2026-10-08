@@ -42,6 +42,16 @@ public sealed class EmployeeAccessController : ControllerBase
         return dto is null ? NotFound(new { message = "Employee not found." }) : Ok(dto);
     }
 
+    /// <summary>Counts per access state over the caller's scope: { waiting_for_work_email, not_started, code_given, active, stopped, blocked }.</summary>
+    [HttpGet("summary")]
+    [HasPermission("employees.read")]
+    public async Task<ActionResult<Dictionary<string, int>>> Summary(CancellationToken ct)
+    {
+        if (TenantId() is not Guid tenantId) return Unauthorized();
+        var scope = await _dataScope.ResolveAsync(User, tenantId, ct);
+        return Ok(await _access.SummaryAsync(tenantId, this.GetEntityScope(), scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList(), ct));
+    }
+
     [HttpPost("codes")]
     [HasPermission(IssuePermission)]
     [Zayra.Api.Infrastructure.Http.NoStore]
@@ -69,9 +79,10 @@ public sealed class EmployeeAccessController : ControllerBase
         if (TenantId() is not Guid tenantId || UserId() is null) return Unauthorized();
         try
         {
+            // Company- or data-scoped callers may backfill their own people: rows for anyone else land in notFound.
             var scope = await _dataScope.ResolveAsync(User, tenantId, ct);
-            if (!scope.IsUnrestricted) return Forbid();
-            return Ok(await _access.BackfillWorkEmailsAsync(tenantId, request, this.GetEntityScope(), Context(tenantId), ct));
+            return Ok(await _access.BackfillWorkEmailsAsync(tenantId, request, this.GetEntityScope(), Context(tenantId), ct,
+                scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList()));
         }
         catch (EmployeeAccessRequestException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
     }
