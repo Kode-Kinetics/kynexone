@@ -39,7 +39,9 @@ public class EmployeeModuleTests
         db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
         db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
         await db.SaveChangesAsync();
-        var controller = CreateController(db, tenantId);
+        var drafter = Guid.NewGuid();
+        var approver = Guid.NewGuid();
+        var controller = CreateController(db, tenantId, drafter);
         // Nationality and country are stated as "Emirati"/"AE", not the free text "UAE" this fixture
         // used to carry: "UAE" is neither ISO-2 nor ISO-3, so it normalises to nothing and the employee
         // would have no identifiable jurisdiction, which now refuses activation. The draft already
@@ -49,13 +51,70 @@ public class EmployeeModuleTests
         await controller.SubmitDraft(draft.Id, CancellationToken.None);
 
         // Maker-checker: the HR user who prepared the draft cannot activate it; a second one does.
-        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
+        var approval = await CreateController(db, tenantId, approver).ApproveDraft(draft.Id, CancellationToken.None);
 
         var profile = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(approval.Result).Value);
         Assert.Equal("Active", profile.Status);
         Assert.StartsWith("EMP-", profile.EmployeeCode);
         Assert.NotNull(profile.UserAccountId);
         Assert.True(await db.EmployeeHistories.AnyAsync(x => x.EmployeeId == profile.Id && x.EventType == "Activated"));
+        // The initial work email is a work-email change: attributed to the approver, naming the drafter.
+        var initial = await db.AuditLogs.SingleAsync(x => x.Action == Zayra.Api.Infrastructure.Auth.AccessManagementService.WorkEmailChangedAction
+            && x.EntityId == profile.Id.ToString());
+        Assert.Equal(approver, initial.UserId);
+        Assert.Contains($"\"draftedBy\":\"{drafter}\"", initial.Metadata);
+        Assert.Contains("\"oldWorkEmail\":null", initial.Metadata);
+    }
+
+    [Fact]
+    public async Task ApproveDraft_RefusesAPlusAddressedWorkEmail()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId);
+        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara+hr@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
+        var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
+        await controller.SubmitDraft(draft.Id, CancellationToken.None);
+
+        var approval = await CreateController(db, tenantId).ApproveDraft(draft.Id, CancellationToken.None);
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(approval.Result);
+        Assert.Contains(Zayra.Api.Infrastructure.Auth.WorkEmailPlusAddressException.Code, System.Text.Json.JsonSerializer.Serialize(refused.Value));
+        Assert.False(await db.Employees.AnyAsync(x => x.TenantId == tenantId && x.WorkEmail == "sara+hr@zayra.local"));
+    }
+
+    /// <summary>D1 drafts the hire, D2 edits the draft's work email, a third person approves: all three set the address,
+    /// so none of them may send its invitation (WorkEmailSetterRule).</summary>
+    [Fact]
+    public async Task ADraftEditorWhoChangedTheWorkEmail_IsASetter()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
+        db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
+        await db.SaveChangesAsync();
+        var d1 = Guid.NewGuid(); var d2 = Guid.NewGuid(); var approver = Guid.NewGuid();
+        var draftResult = await CreateController(db, tenantId, d1).CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
+        var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
+        Assert.IsType<OkObjectResult>((await CreateController(db, tenantId, d2).UpdateDraft(draft.Id, new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara.ahmed@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None)).Result);
+        await CreateController(db, tenantId, d2).SubmitDraft(draft.Id, CancellationToken.None);
+
+        var approval = await CreateController(db, tenantId, approver).ApproveDraft(draft.Id, CancellationToken.None);
+        var profile = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(approval.Result).Value);
+        Assert.Equal("sara.ahmed@zayra.local", profile.WorkEmail);
+
+        var setter = await Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.GetAsync(db, tenantId, profile.Id, CancellationToken.None);
+        Assert.NotNull(setter);
+        Assert.Equal(new[] { approver, d1, d2 }.OrderBy(x => x), setter!.UserIds.OrderBy(x => x));
+
+        // So D2's invitation (the same rule every credential path reads) is handed over, never emailed.
+        Assert.True(await Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsCallerSetterAsync(db, tenantId, profile.Id, d2, CancellationToken.None));
+        Assert.False(await Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsCallerSetterAsync(db, tenantId, profile.Id, Guid.NewGuid(), CancellationToken.None));
     }
 
     [Fact]

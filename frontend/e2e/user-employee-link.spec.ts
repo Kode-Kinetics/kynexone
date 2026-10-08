@@ -40,7 +40,7 @@ const employees = [
 
 interface Captured { method: string; path: string; body: unknown }
 
-async function openUserManagement(page: Page, opts: { slowLookupFor?: string } = {}) {
+async function openUserManagement(page: Page, opts: { slowLookupFor?: string; credentialReset?: boolean; emailChanged?: boolean; handOver?: boolean } = {}) {
   const writes: Captured[] = [];
   const errors: string[] = [];
   let linked = false;
@@ -60,6 +60,12 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string } =
       writes.push({ method: request.method(), path: pathname, body: request.postDataJSON() });
       if (pathname === '/api/access/employee-logins/link-existing') {
         linked = true;
+        if (opts.credentialReset) return json({
+          employeeId: 42, userId: noah.id, email: noah.email, status: 'Invited', accessMode: 'FullPortal', isActive: false, alreadyLinked: false,
+          credentialReset: true, emailSent: false,
+          invitationUrl: 'https://app.example.test/accept-invitation?workspace=kkdemo#token=rotated123',
+          deliveryMessage: 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
+        });
         return json({ employeeId: 42, userId: noah.id, email: noah.email, status: 'Active', accessMode: 'FullPortal', isActive: true, alreadyLinked: false });
       }
       if (pathname === '/api/access/employee-logins/invite') {
@@ -67,8 +73,10 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string } =
           userId: '22222222-2222-2222-2222-222222222222', employeeId: 43, email: 'layla.haddad@kkdemo.com', accessMode: 'ESSOnly',
           status: 'Invited', invitationExpiresAtUtc: '2026-10-10T09:00:00Z',
           invitationUrl: 'https://app.example.test/accept-invitation?tenant=kkdemo&token=abc123',
-          emailDeliveryConfigured: false, emailSent: false,
-          deliveryMessage: 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
+          emailDeliveryConfigured: !!opts.handOver, emailSent: false, handOverInPerson: !!opts.handOver,
+          deliveryMessage: opts.handOver
+            ? 'You entered this work email, so hand the link over in person.'
+            : 'No email delivery is configured for this workspace, so no invitation was sent. Share the invitation link with them directly.',
         }, 201);
       }
       return json({}); // Never touch a real account.
@@ -92,7 +100,9 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string } =
     if (pathname === '/api/access/employee-logins/42') return json({
       employeeId: 42, employeeName: 'Noah Williams', workEmail: 'noah.williams@kkdemo.com', linkedLogin: null,
       matchingLogin: { userId: noah.id, email: noah.email, status: 'Active', accessMode: 'FullPortal', isActive: true },
-      nextAction: 'link_existing', reason: null,
+      nextAction: 'link_existing', reason: null, willResetCredential: !!opts.credentialReset,
+      workEmailSetBy: 'Hana Haddad', workEmailSetAtUtc: '2026-10-01T09:00:00Z',
+      workEmailChangedAfterCreation: !!opts.emailChanged,
     });
     if (pathname === '/api/access/employee-logins/43') return json({
       employeeId: 43, employeeName: 'Layla Haddad', workEmail: 'layla.haddad@kkdemo.com', linkedLogin: null,
@@ -142,6 +152,9 @@ test('an existing login is linked to its employee record from the user row', asy
 
   const status = dialog.getByTestId('employee-login-status');
   await expect(status.getByText(`The login ${noah.email} uses Noah Williams's work email.`, { exact: false })).toBeVisible();
+  await expect(dialog.getByTestId('link-will-reset-credential')).toHaveCount(0);
+  // The work email was set when the record was created: no confirmation, no "set by" line.
+  await expect(dialog.getByTestId('work-email-confirmation')).toHaveCount(0);
   const linkButton = dialog.getByRole('button', { name: 'Link this login', exact: true });
   await expect(linkButton).toBeDisabled(); // A reason is required before anything is sent.
   expect(writes).toEqual([]);
@@ -165,6 +178,55 @@ test('an existing login is linked to its employee record from the user row', asy
   expect(errors).toEqual([]);
 });
 
+test('a login an administrator had handled is linked with a fresh password invitation, copyable when no email went out', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+  const { writes, errors } = await openUserManagement(page, { credentialReset: true });
+  const row = page.getByRole('row').filter({ hasText: noah.email });
+  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('employee-login-status')).toBeVisible();
+  // Said BEFORE anything is sent.
+  await expect(dialog.getByTestId('link-will-reset-credential')).toHaveText(
+    "Linking will reset this login's password. Noah Williams will set a new one from an invitation.");
+  expect(writes).toEqual([]);
+  await dialog.getByLabel('Reason (kept in the audit trail)').fill('Created in User Management');
+  await dialog.getByRole('button', { name: 'Link this login', exact: true }).click();
+
+  const status = dialog.getByRole('status');
+  await expect(status).toContainText('Linked. Noah Williams must set a new password from the invitation.');
+  await expect(status).toContainText("Someone other than Noah Williams had handled this login's password, so the old password no longer works.");
+  await expect(status).not.toContainText('must sign out and sign in again');
+  await expect(dialog.getByText('No email delivery is configured for this workspace', { exact: false })).toBeVisible();
+  await expect(dialog.getByLabel('Invitation link', { exact: true })).toHaveValue('https://app.example.test/accept-invitation?workspace=kkdemo#token=rotated123');
+  await dialog.getByRole('button', { name: 'Copy link', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Link copied', exact: true })).toBeVisible();
+  expect(writes).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('a work email changed after the record was created must be confirmed with the person before linking', async ({ page }) => {
+  const { writes, errors } = await openUserManagement(page, { emailChanged: true });
+  const row = page.getByRole('row').filter({ hasText: noah.email });
+  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('work-email-set-by')).toHaveText('Work email set by Hana Haddad on 2026-10-01.');
+  await dialog.getByLabel('Reason (kept in the audit trail)').fill('Work email corrected by HR');
+  const linkButton = dialog.getByRole('button', { name: 'Link this login', exact: true });
+  await expect(linkButton).toBeDisabled(); // not until the address is confirmed
+  await dialog.getByLabel('I confirmed this email address with Noah Williams.').check();
+  await linkButton.click();
+
+  await expect(dialog.getByRole('status')).toContainText('Linked to Noah Williams.');
+  expect(writes).toEqual([{
+    method: 'POST',
+    path: '/api/access/employee-logins/link-existing',
+    body: { employeeId: 42, userId: noah.id, reason: 'Work email corrected by HR', confirmedWorkEmail: true },
+  }]);
+  expect(errors).toEqual([]);
+});
+
 test('an employee with no login is invited, and the link is copyable when no email went out', async ({ page, context }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
   const { writes, errors } = await openUserManagement(page);
@@ -184,6 +246,17 @@ test('an employee with no login is invited, and the link is copyable when no ema
 
   expect(writes).toEqual([{ method: 'POST', path: '/api/access/employee-logins/invite', body: { employeeId: 43, accessMode: 'ESSOnly' } }]);
   await page.screenshot({ path: testInfo.outputPath('employee-invited.png') });
+  expect(errors).toEqual([]);
+});
+
+test('an invitation for a work email the admin entered is handed over in person, never emailed', async ({ page }) => {
+  const { errors } = await openUserManagement(page, { handOver: true });
+  await page.getByRole('button', { name: 'Invite employee', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await pickEmployee(page, 'Layla Haddad');
+  await dialog.getByRole('button', { name: 'Send self-service invitation', exact: true }).click();
+  await expect(dialog.getByText('You entered this work email, so hand the link over in person.')).toBeVisible();
+  await expect(dialog.getByLabel('Invitation link', { exact: true })).toHaveValue('https://app.example.test/accept-invitation?tenant=kkdemo&token=abc123');
   expect(errors).toEqual([]);
 });
 
