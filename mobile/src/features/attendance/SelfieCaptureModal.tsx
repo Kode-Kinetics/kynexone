@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { GlassSurface, LiquidButton, MotionPressable } from '@/components/ui';
 import type { PunchType } from '@/types';
 import { SELFIE_IMAGE_TYPE, SELFIE_JPEG_QUALITY, choosePictureSize } from './selfieAttendance';
-import { CaptureGuard } from './selfiePhotoPolicy';
+import { CaptureGuard, previewActionFor } from './selfiePhotoPolicy';
 import { adoptCapturedPhoto, deleteTempPhoto } from './selfieFiles';
 
 interface Props {
@@ -33,7 +33,8 @@ interface Props {
  * (Settings, or the attendance card's link), never presented as the way past a required selfie.
  *
  * The photo never outlives its use: it is deleted on retake, on close, when the app goes to the
- * background, and if it arrives after the capture stopped being wanted (CaptureGuard).
+ * background, and if it arrives after the capture stopped being wanted (CaptureGuard). While the app is
+ * inactive (the iOS app switcher snapshots the screen), the preview is covered (previewActionFor).
  */
 export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse, onSkip, onCancel }: Props) {
   const { t } = useTranslation();
@@ -46,6 +47,8 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
   const [pictureSize, setPictureSize] = useState<string | undefined>(undefined);
   const [cameraProblem, setCameraProblem] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
+  // Review 3, 12-note: while the app is not active the preview (camera or photo) is covered by an opaque view.
+  const [obscured, setObscured] = useState(false);
   // A photo handed to the parent is the parent's to delete; any other leftover is deleted here.
   const handedOff = useRef<string | null>(null);
   const guard = useRef(new CaptureGuard());
@@ -65,6 +68,7 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
     if (visible) {
       guard.current.open();
       handedOff.current = null;
+      setObscured(previewActionFor(AppState.currentState) !== 'show');
       if (permission && !permission.granted && permission.canAskAgain) void requestPermission();
       return;
     }
@@ -89,13 +93,16 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {
       if (!visibleRef.current) return;
-      if (next === 'background') {
+      const action = previewActionFor(next);
+      // inactive (the iOS app switcher snapshots the screen now) covers the preview; background also deletes it.
+      setObscured(action !== 'show');
+      if (action === 'delete') {
         guard.current.cancel();
         discardPhoto();
         setCapturing(false);
         setCameraReady(false);
         setCameraKey((key) => key + 1);
-      } else if (next === 'active') {
+      } else if (action === 'show') {
         void getPermission().catch(() => undefined);
       }
     });
@@ -196,6 +203,7 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
           />
         ) : null}
         {photoUri ? <Image source={{ uri: photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
+        {obscured ? <View style={styles.cover} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" /> : null}
 
         <View style={[styles.topBar, { paddingTop: Math.max(insets.top, 14) }]}>
           <MotionPressable
@@ -296,6 +304,8 @@ function TextAction({ label, onPress, disabled }: { label: string; onPress: () =
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#020617' },
+  // Opaque: nothing of the camera or the photo shows through in the app-switcher snapshot.
+  cover: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#020617' },
   flex: { flex: 1 },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, gap: 10 },
   iconButton: {

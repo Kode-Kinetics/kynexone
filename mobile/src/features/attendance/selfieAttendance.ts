@@ -253,6 +253,7 @@ export type RefusalKey =
   | 'appUpdateRequired'
   | 'mobileAppRequired'
   | 'selfieBusy'
+  | 'selfieInProgress'
   | 'network'
   | 'unknown';
 
@@ -278,6 +279,8 @@ export const REVIEW_API_CODES: Readonly<Record<string, RefusalKey>> = {
   mock_detection_required: 'appUpdateRequired',
   selfie_storage_unavailable: 'selfieBusy',
   selfie_upload_interrupted: 'selfieUnusable',
+  // Review 3: another upload of this employee is still in flight. Wait and retry; it never waives a selfie.
+  selfie_upload_in_progress: 'selfieInProgress',
 };
 
 const CODE_TO_KEY: Record<string, RefusalKey> = {
@@ -323,6 +326,7 @@ const KEY_TO_ACTION: Record<RefusalKey, RefusalAction> = {
   appUpdateRequired: 'none',
   mobileAppRequired: 'retry',
   selfieBusy: 'retry',
+  selfieInProgress: 'retry',
   network: 'retry',
   unknown: 'retry',
 };
@@ -345,6 +349,12 @@ export interface PunchRefusal {
   action: RefusalAction;
   /** Discovery may be stale (consent or tenant settings changed): re-read it before acting. */
   refreshVerification: boolean;
+  /**
+   * The server's own `punchWithoutSelfie: true` in the response body (review 3, item 7): the server will accept this
+   * punch without a selfie. The ONLY basis for offering "Clock without a selfie" after a failed upload — never inferred
+   * from the code, the key or the status.
+   */
+  punchWithoutSelfie: boolean;
 }
 
 /** Refusals shown without a local "next" line (see PunchRefusal.nextKey). */
@@ -383,9 +393,9 @@ export interface RefusalPrompt {
 /**
  * The alert for a refusal. `selfie` is the plan after any discovery refresh; `stage` says whether the
  * selfie upload or the punch was refused.
- * - Where a selfie is required, "Clock without a selfie" is offered only when the upload failed on the
- *   server's side (the server then lets the punch through, review 2 item 7); otherwise the employee can
- *   retry, and is told to contact HR if they cannot take a selfie.
+ * - After a failed upload, "Clock without a selfie" is offered only when the server's response says
+ *   `punchWithoutSelfie: true` (review 3, item 7); otherwise the employee can retry, and is told to contact
+ *   HR if they cannot take a selfie.
  */
 export function refusalPrompt(
   refusal: PunchRefusal,
@@ -399,9 +409,11 @@ export function refusalPrompt(
   let buttons: RefusalButton[];
 
   if (stage === 'upload' && refusal.action === 'retry') {
-    buttons = required && !isServerSideUploadFailure(refusal)
-      ? ['cancel', 'selfie_try_again']
-      : ['cancel', 'without_selfie', openSelfie('selfie_try_again')];
+    // Review 3, item 7: only the server's punchWithoutSelfie: true offers it (busy or storage failure that the server
+    // will waive). Otherwise — a selfie already in flight, a network error, a used-up daily cap — the employee retries.
+    buttons = refusal.punchWithoutSelfie
+      ? ['cancel', 'without_selfie', openSelfie('selfie_try_again')]
+      : ['cancel', openSelfie('selfie_try_again')];
   } else {
     switch (refusal.action) {
       case 'retry':
@@ -432,15 +444,6 @@ export function refusalPrompt(
   // De-duplicate (openSelfie can turn a selfie button into a second without_selfie).
   buttons = buttons.filter((button, index) => buttons.indexOf(button) === index);
   return { titleKey: refusal.titleKey, body, buttons };
-}
-
-/**
- * Upload failures that are the server's fault (busy image processing, or an unexpected server error).
- * Where the tenant requires a selfie, the server then lets the punch through without one (review 2,
- * item 7), so the app offers "Clock without a selfie" instead of leaving the employee stuck.
- */
-export function isServerSideUploadFailure(refusal: PunchRefusal): boolean {
-  return refusal.key === 'selfieBusy' || refusal.key === 'unknown';
 }
 
 const STALE_DISCOVERY: ReadonlySet<RefusalKey> = new Set<RefusalKey>([
@@ -485,6 +488,7 @@ export function mapPunchRefusal(error: unknown, language: string): PunchRefusal 
     messageKey: `selfie.refusal.${key}.message`,
     action: KEY_TO_ACTION[key],
     refreshVerification: STALE_DISCOVERY.has(key),
+    punchWithoutSelfie: Boolean(response) && data.punchWithoutSelfie === true,
   };
 }
 

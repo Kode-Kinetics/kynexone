@@ -26,6 +26,7 @@ import {
 import {
   CaptureGuard,
   SELFIE_FILE_PREFIX,
+  previewActionFor,
   isCameraCaptureFile,
   isOwnSelfieFile,
   selfieFileName,
@@ -367,18 +368,48 @@ test('no refusal prompt ever shows a withdraw or consent button, nor withdraw wo
   }
 });
 
-test('required selfie: "clock without a selfie" only after a server-side upload failure', () => {
-  const busy = mapPunchRefusal(refusal(429, { code: 'selfie_busy' }), 'en');
-  const serverError = mapPunchRefusal(refusal(500, {}), 'en');
-  const network = mapPunchRefusal(new Error('Network Error'), 'en');
-  assert.deepEqual(refusalPrompt(busy, 'required', 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again']);
-  assert.deepEqual(refusalPrompt(serverError, 'required', 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again']);
-  assert.deepEqual(refusalPrompt(network, 'required', 'upload', echo).buttons, ['cancel', 'selfie_try_again']);
+test('review 3, item 7: "clock without a selfie" after a failed upload only when the server says punchWithoutSelfie: true', () => {
+  const waived = mapPunchRefusal(refusal(429, { code: 'selfie_busy', punchWithoutSelfie: true }), 'en');
+  const storage = mapPunchRefusal(refusal(503, { code: 'selfie_storage_unavailable', punchWithoutSelfie: true }), 'en');
+  assert.equal(waived.punchWithoutSelfie, true);
+  for (const plan of ['optional', 'required'] as const) {
+    assert.deepEqual(refusalPrompt(waived, plan, 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again'], plan);
+    assert.deepEqual(refusalPrompt(storage, plan, 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again'], plan);
+  }
+  // Never inferred from the code, the key or the status: the server will not waive these.
+  const notWaived = [
+    mapPunchRefusal(refusal(429, { code: 'selfie_busy' }), 'en'),                                   // the daily cap is used up
+    mapPunchRefusal(refusal(429, { code: 'selfie_busy', punchWithoutSelfie: false }), 'en'),
+    mapPunchRefusal(refusal(503, { code: 'selfie_storage_unavailable', punchWithoutSelfie: 'true' }), 'en'),
+    mapPunchRefusal(refusal(500, {}), 'en'),
+    mapPunchRefusal(refusal(429, {}), 'en'),
+    mapPunchRefusal(new Error('Network Error'), 'en'),
+    mapPunchRefusal(refusal(409, { code: 'selfie_upload_in_progress' }), 'en'),
+  ];
+  for (const r of notWaived) {
+    assert.equal(r.punchWithoutSelfie, false, r.code);
+    assert.deepEqual(refusalPrompt(r, 'required', 'upload', echo).buttons, ['cancel', 'selfie_try_again'], r.code);
+    assert.deepEqual(refusalPrompt(r, 'optional', 'upload', echo).buttons, ['cancel', 'selfie_try_again'], r.code);
+  }
   const limited = mapPunchRefusal(refusal(429, { code: 'selfie_rate_limited' }), 'en');
   const prompt = refusalPrompt(limited, 'required', 'upload', echo);
   assert.deepEqual(prompt.buttons, ['cancel', 'selfie_try_again']);
   assert.equal(prompt.body, '[selfie.refusal.selfieRateLimited.message]\n\n[selfie.punch.requiredHelp]');
   assert.deepEqual(refusalPrompt(limited, 'optional', 'upload', echo).buttons, ['cancel', 'without_selfie']);
+});
+
+test('review 3, item 7: selfie_upload_in_progress says a selfie is already being sent, and offers a retry', () => {
+  assert.equal(REVIEW_API_CODES.selfie_upload_in_progress, 'selfieInProgress');
+  const r = mapPunchRefusal(refusal(409, { code: 'selfie_upload_in_progress' }), 'en');
+  assert.equal(r.key, 'selfieInProgress');
+  assert.equal(r.action, 'retry');
+  assert.equal(isSelfieBusy(refusal(409, { code: 'selfie_upload_in_progress' })), false); // not auto-retried as busy
+  assert.equal(selfieEn.refusal.selfieInProgress.message, 'A selfie is already being sent, wait a moment.');
+  assert.ok(selfieAr.refusal.selfieInProgress.message.length > 0);
+  const translate = (key: string) => key.split('.').slice(1).reduce((node: any, part) => node?.[part], selfieEn) ?? key;
+  const prompt = refusalPrompt(r, 'required', 'upload', translate);
+  assert.deepEqual(prompt.buttons, ['cancel', 'selfie_try_again']);
+  assert.match(prompt.body, /already being sent/);
 });
 
 test('the capture and refusal strings no longer carry the withdraw lever', () => {
@@ -500,4 +531,14 @@ test('review-2 codes map to an existing plain-language refusal', () => {
   assert.equal(REVIEW_API_CODES.mock_detection_required, 'appUpdateRequired');
   assert.equal(REVIEW_API_CODES.selfie_storage_unavailable, 'selfieBusy');
   assert.equal(REVIEW_API_CODES.selfie_upload_interrupted, 'selfieUnusable');
+});
+
+// ---- Review 3, 12-note: the iOS app-switcher snapshot never shows the selfie ----
+
+test('the preview is covered while the app is inactive, the photo deleted in the background, shown when active', () => {
+  assert.equal(previewActionFor('inactive'), 'cover');   // iOS takes the app-switcher snapshot here
+  assert.equal(previewActionFor('background'), 'delete');
+  assert.equal(previewActionFor('active'), 'show');
+  assert.equal(previewActionFor('unknown'), 'cover');    // anything else fails safe
+  assert.equal(previewActionFor('extension'), 'cover');
 });

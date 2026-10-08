@@ -76,3 +76,19 @@ export class CaptureGuard {
     return this.active && ticket === this.generation;
   }
 }
+
+/**
+ * What the selfie screen does with the photo on screen for an AppState change (review 3, 12-note):
+ * - `inactive` (iOS app switcher, Control Centre, an incoming call): COVER the preview. iOS takes the
+ *   app-switcher snapshot in this state, so the face must already be hidden when it does;
+ * - `background`: DELETE the photo (and keep it covered);
+ * - `active`: SHOW again (only a photo that still exists).
+ * Any other value (unknown, extension) covers, failing safe.
+ */
+export type PreviewAction = 'show' | 'cover' | 'delete';
+
+export function previewActionFor(appState: string): PreviewAction {
+  if (appState === 'active') return 'show';
+  if (appState === 'background') return 'delete';
+  return 'cover';
+}

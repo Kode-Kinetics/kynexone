@@ -194,6 +194,11 @@ export const selfieEn = {
       message: 'Selfie processing is busy, try again in a moment.',
       next: 'Wait a moment, then try again.',
     },
+    selfieInProgress: {
+      title: 'A selfie is already being sent',
+      message: 'A selfie is already being sent, wait a moment.',
+      next: 'Wait a moment, then try again.',
+    },
     network: {
       title: 'Can’t reach KynexOne',
       message: 'Your punch was not recorded.',
@@ -393,6 +398,11 @@ export const selfieAr: typeof selfieEn = {
     selfieBusy: {
       title: 'معالجة الصور الذاتية مشغولة',
       message: 'معالجة الصور الذاتية مشغولة، حاول مرة أخرى بعد لحظات.',
+      next: 'انتظر لحظة، ثم حاول مرة أخرى.',
+    },
+    selfieInProgress: {
+      title: 'يجري إرسال صورة ذاتية',
+      message: 'يجري إرسال صورة ذاتية بالفعل، انتظر لحظة.',
       next: 'انتظر لحظة، ثم حاول مرة أخرى.',
     },
     network: {
