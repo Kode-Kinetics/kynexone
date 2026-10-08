@@ -109,6 +109,8 @@ public static class PrivilegedMfaPolicy
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
         // Attendance that drives pay.
         "attendance.write", "attendance.delete", "attendance.bulk_import", "attendance.lock",
+        // Selfie attendance: opening an employee's stored face image (sensitive personal data under the PDPL).
+        "attendance.evidence.view",
         // Approvals beyond one's own line, recruitment, performance and compliance decisions.
         "approvals.override", "approvals.manage", "recruitment.write", "recruitment.approve", "recruitment.delete",
         "performance.approve", "performance.cycle_manage", "compliance.write", "compliance.approve",

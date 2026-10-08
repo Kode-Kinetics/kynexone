@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { FIXTURE_PASSWORD_VARS } from './env';
 import { expectedPermissions, loadRoleCatalog, parseAuthSeeder, roleDefinition } from './role-catalog';
-import { catalogRoleMap, evaluatePolicy, ROLE_POLICY, unknownPolicyKeys, unknownPolicyRoles } from './role-policy';
+import { ADMIN_WITHHELD, catalogRoleMap, evaluatePolicy, ROLE_POLICY, unknownPolicyKeys, unknownPolicyRoles } from './role-policy';
 
 /**
  * Browserless proof that the identity contract and the role matrix are generated from — and agree
@@ -35,7 +35,10 @@ test.describe('role catalog is generated from AuthSeeder.cs', () => {
     const levels = catalog.roles.map((r) => r.authorityLevel);
     expect(new Set(levels).size).toBe(levels.length);
     for (const role of catalog.roles) expect(role.permissions.length, role.name).toBeGreaterThan(0);
-    expect(roleDefinition(catalog, 'Admin').permissions).toEqual(catalog.permissions);
+    // Every permission but AuthSeeder.AdminWithheldPermissions (review 3: Admin does not open stored selfies by default).
+    expect(roleDefinition(catalog, 'Admin').permissions).toEqual(catalog.permissions.filter((key) => !ADMIN_WITHHELD.includes(key)));
+    expect(roleDefinition(catalog, 'Admin').permissions).not.toContain('attendance.evidence.view');
+    expect(roleDefinition(catalog, 'HR Manager').permissions).toContain('attendance.evidence.view');
     expect(roleDefinition(catalog, 'Kiosk Operator').permissions).toEqual(['attendance.kiosk']);
     expect(roleDefinition(catalog, 'Employee').permissions).toEqual(expect.arrayContaining(['dashboard.read', 'ess.read', 'ess.write']));
   });
@@ -67,6 +70,10 @@ test.describe('role catalog is generated from AuthSeeder.cs', () => {
     const [role] = parseAuthSeeder(ok).roles;
     expect(role.permissions).toEqual(['a.read', 'a.write']);
     expect(role.unknownKeys).toEqual(['b.read']);
+    // Admin's shape: every permission but an explicit list (an unknown withheld key is reported, not ignored).
+    const allBut = parseAuthSeeder(source.replace('x.Module == "A"', 'x.Key is not "a.write" and not "c.read"')).roles[0];
+    expect(allBut.permissions).toEqual(['a.read']);
+    expect(allBut.unknownKeys).toEqual(['c.read']);
   });
 });
 
@@ -83,6 +90,12 @@ test.describe('separation-of-duties policy holds for the AuthSeeder catalog', ()
       expect(evaluatePolicy(catalogRoleMap(catalog), catalog.permissions, [rule])).toEqual([]);
     });
   }
+
+  test('the policy can fail: an Admin given attendance.evidence.view by default is caught', () => {
+    const roles = catalogRoleMap(catalog);
+    roles.get('Admin')!.add('attendance.evidence.view');
+    expect(evaluatePolicy(roles, catalog.permissions).join('\n')).toContain('admin-does-not-open-selfies: Admin holds attendance.evidence.view');
+  });
 
   test('the policy can fail: a Payroll Officer granted payroll.approve is caught', () => {
     const roles = catalogRoleMap(catalog);

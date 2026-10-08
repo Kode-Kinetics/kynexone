@@ -9,13 +9,13 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Tests.Security;
 
 /// <summary>
-/// 20261008000300_AddEmployeeWelcomeCodes on the real migration chain: applies to a fresh database, applies as an
+/// 20261008000700_AddEmployeeWelcomeCodes on the real migration chain: applies to a fresh database, applies as an
 /// upgrade over existing employee links (they get no code and zero attempts), rolls back and re-applies.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class EmployeeWelcomeCodeMigrationPostgresTests
 {
-    private const string ThisMigration = "20261008000300_AddEmployeeWelcomeCodes";
+    private const string ThisMigration = "20261008000700_AddEmployeeWelcomeCodes";
 
     [Fact]
     public async Task FreshAndUpgrade_AddOnlyTheWelcomeCodeColumns_AndDownRemovesThem()

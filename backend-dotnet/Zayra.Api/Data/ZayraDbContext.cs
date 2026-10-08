@@ -855,6 +855,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<AttendanceLockPeriod> AttendanceLockPeriods => Set<AttendanceLockPeriod>();
     public DbSet<AttendanceAIInsight> AttendanceAIInsights => Set<AttendanceAIInsight>();
     public DbSet<AttendanceAuditLog> AttendanceAuditLogs => Set<AttendanceAuditLog>();
+    // Selfie attendance v2: single-use selfie evidence and per-version biometric consent. Mapped in SelfieAttendanceModelConfiguration.
+    public DbSet<AttendanceEvidence> AttendanceEvidence => Set<AttendanceEvidence>();
+    public DbSet<BiometricConsent> BiometricConsents => Set<BiometricConsent>();
     // ── Leave Management ──────────────────────────────────────────────────────────
     public DbSet<LeaveType> LeaveTypes => Set<LeaveType>();
     public DbSet<LeavePolicy> LeavePolicies => Set<LeavePolicy>();
@@ -4461,6 +4464,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        SelfieAttendanceModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

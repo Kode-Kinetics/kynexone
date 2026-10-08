@@ -17,6 +17,7 @@ import {
 } from './languageDirection';
 import { mfaAr, mfaEn } from './mfaStrings';
 import { welcomeAr, welcomeEn } from './welcomeStrings';
+import { selfieAr, selfieEn } from './selfieStrings';
 
 export type { AppLanguage };
 
@@ -79,6 +80,7 @@ export const en = {
   },
   mfa: mfaEn,
   signin: welcomeEn,
+  selfie: selfieEn,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -337,6 +339,7 @@ const ar: TranslationResources = {
   },
   mfa: mfaAr,
   signin: welcomeAr,
+  selfie: selfieAr,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',
@@ -387,7 +390,7 @@ const ar: TranslationResources = {
     onLeave: 'في إجازة',
     holiday: 'عطلة',
     weekend: 'نهاية الأسبوع',
-    missingPunch: 'بصمة مفقودة',
+    missingPunch: 'تسجيل حضور مفقود',
     correction: 'طلب تصحيح',
     history: 'سجل الحضور',
     monthView: 'عرض شهري',

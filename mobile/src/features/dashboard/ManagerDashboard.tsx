@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -9,11 +8,10 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
+import { usePunchFlow } from '@/features/attendance/usePunchFlow';
 import { AttendanceCard } from '@/features/dashboard/EmployeeDashboard';
-import { getDeviceInfo } from '@/utils/device';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
 import { navigateTo, type AppRoute } from '@/navigation/routes';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -27,7 +25,7 @@ import {
   SectionHeader,
   SwipeDeck,
 } from '@/components/ui';
-import type { GeoLocation, ManagerDashboard, PunchType, TodayAttendance } from '@/types';
+import type { ManagerDashboard, PunchType, TodayAttendance } from '@/types';
 
 interface Props {
   navigation: any;
@@ -42,8 +40,8 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [attendance, setAttendance] = useState<TodayAttendance | undefined>();
   const [attendanceLoading, setAttendanceLoading] = useState(false);
-  const [punchLoading, setPunchLoading] = useState(false);
   const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
+  const [selfieAttached, setSelfieAttached] = useState(false);
   const employeeId = Number(user?.employeeId);
   const hasEmployeeProfile = Number.isFinite(employeeId) && employeeId > 0;
 
@@ -93,39 +91,16 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
   const team = dashboard?.teamSummary;
   const pendingCount = dashboard?.pendingApprovalsCount ?? 0;
 
-  const handlePunch = useCallback(async (punchType: PunchType) => {
-    setPunchLoading(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Location required', 'Allow location access to verify where this attendance event occurred.');
-        return;
-      }
-      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      const geoLocation: GeoLocation = {
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        accuracy: location.coords.accuracy ?? undefined,
-        timestamp: location.timestamp,
-      };
-      await attendanceApi.punch({
-        punchType,
-        timestamp: new Date().toISOString(),
-        location: geoLocation,
-        deviceInfo: await getDeviceInfo(),
-      });
+  // Punches here are for the signed-in manager only (self-only since #209): the request never names
+  // another employee, and the selfie, consent and location rules are the same as on the employee home.
+  const punchFlow = usePunchFlow({
+    onPunched: async ({ punchType, selfieAttached }) => {
       await loadPersonalAttendance();
       setPunchFeedback(punchType);
-    } catch (error: any) {
-      Alert.alert(
-        'Could not record attendance',
-        error?.response?.data?.message ?? error?.message ?? 'Please check your connection and try again.',
-      );
-    } finally {
-      setPunchLoading(false);
-    }
-  }, [loadPersonalAttendance]);
-
+      setSelfieAttached(selfieAttached);
+    },
+    onOpenConsent: () => navigateTo(navigation, 'SelfieConsent', user),
+  });
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
@@ -182,11 +157,13 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
                 attendance={attendance}
                 canClockIn={!attendance?.currentlyActive}
                 canClockOut={!!attendance?.currentlyActive}
-                punchLoading={punchLoading}
-                onClockIn={() => void handlePunch('CLOCK_IN')}
-                onClockOut={() => void handlePunch('CLOCK_OUT')}
+                punchLoading={punchFlow.punching}
+                onClockIn={() => void punchFlow.punch('CLOCK_IN')}
+                onClockOut={() => void punchFlow.punch('CLOCK_OUT')}
                 onViewHistory={() => go('AttendanceHistory')}
                 feedback={punchFeedback}
+                selfieAttached={selfieAttached}
+                notes={hasEmployeeProfile ? punchFlow.notes : undefined}
               />
             )
           ) : (
@@ -428,6 +405,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
+      {hasEmployeeProfile ? punchFlow.modal : null}
     </View>
   );
 }

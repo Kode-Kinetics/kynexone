@@ -51,14 +51,23 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
     private readonly Action<IServiceCollection>? _configureTestServices;
     private readonly IReadOnlyDictionary<string, string?>? _configuration;
 
+    private readonly IReadOnlyDictionary<string, string?>? _hostSettings;
+
+    /// <param name="hostSettings">
+    /// Settings Program.cs must see BEFORE <c>builder.Build()</c> (e.g. options it reads while registering services).
+    /// <paramref name="configuration"/> sources are applied by the factory only at build time under minimal hosting, so
+    /// values read earlier never see them; <c>UseSetting</c> values are in place from the start.
+    /// </param>
     public AuthorizationPipelineHost(
         string sqliteConnectionString,
         Action<IServiceCollection>? configureTestServices = null,
-        IReadOnlyDictionary<string, string?>? configuration = null)
+        IReadOnlyDictionary<string, string?>? configuration = null,
+        IReadOnlyDictionary<string, string?>? hostSettings = null)
     {
         _sqliteConnectionString = sqliteConnectionString;
         _configureTestServices = configureTestServices;
         _configuration = configuration;
+        _hostSettings = hostSettings;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -69,6 +78,7 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
         // only environment in which the UNMODIFIED production composition can boot from the
         // committed appsettings.json — which is precisely what we want to test.
         builder.UseEnvironment(Environments.Development);
+        foreach (var (key, value) in _hostSettings ?? new Dictionary<string, string?>()) builder.UseSetting(key, value);
 
         if (_configuration is not null)
         {

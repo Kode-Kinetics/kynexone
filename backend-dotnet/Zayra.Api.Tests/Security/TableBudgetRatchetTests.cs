@@ -79,7 +79,14 @@ public class TableBudgetRatchetTests
         // ContractRenewalCases: one review per expiring term (precedent final_settlements) — offer, approvals, employee
         // acceptance, Qiwa evidence and Apply; no existing table holds a case with these legal deadlines. HR owns it;
         // retained as labour-law evidence (class S).
-        DeclaredDbSets().Should().HaveCount(330,
+        // Selfie attendance v2 (migration 20261008000500 — the only two tables of the feature):
+        // AttendanceEvidence: one uploaded selfie's envelope — opaque single-use evidence id, owner, SHA-256, expiry, the
+        // punch that used it and its purge state. No existing table holds a single-use token with its own purge lifecycle
+        // (employee_documents are kept HR records; attendance_raw_events.photo_reference is a free device string). HR owns
+        // it; class E — blob purged by the selfie retention rule, envelope and sha256 kept.
+        // BiometricConsents: per-version consent to selfie attendance with withdrawal; nothing records consent today. HR
+        // owns it (DPO approves retention); kept for employment + the statutory minimum as the lawful basis.
+        DeclaredDbSets().Should().HaveCount(332,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

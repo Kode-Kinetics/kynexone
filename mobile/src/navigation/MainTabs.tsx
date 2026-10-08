@@ -33,6 +33,7 @@ import HRRequestDetailScreen from '@/features/requests/HRRequestDetailScreen';
 import NotificationsScreen from '@/features/notifications/NotificationsScreen';
 import AIAssistantScreen from '@/features/ai-assistant/AIAssistantScreen';
 import SettingsScreen from '@/features/settings/SettingsScreen';
+import SelfieConsentScreen from '@/features/attendance/SelfieConsentScreen';
 import SessionScreen from '@/features/settings/SessionScreen';
 import ChangePasswordScreen from '@/features/auth/ChangePasswordScreen';
 
@@ -93,6 +94,7 @@ function MoreStack() {
       {surfaces.has('aiAssistant') && <Stack.Screen name="AIAssistant" component={AIAssistantScreen} />}
       {surfaces.has('settings') && <Stack.Screen name="Settings" component={SettingsScreen} />}
       {surfaces.has('settings') && <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />}
+      {surfaces.has('settings') && <Stack.Screen name="SelfieConsent" component={SelfieConsentScreen} />}
       {surfaces.has('attendanceCorrection') && <Stack.Screen name="AttendanceCorrection" component={AttendanceCorrectionScreen} />}
       {surfaces.has('leave') && <Stack.Screen name="ApplyLeave" component={ApplyLeaveScreen} />}
       {surfaces.has('overtime') && <Stack.Screen name="Overtime" component={OvertimeScreen} />}

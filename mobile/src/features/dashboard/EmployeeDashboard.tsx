@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -14,11 +13,10 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
-import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
-import { attendanceApi, dashboardApi } from '@/api/services';
-import { getDeviceInfo } from '@/utils/device';
+import { dashboardApi } from '@/api/services';
+import { usePunchFlow, type AttendanceVerificationNotes } from '@/features/attendance/usePunchFlow';
 import { daysUntil, formatTime } from '@/utils/date';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
 import { navigateTo, type AppRoute } from '@/navigation/routes';
@@ -36,7 +34,6 @@ import {
 } from '@/components/ui';
 import type {
   EmployeeDashboard,
-  GeoLocation,
   LeaveBalance,
   PunchType,
   TodayAttendance,
@@ -47,15 +44,14 @@ interface Props {
 }
 
 export default function EmployeeDashboardScreen({ navigation }: Props) {
-  const { t } = useTranslation();
   const { theme } = useTheme();
   const { user } = useAuthStore();
   const [dashboard, setDashboard] = useState<EmployeeDashboard | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [punchLoading, setPunchLoading] = useState(false);
   const [punchFeedback, setPunchFeedback] = useState<PunchType | null>(null);
+  const [selfieAttached, setSelfieAttached] = useState(false);
   const loadDashboard = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setLoadError(null);
@@ -79,42 +75,15 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
     void loadDashboard(true);
   }, [loadDashboard]);
 
-  const handlePunch = useCallback(async (punchType: PunchType) => {
-    setPunchLoading(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Location required', t('attendance.locationRequired'));
-        return;
-      }
-
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
-      const geoLocation: GeoLocation = {
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        accuracy: location.coords.accuracy ?? undefined,
-        timestamp: location.timestamp,
-      };
-
-      await attendanceApi.punch({
-        punchType,
-        timestamp: new Date().toISOString(),
-        location: geoLocation,
-        deviceInfo: await getDeviceInfo(),
-      });
+  // Self-only punch: discovery, optional selfie (with consent), location with accuracy, refusals in plain words.
+  const punchFlow = usePunchFlow({
+    onPunched: async ({ punchType, selfieAttached }) => {
       await loadDashboard(true);
       setPunchFeedback(punchType);
-    } catch (error: any) {
-      Alert.alert(
-        'Could not record attendance',
-        error?.response?.data?.message ?? 'Please check your connection and try again.',
-      );
-    } finally {
-      setPunchLoading(false);
-    }
-  }, [loadDashboard, t]);
+      setSelfieAttached(selfieAttached);
+    },
+    onOpenConsent: () => navigateTo(navigation, 'SelfieConsent', user),
+  });
 
   const attendance = dashboard?.todayAttendance;
   const canClockIn = !attendance?.currentlyActive;
@@ -193,11 +162,13 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
                 attendance={attendance}
                 canClockIn={canClockIn}
                 canClockOut={canClockOut}
-                punchLoading={punchLoading}
-                onClockIn={() => void handlePunch('CLOCK_IN')}
-                onClockOut={() => void handlePunch('CLOCK_OUT')}
+                punchLoading={punchFlow.punching}
+                onClockIn={() => void punchFlow.punch('CLOCK_IN')}
+                onClockOut={() => void punchFlow.punch('CLOCK_OUT')}
                 onViewHistory={() => go('AttendanceHistory')}
                 feedback={punchFeedback}
+                selfieAttached={selfieAttached}
+                notes={punchFlow.notes}
               />
             </View>
             <View style={styles.deckSection}>
@@ -393,6 +364,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
+      {punchFlow.modal}
     </View>
   );
 }
@@ -426,6 +398,10 @@ export interface AttendanceCardProps {
   onClockOut: () => void;
   onViewHistory: () => void;
   feedback: PunchType | null;
+  /** The server stored this punch with a selfie ("selfie attached"; no face matching is claimed). */
+  selfieAttached?: boolean;
+  /** What applies to this employee's punch (selfie consent, site location check). */
+  notes?: AttendanceVerificationNotes;
 }
 
 export function AttendanceCard({
@@ -437,8 +413,11 @@ export function AttendanceCard({
   onClockOut,
   onViewHistory,
   feedback,
+  selfieAttached,
+  notes,
 }: AttendanceCardProps) {
   const { theme, reduceMotion } = useTheme();
+  const { t } = useTranslation();
   const feedbackProgress = useSharedValue(feedback ? 1 : 0);
   useEffect(() => {
     if (!feedback) {
@@ -531,9 +510,38 @@ export function AttendanceCard({
             <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>Attendance updated</Text>
             <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
               {feedback === 'CLOCK_IN' ? 'You’re clocked in and your shift is active.' : 'You’re clocked out and today’s hours are recorded.'}
+              {selfieAttached ? ` ${t('selfie.punch.selfieAttached')}` : ''}
             </Text>
           </View>
         </Animated.View>
+      ) : null}
+
+      {notes?.geofence ? (
+        <View style={styles.verificationNote}>
+          <Ionicons name="navigate-circle-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={[theme.typography.caption, styles.verificationText, { color: theme.colors.textSecondary }]}>
+            {notes.geofence}
+          </Text>
+        </View>
+      ) : null}
+      {notes?.selfie ? (
+        <View style={styles.verificationNote}>
+          <Ionicons name="camera-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={[theme.typography.caption, styles.verificationText, { color: theme.colors.textSecondary }]}>
+            {notes.selfie.text}
+          </Text>
+          <MotionPressable
+            onPress={notes.selfie.onPress}
+            haptic="selection"
+            accessibilityRole="button"
+            accessibilityLabel={`${notes.selfie.actionLabel}. ${notes.selfie.text}`}
+            contentStyle={styles.verificationAction}
+          >
+            <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+              {notes.selfie.actionLabel}
+            </Text>
+          </MotionPressable>
+        </View>
       ) : null}
 
       <View style={styles.punchRow}>
@@ -816,6 +824,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   punchRow: { flexDirection: 'row', gap: 10, marginTop: 17 },
+  verificationNote: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  verificationText: { flex: 1 },
+  verificationAction: { minHeight: 36, paddingHorizontal: 10, justifyContent: 'center', borderRadius: 12 },
   attendanceFeedback: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 16, marginTop: 14 },
   feedbackCopy: { flex: 1, gap: 2 },
   flexButton: { flex: 1 },
