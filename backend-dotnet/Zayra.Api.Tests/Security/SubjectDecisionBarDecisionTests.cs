@@ -194,6 +194,24 @@ public class SubjectDecisionBarDecisionTests
         (await db.LeaveRequests.SingleAsync()).EmployeeId.Should().Be(f.SubjectEmployeeId);
     }
 
+    [Theory]
+    [InlineData("Payroll Manager")]
+    [InlineData("Finance")]
+    [InlineData("Finance Approver")]
+    public async Task Leave_AnOrgWideCaller_WithNoCallerEmployeeOnTheScope_StillFilesTheirOwnLeave(string role)
+    {
+        await using var db = CreateDb();
+        var f = await SeedLeaveAsync(db);
+        // Org-wide: the scope carries no CallerEmployeeId; only the employee_id claim says who the caller is.
+        var controller = Leave(db, f.TenantId, callerEmployeeId: f.SubjectEmployeeId, inScope: null,
+            role, "approvals.read", "approvals.decide", "employees.read", "leave.read");
+
+        var result = await controller.Submit(f.SubmitFor(f.SubjectEmployeeId), CancellationToken.None);
+
+        result.Should().BeOfType<CreatedResult>();
+        (await db.LeaveRequests.SingleAsync()).EmployeeId.Should().Be(f.SubjectEmployeeId);
+    }
+
     // ── HR letters ───────────────────────────────────────────────────────────────
 
     [Fact]
@@ -453,13 +471,18 @@ public class SubjectDecisionBarDecisionTests
             Task.FromResult(new DataScope { Level = DataScopeLevel.Organization });
     }
 
+    /// <summary>
+    /// A fixed scope shaped like the real DataScopeService's: an org-wide scope (<paramref name="allowed"/>
+    /// null) carries NO CallerEmployeeId, because the real service returns it before resolving the caller's
+    /// employee. Who the caller is comes from their employee_id claim, which <see cref="Leave"/> always sets.
+    /// </summary>
     private sealed class FixedScope(int callerEmployeeId, int[]? allowed) : IDataScopeService
     {
         public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
             Task.FromResult(new DataScope
             {
                 Level = allowed is null ? DataScopeLevel.Organization : DataScopeLevel.Team,
-                CallerEmployeeId = callerEmployeeId,
+                CallerEmployeeId = allowed is null ? null : callerEmployeeId,
                 AllowedEmployeeIds = allowed,
             });
     }
