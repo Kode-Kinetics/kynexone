@@ -1479,6 +1479,112 @@ public sealed class EmployeeLoginLinkTests
         }
     }
 
+    /// <summary>
+    /// The initial work-email marker commits with the employee. A failure later in the same create (forced here on
+    /// the save that writes the history row) rolls the employee back too — no employee is ever left without its
+    /// setter, which would otherwise let its creator issue its credentials unnoticed.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ACreatedEmployee_NeverCommitsWithoutItsWorkEmailSetterMarker(bool manualCode)
+    {
+        var w = await SeedAsync();
+        var email = Email("atomic.hire");
+        var code = $"ATOM-{Guid.NewGuid():N}"[..18];
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fixture.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+            .AddInterceptors(new FailOnEmployeeHistory())
+            .Options))
+        {
+            var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(db, new AuditService(db), new UnusedStorage(), TestNotifications.For(db));
+            var create = () => service.CreateAsync(w.TenantId, new Zayra.Api.Application.Employees.EmployeeCreateRequest(
+                EmployeeCode: manualCode ? code : null, ManualEmployeeCode: manualCode, EnglishName: "Atomic Hire", ArabicName: null,
+                PreferredName: null, Gender: "Male", DateOfBirth: null, Nationality: "Saudi", MaritalStatus: null,
+                PersonalEmail: null, WorkEmail: email, MobileNumber: null, ProfilePhotoUrl: null,
+                CompanyId: w.CompanyA, BranchId: null, DepartmentId: null, DesignationId: null, GradeId: null,
+                CostCenterId: null, JobTitle: null, ReportingManagerEmployeeId: null, SecondLevelManagerEmployeeId: null,
+                EmploymentType: "Full-time", ContractType: "Unlimited", JoiningDate: DateTime.UtcNow.Date,
+                ConfirmationDate: null, ProbationStartDate: null, ProbationEndDate: null, NoticePeriodDays: null,
+                WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null, LeavePolicyCode: null,
+                AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null),
+                new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), default);
+            (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Be(FailOnEmployeeHistory.Message);
+        }
+
+        await using var verify = _fixture.CreateRetryingDb();
+        (await verify.Employees.IgnoreQueryFilters().AnyAsync(x => x.TenantId == w.TenantId && x.WorkEmail == email))
+            .Should().BeFalse("the failed create must not leave an employee behind without its work-email setter");
+    }
+
+    private sealed class FailOnEmployeeHistory : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public const string Message = "forced failure after the employee insert";
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context!.ChangeTracker.Entries<EmployeeHistory>().Any(e => e.State == EntityState.Added))
+                throw new InvalidOperationException(Message);
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A retried link on a login whose credential rotation still waits for the person reissues the invitation: a fresh
+    /// token supersedes the old one, delivered under the same rules — not the idempotent no-op that left a lost
+    /// delivery unrecoverable.
+    /// </summary>
+    [Fact]
+    public async Task ARetriedRotatingLink_ReissuesTheInvitation_AndSupersedesTheOldOne()
+    {
+        var w = await SeedAsync();
+        var creator = await AddUserAsync(w, Email("creator"), ["Admin"], groupScope: true);
+        var email = Email("retried");
+        Guid login;
+        await using (var db = _fixture.CreateRetryingDb())
+            login = Assert.IsType<AuthUserDto>(Assert.IsType<CreatedAtActionResult>((await Controller(db, w, creator)
+                .CreateUser(new CreateUserRequest(email, "Retried", Password, ["Reporting"]), default)).Result).Value).Id;
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
+
+        EmployeeLoginLinkResultDto first, retry;
+        await using (var db = _fixture.CreateRetryingDb())
+            first = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+        first.CredentialReset.Should().BeTrue();
+        await using (var db = _fixture.CreateRetryingDb())
+            retry = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "the first response was lost"), default)).Result);
+
+        retry.AlreadyLinked.Should().BeTrue();
+        retry.CredentialReset.Should().BeTrue("a pending rotation is reissued on retry");
+        retry.InvitationUrl.Should().Contain("/accept-invitation").And.NotBe(first.InvitationUrl);
+        retry.DeliveryMessage.Should().NotBeNullOrWhiteSpace();
+
+        static string TokenOf(string url) => Uri.UnescapeDataString(url[(url.IndexOf("#token=", StringComparison.Ordinal) + "#token=".Length)..]);
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var stale = () => Auth(db).AcceptInvitationAsync(new AcceptInvitationRequest(TokenOf(first.InvitationUrl!), PersonsNewPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+            await stale.Should().ThrowAsync<UnauthorizedAccessException>("the reissued invitation supersedes the first");
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            await Auth(db).AcceptInvitationAsync(new AcceptInvitationRequest(TokenOf(retry.InvitationUrl!), PersonsNewPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+        (await SignInAsync(w, email, PersonsNewPassword)).FindFirstValue("employee_id").Should().Be(employeeId.ToString());
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == login.ToString() && x.UserId == w.AdminId)).Should().Be(2, "each delivery that handed back a link is recorded");
+
+        // Once the person has accepted, a retry is the plain idempotent answer again.
+        await using (var db = _fixture.CreateRetryingDb())
+            Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                new LinkExistingLoginRequest(employeeId, login, "again"), default)).Result).CredentialReset.Should().BeFalse();
+    }
+
     private static EmployeesController Employees(ZayraDbContext db, World w)
     {
         var audit = new AuditService(db);

@@ -134,15 +134,28 @@ public static class WorkEmailSetterRule
             throw new WorkEmailSetterRefusedException(SetByCallerCode, SetByCallerMessage, SetByCallerMessageAr);
     }
 
-    /// <summary>True when the caller set the work email of any employee the login is live-linked to.</summary>
+    /// <summary>
+    /// Every living employee of the tenant this login belongs to: its live EmployeeUserAccounts mappings UNION the
+    /// legacy <c>Employee.UserAccountId</c> pointer (a state the link and work-email guards still support).
+    /// </summary>
+    public static async Task<IReadOnlyList<int>> EmployeesOfLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, CancellationToken ct)
+    {
+        var mapped = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
+            .Where(x => x.UserId == userId && !x.IsDeleted)
+            .Select(x => x.EmployeeId)
+            .ToListAsync(ct);
+        var pointed = await ScopedBypass.NullableTenantWide(db.Employees, tenantId, Why).AsNoTracking()
+            .Where(x => x.UserAccountId == userId && !x.IsDeleted)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+        return mapped.Concat(pointed).Distinct().ToList();
+    }
+
+    /// <summary>True when the caller set the work email of any employee the login belongs to (live link or legacy pointer).</summary>
     public static async Task<bool> IsCallerSetterForLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, Guid? callerUserId, CancellationToken ct)
     {
         if (callerUserId is null) return false;
-        var employeeIds = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
-            .Where(x => x.UserId == userId && !x.IsDeleted)
-            .Select(x => x.EmployeeId)
-            .Distinct()
-            .ToListAsync(ct);
+        var employeeIds = await EmployeesOfLoginAsync(db, tenantId, userId, ct);
         foreach (var employeeId in employeeIds)
             if (await IsCallerSetterAsync(db, tenantId, employeeId, callerUserId, ct)) return true;
         return false;
@@ -152,11 +165,7 @@ public static class WorkEmailSetterRule
     public static async Task ThrowIfCallerIsSetterForLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, Guid? callerUserId, CancellationToken ct)
     {
         if (callerUserId is null) return;
-        var employeeIds = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
-            .Where(x => x.UserId == userId && !x.IsDeleted)
-            .Select(x => x.EmployeeId)
-            .Distinct()
-            .ToListAsync(ct);
+        var employeeIds = await EmployeesOfLoginAsync(db, tenantId, userId, ct);
         foreach (var employeeId in employeeIds)
             await ThrowIfCallerIsSetterAsync(db, tenantId, employeeId, callerUserId, ct);
     }

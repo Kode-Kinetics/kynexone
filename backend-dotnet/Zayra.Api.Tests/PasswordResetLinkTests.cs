@@ -391,6 +391,43 @@ public sealed class PasswordResetLinkTests
             && x.UserId == actingAdmin && x.EntityId == invite.UserId.ToString())).Should().BeTrue();
     }
 
+    /// <summary>
+    /// A login linked to its employee ONLY by the legacy Employee.UserAccountId pointer (no live mapping row) is still
+    /// covered by the setter rule: the admin who set that employee's work email gets the reset link handed back, never
+    /// emailed (even with a working transport), and the disclosure is recorded.
+    /// </summary>
+    [Fact]
+    public async Task TheSetterOfAPointerOnlyEmployee_IsHandedTheResetLink_NeverEmailed()
+    {
+        await using var db = CreateDb();
+        var (tenant, user) = await SeedActiveUserAsync(db);
+        var actingAdmin = db.Users.IgnoreQueryFilters().Single(u => u.TenantId == tenant.Id && u.Email == ActingAdminEmail).Id;
+        var employee = new Employee
+        {
+            TenantId = tenant.Id, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-PTR", FullName = "Pointer Only",
+            EnglishName = "Pointer Only", WorkEmail = user.Email, Status = EmployeeStatuses.Active, UserAccountId = user.Id,
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        (await db.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.UserId == user.Id)).Should().BeFalse("pointer only");
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = tenant.Id, UserId = actingAdmin, Action = AccessManagementService.WorkEmailChangedAction,
+            EntityName = "Employee", EntityId = employee.Id.ToString(), CreatedAtUtc = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        var email = new FakeEmailService(configured: true);
+
+        var body = Body((await Controller(db, tenant.Id, email).IssuePasswordResetLink(user.Id, default)).Should().BeOfType<OkObjectResult>().Subject);
+
+        email.Sent.Should().BeEmpty("the setter's reset link is never mailed");
+        body.GetProperty("handOverInPerson").GetBoolean().Should().BeTrue();
+        body.GetProperty("emailSent").GetBoolean().Should().BeFalse();
+        body.GetProperty("resetUrl").GetString().Should().Contain("/reset-password");
+        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityId == user.Id.ToString()
+            && x.Action == "PasswordResetLinkDisclosedToAdmin" && x.PerformedBy == actingAdmin)).Should().BeTrue();
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────────
 
     private const string AppUrl = "https://app.kynexone.test";

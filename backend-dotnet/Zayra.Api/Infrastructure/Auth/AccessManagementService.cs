@@ -926,11 +926,54 @@ public class AccessManagementService : IAccessManagementService
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GroupAdminRequired());
             ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
 
-            // Idempotent: this exact link already live → answer it and write nothing.
+            // Idempotent: this exact link already live → answer it and write nothing...
             var sameLink = employeeLinks.FirstOrDefault(x => x.UserId == user.Id);
             if (sameLink is not null && employeeLinks.Count == 1 && employee.UserAccountId == user.Id)
             {
                 result = ToLinkResult(employee.Id, user, sameLink, alreadyLinked: true);
+                // ...EXCEPT a link whose credential rotation is still waiting for the person: its invitation was
+                // delivered after the commit, so a lost delivery (crash, cancellation, failed disclosure) would leave
+                // no way to finish. A retry reissues it — a fresh token supersedes the old one — and the controller
+                // delivers it under the same rules (emailed when allowed, else handed over and recorded).
+                if (sameLink is { RequiresPasswordSetup: true, InvitationAcceptedAtUtc: null }
+                    && !user.IsActive
+                    && await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, TwoPersonWhy).AsNoTracking()
+                        .AnyAsync(x => x.Action == LinkCredentialResetAction && x.EntityName == "User" && x.EntityId == user.Id.ToString(), ct))
+                {
+                    if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status))
+                        throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.EmployeeNotEligible(employee.Status));
+                    if (await WorkEmailSetterRule.RequiresConfirmationAsync(_db, tenantId, employee.Id, ct) && !request.ConfirmedWorkEmail)
+                        throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.ConfirmWorkEmail());
+                    sameLink.Status = "Invited";
+                    sameLink.InvitationTokenHash = rotationTokenHash;
+                    sameLink.InvitedAtUtc = linkedAtUtc;
+                    sameLink.InvitationExpiresAtUtc = rotationExpiresAtUtc;
+                    sameLink.UpdatedAtUtc = linkedAtUtc;
+                    sameLink.UpdatedBy = context.UserId;
+                    var reissuedBySetter = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+                    _db.AuditLogs.Add(AuthAuditEntry.Create(
+                        credentialResetAuditId,
+                        linkedAtUtc,
+                        LinkCredentialResetAction,
+                        "User",
+                        user.Id.ToString(),
+                        context with { TenantId = tenantId },
+                        System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            employeeId = employee.Id,
+                            invitationExpiresAtUtc = rotationExpiresAtUtc,
+                            reason = "rotation_invitation_reissued_on_retry",
+                            supersededPreviousInvitation = true
+                        })));
+                    await _db.SaveChangesAsync(ct);
+                    result = ToLinkResult(employee.Id, user, sameLink, alreadyLinked: true) with
+                    {
+                        CredentialReset = true,
+                        InvitationExpiresAtUtc = rotationExpiresAtUtc,
+                        InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
+                        HandOverInPerson = reissuedBySetter,
+                    };
+                }
                 return true;
             }
 
