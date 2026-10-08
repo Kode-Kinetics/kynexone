@@ -134,18 +134,15 @@ public class LeaveRequestsController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        // Employees submit for themselves. Delegated HR/manager submissions require BOTH the
-        // corresponding effective permission and employee data-scope; a permission claim must never
-        // widen a team/company boundary.
+        // Employees submit for themselves (the every-employee baseline). Filing on someone else's behalf
+        // is leave administration: it needs leave.write AND the employee in the caller's data scope; a
+        // permission claim must never widen a team/company boundary. approvals.decide used to count as
+        // that authority, which let Finance, Finance Approver and Payroll Manager file leave for anyone;
+        // deciding approvals is not filing them.
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        var isSelf = scope.CallerEmployeeId == req.EmployeeId;
-        if (!isSelf)
-        {
-            var hasWritePermission = User.Claims.Any(c => c.Type == "permission" &&
-                (c.Value == "employees.write" || c.Value == "approvals.decide"));
-            if (!hasWritePermission || !scope.CanAccessEmployee(req.EmployeeId))
-                return Forbid();
-        }
+        var isSelf = scope.CallerEmployeeId is int callerEmployeeId && callerEmployeeId == req.EmployeeId;
+        if (!isSelf && !(User.HasPermission("leave.write") && scope.CanAccessEmployee(req.EmployeeId)))
+            return Forbid();
 
         var leaveType = await _db.LeaveTypes
             .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
@@ -44,7 +45,8 @@ namespace Zayra.Api.Controllers;
 /// people, and the register records both.</para>
 ///
 /// <para>What IS gated: an employee can request and can download their own issued letter, and
-/// can do nothing else. Issuing, declining and template editing are HR-role only.</para>
+/// can do nothing else. Issuing, declining and template editing are HR-role only, and no one issues or
+/// declines a letter about themselves (<see cref="SubjectDecisionBar"/>).</para>
 /// </summary>
 [ApiController]
 [Route("api/hr-letters")]
@@ -53,6 +55,10 @@ public class HrLettersController : ControllerBase
 {
     private const string HrRoles = "Admin,HR Manager,HR Officer";
     private const string TemplateAdminRoles = "Admin,HR Manager";
+
+    // A letter about the caller (their own salary certificate, say) is issued by someone else in HR, never
+    // by them: a letter you sign about yourself can say anything. Requesting it through Self-Service is fine.
+    private const string SelfIssueRefusal = "This letter is about you. Someone else in HR has to issue it.";
 
     private readonly ZayraDbContext _db;
     private readonly IHrLetterIssuer _issuer;
@@ -213,6 +219,8 @@ public class HrLettersController : ControllerBase
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(req.EmployeeId)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), req.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(SelfIssueRefusal));
 
         var result = await _issuer.IssueAsync(await BuildCommandAsync(
             tenantId.Value, req.EmployeeId, req.LetterType, req.Language,
@@ -365,6 +373,8 @@ public class HrLettersController : ControllerBase
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), request.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(SelfIssueRefusal));
 
         if (request.Status != EmployeeDocumentRequestStatuses.Pending)
             return Conflict(new
@@ -412,6 +422,8 @@ public class HrLettersController : ControllerBase
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
         if (!scope.CanAccessEmployee(request.EmployeeId)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), request.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This request is yours. Someone else in HR has to decide it."));
         if (request.Status != EmployeeDocumentRequestStatuses.Pending)
             return Conflict(new { code = "request_not_pending", message = $"This request is already {request.Status}." });
 
