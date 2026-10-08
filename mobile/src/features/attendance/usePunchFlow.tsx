@@ -9,6 +9,7 @@ import type { GeoLocation, PunchType } from '@/types';
 import { SelfieCaptureModal } from './SelfieCaptureModal';
 import { deleteTempPhoto } from './selfieFiles';
 import {
+  demoNoticeText,
   mapPunchRefusal,
   planPunch,
   refusalPrompt,
@@ -252,6 +253,7 @@ export function usePunchFlow({ onPunched, onOpenConsent }: Options) {
       onUse={(uri) => void onUse(uri)}
       onSkip={selfie?.mode === 'optional' ? onSkip : undefined}
       onCancel={onCancel}
+      demoNotice={demoNoticeText(verification, i18n.language, tx('selfie.demo.notice'))}
     />
   );
 

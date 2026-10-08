@@ -22,6 +22,8 @@ interface Props {
   /** Punch without a selfie (optional mode). */
   onSkip?: () => void;
   onCancel: () => void;
+  /** The demo-exception notice (photos stored outside Saudi Arabia, deleted after a few days), or null. */
+  demoNotice?: string | null;
 }
 
 /**
@@ -36,7 +38,7 @@ interface Props {
  * background, and if it arrives after the capture stopped being wanted (CaptureGuard). While the app is
  * inactive (the iOS app switcher snapshots the screen), the preview is covered (previewActionFor).
  */
-export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse, onSkip, onCancel }: Props) {
+export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse, onSkip, onCancel, demoNotice }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
@@ -227,6 +229,12 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
 
         <View style={[styles.bottom, { paddingBottom: Math.max(insets.bottom, 18) }]}>
           <GlassSurface radius={26} tintColor="rgba(8,15,32,0.72)" contentStyle={styles.panel}>
+            {demoNotice ? (
+              <View style={styles.demoRow} accessibilityLabel={demoNotice}>
+                <Ionicons name="warning-outline" size={15} color="#FCD34D" />
+                <Text style={styles.demoText}>{demoNotice}</Text>
+              </View>
+            ) : null}
             {!permission ? (
               <View style={styles.centerRow}>
                 <ActivityIndicator color="#FFFFFF" />
@@ -324,6 +332,8 @@ const styles = StyleSheet.create({
   heading: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
   body: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },
   centerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
+  demoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  demoText: { color: '#FCD34D', fontSize: 12, lineHeight: 17, flex: 1 },
   buttonRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   secondaryRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6 },
   textAction: { minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 14 },

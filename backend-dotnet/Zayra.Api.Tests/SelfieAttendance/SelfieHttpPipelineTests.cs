@@ -286,7 +286,7 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
         return tenant.Id;
     }
 
-    private static async Task<(Guid UserId, int EmployeeId)> SeedEmployeeUserAsync(ZayraDbContext db, Guid tenantId, string name)
+    internal static async Task<(Guid UserId, int EmployeeId)> SeedEmployeeUserAsync(ZayraDbContext db, Guid tenantId, string name)
     {
         var company = new Company { TenantId = tenantId, LegalNameEn = $"{name} Co", TradeName = name, CountryCode = "SA", IsActive = true };
         db.Companies.Add(company);
@@ -315,7 +315,7 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
     }
 
     /// <summary>Mirrors AuthService.BuildAuthResponse for a group-scoped user with no entity grants.</summary>
-    private static async Task<string> MintAsync(ZayraDbContext db, ITokenService tokens, Guid userId)
+    internal static async Task<string> MintAsync(ZayraDbContext db, ITokenService tokens, Guid userId)
     {
         var user = await db.Users
             .Include(x => x.Tenant)

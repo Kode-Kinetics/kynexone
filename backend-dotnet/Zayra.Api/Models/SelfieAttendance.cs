@@ -87,6 +87,14 @@ public class AttendanceEvidence : ITenantOwned
     /// <summary>When a later SUCCESSFUL upload by the same employee cancelled this open waiver (they could take a selfie
     /// after all). A cancelled waiver can no longer be used.</summary>
     public DateTime? WaiverCancelledAtUtc { get; set; }
+
+    /// <summary>
+    /// Set at upload only for a selfie taken under the time-boxed demo exception (<c>SelfieDemoExceptionOptions</c>, since
+    /// <c>20261008000800</c>): the blob is deleted at this instant (capture + the exception's retention days), whether a
+    /// punch used it or not, overriding the payroll-lock and 120-day rules — and still after the exception has expired.
+    /// The shorter of this and the normal rule wins. Null for every other selfie.
+    /// </summary>
+    public DateTime? PurgeDueAtUtc { get; set; }
 }
 
 /// <summary>Values of <c>attendance_evidence.failed_reason</c> (CHECK <c>ck_attendance_evidence__failed_reason</c>).</summary>
@@ -218,6 +226,8 @@ public static class SelfieAttendanceModelConfiguration
                 // (The IS NOT NULL matters: NULL IN (...) is NULL, which a CHECK would let through.)
                 t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "(failed_reason IS NOT NULL AND failed_reason IN " + WaivableReasonsIn + ") OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
                 t.HasCheckConstraint("ck_attendance_evidence__waiver_once", "waiver_consumed_at_utc IS NULL OR waiver_cancelled_at_utc IS NULL");
+                // A demo-exception selfie is due after it was taken, never before.
+                t.HasCheckConstraint("ck_attendance_evidence__purge_due_after_capture", "purge_due_at_utc IS NULL OR purge_due_at_utc > created_at_utc");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.StorageKey).HasMaxLength(500).IsRequired();
@@ -252,6 +262,12 @@ public static class SelfieAttendanceModelConfiguration
             entity.HasIndex(x => new { x.TenantId, x.UsedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__used_purge_due")
                 .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
+            // Serves the purge of demo-exception selfies (20261008000800): one tenant's not-yet-purged rows whose stamped
+            // purge_due_at_utc has passed (SelfieEvidencePurger.FindDueItemsAsync, query d), and the scheduler's tenant scan.
+            // Partial: only stamped, unpurged rows (a handful), so it costs nothing for every other tenant.
+            entity.HasIndex(x => new { x.TenantId, x.PurgeDueAtUtc })
+                .HasDatabaseName("ix_attendance_evidence__purge_due_override")
+                .HasFilter("purge_due_at_utc IS NOT NULL AND purge_state IN ('Pending','Active')");
             // Serves HR's waived-punches report (review 3): one tenant's used waivers in a date range, newest first.
             entity.HasIndex(x => new { x.TenantId, x.WaiverConsumedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__waived_punches")
