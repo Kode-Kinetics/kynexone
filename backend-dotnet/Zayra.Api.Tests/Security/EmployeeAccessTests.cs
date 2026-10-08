@@ -298,6 +298,7 @@ public sealed class EmployeeAccessTests
 
         response.Emailed.Should().BeFalse();
         response.DeliveryMessage.Should().Be("No email delivery is configured, so print the sign-in slips.");
+        response.Issued.Should().OnlyContain(i => i.PrintReason == IssuedCodeDto.PrintBecauseNoEmail);
         response.Issued.Select(i => i.EmployeeId).Should().BeEquivalentTo([ok, pending]);
         var item = response.Issued.Single(i => i.EmployeeId == ok);
         item.Code.Should().MatchRegex("^[0-9]{8}$");
@@ -341,6 +342,7 @@ public sealed class EmployeeAccessTests
         var email = new RecordingEmail(configured: true);
         var response = await IssueAsync(w, w.HrOfficerId, [id], email: email, delivery: "print");
         response.Emailed.Should().BeFalse();
+        response.Issued.Single().PrintReason.Should().Be(IssuedCodeDto.PrintBecauseRequested);
         response.Issued.Single().Code.Should().MatchRegex("^[0-9]{8}$");
         email.Sent.Should().BeEmpty();
         await using var db = _fx.CreateDb();
@@ -382,6 +384,7 @@ public sealed class EmployeeAccessTests
 
         var item = response.Issued.Should().ContainSingle().Subject;
         item.Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
+        item.PrintReason.Should().Be(IssuedCodeDto.PrintBecauseSetter);
         item.Code.Should().MatchRegex("^[0-9]{8}$");
         response.Emailed.Should().BeFalse();
         response.DeliveryMessage.Should().Be("You entered these work emails, so print the slips and hand them over in person.");
@@ -422,6 +425,8 @@ public sealed class EmployeeAccessTests
         var mail = new RecordingEmail(configured: true);
         var bulk = await IssueAsync(w, w.HrOfficerId, [mine, theirs], email: mail);
         bulk.Issued.Single(i => i.EmployeeId == mine).Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
+        bulk.Issued.Single(i => i.EmployeeId == mine).PrintReason.Should().Be(IssuedCodeDto.PrintBecauseSetter);
+        bulk.Issued.Single(i => i.EmployeeId == theirs).PrintReason.Should().BeNull("emailed codes carry no print reason");
         bulk.Issued.Single(i => i.EmployeeId == mine).Code.Should().NotBeNull();
         bulk.Issued.Single(i => i.EmployeeId == theirs).Delivery.Should().Be(IssuedCodeDto.EmailDelivery);
         bulk.Issued.Single(i => i.EmployeeId == theirs).Code.Should().BeNull();
@@ -691,6 +696,76 @@ public sealed class EmployeeAccessTests
         await AddEmployeeAsync(other, "", code: "SC-FOREIGN");
         (await Service(db).BackfillWorkEmailsAsync(w.TenantId, new WorkEmailBackfillRequest([new("SC-FOREIGN", $"f@{w.Domain}")], DryRun: true),
             EntityScopeContext.GroupLevel, Ctx(w.HrOfficerId, w.TenantId), default)).NotFound.Should().BeEquivalentTo(["SC-FOREIGN"]);
+    }
+
+    [Fact]
+    public async Task TheCard_RunsTheSameChecksAsIssuing_AnHrManagerIsNotOfferedAnAdmin()
+    {
+        var w = await SeedAsync();
+        var admin = await AddEmployeeAsync(w, await EmailOfAsync(w.AdminId));
+        await AddLinkAsync(w, admin, w.AdminId);
+        await using var db = _fx.CreateDb();
+        var card = await Service(db).GetAsync(w.TenantId, admin, EntityScopeContext.GroupLevel, Ctx(w.HrManagerId, w.TenantId), true, true, default);
+        card!.CanIssue.Should().BeFalse();
+        card.ReasonCode.Should().Be(EmployeeAccessService.Skip.Privileged);
+        Reason(await IssueAsync(w, w.HrManagerId, [admin], canReset: true), admin).Should().Be(card.ReasonCode);
+
+        // A plain employee's card stays issuable for the same caller.
+        var plain = await AddStagedAsync(w, $"plain.card@{w.Domain}");
+        (await Service(db).GetAsync(w.TenantId, plain, EntityScopeContext.GroupLevel, Ctx(w.HrManagerId, w.TenantId), true, true, default))!
+            .CanIssue.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AccessStopped_IncludesFormerEmployees_OtherStatesDoNot()
+    {
+        var w = await SeedAsync();
+        var leaver = await AddStagedAsync(w, $"leaver@{w.Domain}");
+        await UpdateEmployeeAsync(leaver, e => e.Status = "Terminated");
+        var current = await AddStagedAsync(w, $"current@{w.Domain}");
+        // A former employee who is NOT stopped (offboarded, serving notice, login still on) stays out of every other state.
+        var notice = await AddStagedAsync(w, $"notice@{w.Domain}");
+        await UpdateEmployeeAsync(notice, e => e.Status = EmployeeStatuses.Offboarded);
+
+        await using var db = _fx.CreateDb();
+        var stopped = await Employees(db).SearchAsync(w.TenantId, null, null, null, null, null, null, "stopped", 1, 50, default);
+        stopped.Items.Select(i => i.Id).Should().BeEquivalentTo([leaver]);
+        stopped.Items.Single().AccessState.Should().Be(EmployeeAccessStates.Stopped);
+        var notStarted = await Employees(db).SearchAsync(w.TenantId, null, null, null, null, null, null, "not_started", 1, 50, default);
+        notStarted.Items.Select(i => i.Id).Should().Contain(current).And.NotContain([leaver, notice]);
+        var all = await Employees(db).SearchAsync(w.TenantId, null, null, null, null, null, null, null, 1, 50, default);
+        all.Items.Select(i => i.Id).Should().NotContain([leaver, notice], "the plain list still excludes former employees");
+
+        var summary = await Service(db).SummaryAsync(w.TenantId, EntityScopeContext.GroupLevel, null, default);
+        summary["stopped"].Should().Be(1);
+        summary["not_started"].Should().Be(1, "the offboarded employee is not counted under another state");
+    }
+
+    [Fact]
+    public async Task BackfillSave_ReturnsEachRowsStateAndWhetherTheCallerCanIssue()
+    {
+        var w = await SeedAsync();
+        await AddEmployeeAsync(w, "", code: "BV-READY");
+        await AddEmployeeAsync(w, "", code: "BV-DRAFT", status: EmployeeStatuses.Draft);
+        var rows = new List<WorkEmailBackfillRow> { new("BV-READY", $"ready.bv@{w.Domain}"), new("BV-DRAFT", $"draft.bv@{w.Domain}") };
+
+        var dry = await BackfillAsync(w, rows, dryRun: true);
+        dry.Matched.Should().OnlyContain(m => m.AccessState == null && m.CanIssue == null);
+        dry.EmailDelivery.Should().BeNull();
+
+        var saved = await BackfillAsync(w, rows, dryRun: false);
+        saved.EmailDelivery.Should().BeFalse();
+        var ready = saved.Matched.Single(m => m.EmployeeCode == "BV-READY");
+        ready.AccessState.Should().Be(EmployeeAccessStates.NotStarted);
+        ready.CanIssue.Should().BeTrue();
+        ready.ReasonCode.Should().BeNull();
+        var draft = saved.Matched.Single(m => m.EmployeeCode == "BV-DRAFT");
+        draft.CanIssue.Should().BeFalse();
+        draft.ReasonCode.Should().Be(EmployeeAccessService.Skip.AwaitingApproval);
+        // The same answer GET status gives the same caller.
+        var card = await GetAsync(w, ready.EmployeeId, w.HrOfficer2Id);
+        card!.State.Should().Be(ready.AccessState);
+        card.CanIssue.Should().Be(ready.CanIssue!.Value);
     }
 
     [Fact]
