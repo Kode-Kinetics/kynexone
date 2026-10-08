@@ -25,6 +25,11 @@ test('login preserves password exactly', () => {
   });
 });
 
+test('login without a company ID sends no tenantSlug (the server resolves it from the email)', () => {
+  assert.deepEqual(publicLoginInput('a@evostel.com', 'pw', '  '), { email: 'a@evostel.com', password: 'pw' });
+  assert.deepEqual(publicLoginInput('a@evostel.com', 'pw'), { email: 'a@evostel.com', password: 'pw' });
+});
+
 test('reset and invitation are token-first, contain no email, and preserve passwords', () => {
   const password = '  Exact Password!  ';
   const reset = publicResetInput('reset-secret', password, ' Demo ');

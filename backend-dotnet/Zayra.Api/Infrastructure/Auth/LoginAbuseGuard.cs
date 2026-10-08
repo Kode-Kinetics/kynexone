@@ -166,6 +166,21 @@ public sealed class LoginAbuseGuard : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// True when <paramref name="token"/> is a valid known-device cookie issued to a DIFFERENT principal than
+    /// <paramref name="principalId"/> (welcome-code redeem refuses with sign_out_first, F11). A cookie for the same
+    /// principal (any credential version) or an unreadable one is not "another".
+    /// </summary>
+    public bool KnownDeviceBelongsToAnother(string? token, Guid principalId)
+    {
+        if (_knownDevice is null || string.IsNullOrEmpty(token)) return false;
+        string payload;
+        try { payload = _knownDevice.Unprotect(token); }
+        catch (System.Security.Cryptography.CryptographicException) { return false; }
+        var parts = payload.Split('|');
+        return parts.Length >= 3 && Guid.TryParseExact(parts[^3], "N", out var owner) && owner != principalId;
+    }
+
     public bool IsKnownDevice(string? token, string scope, string tenant, string email, Guid principalId, string credentialVersion)
         => TryReadKnownDevice(token, scope, tenant, email, principalId, credentialVersion, out _);
 

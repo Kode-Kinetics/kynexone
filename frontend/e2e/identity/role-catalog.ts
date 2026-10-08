@@ -128,8 +128,13 @@ function parsePermissionKeys(source: string): string[] {
   return [...keys].sort();
 }
 
-/** Evaluate `x.Key.StartsWith("a") || ... || x.Key is "b" or "c"` — and nothing else. */
+/** Evaluate `x.Key.StartsWith("a") || (x.Key.StartsWith("p") && !x.Key.StartsWith("q")) || ... || x.Key is "b" or "c"`
+ *  — and nothing else. The `(p && !q)` group is "prefix p, except prefix q" (e.g. HR Director's employees.* without
+ *  employees.access.*). */
 function evaluatePredicate(role: string, predicate: string, catalog: string[]): { keys: string[]; unknown: string[] } {
+  const exceptRe = /\(\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*&&\s*!\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*\)/g;
+  const excepts = [...predicate.matchAll(exceptRe)].map((m) => ({ prefix: m[1], without: m[2] }));
+  predicate = predicate.replace(exceptRe, '');
   const prefixes = [...predicate.matchAll(/x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
   let exact: string[] = [];
   const isClause = /x\.Key\s+is\s+((?:"[^"]+"\s*(?:or\s*)?)+)/.exec(predicate);
@@ -148,7 +153,8 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[]): 
     );
   }
   return {
-    keys: catalog.filter((key) => prefixes.some((p) => key.startsWith(p)) || exact.includes(key)),
+    keys: catalog.filter((key) => prefixes.some((p) => key.startsWith(p)) || exact.includes(key)
+      || excepts.some((e) => key.startsWith(e.prefix) && !key.startsWith(e.without))),
     unknown: exact.filter((key) => !catalog.includes(key)),
   };
 }

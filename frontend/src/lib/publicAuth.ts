@@ -73,3 +73,29 @@ export function consumeFragmentToken(location: FragmentLocation, history: Fragme
   }
   return token;
 }
+
+/** A validation-problem key that names the workspace: `tenantSlug`, `TenantSlug`, `$.tenantSlug`, `request.TenantSlug`. */
+const WORKSPACE_ERROR_KEY = /(^|[.$])tenantslug$/i;
+
+interface ApiErrorLike {
+  response?: { status?: number; data?: unknown } | null;
+}
+
+/**
+ * The server needs the company ID before it can go on. Two shapes mean that, and both must:
+ *  - this build's API: 400 `{ code: 'workspace_required' }` (the email's domain is ambiguous);
+ *  - the API before employee access (still live while the frontend deploys first): the slug was a
+ *    required field, so leaving it out is a standard validation problem,
+ *    400 `{ title: 'One or more validation errors occurred.', errors: { TenantSlug: [...] } }`.
+ * Treating the second as "check the details you entered" left every user unable to sign in.
+ */
+export function isWorkspaceRequired(err: unknown): boolean {
+  const response = (err as ApiErrorLike | null | undefined)?.response;
+  if (!response || response.status !== 400) return false;
+  const data = response.data as { code?: unknown; errors?: unknown } | null | undefined;
+  if (!data || typeof data !== 'object') return false;
+  if (data.code === 'workspace_required') return true;
+  const errors = data.errors;
+  if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return false;
+  return Object.keys(errors).some((key) => WORKSPACE_ERROR_KEY.test(key.trim()));
+}

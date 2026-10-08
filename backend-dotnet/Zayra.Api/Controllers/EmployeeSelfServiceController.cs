@@ -337,6 +337,11 @@ public class EmployeeSelfServiceController : ControllerBase
         if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "approve", cancellationToken) is { } refusal) return refusal;
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
+        // Segregation of duties (employee access F1): the subject is already refused above (SubjectDecisionBar,
+        // #209); whoever was shown this employee's welcome code may not approve their changes for 30 days after redeem.
+        if (GetUserId() is Guid deciderId
+            && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, employee.Id, deciderId, DateTime.UtcNow, cancellationToken))
+            return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
         foreach (var (field, value) in values)
         {

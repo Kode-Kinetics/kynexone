@@ -12,14 +12,24 @@ export function normalizeEmail(value: string): string {
   return value.trim();
 }
 
-export function publicLoginInput(email: string, password: string, workspace: string) {
+/** `{ tenantSlug }` only when one was given: without it the server finds the company from the email. */
+export function optionalWorkspace(value: string | null | undefined): { tenantSlug?: string } {
+  const workspace = normalizeWorkspace(value);
+  return workspace ? { tenantSlug: workspace } : {};
+}
+
+/**
+ * The company ID is OPTIONAL: the server resolves the company from the email's domain and answers
+ * 400 `{ code: 'workspace_required' }` only when it cannot, and the sign-in screen then asks for it.
+ */
+export function publicLoginInput(email: string, password: string, workspace?: string | null) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail) throw new Error('Work email is required.');
   return {
     email: normalizedEmail,
     // Passwords are credentials, not identifiers. Preserve every code unit.
     password,
-    tenantSlug: requireWorkspace(workspace),
+    ...optionalWorkspace(workspace),
   };
 }
 

@@ -11,18 +11,21 @@ public sealed class RequiredWorkspaceAttribute : ValidationAttribute
         value is string workspace && !string.IsNullOrWhiteSpace(workspace);
 }
 
+/// <summary>TenantSlug is optional: without it the email's domain routes to a workspace on a unique match only,
+/// otherwise the answer is 400 <c>{ code: "workspace_required" }</c> (contract §4).</summary>
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record RefreshTokenRequest([Required] string RefreshToken);
 
 public record LogoutRequest([Required] string RefreshToken);
 
+/// <summary>Without a workspace nothing is mailed: 400 <c>workspace_required</c> (F5).</summary>
 public record ForgotPasswordRequest(
     [Required, EmailAddress] string Email,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record ResetPasswordRequest(
     [Required] string ResetToken,
@@ -229,9 +232,24 @@ public record AuthUserDto(
     // Company-scope capability payload (final batch): drives the frontend company switcher.
     string AccountType = "SingleCompany",
     bool IsGroupScope = false,
-    IReadOnlyCollection<CompanyAccessDto>? Companies = null);
+    IReadOnlyCollection<CompanyAccessDto>? Companies = null)
+{
+    /// <summary>F1: non-null while a sign-in code HR issued for this ACTIVE login is live ("HR gave you a new sign-in code on {date}").</summary>
+    public PendingResetNoticeDto? PendingResetNotice { get; init; }
+}
 
-public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc);
+public record PendingResetNoticeDto(DateTime Date);
+
+/// <summary>GET api/auth/password-policy — what the welcome screen's live ticks check.</summary>
+public record PasswordPolicyDto(int MinLength);
+
+public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc)
+{
+    /// <summary>Whether the RESOLVED workspace can send email at all (never whether the address exists). Lets the
+    /// employee screens say "Ask HR for a new welcome code" when nothing can be mailed. False for an unknown workspace (no enumeration).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EmailDeliveryConfigured { get; init; }
+}
 
 public record RoleDto(
     Guid Id,

@@ -38,6 +38,14 @@ public class AuthController : ControllerBase
         // account overall (unless this browser is a known device for it), and — when the address
         // identifies one client — the address's budget for failures against unknown accounts.
         var client = _abuse?.Client(HttpContext);
+        // Workspace optional (contract §4 / F5): resolved from the email's domain BEFORE the abuse windows, so the
+        // per-account limits key on the same workspace either way. Zero or several matches: the Company ID field.
+        if (string.IsNullOrWhiteSpace(request.TenantSlug))
+        {
+            var routed = await _authService.ResolveWorkspaceAsync(request.Email, cancellationToken);
+            if (routed is null) return WorkspaceRequired();
+            request = request with { TenantSlug = routed };
+        }
         var tenant = request.TenantSlug ?? string.Empty;
         var email = request.Email ?? string.Empty;
         if (_abuse is not null && client is { } address
@@ -84,7 +92,54 @@ public class AuthController : ControllerBase
         {
             return Refused(Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.BusyError, ex.Message);
         }
+        catch (Zayra.Api.Infrastructure.Auth.WorkspaceRequiredException)
+        {
+            return WorkspaceRequired();
+        }
     }
+
+    private IActionResult WorkspaceRequired() =>
+        BadRequest(new { code = Zayra.Api.Infrastructure.Auth.WorkspaceResolver.WorkspaceRequiredCode, message = "Enter your Company ID." });
+
+    /// <summary>
+    /// The employee proves the welcome code HR gave them and sets their own password. Never issues a session: the
+    /// client signs in with the new password, using the returned <c>tenantSlug</c> (F12).
+    /// </summary>
+    [HttpPost("welcome/redeem")]
+    [AllowAnonymous]
+    [EnableRateLimiting("auth_welcome")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> RedeemWelcomeCode(Zayra.Api.Infrastructure.Auth.WelcomeRedeemRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Guid? sessionTenant = Guid.TryParse(User.FindFirstValue("tenant_id"), out var t) ? t : null;
+            var presenter = new Zayra.Api.Infrastructure.Auth.WelcomeCodeRedeemer.Presenter(
+                User.Identity?.IsAuthenticated == true ? GetUserId() : null,
+                sessionTenant,
+                Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.KnownDeviceCookie(Request, "tenant"));
+            return Ok(await _authService.RedeemWelcomeCodeAsync(request, GetContext(), presenter, cancellationToken));
+        }
+        catch (Zayra.Api.Infrastructure.Auth.WelcomeRedeemRefusedException ex)
+        {
+            if (ex.Status == StatusCodes.Status429TooManyRequests)
+            {
+                Response.Headers.RetryAfter = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.JitteredRetryAfterSeconds();
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { code = ex.Code });
+            }
+            // password_policy carries `message` for logs only; the client shows its own copy for every code.
+            return ex.Code == Zayra.Api.Infrastructure.Auth.WelcomeCodeRedeemer.Codes.PasswordPolicy
+                ? BadRequest(new { code = ex.Code, message = ex.Detail })
+                : BadRequest(new { code = ex.Code });
+        }
+    }
+
+    /// <summary>The workspace's minimum password length for the welcome screen's live ticks (F10). 10 when unknown.</summary>
+    [HttpGet("password-policy")]
+    [AllowAnonymous]
+    [EnableRateLimiting("auth_welcome")]
+    public async Task<ActionResult<PasswordPolicyDto>> PasswordPolicy([FromQuery] string? tenantSlug, CancellationToken cancellationToken)
+        => Ok(await _authService.GetPasswordPolicyAsync(tenantSlug, cancellationToken));
 
     [HttpPost("refresh")]
     [AllowAnonymous]
@@ -107,9 +162,12 @@ public class AuthController : ControllerBase
     [HttpPost("forgot-password")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")] // throttle to prevent reset-email bombing / enumeration abuse
-    public async Task<ActionResult<ForgotPasswordResponse>> ForgotPassword(ForgotPasswordRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest request, CancellationToken cancellationToken)
     {
-        return Ok(await _authService.ForgotPasswordAsync(request, GetContext(), cancellationToken));
+        // F5: no workspace → nothing is mailed; the client asks for the Company ID.
+        if (string.IsNullOrWhiteSpace(request.TenantSlug)) return WorkspaceRequired();
+        try { return Ok(await _authService.ForgotPasswordAsync(request, GetContext(), cancellationToken)); }
+        catch (Zayra.Api.Infrastructure.Auth.WorkspaceRequiredException) { return WorkspaceRequired(); }
     }
 
     [HttpPost("reset-password")]

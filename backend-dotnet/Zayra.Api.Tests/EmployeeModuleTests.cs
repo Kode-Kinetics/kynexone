@@ -37,7 +37,12 @@ public class EmployeeModuleTests
         // master data must exist or the approve legitimately 422s.
         db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
         db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
-        db.Branches.Add(new Branch { TenantId = tenantId, Code = "DXB", NameEn = "Dubai", IsActive = true });
+        // UPDATED (employee-access contract §3): the login is staged only on the employing company's official email
+        // domain, so the branch now belongs to a company that has one.
+        var zayraCo = new Company { TenantId = tenantId, LegalNameEn = "Zayra", TradeName = "Zayra", CountryCode = "AE", Jurisdiction = "AE", EmailDomain = "zayra.local" };
+        db.Companies.Add(zayraCo);
+        await db.SaveChangesAsync();
+        db.Branches.Add(new Branch { TenantId = tenantId, CompanyId = zayraCo.Id, Code = "DXB", NameEn = "Dubai", IsActive = true });
         await db.SaveChangesAsync();
         var drafter = Guid.NewGuid();
         var approver = Guid.NewGuid();

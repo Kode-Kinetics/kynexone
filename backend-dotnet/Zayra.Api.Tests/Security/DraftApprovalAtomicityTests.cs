@@ -102,24 +102,26 @@ public sealed class DraftApprovalAtomicityTests
     }
 
     [Fact]
-    public async Task ExistingSameEmailIdentity_FailsClosedWithoutPartialEmployee()
+    public async Task ExistingSameEmailIdentity_IsNeverAdopted_AndTheHireIsBlocked()
     {
+        // UPDATED (employee-access contract §3): a work email that is already another login's username no longer refuses
+        // the approval. The hire is activated WITHOUT a login and shows as blocked
+        // (email_belongs_to_existing_login) for an administrator to resolve through the two-person Link — the existing
+        // login is never adopted, renamed or given a grant.
         await using var fixture = await Fixture.CreateAsync(withIdentityCollision: true);
 
         var result = await fixture.Controller.ApproveDraft(fixture.DraftId, default);
-        result.Result.Should().BeOfType<ConflictObjectResult>();
+        result.Result.Should().BeOfType<OkObjectResult>();
 
         fixture.Db.ChangeTracker.Clear();
-        (await fixture.Db.Employees.IgnoreQueryFilters().CountAsync()).Should().Be(0);
-        (await fixture.Db.Users.IgnoreQueryFilters().CountAsync()).Should().Be(1);
-        (await fixture.Db.EmployeeUserAccounts.IgnoreQueryFilters().CountAsync()).Should().Be(0);
+        var employee = await fixture.Db.Employees.IgnoreQueryFilters().SingleAsync();
+        employee.UserAccountId.Should().BeNull();
+        (await fixture.Db.Users.IgnoreQueryFilters().CountAsync()).Should().Be(1, "no second login is created");
+        (await fixture.Db.EmployeeUserAccounts.IgnoreQueryFilters().CountAsync()).Should().Be(0, "the existing login is not adopted");
         (await fixture.Db.UserEntityAccesses.IgnoreQueryFilters().CountAsync()).Should().Be(0);
-        (await fixture.Db.EmployeeHistories.IgnoreQueryFilters().CountAsync()).Should().Be(0);
-        (await fixture.Db.AuditLogs.IgnoreQueryFilters()
-            .CountAsync(x => x.Action == "employee.activated")).Should().Be(0);
-        (await fixture.Db.EmployeeDrafts.IgnoreQueryFilters().SingleAsync()).Status
-            .Should().Be("PendingHrApproval");
-        (await fixture.Db.EmployeeDocuments.IgnoreQueryFilters().SingleAsync()).EmployeeId.Should().BeNull();
+        var state = (await EmployeeAccessStates.EvaluateAsync(fixture.Db, employee.TenantId!.Value, new[] { employee.Id }, DateTime.UtcNow, default))[employee.Id].State;
+        state.State.Should().Be(EmployeeAccessStates.Blocked);
+        state.BlockedCode.Should().Be(EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToExistingLogin);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -170,7 +172,9 @@ public sealed class DraftApprovalAtomicityTests
                 RegistrationNumber = $"RC-{Guid.NewGuid():N}",
                 CountryCode = "AE",
                 Jurisdiction = "AE",
-                DefaultCurrency = "AED"
+                DefaultCurrency = "AED",
+                // The login is staged only on the company's official email domain (employee-access contract §3).
+                EmailDomain = "example.test"
             };
             var branch = new Branch
             {

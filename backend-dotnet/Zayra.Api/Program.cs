@@ -335,6 +335,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.EmployeeAccessService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceVerificationService>();
@@ -698,6 +699,18 @@ builder.Services.AddRateLimiter(o =>
             {
                 PermitLimit              = rl.GetValue("LoginPermitLimit", 10),
                 Window                   = TimeSpan.FromSeconds(rl.GetValue("LoginWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
+    // Welcome-code redeem and the password-policy probe (Amendment 3 F6): 30 per minute per client address.
+    o.AddPolicy("auth_welcome", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            RateLimitPartitionKey(ctx),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("WelcomePermitLimit", 30),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("WelcomeWindowSeconds", 60)),
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));

@@ -12435,6 +12435,31 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
+                    b.Property<DateTime?>("WelcomeCodeExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_expires_at_utc");
+
+                    b.Property<int>("WelcomeCodeFailedAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("welcome_code_failed_attempts");
+
+                    b.Property<string>("WelcomeCodeHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("welcome_code_hash");
+
+                    b.Property<DateTime?>("WelcomeCodeIssuedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_issued_at_utc");
+
+                    b.Property<Guid?>("WelcomeCodeIssuedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("welcome_code_issued_by");
+
+                    b.Property<DateTime?>("WelcomeCodeRedeemedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_redeemed_at_utc");
+
                     b.HasKey("Id");
 
                     b.HasIndex("UserId");

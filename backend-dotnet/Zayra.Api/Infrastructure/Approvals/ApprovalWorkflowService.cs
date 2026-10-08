@@ -282,13 +282,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         string? blockedReason = null;
         if (context is not null && !canDecide && approval.Status == "Pending")
         {
-            if (bar is DecisionBar.Subject or DecisionBar.DecidedEarlierStep)
+            if (bar is DecisionBar.Subject or DecisionBar.DecidedEarlierStep or DecisionBar.CredentialHandler)
             {
                 // Same shape as maker-checker below: say why, then who can unblock it. A sole Admin who is
                 // the subject, or who decided step 1, must be told nobody else can ever decide it.
-                blockedReason = bar == DecisionBar.Subject
-                    ? "This request is about you, so someone else must decide it."
-                    : "You already decided an earlier step of this request, so a different person must decide this one.";
+                blockedReason = bar switch
+                {
+                    DecisionBar.Subject => "This request is about you, so someone else must decide it.",
+                    DecisionBar.CredentialHandler => Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message,
+                    _ => "You already decided an earlier step of this request, so a different person must decide this one.",
+                };
                 blockedReason += await AnyoneElseCanDecideAsync(approval, otherDeciders, cancellationToken)
                     ? $" It is waiting for {OwnerLabel(approval)}."
                     : NobodyElseSentence(approval, "decide", canWithdraw: false);
@@ -453,6 +456,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 throw new InvalidOperationException(SubjectBarMessage);
             case DecisionBar.DecidedEarlierStep:
                 throw new InvalidOperationException(EarlierStepBarMessage);
+            case DecisionBar.CredentialHandler:
+                throw new InvalidOperationException(Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message);
         }
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
@@ -779,7 +784,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         "Segregation of duties: you already decided an earlier step of this request, so a different approver must decide this one.";
 
     /// <summary>Why the caller may never decide this request, whatever their role or permissions.</summary>
-    private enum DecisionBar { None, Requester, Subject, DecidedEarlierStep }
+    private enum DecisionBar { None, Requester, Subject, DecidedEarlierStep, CredentialHandler }
 
     /// <summary>
     /// The segregation-of-duties bars, in one place for the decision itself, canDecide and the
@@ -805,6 +810,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         }
         // Every load of a request for a decision or a listing includes its decision ledger.
         if (approval.Decisions.Any(x => x.DecidedByUserId == userId)) return DecisionBar.DecidedEarlierStep;
+        // Whoever was shown the subject's welcome code decides nothing about them for 30 days after the redeem (F1).
+        if (subject is int handledSubject
+            && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, approval.TenantId, handledSubject, userId, DateTime.UtcNow, cancellationToken))
+            return DecisionBar.CredentialHandler;
         return DecisionBar.None;
     }
 

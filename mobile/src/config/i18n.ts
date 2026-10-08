@@ -16,6 +16,7 @@ import {
   type AppLanguage,
 } from './languageDirection';
 import { mfaAr, mfaEn } from './mfaStrings';
+import { welcomeAr, welcomeEn } from './welcomeStrings';
 import { selfieAr, selfieEn } from './selfieStrings';
 
 export type { AppLanguage };
@@ -78,6 +79,7 @@ export const en = {
     firstLogin: 'Welcome! Please set your password to continue.',
   },
   mfa: mfaEn,
+  signin: welcomeEn,
   selfie: selfieEn,
   nav: {
     home: 'Home',
@@ -336,6 +338,7 @@ const ar: TranslationResources = {
     firstLogin: 'مرحباً! يرجى تعيين كلمة المرور للمتابعة.',
   },
   mfa: mfaAr,
+  signin: welcomeAr,
   selfie: selfieAr,
   nav: {
     home: 'الرئيسية',

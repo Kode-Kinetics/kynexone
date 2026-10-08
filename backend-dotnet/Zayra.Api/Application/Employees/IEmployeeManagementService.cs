@@ -12,6 +12,9 @@ public interface IEmployeeManagementService
 
     /// <summary>People-list search with the server-side readiness / import-gap deep-link filters.</summary>
     Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken);
+
+    /// <summary>As above, plus the self-service access state filter (<c>access=</c>, comma-separated states).</summary>
+    Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken);
     Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken);
     /// <param name="includeSensitive">The CALLER's own sensitive-data entitlement (EmployeesController.CanViewSensitive()).
     /// Defaults to FALSE so a forgotten call site masks rather than leaks: a mutation response must never

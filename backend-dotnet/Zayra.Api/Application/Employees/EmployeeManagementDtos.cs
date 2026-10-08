@@ -152,6 +152,9 @@ public record EmployeeDetailDto
     /// <summary>Set on a create response only: the new work email is already an existing login's username. A warning,
     /// not a refusal — check it is the same person before linking that login to this record.</summary>
     public bool WorkEmailHasExistingLogin { get; init; }
+    /// <summary>Set on a create response when the work email was left blank: the name-derived address HR may accept.
+    /// It is NOT saved — a derived address is a suggestion only (employee-access contract §3).</summary>
+    public string? SuggestedWorkEmail { get; init; }
     public string Phone { get; init; } = string.Empty;
     // ── Demographics ──────────────────────────────────────────────────────────────
     public string Gender { get; init; } = string.Empty;
