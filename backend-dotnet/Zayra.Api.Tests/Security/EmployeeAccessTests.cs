@@ -487,6 +487,83 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
+    public async Task AFailedPasswordLockout_NeverKillsAResetCode_ItRedeemsOnceTheLockoutEnds()
+    {
+        // PR #210 review P1: an attacker who knows the email must not destroy an HR-issued reset code by locking the
+        // login out with wrong passwords. An ADMIN lock still kills it (SuspendingOrLockingTheLogin_… below).
+        var w = await SeedAsync();
+        var email = $"locked.out@{w.Domain}";
+        var id = await AddStagedAsync(w, email);
+        await RedeemAsync(w, email, (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!);
+        var code = (await IssueAsync(w, w.HrManagerId, [id], canReset: true)).Issued.Single().Code!;
+
+        for (var i = 0; i < 5; i++)
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => SignInAsync(w.Slug, email, "Wrong1!password"));
+        await using (var db = _fx.CreateDb())
+        {
+            var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.EmployeeId == id);
+            var user = await db.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(u => u.Id == link.UserId);
+            user.IsLocked.Should().BeTrue("five wrong passwords lock the login out");
+            link.WelcomeCodeHash.Should().NotBeNull("a failed-password lockout is not an administrative change");
+        }
+        // While the lockout is in force the code is held back (generic answer), neither used nor counted.
+        (await RedeemRefusedAsync(w, email, code, password: "AfterLock1!pass")).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+        await using (var db = _fx.CreateDb())
+        {
+            var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.EmployeeId == id);
+            link.WelcomeCodeHash.Should().NotBeNull();
+            link.WelcomeCodeFailedAttempts.Should().Be(0);
+            // The lockout window passes.
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE users SET lockout_end = now() - interval '1 minute' WHERE id = {link.UserId}");
+        }
+        await RedeemAsync(w, email, code, password: "AfterLock1!pass");
+        (await SignInAsync(w.Slug, email, "AfterLock1!pass")).Tokens.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Redeem_ALostCommitAcknowledgement_IsVerifiedAsSuccess_NotRetriedIntoCodeUsed()
+    {
+        // PR #210 review P2: commit verification keyed on the redeem's stable audit id.
+        var w = await SeedAsync();
+        var email = $"lost.ack@{w.Domain}";
+        var id = await AddStagedAsync(w, email);
+        var code = (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!;
+        var fault = new ThrowOnceAfterCommit();
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+                         .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
+                         .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, fault)
+                         .Options))
+        {
+            var response = await Auth(db).RedeemWelcomeCodeAsync(new WelcomeRedeemRequest(email, code, NewPassword, w.Slug),
+                new RequestContext("203.0.113.5", "tests"), NoPresenter, default);
+            response.TenantSlug.Should().Be(w.Slug);
+        }
+        fault.Injected.Should().Be(1, "the commit's acknowledgement was lost once");
+        await using var verify = _fx.CreateDb();
+        var link = await verify.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.EmployeeId == id);
+        (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == WelcomeCodeRedeemer.RedeemedAction && a.EntityId == link.UserId.ToString()))
+            .Should().Be(1, "redeemed exactly once");
+        (await SignInAsync(w.Slug, email, NewPassword)).Tokens.Should().NotBeNull();
+    }
+
+    private sealed class ThrowOnceAfterCommit : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        private int _armed = 1;
+        public int Injected;
+
+        public override Task TransactionCommittedAsync(System.Data.Common.DbTransaction transaction,
+            Microsoft.EntityFrameworkCore.Diagnostics.TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                Interlocked.Increment(ref Injected);
+                throw new TimeoutException("WELCOME_REDEEM_POST_COMMIT_TIMEOUT");
+            }
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
     public async Task SuspendingOrLockingTheLogin_KillsTheLiveCode_AndRedeemIsRefused()
     {
         var w = await SeedAsync();

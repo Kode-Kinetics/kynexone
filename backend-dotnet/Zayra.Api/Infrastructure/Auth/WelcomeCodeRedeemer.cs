@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -187,6 +188,13 @@ public sealed class WelcomeCodeRedeemer
             if (link.WelcomeCodeRedeemedAtUtc is not null) { verdict = Verdict.Used; return; }
             if (link.WelcomeCodeFailedAttempts >= WelcomeCodes.BurnAt) { verdict = Verdict.Used; return; }
             if (link.WelcomeCodeExpiresAtUtc is not { } exp || exp <= at) { verdict = Verdict.Expired; return; }
+            // A failed-password lockout in force (not an admin lock — that is a Status, refused below and clearing the
+            // code): the code is neither used nor destroyed; it redeems once the lockout expires. Generic answer.
+            if (!StoppedLoginStatuses.Contains(user.Status, StringComparer.Ordinal) && AuthCurrentEligibility.IsFailureLockoutActive(user, at))
+            {
+                verdict = Verdict.Invalid;
+                return;
+            }
 
             var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenant.Id, Why).TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(e => e.Id == link.EmployeeId, token);
@@ -305,13 +313,22 @@ public sealed class WelcomeCodeRedeemer
 
         if (_db.Database.IsRelational())
         {
+            // Commit verification keyed on the stable audit id (as the invitation issue does): a lost commit
+            // acknowledgement is recognised as a success instead of being retried into "code_used".
             var strategy = _db.Database.CreateExecutionStrategy();
-            await strategy.ExecuteAsync(async () =>
+            Func<CancellationToken, Task<bool>> operation = async token =>
             {
-                await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-                await RunAsync(ct);
-                await tx.CommitAsync(ct);
-            });
+                await RunAsync(token);
+                return true;
+            };
+            Func<CancellationToken, Task<bool>> verifySucceeded = async token =>
+            {
+                var committed = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenant.Id, Why).AsNoTracking()
+                    .AnyAsync(a => a.Id == auditId, token);
+                if (committed) verdict = Verdict.Ok;
+                return committed;
+            };
+            await strategy.ExecuteInTransactionAsync(operation, verifySucceeded, IsolationLevel.ReadCommitted, ct);
         }
         else
         {

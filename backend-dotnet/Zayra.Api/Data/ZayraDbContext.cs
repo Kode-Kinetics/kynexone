@@ -756,14 +756,18 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
         foreach (var e in ChangeTracker.Entries<UserEntityAccess>())
             if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
-        // The login itself: username, access mode, scope, and its standing (active, status, lock, deletion). A suspended,
-        // deactivated or locked login must never be revived by a code issued before (review P1).
+        // The login itself, on ADMINISTRATIVE changes only: username, access mode, scope, being switched off (IsActive
+        // false), deleted, or given an admin status (Suspended / Deactivated / Locked — LockUserAsync writes "Locked").
+        // A failed-password lockout (IsLocked / LockoutEnd written by AuthService.LoginAsync) is deliberately NOT one:
+        // anyone who knows the email could otherwise destroy an HR-issued reset code with a few wrong passwords
+        // (PR #210 review). The redeem waits out such a lockout instead (WelcomeCodeRedeemer).
         foreach (var e in ChangeTracker.Entries<User>())
             if (e.State == EntityState.Modified
                 && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.NormalizedEmail).IsModified
-                    || e.Property(x => x.IsGroupScope).IsModified || e.Property(x => x.IsActive).IsModified
-                    || e.Property(x => x.Status).IsModified || e.Property(x => x.IsLocked).IsModified
-                    || e.Property(x => x.IsDeleted).IsModified))
+                    || e.Property(x => x.IsGroupScope).IsModified
+                    || (e.Property(x => x.IsActive).IsModified && !e.Entity.IsActive)
+                    || (e.Property(x => x.Status).IsModified && e.Entity.Status is "Suspended" or "Deactivated" or "Locked")
+                    || (e.Property(x => x.IsDeleted).IsModified && e.Entity.IsDeleted)))
                 Add(e.Entity.Id, e.Entity.TenantId);
         foreach (var e in ChangeTracker.Entries<EmployeeUserAccount>())
             if (e.State == EntityState.Modified && e.Entity.UserId is Guid lu
