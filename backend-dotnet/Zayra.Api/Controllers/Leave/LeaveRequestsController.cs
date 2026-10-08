@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Common;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
@@ -139,8 +140,11 @@ public class LeaveRequestsController : ControllerBase
         // permission claim must never widen a team/company boundary. approvals.decide used to count as
         // that authority, which let Finance, Finance Approver and Payroll Manager file leave for anyone;
         // deciding approvals is not filing them.
+        // "Self" is the caller's linked employee (the employee_id claim). The data scope cannot answer it: an
+        // org-wide scope carries no CallerEmployeeId, which refused Payroll and Finance their own leave.
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        var isSelf = scope.CallerEmployeeId is int callerEmployeeId && callerEmployeeId == req.EmployeeId;
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct);
+        var isSelf = self is int callerEmployeeId && callerEmployeeId == req.EmployeeId;
         if (!isSelf && !(User.HasPermission("leave.write") && scope.CanAccessEmployee(req.EmployeeId)))
             return Forbid();
 

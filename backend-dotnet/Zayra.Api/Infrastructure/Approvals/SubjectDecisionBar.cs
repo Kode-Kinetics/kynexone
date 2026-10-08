@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 
 namespace Zayra.Api.Infrastructure.Approvals;
@@ -8,7 +9,8 @@ namespace Zayra.Api.Infrastructure.Approvals;
 /// overtime request, a profile change, an HR letter. The person a record is about may ask for it; they
 /// may never approve, reject or issue it, whatever their role. Every login linked to the subject employee
 /// is barred, read tenant-wide through <see cref="ApprovalUnblock.SubjectUserIdsAsync"/>, the same lookup
-/// the Approval Center and leave use, so a move to another legal entity cannot open a gap.
+/// the Approval Center and leave use, so a move to another legal entity cannot open a gap, and through the
+/// login-to-employee link table, which the caller's employee_id claim comes from.
 ///
 /// <para>A refusal is a 400, as every other separation-of-duties refusal is, with a stable
 /// <see cref="ErrorCode"/> so clients and tests can tell it apart from a validation error.</para>
@@ -23,7 +25,12 @@ public static class SubjectDecisionBar
         ZayraDbContext db, Guid tenantId, Guid? callerUserId, int subjectEmployeeId, CancellationToken ct)
     {
         if (callerUserId is not Guid uid || uid == Guid.Empty) return true;
-        return (await ApprovalUnblock.SubjectUserIdsAsync(db, tenantId, subjectEmployeeId, ct)).Contains(uid);
+        if ((await ApprovalUnblock.SubjectUserIdsAsync(db, tenantId, subjectEmployeeId, ct)).Contains(uid)) return true;
+        // The employee_id claim is issued from the login-to-employee link table, and some paths (NoLogin
+        // access, offboarding) clear Employees.UserAccountId while a link row remains. Any link row between
+        // this login and the subject, whatever its status, bars the decision: refusing is the safe answer.
+        return await db.EmployeeUserAccounts.AsNoTracking()
+            .AnyAsync(l => l.TenantId == tenantId && l.EmployeeId == subjectEmployeeId && l.UserId == uid, ct);
     }
 
     /// <summary>The response body for a refused decision: <c>{ error, message }</c>.</summary>

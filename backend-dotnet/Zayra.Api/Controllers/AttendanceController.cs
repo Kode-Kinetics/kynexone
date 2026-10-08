@@ -153,7 +153,10 @@ public class AttendanceController : ControllerBase
         if (employeeId is int target)
         {
             var self = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
-            if (target != self && !(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(target))
+            // Never your own record: a raw event carries a caller-chosen timestamp, so pushing one for yourself
+            // is deciding your own pay-driving attendance. Your own clock-in is punch/*, stamped with server time.
+            if (target == self) return Forbid();
+            if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(target))
                 return Forbid();
             // Record exactly the employee that was authorized, not whatever a second identifier might map to.
             request = request with { EmployeeId = target, EmployeeCode = null };
@@ -174,6 +177,11 @@ public class AttendanceController : ControllerBase
     {
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         if (!scope.IsUnrestricted && await HasOutOfScopeImportRowAsync(RequireTenant(), request, scope, ct))
+            return Forbid();
+        // An import carries caller-chosen timestamps; a row for the importer's own record would let them write
+        // their own attendance. Refuse the file rather than silently dropping the row.
+        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), ct);
+        if (self is int ownId && await ImportHasRowForEmployeeAsync(RequireTenant(), request, ownId, ct))
             return Forbid();
 
         return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
@@ -527,7 +535,14 @@ public class AttendanceController : ControllerBase
         return rows.Where(row => scope.AllowedEmployeeIds!.Contains(employeeIdSelector(row))).ToList();
     }
 
-    private async Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
+    private Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
+        => AnyImportRowAsync(tenantId, request, employeeId => !scope.CanAccessEmployee(employeeId), ct);
+
+    private Task<bool> ImportHasRowForEmployeeAsync(Guid tenantId, ImportAttendanceRequest request, int employeeId, CancellationToken ct)
+        => AnyImportRowAsync(tenantId, request, id => id == employeeId, ct);
+
+    /// <summary>Whether any data row of the CSV resolves to an employee matching <paramref name="match"/>.</summary>
+    private async Task<bool> AnyImportRowAsync(Guid tenantId, ImportAttendanceRequest request, Func<int, bool> match, CancellationToken ct)
     {
         var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var rowNumber = 0;
@@ -539,7 +554,7 @@ public class AttendanceController : ControllerBase
             if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
                 continue;
             var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, null, cells[0], ct);
-            if (employeeId is not null && !scope.CanAccessEmployee(employeeId.Value))
+            if (employeeId is not null && match(employeeId.Value))
                 return true;
         }
         return false;
