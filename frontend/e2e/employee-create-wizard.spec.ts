@@ -12,15 +12,30 @@ const duplicate = { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Mo
 const headings = ['Start with the person', 'Place them in the organization', 'Set up payroll', 'Build the salary package', 'Add identity documents', 'Review employee details'];
 const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 
-interface MockOptions { missingCountry?: boolean; failFirstCreate?: boolean; duplicate?: boolean }
+interface MockOptions {
+  missingCountry?: boolean;
+  failFirstCreate?: boolean;
+  duplicate?: boolean;
+  transliteration?: {
+    status?: number;
+    result?: { suggestion: string; requiresManualEntry?: boolean };
+    waitFor?: Promise<void>;
+  };
+}
 
 async function boot(page: Page, options: MockOptions = {}) {
   const creates: EmployeeCreateRequest[] = [];
   const probes: unknown[] = [];
+  const transliterations: unknown[] = [];
   const errors: string[] = [];
   const testCompany = { ...company, countryCode: options.missingCountry ? '' : company.countryCode };
   let saved: Record<string, unknown> | undefined;
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    if (message.type() !== 'error') return;
+    if ((options.failFirstCreate || options.transliteration?.status === 503) && /Failed to load resource.*503/.test(message.text())) return;
+    errors.push(message.text());
+  });
   await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'wizard-browser-fixture'));
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -43,6 +58,11 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path.endsWith('/pay-scale')) return reply([]);
     if (path === '/api/organization/cost-centers') return reply(paged([{ id: 'cost-wizard', companyId: company.id, code: 'OPS', nameEn: 'Operations cost center', isActive: true }]));
     if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
+    if (path === '/api/localization/transliterate') {
+      transliterations.push(body);
+      await options.transliteration?.waitFor;
+      return reply(options.transliteration?.result ?? { suggestion: 'محمد عمر', requiresManualEntry: false }, options.transliteration?.status);
+    }
     if (path === '/api/employees/derive-work-email') {
       const localPart = body.localPart ?? body.englishName.trim().toLowerCase().split(/\s+/).join('.');
       return reply({ domain: company.emailDomain, pattern: company.workEmailPattern, localPart, workEmail: `${localPart}@${company.emailDomain}`, unique: true, suggestion: localPart, status: 'derived' });
@@ -76,7 +96,7 @@ async function boot(page: Page, options: MockOptions = {}) {
   await page.getByRole('button', { name: 'Add Employee', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Add Employee', exact: true });
   await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
-  return { dialog, creates, probes, errors };
+  return { dialog, creates, probes, transliterations, errors };
 }
 
 async function next(dialog: Locator, index: number) {
@@ -97,7 +117,9 @@ async function finishCreated(dialog: Locator) {
 
 async function evidence(page: Page, info: TestInfo, name: string) {
   const path = info.outputPath(`${name}-${info.project.name}.png`);
-  await page.screenshot({ path, fullPage: false, animations: 'disabled' });
+  const activePanel = page.locator('[data-employee-step]:visible');
+  if (await activePanel.count()) await expect(activePanel).toHaveCSS('opacity', '1');
+  await page.screenshot({ path, fullPage: false, animations: 'disabled', style: 'nextjs-portal { display: none !important; }' });
   await info.attach(name, { path, contentType: 'image/png' });
 }
 
@@ -121,6 +143,7 @@ test('guides keyboard navigation, requires a name, and keeps creation until revi
   await expect(dialog.getByText('Enter the employee’s English full name to continue.', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await expect(dialog.getByText('Enter the employee’s English full name to continue.', { exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Create Employee', exact: true })).toHaveCount(0);
   await advance.focus();
   await page.keyboard.press('Enter');
@@ -270,3 +293,134 @@ test('keeps salary-band validation on the salary step and allows correction', as
   expect(creates).toHaveLength(0);
   expect(errors).toEqual([]);
 });
+
+test('suggests a person name only on request and carries the reviewed Arabic name through the wizard', async ({ page }, info) => {
+  const { dialog, creates, transliterations, errors } = await boot(page);
+  const englishName = dialog.getByLabel('English full name', { exact: false });
+  const arabicName = dialog.getByLabel('Arabic full name', { exact: true });
+  const suggest = dialog.getByRole('button', { name: 'Suggest (AR)', exact: true });
+  await expect(suggest).toBeDisabled();
+  await englishName.fill('Muhammad Umar');
+  await arabicName.focus();
+  await expect(arabicName).toHaveValue('');
+  expect(transliterations).toHaveLength(0);
+  await expect(dialog.getByText('Check the Arabic spelling against the employee’s passport or ID.', { exact: true })).toBeVisible();
+  await suggest.click();
+  await expect(dialog.getByText('محمد عمر', { exact: true })).toBeVisible();
+  await expect(arabicName).toHaveValue('');
+  expect(transliterations).toEqual([{ text: 'Muhammad Umar', target: 'ar', kind: 'person-name' }]);
+  await expectContained(dialog, page);
+  await evidence(page, info, 'arabic-name-suggestion-preview');
+  await dialog.getByRole('button', { name: 'Dismiss suggestion', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Use this spelling', exact: true })).toHaveCount(0);
+  await expect(arabicName).toHaveValue('');
+  await suggest.click();
+  await expect(dialog.getByText('محمد عمر', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Use this spelling', exact: true }).click();
+  await expect(arabicName).toHaveValue('محمد عمر');
+  await expect(arabicName).toBeFocused();
+  await toReview(dialog);
+  const profile = dialog.locator('[data-employee-step="5"] dl').filter({ hasText: 'Arabic full name' });
+  await expect(profile).toContainText('Arabic full name');
+  await expect(profile).toContainText('محمد عمر');
+  await dialog.getByRole('button', { name: 'Edit Profile', exact: true }).click();
+  await expect(arabicName).toHaveValue('محمد عمر');
+  expect(creates).toHaveLength(0);
+  expect(transliterations).toEqual(Array(2).fill({ text: 'Muhammad Umar', target: 'ar', kind: 'person-name' }));
+  expect(errors).toEqual([]);
+});
+
+test('unsupported Arabic name suggestions explain manual entry and keep the entered Arabic name', async ({ page }, info) => {
+  const { dialog, creates, transliterations, errors } = await boot(page, {
+    transliteration: { result: { suggestion: '', requiresManualEntry: true } },
+  });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Unlisted Person');
+  const arabicName = dialog.getByLabel('Arabic full name', { exact: true });
+  await arabicName.fill('الاسم المعتمد');
+  await dialog.getByRole('button', { name: 'Suggest (AR)', exact: true }).click();
+  await expect(dialog.getByText('No reliable suggestion for this name. Enter the Arabic spelling from the employee’s passport or ID.', { exact: true })).toBeVisible();
+  await expect(arabicName).toHaveValue('الاسم المعتمد');
+  await expect(dialog.getByRole('button', { name: 'Suggest (AR)', exact: true })).toBeEnabled();
+  await evidence(page, info, 'arabic-name-manual-entry');
+  expect(transliterations).toEqual([{ text: 'Unlisted Person', target: 'ar', kind: 'person-name' }]);
+  expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('a failed Arabic suggestion request is visible and leaves manual entry usable', async ({ page }) => {
+  const { dialog, creates, transliterations, errors } = await boot(page, { transliteration: { status: 503 } });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Muhammad Umar');
+  const arabicName = dialog.getByLabel('Arabic full name', { exact: true });
+  await arabicName.fill('محمد عمر');
+  await dialog.getByRole('button', { name: 'Suggest (AR)', exact: true }).click();
+  await expect(dialog.getByText('Could not get a suggestion. Try again or enter the Arabic name manually.', { exact: true })).toBeVisible();
+  await expect(arabicName).toHaveValue('محمد عمر');
+  await arabicName.fill('محمد عمرو');
+  await expect(arabicName).toHaveValue('محمد عمرو');
+  await expect(dialog.getByRole('button', { name: 'Suggest (AR)', exact: true })).toBeEnabled();
+  expect(transliterations).toHaveLength(1);
+  expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('an older backend response without a reliability signal cannot be applied as an Arabic name', async ({ page }) => {
+  const { dialog, creates, transliterations, errors } = await boot(page, {
+    transliteration: { result: { suggestion: 'محمد ومار' } },
+  });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Muhammad Umar');
+  const arabicName = dialog.getByLabel('Arabic full name', { exact: true });
+  await arabicName.fill('محمد عمر');
+  await dialog.getByRole('button', { name: 'Suggest (AR)', exact: true }).click();
+  await expect(dialog.getByText('No reliable suggestion for this name. Enter the Arabic spelling from the employee’s passport or ID.', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Use this spelling', exact: true })).toHaveCount(0);
+  await expect(dialog.getByText('محمد ومار', { exact: true })).toHaveCount(0);
+  await expect(arabicName).toHaveValue('محمد عمر');
+  expect(transliterations).toHaveLength(1);
+  expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+for (const changedDraft of ['English name changed and restored', 'Arabic name manually edited', 'dialog closed and reopened'] as const) {
+  test(`a delayed Arabic suggestion cannot overwrite the draft after ${changedDraft}`, async ({ page }) => {
+    let releaseSuggestion!: () => void;
+    const waitFor = new Promise<void>(resolve => { releaseSuggestion = resolve; });
+    const { dialog, creates, transliterations, errors } = await boot(page, { transliteration: { waitFor } });
+    const englishName = dialog.getByLabel('English full name', { exact: false });
+    const arabicName = dialog.getByLabel('Arabic full name', { exact: true });
+    const suggest = dialog.getByRole('button', { name: 'Suggest (AR)', exact: true });
+    await englishName.fill('Muhammad Umar');
+    await suggest.click();
+    await expect.poll(() => transliterations.length).toBe(1);
+    await expect(dialog.getByRole('button', { name: 'Suggesting…', exact: true })).toBeDisabled();
+    let expectedArabic = '';
+    if (changedDraft === 'English name changed and restored') {
+      await englishName.fill('Ahmed Ali');
+      await englishName.fill('Muhammad Umar');
+    } else if (changedDraft === 'Arabic name manually edited') {
+      expectedArabic = 'محمد عمرو';
+      await arabicName.fill(expectedArabic);
+    } else {
+      page.once('dialog', prompt => prompt.accept());
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await page.getByRole('button', { name: 'Add Employee', exact: true }).first().click();
+      await expect(englishName).toHaveValue('');
+      await englishName.fill('Ahmed Ali');
+      expectedArabic = 'أحمد علي';
+      await arabicName.fill(expectedArabic);
+    }
+    const completed = page.waitForResponse(response => response.url().endsWith('/api/localization/transliterate'));
+    releaseSuggestion();
+    await (await completed).finished();
+    await expect(suggest).toBeEnabled();
+    await expect(arabicName).toHaveValue(expectedArabic);
+    await expect(dialog.getByRole('button', { name: 'Use this spelling', exact: true })).toHaveCount(0);
+    // Navigating away and back also verifies the retained form state after the response.
+    await next(dialog, 1);
+    await dialog.getByRole('button', { name: 'Back', exact: true }).click();
+    await expect(arabicName).toHaveValue(expectedArabic);
+    expect(transliterations).toHaveLength(1);
+    expect(creates).toHaveLength(0);
+    expect(errors).toEqual([]);
+  });
+}

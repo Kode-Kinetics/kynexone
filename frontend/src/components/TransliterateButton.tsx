@@ -31,7 +31,7 @@ export function TransliterateButton({
   const canSuggest = source.trim().length >= 2 && !isTranslating;
 
   const handleClick = async () => {
-    const suggestion = await suggest(source, target);
+    const { suggestion } = await suggest(source, target);
     if (suggestion) onSuggest(suggestion);
   };
 
