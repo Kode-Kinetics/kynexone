@@ -5,7 +5,7 @@ import { KeyRound } from 'lucide-react';
 import { employeeAccessApi, type EmployeeAccessDto, type IssueWelcomeCodesResult } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
-import { ACCESS_STATE_COPY, GENERIC_SKIP_KEY, dateLine, skipReasonKey } from '../../lib/employeeAccess';
+import { ACCESS_STATE_COPY, BLOCKED_REASON_KEYS, GENERIC_SKIP_KEY, STOPPED_REASON_KEYS, dateLine, skipReasonKey } from '../../lib/employeeAccess';
 import { StatusChip } from '../StatusChip';
 import type { IssueOptions } from './useWelcomeCodes';
 
@@ -18,7 +18,7 @@ import type { IssueOptions } from './useWelcomeCodes';
  *   Access stopped / Needs admin help → no button, the reason instead
  */
 export function EmployeeAccessCard({
-  employeeId, employeeName, refreshKey, canIssue, canReset, issuing, onIssue, onAddWorkEmail,
+  employeeId, employeeName, refreshKey, canIssue, canReset, isSelf = false, issuing, onIssue, onAddWorkEmail,
 }: {
   employeeId: number;
   employeeName: string;
@@ -28,12 +28,15 @@ export function EmployeeAccessCard({
   canIssue: boolean;
   /** employees.access.reset */
   canReset: boolean;
+  /** This profile is the signed-in HR person's own: nobody gives themselves a code. */
+  isSelf?: boolean;
   /** A code request is in flight (the button is disabled meanwhile). */
   issuing: boolean;
   onIssue: (employeeIds: number[], options: IssueOptions) => Promise<IssueWelcomeCodesResult | null>;
   onAddWorkEmail: () => void;
 }) {
   const { t, locale } = useLocale();
+  const say = (code: string | null | undefined) => t(skipReasonKey(code) ?? GENERIC_SKIP_KEY, { name: employeeName });
   const { defaultTimezone } = useTenantSettings();
   const [access, setAccess] = useState<EmployeeAccessDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,9 +67,7 @@ export function EmployeeAccessCard({
     setSkipNote('');
     const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true, delivery, companyEmails: !!access?.emailDelivery });
     if (result && result.issued.length === 0 && result.skipped.length > 0) {
-      const s = result.skipped[0];
-      const key = skipReasonKey(s.reasonCode);
-      setSkipNote(key ? t(key) : lang === 'en' && s.reason ? s.reason : t(GENERIC_SKIP_KEY));
+      setSkipNote(say(result.skipped[0].reasonCode));
       void load();
     }
   };
@@ -89,12 +90,17 @@ export function EmployeeAccessCard({
   // The one button (or, when the company can email codes, "Email sign-in code" first and
   // "Print sign-in slip" second), if this person may press it.
   const emailing = !!access.emailDelivery;
+  // Something the API (or this screen) says stands in the way: the one sentence replaces the button.
+  const waitingReason = isSelf && access.state !== 'stopped' && access.state !== 'blocked' ? 'cannot_issue_for_self'
+    : access.reasonCode && skipReasonKey(access.reasonCode) ? access.reasonCode
+      : null;
   const replacesCode = access.state === 'code_given';
   let primary: { label: string; delivery?: 'email' | 'print'; run?: () => void } | null = null;
   let secondary: { label: string; delivery: 'print' } | null = null;
   let confirmText = '';
   let confirmLabel = '';
-  if (access.state === 'waiting_for_work_email' && canIssue) primary = { label: t('Add work email'), run: onAddWorkEmail };
+  if (waitingReason) primary = null;
+  else if (access.state === 'waiting_for_work_email' && canIssue) primary = { label: t('Add work email'), run: onAddWorkEmail };
   else if (access.canIssue && (access.state === 'not_started' || replacesCode) && canIssue) {
     primary = emailing ? { label: t('Email sign-in code'), delivery: 'email' } : { label: replacesCode ? t('Give new code') : t('Give access') };
     if (emailing) secondary = { label: t('Print sign-in slip'), delivery: 'print' };
@@ -114,6 +120,7 @@ export function EmployeeAccessCard({
   return (
     <Shell title={t('Self-service')} pill={<StatusChip label={t(copy.label)} tone={copy.tone} dot />}>
       {detail && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="access-detail">{detail}</p>}
+      {waitingReason && <p className="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{say(waitingReason)}</p>}
       {skipNote && <p role="alert" className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p>}
       {primary && !confirming && (
         <div className="mt-2.5 flex flex-col gap-1.5">
@@ -164,18 +171,12 @@ function detailLine(
         : t('Valid until {date}', { date: when(a.codeExpiresAtUtc) });
     case 'active':
       return a.lastSignInAtUtc ? t('Last signed in on {date}.', { date: when(a.lastSignInAtUtc) }) : '';
-    case 'stopped':
-      return /left|leav|offboard|terminat|resign|former/i.test(a.stoppedReason ?? '')
-        ? t('Access stopped because the employee has left the company.')
-        : t('Access stopped by a system admin.');
+    case 'stopped': {
+      const key = STOPPED_REASON_KEYS[a.stoppedReason ?? ''];
+      return key ? t(key) : '';
+    }
     case 'blocked':
-      if (a.blockedCode === 'company_email_domain_missing') {
-        return t('The company email ending (for example @evostel.com) is not set up. Ask your system admin to add it in company settings.');
-      }
-      if (a.blockedCode === 'email_belongs_to_existing_login' || a.blockedCode === 'email_belongs_to_former_employee') {
-        return t('This email is already used to sign in by someone else. Ask your system admin to fix it.');
-      }
-      return t('This needs a system admin first.');
+      return t(BLOCKED_REASON_KEYS[a.blockedCode ?? ''] ?? BLOCKED_REASON_KEYS[a.blockedReason ?? ''] ?? 'This needs a system admin first.');
     default:
       return '';
   }

@@ -2,7 +2,12 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Search, ShieldAlert, UserPlus } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, Printer, RefreshCw, Search, ShieldAlert, UserPlus } from 'lucide-react';
+import { employeeAccessApi, type EmployeeAccessDto } from '../api/employeeAccess';
+import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
+import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { BULK_PRINTABLE_STATES, skipReasonKey } from '../lib/employeeAccess';
 import {
   employeeDraftsApi,
   type EmployeeDraftListItem,
@@ -39,7 +44,7 @@ function placement(row: Pick<EmployeeDraftListItem, 'department' | 'designation'
   return [row.designation, row.department, row.branch].filter((x) => x && x.trim()).join(' · ') || 'No placement yet';
 }
 
-type Notice = { text: string; employeeId?: number | null };
+type Notice = { text: string; employeeId?: number | null; name?: string };
 
 /**
  * New hires: every accepted offer and prepared hire on its way to becoming an employee. The default
@@ -55,6 +60,11 @@ export function NewHiresPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The newly activated employee's sign-in status: the approval success offers their sign-in slip.
+  const [noticeAccess, setNoticeAccess] = useState<EmployeeAccessDto | null>(null);
+  const { t } = useLocale();
+  const { hasPermission } = useAuth();
+  const welcome = useWelcomeCodes();
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const requestSeq = useRef(0);
 
@@ -137,7 +147,11 @@ export function NewHiresPage() {
     setDecisionError('');
     try {
       const employee = await employeeDraftsApi.approve(selected.id);
-      setNotice({ text: `${selected.name} is now employee ${employee.employeeCode}.`, employeeId: employee.id });
+      setNotice({ text: `${selected.name} is now employee ${employee.employeeCode}.`, employeeId: employee.id, name: selected.name });
+      setNoticeAccess(null);
+      if (hasPermission('employees.access.issue')) {
+        void employeeAccessApi.get(employee.id).then(setNoticeAccess).catch(() => setNoticeAccess(null));
+      }
       setSelected(null);
       setReview(null);
       void load();
@@ -238,9 +252,26 @@ export function NewHiresPage() {
               Open employee record
             </Link>
           )}
+          {noticeAccess && notice.employeeId === noticeAccess.employeeId && BULK_PRINTABLE_STATES.has(noticeAccess.state)
+            && noticeAccess.canIssue && !skipReasonKey(noticeAccess.reasonCode) && (
+            <button
+              type="button"
+              disabled={welcome.busy}
+              onClick={() => void welcome.issue([noticeAccess.employeeId], {
+                names: { [noticeAccess.employeeId]: notice.name ?? noticeAccess.employeeName },
+                delivery: 'print',
+                companyEmails: !!noticeAccess.emailDelivery,
+              })}
+              className="btn-primary inline-flex h-8 items-center gap-1.5 px-3 text-xs disabled:opacity-60"
+            >
+              <Printer className="h-3.5 w-3.5" aria-hidden="true" />
+              {t('Print sign-in slip')}
+            </button>
+          )}
           <button type="button" onClick={() => setNotice(null)} className="ms-auto text-xs font-semibold underline">Dismiss</button>
         </div>
       )}
+      {welcome.view}
 
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-white/10 dark:bg-white/[0.03]" role="group" aria-label="Filter new hires by status">
         {DRAFT_FILTERS.map((f) => {

@@ -29,7 +29,7 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
   /** Whether the company can email codes, read from one saved employee's access status. */
   checkEmailDelivery: (employeeId: number) => Promise<boolean>;
 }) {
-  const { t, locale } = useLocale();
+  const { t } = useLocale();
   const [text, setText] = useState('');
   const [step, setStep] = useState<Step>('input');
   const [preview, setPreview] = useState<WorkEmailBackfillResult | null>(null);
@@ -215,7 +215,7 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
                       <span aria-hidden="true"> · </span>
                       {sentence
                         ? fill(t(sentence), { username: <Ltr>{row.username}</Ltr> })
-                        : locale === 'en' && row.reason && !/^[a-z_]+$/.test(row.reason) ? row.reason : t(DEFAULT_CONFLICT_KEY)}
+                        : t(DEFAULT_CONFLICT_KEY)}
                     </li>
                   );
                 })}
