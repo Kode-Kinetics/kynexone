@@ -1975,6 +1975,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("attendance_regularization_requests");
             entity.HasKey(x => x.Id);
+            // Every status transition advances it (backstop to the employee-day lock): a racing decision fails, never overwrites.
+            entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate });
             entity.HasIndex(x => new { x.TenantId, x.Status });
         });

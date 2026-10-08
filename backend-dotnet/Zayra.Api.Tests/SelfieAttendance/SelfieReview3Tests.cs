@@ -94,7 +94,8 @@ public sealed class SelfieReview3Tests
 
         Assert.Equal(503, Status(failed));
         Assert.False(JsonSerializer.SerializeToElement(((ObjectResult)failed).Value).GetProperty("punchWithoutSelfie").GetBoolean());
-        Assert.All(await w.Db.AttendanceEvidence.ToListAsync(), e => Assert.Null(e.FailedReason));
+        // Nothing waivable: the failed attempt is closed as DeniedFailure (non-waivable), the in-flight one is untouched.
+        Assert.All(await w.Db.AttendanceEvidence.ToListAsync(), e => Assert.DoesNotContain(e.FailedReason, SelfieUploadFailureReasons.Waivable));
         var punch = await w.Attendance(user).MobilePunch(new WebPunchRequest(0, "In", null, null, null), default);
         Assert.Equal("selfie_required", SelfieWorld.CodeOf(punch.Result));
     }

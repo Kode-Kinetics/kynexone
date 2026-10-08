@@ -40,8 +40,10 @@ public sealed class StorageResidency
 
     private readonly StorageOptions _options;
     private readonly Func<CancellationToken, Task<string?>>? _bucketRegionProbe;
-    private readonly SemaphoreSlim _probeLock = new(1, 1);
-    private string? _cachedRegion;
+    private readonly object _probeGate = new();
+    /// <summary>The one probe in flight, shared by every caller that arrives while it runs (null when none is).</summary>
+    private Task<(string? Region, string? Error)>? _inFlightProbe;
+    private volatile string? _cachedRegion;
     private string? _probeError;
     private DateTime _probeFailedAtUtc;
 
@@ -71,41 +73,64 @@ public sealed class StorageResidency
     }
 
     /// <summary>The region the bucket reports, read once and cached (a failure — including a read that takes longer than
-    /// <see cref="ProbeTimeout"/> — is retried after <see cref="ProbeFailureRetry"/>, and until then nothing is resident).</summary>
+    /// <see cref="ProbeTimeout"/> — is retried after <see cref="ProbeFailureRetry"/>, and until then nothing is resident).
+    /// <para>Callers that arrive while a probe runs share that ONE probe (and its answer) instead of queueing to run
+    /// their own one after another: with storage hanging, 20 concurrent policy reads cost one probe and about one
+    /// <see cref="ProbeTimeout"/>, not 20. A caller's own token cancels only its wait, never the shared probe.</para></summary>
     public async Task<(string? Region, string? Error)> BucketRegionAsync(CancellationToken ct)
     {
         if (!IsS3) return (Local, null);
         if (_bucketRegionProbe is null) return (null, "this deployment cannot read its bucket's region");
         if (_cachedRegion is not null) return (_cachedRegion, null);
-        if (_probeError is not null && DateTime.UtcNow - _probeFailedAtUtc < ProbeFailureRetry) return (null, _probeError);
-        await _probeLock.WaitAsync(ct);
+        Task<(string? Region, string? Error)> probe;
+        lock (_probeGate)
+        {
+            // Re-checked under the gate: the previous probe's answer (a success, or a failure within ProbeFailureRetry)
+            // is returned as it is rather than probing again.
+            if (_cachedRegion is not null) return (_cachedRegion, null);
+            if (_probeError is not null && DateTime.UtcNow - _probeFailedAtUtc < ProbeFailureRetry) return (null, _probeError);
+            // Task.Run, so the probe's own completion (which clears _inFlightProbe under this gate) can never run before
+            // the assignment below — a synchronously finishing probe would otherwise leave a stale task behind.
+            probe = _inFlightProbe ??= Task.Run(RunProbeAsync);
+        }
+        return await probe.WaitAsync(ct);
+    }
+
+    private async Task<(string? Region, string? Error)> RunProbeAsync()
+    {
         try
         {
-            if (_cachedRegion is not null) return (_cachedRegion, null);
-            try
+            // A 3-second timeout; WaitAsync as well, so a probe that ignores its token cannot hang us either.
+            using var timeout = new CancellationTokenSource(ProbeTimeout);
+            string? region;
+            try { region = await _bucketRegionProbe!(timeout.Token).WaitAsync(ProbeTimeout); }
+            catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
             {
-                // A linked 3-second timeout; WaitAsync as well, so a probe that ignores its token cannot hang us either.
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(ProbeTimeout);
-                string? region;
-                try { region = await _bucketRegionProbe(timeout.Token).WaitAsync(ProbeTimeout, ct); }
-                catch (Exception ex) when (!ct.IsCancellationRequested && ex is OperationCanceledException or TimeoutException)
-                {
-                    throw new TimeoutException($"storage did not answer within {ProbeTimeout.TotalSeconds:0} seconds");
-                }
-                if (string.IsNullOrWhiteSpace(region)) throw new InvalidOperationException("storage returned no bucket region");
-                _cachedRegion = Normalize(region);
+                throw new TimeoutException($"storage did not answer within {ProbeTimeout.TotalSeconds:0} seconds");
+            }
+            if (string.IsNullOrWhiteSpace(region)) throw new InvalidOperationException("storage returned no bucket region");
+            var normalized = Normalize(region);
+            lock (_probeGate)
+            {
+                _cachedRegion = normalized;
                 _probeError = null;
-                return (_cachedRegion, null);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            {
-                _probeError = $"the bucket's region could not be read from storage ({ex.GetType().Name}: {ex.Message})";
-                _probeFailedAtUtc = DateTime.UtcNow;
-                return (null, _probeError);
-            }
+            return (normalized, null);
         }
-        finally { _probeLock.Release(); }
+        catch (Exception ex)
+        {
+            var error = $"the bucket's region could not be read from storage ({ex.GetType().Name}: {ex.Message})";
+            lock (_probeGate)
+            {
+                _probeError = error;
+                _probeFailedAtUtc = DateTime.UtcNow;
+            }
+            return (null, error);
+        }
+        finally
+        {
+            lock (_probeGate) _inFlightProbe = null;
+        }
     }
 
     public async Task<StorageResidencyVerdict> CheckAsync(string jurisdiction, CancellationToken ct = default)

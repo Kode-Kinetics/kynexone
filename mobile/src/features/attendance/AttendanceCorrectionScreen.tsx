@@ -15,6 +15,7 @@ import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { attendanceApi } from '@/api/adapters';
+import { extractErrorMessage } from '@/api/client';
 import {
   GlassSurface,
   GlassTextField,
@@ -64,8 +65,9 @@ export default function AttendanceCorrectionScreen() {
         'Your attendance correction was sent for review.',
         [{ text: 'Done', onPress: () => navigation.goBack() }],
       );
-    } catch (error: any) {
-      Alert.alert('Could not submit request', error?.message || 'Please try again.');
+    } catch (error: unknown) {
+      // The server's own plain message (e.g. a corrected time outside that work day), not axios's status text.
+      Alert.alert('Could not submit request', extractErrorMessage(error) || 'Please try again.');
     } finally {
       setSubmitting(false);
     }

@@ -542,3 +542,26 @@ test('the preview is covered while the app is inactive, the photo deleted in the
   assert.equal(previewActionFor('unknown'), 'cover');    // anything else fails safe
   assert.equal(previewActionFor('extension'), 'cover');
 });
+
+test('hardening: selfie_upload_timeout and selfie_upload_incomplete are a retake/retry, never a waiver', () => {
+  assert.equal(REVIEW_API_CODES.selfie_upload_timeout, 'network');
+  assert.equal(REVIEW_API_CODES.selfie_upload_incomplete, 'network');
+  const echo = (key: string) => `[${key}]`;
+  for (const [status, code] of [[408, 'selfie_upload_timeout'], [400, 'selfie_upload_incomplete']] as const) {
+    const r = mapPunchRefusal(refusal(status, { code, message: 'Sending took too long.', messageAr: 'استغرق الإرسال وقتًا طويلًا.' }), 'en');
+    assert.equal(r.code, code);
+    assert.equal(r.key, 'network');
+    assert.equal(r.action, 'retry');
+    assert.equal(r.punchWithoutSelfie, false, code);
+    assert.equal(r.serverMessage, 'Sending took too long.');
+    assert.equal(r.titleKey, 'selfie.refusal.network.title'); // an existing string, in both languages
+    assert.ok(selfieEn.refusal.network.title.length > 0 && selfieAr.refusal.network.title.length > 0);
+    assert.equal(isSelfieBusy(refusal(status, { code })), false); // not auto-retried as busy
+    // At the upload: take the selfie again; never "Clock without a selfie", required or optional.
+    assert.deepEqual(refusalPrompt(r, 'required', 'upload', echo).buttons, ['cancel', 'selfie_try_again']);
+    assert.deepEqual(refusalPrompt(r, 'optional', 'upload', echo).buttons, ['cancel', 'selfie_try_again']);
+    // Even if a server ever sent punchWithoutSelfie: false explicitly, nothing changes.
+    const explicit = mapPunchRefusal(refusal(status, { code, punchWithoutSelfie: false }), 'ar');
+    assert.equal(explicit.punchWithoutSelfie, false);
+  }
+});
