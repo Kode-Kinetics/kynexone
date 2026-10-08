@@ -32,6 +32,12 @@ public sealed class StorageResidency
     /// <summary>A failed bucket-region read is retried after this long (a success is kept for the process lifetime).</summary>
     public static readonly TimeSpan ProbeFailureRetry = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// The longest one bucket-region read may take (review 3, item 6). A storage endpoint that hangs must not hang every
+    /// policy read behind the probe lock: past this the read counts as failed, so residency is NOT confirmed (fail closed).
+    /// </summary>
+    public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
+
     private readonly StorageOptions _options;
     private readonly Func<CancellationToken, Task<string?>>? _bucketRegionProbe;
     private readonly SemaphoreSlim _probeLock = new(1, 1);
@@ -64,7 +70,8 @@ public sealed class StorageResidency
         }
     }
 
-    /// <summary>The region the bucket reports, read once and cached (a failure is retried after <see cref="ProbeFailureRetry"/>).</summary>
+    /// <summary>The region the bucket reports, read once and cached (a failure — including a read that takes longer than
+    /// <see cref="ProbeTimeout"/> — is retried after <see cref="ProbeFailureRetry"/>, and until then nothing is resident).</summary>
     public async Task<(string? Region, string? Error)> BucketRegionAsync(CancellationToken ct)
     {
         if (!IsS3) return (Local, null);
@@ -77,7 +84,15 @@ public sealed class StorageResidency
             if (_cachedRegion is not null) return (_cachedRegion, null);
             try
             {
-                var region = await _bucketRegionProbe(ct);
+                // A linked 3-second timeout; WaitAsync as well, so a probe that ignores its token cannot hang us either.
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(ProbeTimeout);
+                string? region;
+                try { region = await _bucketRegionProbe(timeout.Token).WaitAsync(ProbeTimeout, ct); }
+                catch (Exception ex) when (!ct.IsCancellationRequested && ex is OperationCanceledException or TimeoutException)
+                {
+                    throw new TimeoutException($"storage did not answer within {ProbeTimeout.TotalSeconds:0} seconds");
+                }
                 if (string.IsNullOrWhiteSpace(region)) throw new InvalidOperationException("storage returned no bucket region");
                 _cachedRegion = Normalize(region);
                 _probeError = null;

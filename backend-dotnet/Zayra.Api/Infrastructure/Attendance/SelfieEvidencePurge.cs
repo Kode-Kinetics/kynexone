@@ -37,7 +37,8 @@ public static class SelfieEvidenceRetention
     /// timezone slack). Rows used more recently are not even read.</summary>
     public static readonly TimeSpan UsedScanFloor = AfterPayrollLock - TimeSpan.FromDays(1);
 
-    /// <summary>A used selfie this old may be due by the 120-day fallback alone (a day of timezone slack included).</summary>
+    /// <summary>A used selfie this old may be due by the 120-day fallback alone (a day of timezone slack included). The
+    /// scheduler's tenant scan uses it; the per-tenant query c1 uses the exact cutoff in the tenant's time zone.</summary>
     public static readonly TimeSpan FallbackScanFloor = WithoutPayrollLock - TimeSpan.FromDays(1);
 
     /// <summary>
@@ -110,8 +111,9 @@ public sealed class SelfieEvidencePurger
     /// <list type="number">
     ///   <item>Pending rows older than 1 hour;</item>
     ///   <item>unused Active rows older than 24 hours, or of an employee with no open consent (due at once);</item>
-    ///   <item>used rows ordered by when they were used (the due-date proxy), only where they can be due: past the
-    ///     120-day fallback, or inside a payroll month locked at least 90 days ago (one query per such month).</item>
+    ///   <item>used rows due by the 120-day fallback, excluding the months locked less than 90 days ago whose rows wait
+    ///     for lock + 90 (c1: every row it returns is due, review 3, item 5), and used rows inside a payroll month locked
+    ///     at least 90 days ago (c2, one query per such month).</item>
     /// </list>
     /// The payroll facts are then loaded in bulk (review 1, item 11: no per-row lookups) and each row's exact due date
     /// decides.
@@ -137,16 +139,29 @@ public sealed class SelfieEvidencePurger
                         && (e.CreatedAtUtc <= unusedBefore || !openConsents.Any(c => c.EmployeeId == e.EmployeeId)))
             .OrderBy(e => e.CreatedAtUtc).ThenBy(e => e.Id).Take(limit)).ToListAsync(ct));
 
-        // (c1) Used selfies past the 120-day fallback. Ordered by use, the due ones come first: the fallback date only
-        // grows with the use date, so a not-yet-due row can never sit in front of a due one.
-        var fallbackBefore = nowUtc - SelfieEvidenceRetention.FallbackScanFloor;
+        // (c1) Used selfies due by the 120-day fallback (review 3, item 5): ONLY rows that are actually due now. A row is
+        // due at work date + 120 days unless its payroll month was locked by then, in which case it is due 90 days after
+        // that lock. So c1 takes the rows whose work date is at least 120 days ago (exact, in the tenant's time zone) and
+        // EXCLUDES the rows of every month whose effective lock is less than 90 days old and came no later than the row's
+        // fallback date (those wait for lock + 90, and query c2 finds them then). Without the exclusion, 1,000 rows of a
+        // late-locking month filled this query's batch and held back the due rows of a company that never locks. Every row
+        // it returns is due, so its order (oldest use first) is only fairness, not correctness.
+        var tz = await TenantTimeZoneAsync(tenantId, ct);
         var usedActive = tenantRows.Where(e => e.PurgeState == AttendanceEvidencePurgeStates.Active && e.UsedAtUtc != null);
-        AddAll(await Project(usedActive
-            .Where(e => e.UsedAtUtc <= fallbackBefore)
-            .OrderBy(e => e.UsedAtUtc).ThenBy(e => e.Id).Take(limit)).ToListAsync(ct));
+        var fallbackCutoff = FallbackCutoffUtc(tz, nowUtc);
+        var c1 = usedActive.Where(e => e.UsedAtUtc < fallbackCutoff);
+        foreach (var exclusion in await RecentLockExclusionsAsync(tenantId, tz, nowUtc, ct))
+        {
+            var (from, until, employees, invert) = exclusion;
+            c1 = employees is null
+                ? c1.Where(e => !(e.UsedAtUtc >= from && e.UsedAtUtc < until))
+                : invert
+                    ? c1.Where(e => !(e.UsedAtUtc >= from && e.UsedAtUtc < until && !employees.Contains(e.EmployeeId)))
+                    : c1.Where(e => !(e.UsedAtUtc >= from && e.UsedAtUtc < until && employees.Contains(e.EmployeeId)));
+        }
+        AddAll(await Project(c1.OrderBy(e => e.UsedAtUtc).ThenBy(e => e.Id).Take(limit)).ToListAsync(ct));
 
         // (c2) Used selfies inside a payroll month locked at least 90 days ago (and not already past the fallback).
-        var tz = await TenantTimeZoneAsync(tenantId, ct);
         var lockedBefore = nowUtc - SelfieEvidenceRetention.AfterPayrollLock;
         var earliestUse = nowUtc - SelfieEvidenceRetention.WithoutPayrollLock - TimeSpan.FromDays(2);
         var years = new[] { earliestUse.Year, nowUtc.Year }.Distinct().ToList();
@@ -191,6 +206,82 @@ public sealed class SelfieEvidencePurger
             if (dueAt <= nowUtc) due.Add(new DueSelfieEvidence(c.Id, c.UsedAtUtc, dueAt, workDate, locked));
         }
         return due;
+    }
+
+    /// <summary>
+    /// The first instant whose use is NOT yet due by the fallback: a used row is due by it when its tenant-local work date
+    /// W satisfies W + 120 days &lt;= now (<see cref="SelfieEvidenceRetention.DueAtUtc"/>), i.e. W &lt;= date(now - 120 d).
+    /// </summary>
+    internal static DateTime FallbackCutoffUtc(TimeZoneInfo tz, DateTime nowUtc)
+    {
+        var lastDueWorkDate = DateOnly.FromDateTime(nowUtc - SelfieEvidenceRetention.WithoutPayrollLock);
+        return TenantTimeZone.LocalDayStartUtc(tz, lastDueWorkDate.AddDays(1));
+    }
+
+    /// <summary>
+    /// The used rows c1 must skip (review 3, item 5): in each payroll month whose EFFECTIVE lock (the earliest regular,
+    /// non-voided lock covering the employee's company, as <see cref="PunchFactsAsync"/> computes it) is less than 90
+    /// days old, the rows whose fallback date is on or after that lock — they are due at lock + 90, not now. Each entry
+    /// is a UTC use window and an employee set: <c>null</c> = every employee; <c>Invert</c> = everyone EXCEPT the set
+    /// (a company-less run covers the employees of companies without a run of their own).
+    /// </summary>
+    private async Task<List<(DateTime From, DateTime Until, List<int>? Employees, bool Invert)>> RecentLockExclusionsAsync(
+        Guid tenantId, TimeZoneInfo tz, DateTime nowUtc, CancellationToken ct)
+    {
+        var recentFrom = nowUtc - SelfieEvidenceRetention.AfterPayrollLock;
+        // A lock only matters to rows whose fallback is on or after it, so to months within 120 days (+ slack) before it.
+        var earliestMonth = nowUtc - SelfieEvidenceRetention.AfterPayrollLock - SelfieEvidenceRetention.WithoutPayrollLock - TimeSpan.FromDays(32);
+        var years = Enumerable.Range(earliestMonth.Year, nowUtc.Year - earliestMonth.Year + 1).ToList();
+        var locks = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && years.Contains(r.Year) && r.RunType == PayrollRunTypes.Regular
+                        && r.Status != "Voided" && r.LockedAtUtc != null)
+            .Select(r => new { r.Year, r.Month, r.CompanyId, LockedAtUtc = r.LockedAtUtc!.Value })
+            .ToListAsync(ct);
+        var result = new List<(DateTime, DateTime, List<int>?, bool)>();
+        foreach (var month in locks.Where(l => l.Month is >= 1 and <= 12).GroupBy(l => (l.Year, l.Month)))
+        {
+            // Only a month with a lock in the last 90 days can hold a row that is not yet due.
+            if (!month.Any(l => l.LockedAtUtc > recentFrom)) continue;
+            var first = new DateOnly(month.Key.Year, month.Key.Month, 1);
+            var monthStart = TenantTimeZone.LocalDayStartUtc(tz, first);
+            var monthEnd = TenantTimeZone.LocalDayStartUtc(tz, first.AddMonths(1));
+            DateTime? companyless = month.Where(l => l.CompanyId == null).Select(l => (DateTime?)l.LockedAtUtc).Min();
+            var byCompany = month.Where(l => l.CompanyId != null).GroupBy(l => l.CompanyId!.Value)
+                .ToDictionary(g => g.Key, g => Min(g.Min(l => l.LockedAtUtc), companyless));
+
+            (DateTime From, DateTime Until)? Window(DateTime effectiveLock)
+            {
+                if (effectiveLock <= recentFrom) return null; // locked 90+ days ago: c2's rows, not c1's to skip
+                // The row is NOT due when lock <= fallback = W + 120 days, i.e. W >= the first date D with D + 120 d >= lock.
+                var firstNotDue = DateOnly.FromDateTime(effectiveLock - SelfieEvidenceRetention.WithoutPayrollLock);
+                if (firstNotDue.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) + SelfieEvidenceRetention.WithoutPayrollLock < effectiveLock)
+                    firstNotDue = firstNotDue.AddDays(1);
+                var from = TenantTimeZone.LocalDayStartUtc(tz, firstNotDue);
+                if (from < monthStart) from = monthStart;
+                return from < monthEnd ? (from, monthEnd) : null;
+            }
+
+            if (byCompany.Count > 0)
+            {
+                var companyEmployees = await _db.Employees.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.CompanyId != null && byCompany.Keys.Contains(x.CompanyId.Value))
+                    .Select(x => new { x.Id, CompanyId = x.CompanyId!.Value })
+                    .ToListAsync(ct);
+                foreach (var (companyId, effective) in byCompany)
+                    if (Window(effective) is { } w)
+                        result.Add((w.From, w.Until, companyEmployees.Where(e => e.CompanyId == companyId).Select(e => e.Id).ToList(), false));
+                // A company-less run covers everyone else (employees of companies with no run of their own, or none).
+                if (companyless is { } c && Window(c) is { } rest)
+                    result.Add((rest.From, rest.Until, companyEmployees.Select(e => e.Id).ToList(), true));
+            }
+            else if (companyless is { } c && Window(c) is { } all)
+            {
+                result.Add((all.From, all.Until, null, false));
+            }
+        }
+        return result;
+
+        static DateTime Min(DateTime a, DateTime? b) => b is { } x && x < a ? x : a;
     }
 
     private static IQueryable<Candidate> Project(IQueryable<AttendanceEvidence> rows) =>
