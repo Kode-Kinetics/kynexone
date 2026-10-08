@@ -69,7 +69,7 @@ type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'reset-notice';
  */
 export function LoginPage() {
   return (
-    <LocaleProvider preferDevice>
+    <LocaleProvider>
       <LoginCard />
     </LocaleProvider>
   );

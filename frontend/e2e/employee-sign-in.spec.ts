@@ -389,6 +389,23 @@ test.describe('device language on an Arabic phone', () => {
     await expect(page.getByTestId('welcome-email')).toHaveText(EMAIL);
   });
 
+  test('redeeming in Arabic lands on Self-Service in Arabic, right-to-left', async ({ page }) => {
+    await mockApi(page);
+    // The dashboard payload is not this spec's business: a failed load keeps /ess inside the shell.
+    await page.route('**/api/ess/dashboard', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }));
+    await page.goto(`/welcome#e=${encodeURIComponent(EMAIL)}&c=${CODE}`);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('مرحباً');
+    await page.getByLabel('اختر كلمة المرور').fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'حفظ كلمة المرور وتسجيل الدخول' }).click();
+    await page.waitForURL(/\/ess/);
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
+    // Saved as their choice, so it holds on every later visit whatever the device says.
+    expect(await page.evaluate(() => localStorage.getItem('kynexone-locale-choice-v2'))).toBe('ar');
+    // And the page itself speaks Arabic.
+    await expect(page.locator('main')).toContainText(/[؀-ۿ]/);
+  });
+
   test('an explicit English choice wins over the device', async ({ page }) => {
     await mockApi(page, { locale: 'en' });
     await page.goto('/welcome');
