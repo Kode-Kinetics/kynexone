@@ -125,6 +125,18 @@ public static class FeatureKeys
     /// (PUT /api/platform/tenants/{id}/features/release_a), never from Tenant Admin. See OptInFeatures.
     /// </summary>
     public const string ReleaseA = "release_a";
+    /// <summary>
+    /// Selfie attendance (a photo with each punch, single-use evidence id, consent per policy version). OPT-IN: an
+    /// absent row means OFF. Only the platform team can switch it on, and the platform endpoint refuses unless the
+    /// flag's ConfigJson records the owner's DPIA sign-off and the KSA data-residency confirmation
+    /// (SelfieAttendanceConfig). Tenant Admin never can. See OptInFeatures.
+    /// </summary>
+    public const string SelfieAttendance = "selfie_attendance";
+    /// <summary>
+    /// Server-side geofence on every employee self-punch, against the site's Location row. OPT-IN and independent of
+    /// selfies (not biometric, so no DPIA gate); settings in ConfigJson (PunchGeofenceConfig). Platform-switched.
+    /// </summary>
+    public const string PunchGeofence = "attendance_geofence";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

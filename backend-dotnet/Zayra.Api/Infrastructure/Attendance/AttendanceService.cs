@@ -375,23 +375,28 @@ public class AttendanceService : IAttendanceService
         return logs;
     }
 
-    public async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    public Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct) =>
+        PushEventAsync(tenantId, request, context, ct, verification: null);
+
+    private async Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct,
+        PunchVerification? verification)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await PushEventCoreAsync(tenantId, request, context, ct);
+            return await PushEventCoreAsync(tenantId, request, context, ct, verification);
 
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
             await using var transaction = await _db.Database.BeginTransactionAsync(
                 System.Data.IsolationLevel.ReadCommitted, ct);
-            var created = await PushEventCoreAsync(tenantId, request, context, ct);
+            var created = await PushEventCoreAsync(tenantId, request, context, ct, verification);
             await transaction.CommitAsync(ct);
             return created;
         });
     }
 
-    private async Task<AttendanceRawEvent> PushEventCoreAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct)
+    private async Task<AttendanceRawEvent> PushEventCoreAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct,
+        PunchVerification? verification = null)
     {
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, request.EmployeeCode, ct);
         if (employee is null) throw new InvalidOperationException("Employee could not be mapped from attendance event.");
@@ -435,8 +440,43 @@ public class AttendanceService : IAttendanceService
         };
         _db.AttendanceRawEvents.Add(raw);
         await Audit(tenantId, context, "attendance.raw_event.created", "AttendanceRawEvent", raw.Id.ToString(), ct);
-        await _db.SaveChangesAsync(ct);
+        if (verification?.EvidenceId is Guid evidenceId)
+            await ConsumeEvidenceAsync(tenantId, employee.Id, evidenceId, raw, verification, context, ct);
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) when (verification?.EvidenceId is not null)
+        {
+            // Another punch marked the same evidence used between our read and this write (the UPDATE carries
+            // WHERE used_at_utc IS NULL). Nothing of this punch was written: the raw row and the update share one save.
+            throw new AttendanceRefusalException(AttendanceRefusals.EvidenceUsed);
+        }
         return raw;
+    }
+
+    /// <summary>
+    /// Marks one selfie evidence row used by <paramref name="raw"/>, in the same SaveChanges as the raw event. The rule is
+    /// re-checked here (the controller's check ran before the transaction), and the row's UsedAtUtc concurrency token makes
+    /// the UPDATE conditional on it still being unused, so the id is single-use even under concurrent punches.
+    /// </summary>
+    private async Task ConsumeEvidenceAsync(Guid tenantId, int employeeId, Guid evidenceId, AttendanceRawEvent raw,
+        PunchVerification verification, RequestContext context, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var evidence = await _db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == evidenceId, ct);
+        var refusal = AttendanceVerificationService.EvidenceRefusal(
+            evidence?.EmployeeId, evidence?.UsedAtUtc, evidence?.PurgeState, evidence?.ExpiresAtUtc, employeeId, now);
+        if (refusal is not null) throw new AttendanceRefusalException(refusal);
+        evidence!.UsedAtUtc = now;
+        evidence.UsedByRawEventId = raw.Id;
+        raw.PhotoReference = $"evidence:{evidence.Id}";
+        await Audit(tenantId, context, "attendance.selfie.punch_with_evidence", "AttendanceRawEvent", raw.Id.ToString(),
+            JsonSerializer.Serialize(new
+            {
+                employeeId,
+                evidenceId = evidence.Id,
+                verificationMethod = verification.Method,
+                geofenceSite = verification.GeofenceSite,
+                distanceMeters = verification.DistanceMeters is double d ? Math.Round(d, 1) : (double?)null,
+            }), ct);
     }
 
     private static string HashKey(string key) =>
@@ -710,15 +750,18 @@ public class AttendanceService : IAttendanceService
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
-    public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct)
+    public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct,
+        PunchVerification? verification = null)
     {
         var punchedAtUtc = DateTime.UtcNow;
+        // Selfie attendance v2 rule 4: the stored method is what the SERVER verified (None, Geofence, Selfie,
+        // Selfie+Geofence). The request's VerificationMethod, ConfidenceScore and ClientBiometricVerified are never read.
+        verification ??= PunchVerification.Unverified;
         var raw = await PushEventAsync(tenantId,
             new AttendanceRawEventRequest(request.EmployeeId, null, null, source, punchedAtUtc,
                 request.PunchDirection, request.LocationName, request.Latitude, request.Longitude,
-                context.IpAddress, null, null, "",
-                source.Contains("mobile", StringComparison.OrdinalIgnoreCase) ? "Mobile" : "Web", null),
-            context, ct);
+                context.IpAddress, null, null, "", verification.Method, null),
+            context, ct, verification);
 
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, null, ct)
             ?? throw new InvalidOperationException("Employee could not be mapped from attendance event.");

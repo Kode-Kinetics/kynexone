@@ -9,6 +9,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
@@ -24,13 +25,18 @@ public class AttendanceController : ControllerBase
     private readonly IDataScopeService _scopeService;
     private readonly IHrmHierarchyService _hierarchyService;
     private readonly ZayraDbContext _db;
+    private readonly AttendanceVerificationService _verification;
 
-    public AttendanceController(IAttendanceService attendance, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, ZayraDbContext db)
+    // The verification service is a trailing optional parameter so every existing construction keeps compiling; when it
+    // is not supplied the controller builds one over the same context, so the geofence and evidence rules always run.
+    public AttendanceController(IAttendanceService attendance, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, ZayraDbContext db,
+        AttendanceVerificationService? verification = null)
     {
         _attendance = attendance;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
         _db = db;
+        _verification = verification ?? new AttendanceVerificationService(db);
     }
 
     [HttpGet("dashboard")]
@@ -522,7 +528,16 @@ public class AttendanceController : ControllerBase
             if (!User.HasAnyPermission(onBehalfPermissions)) return Forbid();
             if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(employeeId)) return Forbid();
         }
-        try { return Ok(await _attendance.PunchAsync(tenantId, request with { EmployeeId = employeeId }, source, Context(), ct)); }
+
+        // Selfie attendance v2: the server decides what was verified. The geofence (when the tenant enforces it) and the
+        // evidence rules run on every self-punch route, including the kiosk, which has no fixed site of its own. Evidence
+        // must belong to the employee the punch is recorded against, so nobody can punch with someone else's selfie.
+        var decision = await _verification.EvaluatePunchAsync(tenantId, employeeId, request.EvidenceId,
+            new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked), ct);
+        if (decision.Refusal is { } refusal) return BadRequest(refusal.Body);
+
+        try { return Ok(await _attendance.PunchAsync(tenantId, request with { EmployeeId = employeeId }, source, Context(), ct, decision.Verification)); }
+        catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());

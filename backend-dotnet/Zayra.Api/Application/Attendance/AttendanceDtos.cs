@@ -245,7 +245,31 @@ public record AttendanceRawEventRequest(
     string? VerificationMethod,
     decimal? ConfidenceScore);
 
-public record WebPunchRequest(int EmployeeId, string PunchDirection, string? LocationName, decimal? Latitude, decimal? Longitude);
+/// <summary>
+/// An employee self-punch (punch/web, punch/mobile, punch/kiosk). Selfie attendance v2 adds the device's location
+/// accuracy and mock flag (read by the server-side geofence) and <see cref="EvidenceId"/>, the opaque single-use id
+/// returned by POST /api/attendance/evidence/selfie — never a storage key.
+/// <para><see cref="VerificationMethod"/>, <see cref="ConfidenceScore"/> and <see cref="ClientBiometricVerified"/> are
+/// accepted so older clients still bind, and are IGNORED: the server stores what it verified itself.</para>
+/// </summary>
+public record WebPunchRequest(
+    int EmployeeId,
+    string PunchDirection,
+    string? LocationName,
+    decimal? Latitude,
+    decimal? Longitude,
+    decimal? AccuracyMeters = null,
+    bool? LocationMocked = null,
+    Guid? EvidenceId = null,
+    string? VerificationMethod = null,
+    decimal? ConfidenceScore = null,
+    bool? ClientBiometricVerified = null);
+
+/// <summary>What the server verified for a self-punch, handed to the write so it is stored with the raw event.</summary>
+public sealed record PunchVerification(string Method, Guid? EvidenceId, string? GeofenceSite, double? DistanceMeters)
+{
+    public static readonly PunchVerification Unverified = new(Zayra.Api.Models.AttendanceVerificationMethods.None, null, null, null);
+}
 
 // ── Device-key-authenticated ingest (generic webhook connector) ──────────────
 public record DeviceIngestPunch(

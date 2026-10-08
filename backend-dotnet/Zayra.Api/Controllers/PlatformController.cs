@@ -18,6 +18,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Email;
@@ -1120,6 +1121,27 @@ public class PlatformController : ControllerBase
         var flag = await _db.TenantFeatureFlags
             .FirstOrDefaultAsync(f => f.TenantId == tenantId && f.FeatureKey == featureKey, ct);
 
+        // Selfie attendance collects a face image. The two owner decisions — the DPIA sign-off (legal) and the KSA
+        // data-residency confirmation (spend) — must be recorded in ConfigJson before it can be switched on. Disabling
+        // is always allowed and keeps the recorded sign-offs (a null ConfigJson does not erase them).
+        var effectiveConfig = req.ConfigJson;
+        if (featureKey == FeatureKeys.SelfieAttendance)
+        {
+            effectiveConfig ??= flag?.ConfigJson;
+            if (req.IsEnabled && SelfieAttendanceConfig.MissingSignOffs(effectiveConfig) is { Count: > 0 } missing)
+                return UnprocessableEntity(new
+                {
+                    code = "selfie_signoff_missing",
+                    message = "Selfie attendance cannot be switched on until the DPIA sign-off and the KSA data-residency "
+                              + "confirmation are recorded in ConfigJson.",
+                    missing,
+                });
+        }
+        else if (featureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } problems)
+        {
+            return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", problems), problems });
+        }
+
         if (flag is null)
         {
             flag = new TenantFeatureFlag { TenantId = tenantId, FeatureKey = featureKey };
@@ -1128,9 +1150,12 @@ public class PlatformController : ControllerBase
 
         var oldEnabled = flag.IsEnabled;
         flag.IsEnabled = req.IsEnabled;
-        flag.ConfigJson = req.ConfigJson;
+        flag.ConfigJson = effectiveConfig;
         flag.UpdatedAtUtc = DateTime.UtcNow;
 
+        object newValues = featureKey == FeatureKeys.SelfieAttendance
+            ? (object)new { featureKey, isEnabled = req.IsEnabled, signOffs = SelfieAttendanceConfig.SignOffsForAudit(effectiveConfig), actor = PlatformActorEmail() }
+            : new { featureKey, isEnabled = req.IsEnabled };
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId = tenantId,
@@ -1138,7 +1163,7 @@ public class PlatformController : ControllerBase
             EntityId = $"{tenantId}/{featureKey}",
             Action = req.IsEnabled ? "FeatureEnabled" : "FeatureDisabled",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { featureKey, isEnabled = oldEnabled }),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { featureKey, isEnabled = req.IsEnabled }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(newValues),
             PerformedByName = "platform_admin",
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
@@ -2185,6 +2210,17 @@ public class PlatformController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(req.FeatureKey))
             return BadRequest(new { message = "featureKey is required." });
+        // Each tenant's selfie attendance needs its own recorded sign-offs, so it is never switched ON in bulk.
+        // Switching it OFF in bulk (a kill switch) stays possible.
+        if (req.FeatureKey == FeatureKeys.SelfieAttendance && req.IsEnabled)
+            return UnprocessableEntity(new
+            {
+                code = "selfie_bulk_enable_refused",
+                message = "Selfie attendance is switched on one tenant at a time, with that tenant's DPIA sign-off and "
+                          + "KSA data-residency confirmation. Use PUT /api/platform/tenants/{id}/features/selfie_attendance.",
+            });
+        if (req.FeatureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } bulkProblems)
+            return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", bulkProblems), problems = bulkProblems });
 
         List<Guid> ids;
         if (req.ApplyToAll)
@@ -2215,7 +2251,9 @@ public class PlatformController : ControllerBase
 
             AuditTenant(id, req.IsEnabled ? "FeatureEnabled" : "FeatureDisabled",
                 new { featureKey = req.FeatureKey, isEnabled = oldEnabled },
-                new { featureKey = req.FeatureKey, isEnabled = req.IsEnabled },
+                req.FeatureKey == FeatureKeys.SelfieAttendance
+                    ? (object)new { featureKey = req.FeatureKey, isEnabled = req.IsEnabled, signOffs = SelfieAttendanceConfig.SignOffsForAudit(flag.ConfigJson) }
+                    : new { featureKey = req.FeatureKey, isEnabled = req.IsEnabled },
                 entityType: "FeatureFlag", entityId: $"{id}/{req.FeatureKey}");
             results.Add(BulkOpItem.Ok(id, tenant.Name));
         }

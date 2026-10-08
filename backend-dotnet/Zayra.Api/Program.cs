@@ -337,6 +337,7 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceVerificationService>();
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
 // Establishment matrix: the ONE budget guard every assignment path shares, plus the per-tenant
@@ -544,6 +545,16 @@ builder.Services.AddSingleton(effectiveChangeOptions);
 builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler.Descriptor);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
+
+// Selfie attendance v2 (rule 7): selfie blobs are deleted 90 days after the punch's payroll month locks, at work date
+// + 120 days when no run locks it, or 24 hours after an upload no punch used. The row and its SHA-256 are kept. ON by
+// default — the retention rule is a promise to employees; SelfieEvidencePurge__Enabled=false is the kill switch.
+var selfiePurgeOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions>() ?? new Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions();
+builder.Services.AddSingleton(selfiePurgeOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeJobHandler>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeScheduler>();
 
 // Release A (grade entitlements, contract-year package, contract renewals, deductions statement). Every service
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A

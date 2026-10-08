@@ -31,6 +31,14 @@ public static class OptInFeatures
                 "/api/ess/deductions",     // R3 employee deductions
                 "/api/ess/renewal-offer",  // R6 employee acceptance
             ],
+            // Selfie attendance: only the upload is a route of its own. Consent withdrawal and the ESS read stay
+            // reachable when it is off (withdrawing is always possible); punches check the flag in code.
+            [FeatureKeys.SelfieAttendance] =
+            [
+                "/api/attendance/evidence",
+            ],
+            // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
+            [FeatureKeys.PunchGeofence] = [],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();
