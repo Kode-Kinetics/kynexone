@@ -195,42 +195,44 @@ public class MobileController : ControllerBase
         if (decision.Refusal is { } refusal)
             return BadRequest((refusal.Code == AttendanceRefusals.LocationRequired.Code ? AttendanceRefusals.LegacyPunchNeedsLocation : refusal).Body);
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-
-        var existing = await _db.AttendanceDailyRecords
-            .FirstOrDefaultAsync(a => a.TenantId == tenantId
-                && a.EmployeeId == employeeId
-                && a.WorkDate == today, ct);
-
         var nowUtc = DateTime.UtcNow;
-        if (existing is null)
-        {
-            existing = new AttendanceDailyRecord
-            {
-                TenantId = tenantId.Value,
-                EmployeeId = employeeId.Value,
-                WorkDate = today,
-                Status = "Present"
-            };
-            _db.AttendanceDailyRecords.Add(existing);
-        }
+        var today = DateOnly.FromDateTime(nowUtc);
 
-        if (req.Direction == "In")
+        // Race-safe like AttendanceService.PunchAsync: two first-of-day punches used to both insert the daily record and
+        // the loser got an unhandled 23505 (a 500). Under the per-(tenant, employee, work date) lock the second one finds
+        // and updates the first's row.
+        AttendanceDailyRecord existing = null!;
+        await AttendanceDailyRecordLock.RunAsync(_db, tenantId.Value, employeeId.Value, today, async () =>
         {
-            existing.FirstInUtc = nowUtc;
-            existing.Status = "Present";
-        }
-        else if (req.Direction == "Out")
-        {
-            existing.LastOutUtc = nowUtc;
-            if (existing.FirstInUtc.HasValue && existing.LastOutUtc.HasValue)
+            existing = await _db.AttendanceDailyRecords
+                .FirstOrDefaultAsync(a => a.TenantId == tenantId
+                    && a.EmployeeId == employeeId
+                    && a.WorkDate == today, ct)
+                ?? _db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+                {
+                    TenantId = tenantId.Value,
+                    EmployeeId = employeeId.Value,
+                    WorkDate = today,
+                    Status = "Present"
+                }).Entity;
+
+            if (req.Direction == "In")
             {
-                var worked = existing.LastOutUtc.Value - existing.FirstInUtc.Value;
-                existing.TotalWorkedMinutes = worked.TotalMinutes > 0 ? (int)worked.TotalMinutes : 0;
+                existing.FirstInUtc = nowUtc;
+                existing.Status = "Present";
             }
-        }
+            else if (req.Direction == "Out")
+            {
+                existing.LastOutUtc = nowUtc;
+                if (existing.FirstInUtc.HasValue && existing.LastOutUtc.HasValue)
+                {
+                    var worked = existing.LastOutUtc.Value - existing.FirstInUtc.Value;
+                    existing.TotalWorkedMinutes = worked.TotalMinutes > 0 ? (int)worked.TotalMinutes : 0;
+                }
+            }
 
-        await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(ct);
+        }, ct);
         return Ok(new
         {
             employeeId,

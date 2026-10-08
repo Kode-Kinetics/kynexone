@@ -826,8 +826,12 @@ public class AttendanceService : IAttendanceService
         var employee = await ResolveEmployee(tenantId, request.EmployeeId, null, ct)
             ?? throw new InvalidOperationException("Employee could not be mapped from attendance event.");
         var workDate = await ResolvePunchWorkDateAsync(tenantId, employee.Id, punchedAtUtc, ct);
-        if (!await IsLocked(tenantId, workDate, ct))
+        // Race-safe: two first-of-day punches of the same employee used to both create the daily record, and the loser
+        // got an unhandled 23505 (a 500 after its raw event had committed). The daily record and what is derived from it
+        // are written under a per-(tenant, employee, work date) advisory lock, so the second punch updates the first's row.
+        await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, workDate, async () =>
         {
+            if (await IsLocked(tenantId, workDate, ct)) return;
             var policies = await _db.AttendancePolicies
                 .Where(x => x.TenantId == tenantId && x.IsActive)
                 .ToListAsync(ct);
@@ -840,7 +844,7 @@ public class AttendanceService : IAttendanceService
             await ProcessEmployeeDay(tenantId, employee, workDate,
                 ResolveAttendancePolicy(employee, policies), context, ct);
             await _db.SaveChangesAsync(ct);
-        }
+        }, ct);
 
         return raw;
     }
