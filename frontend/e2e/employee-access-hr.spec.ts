@@ -234,6 +234,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
 
 async function openProfile(page: Page, name: string): Promise<Locator> {
   await page.getByRole('button', { name: `Open profile for ${name}` }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Open full profile', exact: true }).click();
   const card = page.getByTestId('employee-access-card');
   await expect(card).toBeVisible();
   await expect(card.getByText('Checking self-service…')).toHaveCount(0);
@@ -717,7 +718,7 @@ test('Add work emails falls back to each status when the save response has no st
 
 test('Activate employee offers the sign-in slip: Add, Activate, Print', async ({ page }) => {
   const { writes } = await openPeople(page);
-  await page.getByRole('button', { name: 'Open profile for Rana Saeed' }).click();
+  await openProfile(page, 'Rana Saeed');
   await page.getByRole('button', { name: 'Activate employee' }).click();
   const prompt = page.getByRole('dialog').filter({ has: page.getByTestId('employee-activated') });
   await expect(prompt.getByTestId('employee-activated')).toHaveText('Rana Saeed is now active.');

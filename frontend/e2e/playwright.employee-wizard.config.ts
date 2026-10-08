@@ -1,10 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// This suite intercepts every API request and never creates a real employee.
+// This suite intercepts every API request and never mutates a real employee.
 // Start the frontend separately so the suite can also run against an existing preview.
 export default defineConfig({
   testDir: '.',
-  testMatch: /employee-create-wizard\.spec\.ts/,
+  testMatch: /employee-(?:create|edit)-wizard\.spec\.ts/,
   workers: 1,
   retries: 0,
   timeout: 60_000,
