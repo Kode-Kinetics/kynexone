@@ -787,6 +787,7 @@ public class AccessManagementService : IAccessManagementService
         return Status(null, matching, EmployeeLoginNextActions.LinkExisting, null) with
         {
             WillResetCredential = await HasCredentialHandlersAsync(tenantId, user.Id, cancellationToken)
+                || await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, cancellationToken)
         };
     }
 
@@ -948,7 +949,11 @@ public class AccessManagementService : IAccessManagementService
             if (confirmationRequired && !request.ConfirmedWorkEmail)
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.ConfirmWorkEmail());
             // Someone other than the person has held a credential for this login: the link rotates it (below).
-            var rotateCredential = await HasCredentialHandlersAsync(tenantId, user.Id, ct);
+            // ...and so does a link made by whoever set the employee's work email (WorkEmailSetterRule): the identity
+            // evidence is theirs, so the person proves the address by setting their own password from an invitation
+            // handed over in person (recorded as disclosed — the caller becomes a credential handler).
+            var callerIsSetter = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct);
+            var rotateCredential = callerIsSetter || await HasCredentialHandlersAsync(tenantId, user.Id, ct);
             var companyAccess = LinkCompanyAccess(user, tenantId, employee.CompanyId);
 
             // The Employee role: what Self-Service needs. Every other role the login holds is kept as it is.
@@ -1084,7 +1089,7 @@ public class AccessManagementService : IAccessManagementService
                         employeeId = employee.Id,
                         invitationExpiresAtUtc = rotationExpiresAtUtc,
                         mfaCleared,
-                        reason = "credential_handled_by_administrator"
+                        reason = callerIsSetter ? "linked_by_work_email_setter" : "credential_handled_by_administrator"
                     })));
             }
 
@@ -1123,7 +1128,7 @@ public class AccessManagementService : IAccessManagementService
                 {
                     CredentialReset = true,
                     // The caller set the work email: the rotation invitation is handed back, never emailed.
-                    HandOverInPerson = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employee.Id, context.UserId, ct),
+                    HandOverInPerson = callerIsSetter,
                     InvitationExpiresAtUtc = rotationExpiresAtUtc,
                     // The controller emails it, or hands it back (and records that) when no email went out.
                     InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),

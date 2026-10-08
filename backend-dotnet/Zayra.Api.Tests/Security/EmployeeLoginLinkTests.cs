@@ -1106,11 +1106,37 @@ public sealed class EmployeeLoginLinkTests
 
         if (changedBy == "caller")
         {
-            // The caller set the work email, but this login has no credential handler: linking issues no credential,
-            // so the setter rule (which only ever withholds the EMAIL channel) has nothing to withhold.
-            await using var db = _fixture.CreateRetryingDb();
-            Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
-                .NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            // The caller set the work email the link rests on. Even with no credential handler, their link ALWAYS
+            // rotates the credential: the person sets their own password from an invitation the caller hands over in
+            // person (never emailed), and that disclosure makes the caller a credential handler.
+            var refreshTokenId = await AddRefreshTokenAsync(login);
+            await using (var db = _fixture.CreateRetryingDb())
+            {
+                var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
+                status.NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+                status.WillResetCredential.Should().BeTrue("the setter's link resets the password");
+            }
+            await using (var db = _fixture.CreateRetryingDb())
+                Ok<EmployeeLoginStatusDto>((await Controller(db, w, peer).EmployeeLoginStatus(employeeId, default)).Result)
+                    .WillResetCredential.Should().BeFalse("a peer who set nothing links this handler-free login as it is");
+            EmployeeLoginLinkResultDto linked;
+            await using (var db = _fixture.CreateRetryingDb())
+                linked = Ok<EmployeeLoginLinkResultDto>((await Controller(db, w, w.AdminId).LinkExistingLogin(
+                    new LinkExistingLoginRequest(employeeId, login, "link"), default)).Result);
+            linked.CredentialReset.Should().BeTrue();
+            linked.HandOverInPerson.Should().BeTrue();
+            linked.EmailSent.Should().BeFalse();
+            linked.InvitationUrl.Should().Contain("/accept-invitation");
+            linked.DeliveryMessage.Should().Be(WorkEmailSetterRule.HandOverMessage);
+            await using var verify = _fixture.CreateRetryingDb();
+            var rotated = await verify.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == login);
+            rotated.IsActive.Should().BeFalse();
+            rotated.PasswordHash.Should().NotBe("test-only-hash");
+            (await verify.RefreshTokens.SingleAsync(x => x.Id == refreshTokenId)).RevokedAtUtc.Should().NotBeNull();
+            (await verify.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.LinkCredentialResetAction
+                && x.EntityId == login.ToString())).Metadata.Should().Contain("linked_by_work_email_setter");
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == login.ToString() && x.UserId == w.AdminId)).Should().BeTrue("the setter now holds a credential");
             return;
         }
         var expectedCode = EmployeeLinkRefusals.WorkEmailParty;
