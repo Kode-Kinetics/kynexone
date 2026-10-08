@@ -195,6 +195,7 @@ export function skipReasonKey(reasonCode: string | null | undefined): string | n
 /** Work-email refusals the create / edit / backfill saves can return (422 `error` or `code`). */
 export const WORK_EMAIL_ERROR_KEYS: Record<string, string> = {
   work_email_plus_address: "Work email can't contain '+'.",
+  work_email_invalid_characters: 'Work email can only use English letters, numbers, dots, dashes and underscores before the @.',
   work_email_wrong_domain: 'Work email must end in @{domain}.',
 };
 
@@ -214,3 +215,21 @@ export const CONFLICT_REASON_KEYS: Record<string, string> = {
   in_file_duplicate: 'This row repeats an employee number or email from earlier in the list.',
 };
 export const DEFAULT_CONFLICT_KEY = 'This email is already used by another employee.';
+
+/**
+ * The same rule the server applies to the part before the @, checked as HR types: a "+" has its own
+ * sentence; anything but English letters, digits, dots, dashes and underscores is refused. Returns
+ * the 422 code it matches, or null. Blank is fine (a work email is optional).
+ */
+export function workEmailLocalProblem(email: string | null | undefined): 'work_email_plus_address' | 'work_email_invalid_characters' | null {
+  const value = (email ?? '').trim();
+  if (!value) return null;
+  const local = value.includes('@') ? value.slice(0, value.indexOf('@')) : value;
+  if (local.includes('+')) return 'work_email_plus_address';
+  return /^[A-Za-z0-9._-]*$/.test(local) ? null : 'work_email_invalid_characters';
+}
+
+/** The sentence for a work-email refusal (server 422 or the as-you-type check); null for anything else. */
+export function workEmailProblemKey(code: string | null): string | null {
+  return code && code !== 'work_email_wrong_domain' ? WORK_EMAIL_ERROR_KEYS[code] ?? null : null;
+}

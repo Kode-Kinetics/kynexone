@@ -375,12 +375,29 @@ test('Add Employee: accept the suggestion, then Print sign-in slip', async ({ pa
   await expectNoCodeStored(page, ['60606161']);
 });
 
-test("Add Employee: a '+' in the work email is refused in plain words", async ({ page }) => {
+test("Add Employee: a '+' or a non-English character is refused as HR types, before any save", async ({ page }) => {
+  const { writes } = await openPeople(page);
+  await page.getByRole('button', { name: 'Add Employee' }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
+  const local = dialog.getByTestId('work-email-local-part');
+  await local.fill('mona+hr');
+  await expect(dialog.getByTestId('work-email-problem')).toHaveText("Work email can't contain '+'.");
+  await local.fill('monä');
+  await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
+  await dialog.getByRole('button', { name: 'Create Employee' }).click();
+  await expect(dialog.getByText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.')).toHaveCount(2);
+  expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
+  await local.fill('mona.kamal');
+  await expect(dialog.getByTestId('work-email-problem')).toHaveCount(0);
+});
+
+test("Add Employee: the server's work-email refusal is shown in plain words", async ({ page }) => {
   await openPeople(page, { createReturns422: true });
   await page.getByRole('button', { name: 'Add Employee' }).first().click();
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
-  await dialog.getByTestId('work-email-local-part').fill('mona+hr');
+  await dialog.getByTestId('work-email-local-part').fill('mona.kamal');
   await dialog.getByRole('button', { name: 'Create Employee' }).click();
   await expect(dialog.getByText("Work email can't contain '+'.")).toBeVisible();
   await expect(dialog.getByText('English server text')).toHaveCount(0);
@@ -493,4 +510,17 @@ test('Add work emails offers Email beside Print when the company can email', asy
   await dialog.getByRole('button', { name: 'Email sign-in codes (1)' }).click();
   await expect(page.getByTestId('welcome-codes-summary')).toContainText('Sign-in codes emailed: 1.');
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [45] }]);
+});
+
+test('Add work emails flags rows the server would refuse before checking', async ({ page }) => {
+  const { writes } = await openPeople(page);
+  await page.getByTestId('access-filter').getByRole('button', { name: 'Waiting for work email' }).click();
+  await page.getByRole('button', { name: 'Add work emails' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara+hr@evostel.com\nEMP-0046\thamäd@evostel.com');
+  const invalid = dialog.getByTestId('work-emails-invalid');
+  await expect(invalid.getByRole('listitem').first()).toContainText("Work email can't contain '+'.");
+  await expect(invalid.getByRole('listitem').nth(1)).toContainText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
+  await expect(dialog.getByRole('button', { name: 'Check the list' })).toBeDisabled();
+  expect(writes.filter((w) => w.path === '/api/employee-access/work-emails')).toHaveLength(0);
 });
