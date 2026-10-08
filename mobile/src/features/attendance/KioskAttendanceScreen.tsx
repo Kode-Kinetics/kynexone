@@ -10,7 +10,7 @@ import { formatTime } from '@/utils/date';
 import { COLORS } from '@/config';
 import type { GeoLocation, TodayAttendance } from '@/types';
 import { kioskPunchLabel, nextKioskPunch } from './kioskPolicy';
-import { mapPunchRefusal } from './selfieAttendance';
+import { mapPunchRefusal, refusalText } from './selfieAttendance';
 
 export default function KioskAttendanceScreen() {
   const { user } = useAuthStore();
@@ -62,7 +62,7 @@ export default function KioskAttendanceScreen() {
     } catch (error) {
       // The kiosk route runs the same server-side geofence: show its reason and the next step.
       const refusal = mapPunchRefusal(error, i18n.language);
-      const message = `${refusal.serverMessage ?? tx(refusal.messageKey)}\n\n${tx(refusal.nextKey)}`;
+      const message = refusalText(refusal, tx);
       Alert.alert(tx(refusal.titleKey), message, refusal.action === 'open_settings'
         ? [{ text: tx('selfie.punch.openSettings'), onPress: () => void Linking.openSettings() }, { text: tx('selfie.punch.ok'), style: 'cancel' }]
         : [{ text: tx('selfie.punch.ok') }]);

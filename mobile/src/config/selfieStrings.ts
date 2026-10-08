@@ -2,6 +2,8 @@
 // Kept import-free so tests can check EN/AR key parity and the refusal-key mapping under node.
 //
 // Wording rules: no face matching is performed, so never say "face verified" — say "selfie attached".
+// Arabic: a punch is تسجيل الحضور (never بصمة, which reads as a fingerprint). Nothing implies biometrics
+// beyond one photo. Withdrawal is never offered as the way past a required selfie (review 2, item 8).
 // Retention mirrors the server's purge job (selfie attendance v2 contract, rule 7).
 
 export const selfieEn = {
@@ -29,7 +31,7 @@ export const selfieEn = {
     withdraw: 'Withdraw my consent',
     withdrawConfirmTitle: 'Withdraw consent?',
     withdrawConfirmBody:
-      'From now on you will clock in and out without a selfie. Photos not yet used for attendance are deleted now; photos attached to past punches are deleted on the normal schedule.',
+      'From now on you will clock in and out without a selfie. Photos not yet used for attendance are deleted; photos attached to past punches are deleted on the normal schedule.',
     withdrawConfirm: 'Withdraw',
     withdrawDeletesUnused: 'Withdrawing deletes any photos not yet used for attendance.',
     givenOn: 'You agreed on {{date}}.',
@@ -37,11 +39,14 @@ export const selfieEn = {
     notGivenStatus: 'You have not agreed. You clock in and out without a selfie.',
     agreedToast: 'Thank you. A selfie will be part of your punches from now on.',
     withdrawnToast: 'Consent withdrawn. You will clock in and out without a selfie.',
+    withdrawnDeletedToast:
+      'Consent withdrawn. Your photos not yet used for attendance have been deleted. You will clock in and out without a selfie.',
+    withdrawnPendingToast:
+      'Consent withdrawn. Your photos not yet used for attendance will be deleted within about 15 minutes. You will clock in and out without a selfie.',
     versionChanged: 'The consent text has been updated. Please read it again before agreeing.',
     featureOff: 'Your company does not use selfie attendance. Nothing is captured.',
     unavailable: 'We couldn’t load your selfie attendance settings. Check your connection and try again.',
-    requiredNote:
-      'Your company asks employees who agreed to attach a selfie to each punch. If you withdraw, you clock in and out without one.',
+    requiredNote: 'Your company asks employees who agreed to attach a selfie to each punch they make from the app.',
   },
   card: {
     consentNeeded: 'Your company offers selfie attendance. Read what it means before deciding.',
@@ -65,14 +70,16 @@ export const selfieEn = {
     retake: 'Retake',
     use: 'Use this photo',
     skip: 'Clock without a selfie',
-    withdrawInstead: 'I don’t want to use a selfie',
     close: 'Close selfie',
     uploading: 'Attaching your selfie…',
     preparing: 'Starting the camera…',
     cameraNeededTitle: 'Camera access needed',
     cameraNeededBody: 'Allow camera access to take your attendance selfie, or clock without one.',
     cameraNeededRequiredBody:
-      'Allow camera access to take your attendance selfie. If you prefer not to use a selfie, withdraw your consent and clock without one.',
+      'Your company asks for a selfie with each punch you make from the app. Allow camera access to take it. If you can’t use the camera, contact HR.',
+    cameraProblem: 'The camera could not take the photo. Try again.',
+    cameraProblemRequired: 'The camera could not take the photo. Try again. If it keeps happening, contact HR.',
+    tryAgain: 'Try again',
     allowCamera: 'Allow camera',
     openSettings: 'Open settings',
     privacy: 'The photo is sent once and deleted from this phone straight away.',
@@ -88,7 +95,7 @@ export const selfieEn = {
     takeSelfie: 'Take a selfie',
     withoutSelfie: 'Clock without a selfie',
     openSettings: 'Open settings',
-    reviewConsent: 'Review consent',
+    requiredHelp: 'Wait a moment and try again. If you can’t take a selfie, contact HR.',
     ok: 'OK',
   },
   refusal: {
@@ -149,8 +156,8 @@ export const selfieEn = {
     },
     selfieRequired: {
       title: 'A selfie is needed',
-      message: 'Your company asks employees who agreed to selfie attendance to attach a selfie to each punch.',
-      next: 'Take a selfie, or withdraw your consent to clock without one.',
+      message: 'Your company asks for a selfie with each punch you make from the app. Take a selfie and try again.',
+      next: 'Take a selfie and try again.',
     },
     selfieRateLimited: {
       title: 'Too many selfies',
@@ -207,15 +214,15 @@ export const selfieAr: typeof selfieEn = {
     subtitle: 'القرار لك. يمكنك الرفض أو تغيير رأيك في أي وقت.',
     whatTitle: 'ما الذي يُلتقط',
     whatBody:
-      'عند تسجيل الدخول أو الخروج، يلتقط التطبيق صورة واحدة لوجهك بالكاميرا الأمامية. تُرفق الصورة بتلك البصمة، ويُتحقق من موقعك كالمعتاد.',
+      'عند تسجيل الدخول أو الخروج، يلتقط التطبيق صورة واحدة لوجهك بالكاميرا الأمامية. تُرفق الصورة بتسجيل الحضور ذاك، ويُتحقق من موقعك كالمعتاد.',
     whyTitle: 'لماذا',
     whyBody:
-      'تستخدم شركتك الصورة للتأكد من أنك سجّلت البصمة بنفسك. لا تجري أي مقارنة آلية لوجهك: لا يوجد تعرّف على الوجه.',
+      'تستخدم شركتك الصورة للتأكد من أنك سجّلت حضورك بنفسك. لا تُجرى أي مقارنة آلية لوجهك: لا يوجد تعرّف على الوجه.',
     whoTitle: 'أين تُحفظ',
     whoBody: 'في حساب شركتك على KynexOne، لمراجعة الحضور فقط. لا تُحفظ الصورة على هاتفك.',
     retentionTitle: 'مدة الاحتفاظ',
     retentionBody:
-      'تُحذف كل صورة بعد 90 يومًا من إقفال مسير رواتب ذلك الشهر، وفي موعد أقصاه 120 يومًا من يوم العمل إذا لم يُقفل المسير حتى ذلك الحين. أما الصورة التي لم تُرفق بأي بصمة فتُحذف خلال 24 ساعة.',
+      'تُحذف كل صورة بعد 90 يومًا من إقفال مسير رواتب ذلك الشهر، وفي موعد أقصاه 120 يومًا من يوم العمل إذا لم يُقفل المسير حتى ذلك الحين. أما الصورة التي لم تُرفق بأي تسجيل حضور فتُحذف خلال 24 ساعة.',
     choiceTitle: 'إذا رفضت',
     choiceBody:
       'يمكنك تسجيل الدخول والخروج دون صورة ذاتية كما في السابق تمامًا. الرفض أو السحب لاحقًا لا يؤثر في حضورك.',
@@ -225,27 +232,30 @@ export const selfieAr: typeof selfieEn = {
     withdraw: 'سحب موافقتي',
     withdrawConfirmTitle: 'سحب الموافقة؟',
     withdrawConfirmBody:
-      'من الآن ستسجّل الدخول والخروج دون صورة ذاتية. تُحذف الآن الصور التي لم تُستخدم بعد في الحضور، أما الصور المرفقة ببصمات سابقة فتُحذف وفق الجدول المعتاد.',
+      'من الآن ستسجّل الدخول والخروج دون صورة ذاتية. تُحذف الصور التي لم تُستخدم بعد في الحضور، أما الصور المرفقة بتسجيلات حضور سابقة فتُحذف وفق الجدول المعتاد.',
     withdrawConfirm: 'سحب',
     withdrawDeletesUnused: 'يؤدي السحب إلى حذف أي صور لم تُستخدم بعد في الحضور.',
     givenOn: 'وافقت بتاريخ {{date}}.',
     givenStatus: 'لقد وافقت على الحضور بالصورة الذاتية.',
     notGivenStatus: 'لم توافق. تسجّل الدخول والخروج دون صورة ذاتية.',
-    agreedToast: 'شكرًا لك. ستُرفق صورة ذاتية ببصماتك من الآن.',
+    agreedToast: 'شكرًا لك. ستُرفق صورة ذاتية بتسجيلات حضورك من الآن.',
     withdrawnToast: 'تم سحب الموافقة. ستسجّل الدخول والخروج دون صورة ذاتية.',
+    withdrawnDeletedToast:
+      'تم سحب الموافقة، وحُذفت صورك التي لم تُستخدم بعد في الحضور. ستسجّل الدخول والخروج دون صورة ذاتية.',
+    withdrawnPendingToast:
+      'تم سحب الموافقة. ستُحذف صورك التي لم تُستخدم بعد في الحضور خلال 15 دقيقة تقريبًا. ستسجّل الدخول والخروج دون صورة ذاتية.',
     versionChanged: 'تم تحديث نص الموافقة. يُرجى قراءته مرة أخرى قبل الموافقة.',
     featureOff: 'لا تستخدم شركتك الحضور بالصورة الذاتية. لا يُلتقط أي شيء.',
     unavailable: 'تعذّر تحميل إعدادات الحضور بالصورة الذاتية. تحقّق من اتصالك وحاول مرة أخرى.',
-    requiredNote:
-      'تطلب شركتك من الموظفين الموافقين إرفاق صورة ذاتية بكل بصمة. إذا سحبت موافقتك، تسجّل الدخول والخروج دونها.',
+    requiredNote: 'تطلب شركتك من الموظفين الموافقين إرفاق صورة ذاتية بكل تسجيل حضور يجرونه من التطبيق.',
   },
   card: {
     consentNeeded: 'تتيح شركتك الحضور بالصورة الذاتية. اطّلع على ما يعنيه قبل أن تقرر.',
     consentNeededAction: 'اقرأ وقرّر',
-    selfieOn: 'تُرفق صورة ذاتية ببصماتك.',
-    selfieOptional: 'يمكنك إرفاق صورة ذاتية ببصماتك.',
+    selfieOn: 'تُرفق صورة ذاتية بتسجيلات حضورك.',
+    selfieOptional: 'يمكنك إرفاق صورة ذاتية بتسجيلات حضورك.',
     manage: 'إدارة',
-    geofenceOn: 'يُتحقق من موقع بصمتك مقارنةً بموقع عملك.',
+    geofenceOn: 'يُتحقق من موقع تسجيل حضورك مقارنةً بموقع عملك.',
   },
   settingsRow: {
     title: 'الحضور بالصورة الذاتية',
@@ -261,14 +271,16 @@ export const selfieAr: typeof selfieEn = {
     retake: 'إعادة الالتقاط',
     use: 'استخدام هذه الصورة',
     skip: 'التسجيل دون صورة ذاتية',
-    withdrawInstead: 'لا أريد استخدام صورة ذاتية',
     close: 'إغلاق الصورة الذاتية',
     uploading: 'جارٍ إرفاق صورتك الذاتية…',
     preparing: 'جارٍ تشغيل الكاميرا…',
     cameraNeededTitle: 'يلزم الوصول إلى الكاميرا',
     cameraNeededBody: 'اسمح بالوصول إلى الكاميرا لالتقاط صورة الحضور، أو سجّل دونها.',
     cameraNeededRequiredBody:
-      'اسمح بالوصول إلى الكاميرا لالتقاط صورة الحضور. إذا كنت لا تفضّل استخدام صورة ذاتية، اسحب موافقتك وسجّل دونها.',
+      'تطلب شركتك صورة ذاتية مع كل تسجيل حضور تجريه من التطبيق. اسمح بالوصول إلى الكاميرا لالتقاطها. إذا تعذّر عليك استخدام الكاميرا، تواصل مع الموارد البشرية.',
+    cameraProblem: 'تعذّر على الكاميرا التقاط الصورة. حاول مرة أخرى.',
+    cameraProblemRequired: 'تعذّر على الكاميرا التقاط الصورة. حاول مرة أخرى، وإذا تكرر ذلك فتواصل مع الموارد البشرية.',
+    tryAgain: 'أعد المحاولة',
     allowCamera: 'السماح بالكاميرا',
     openSettings: 'فتح الإعدادات',
     privacy: 'تُرسل الصورة مرة واحدة وتُحذف من هذا الهاتف فورًا.',
@@ -284,13 +296,13 @@ export const selfieAr: typeof selfieEn = {
     takeSelfie: 'التقاط صورة ذاتية',
     withoutSelfie: 'التسجيل دون صورة ذاتية',
     openSettings: 'فتح الإعدادات',
-    reviewConsent: 'مراجعة الموافقة',
+    requiredHelp: 'انتظر قليلًا ثم حاول مرة أخرى. إذا تعذّر عليك التقاط صورة ذاتية، تواصل مع الموارد البشرية.',
     ok: 'حسنًا',
   },
   refusal: {
     outsideGeofence: {
       title: 'أنت خارج موقع عملك',
-      message: 'سُجّلت هذه البصمة بعيدًا جدًا عن موقع عملك.',
+      message: 'سُجّل هذا الحضور بعيدًا جدًا عن موقع عملك.',
       next: 'اقترب من موقعك وحاول مرة أخرى.',
     },
     locationInaccurate: {
@@ -315,7 +327,7 @@ export const selfieAr: typeof selfieEn = {
     },
     siteMissing: {
       title: 'لم يُضبط موقع عملك',
-      message: 'تتحقق شركتك من مواقع البصمات، لكن لم يُضبط موقع عملك بعد.',
+      message: 'تتحقق شركتك من مواقع تسجيل الحضور، لكن لم يُضبط موقع عملك بعد.',
       next: 'اطلب من الموارد البشرية إضافة موقع عملك، ثم حاول مرة أخرى.',
     },
     evidenceExpired: {
@@ -325,12 +337,12 @@ export const selfieAr: typeof selfieEn = {
     },
     evidenceUsed: {
       title: 'استُخدمت الصورة الذاتية من قبل',
-      message: 'يمكن إرفاق كل صورة ذاتية ببصمة واحدة فقط.',
+      message: 'يمكن إرفاق كل صورة ذاتية بتسجيل حضور واحد فقط.',
       next: 'التقط صورة ذاتية جديدة.',
     },
     evidenceNotFound: {
       title: 'لم يُعثر على الصورة الذاتية',
-      message: 'تعذّر العثور على الصورة الذاتية لهذه البصمة.',
+      message: 'تعذّر العثور على الصورة الذاتية لتسجيل الحضور هذا.',
       next: 'التقط صورة ذاتية جديدة.',
     },
     consentRequired: {
@@ -345,8 +357,8 @@ export const selfieAr: typeof selfieEn = {
     },
     selfieRequired: {
       title: 'تلزم صورة ذاتية',
-      message: 'تطلب شركتك من الموظفين الموافقين على الحضور بالصورة الذاتية إرفاق صورة بكل بصمة.',
-      next: 'التقط صورة ذاتية، أو اسحب موافقتك لتسجّل دونها.',
+      message: 'تطلب شركتك صورة ذاتية مع كل تسجيل حضور تجريه من التطبيق. التقط صورة ذاتية وحاول مرة أخرى.',
+      next: 'التقط صورة ذاتية وحاول مرة أخرى.',
     },
     selfieRateLimited: {
       title: 'صور ذاتية كثيرة',
@@ -376,7 +388,7 @@ export const selfieAr: typeof selfieEn = {
     mobileAppRequired: {
       title: 'استخدم تطبيق الجوال',
       message: 'تشترط شركتك تسجيل الحضور من تطبيق الجوال في موقعك.',
-      next: 'سجّل الدخول باستخدام تطبيق KynexOne للجوال في موقعك.',
+      next: 'سجّل حضورك باستخدام تطبيق KynexOne للجوال في موقعك.',
     },
     selfieBusy: {
       title: 'معالجة الصور الذاتية مشغولة',
@@ -385,12 +397,12 @@ export const selfieAr: typeof selfieEn = {
     },
     network: {
       title: 'تعذّر الاتصال بـ KynexOne',
-      message: 'لم تُسجّل بصمتك.',
+      message: 'لم يُسجَّل حضورك.',
       next: 'تحقّق من اتصالك وحاول مرة أخرى.',
     },
     unknown: {
       title: 'لم يُسجّل الحضور',
-      message: 'حدث خطأ ولم تُسجّل بصمتك.',
+      message: 'حدث خطأ ولم يُسجَّل حضورك.',
       next: 'حاول مرة أخرى. إذا تكرر ذلك، تواصل مع الموارد البشرية.',
     },
   },

@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { selfieAttendanceApi } from '@/api/services';
 import { useTheme } from '@/theme/ThemeProvider';
 import { GlassSurface, LiquidBackdrop, LiquidButton, MotionPressable, ScreenHero } from '@/components/ui';
-import { mapPunchRefusal, type AttendanceVerification } from './selfieAttendance';
+import { mapPunchRefusal, withdrawalNoticeKey, type AttendanceVerification } from './selfieAttendance';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -77,8 +77,10 @@ export default function SelfieConsentScreen() {
           setSaving('withdraw');
           setNotice(null);
           try {
-            setVerification(await selfieAttendanceApi.withdrawConsent());
-            setNotice(tx('selfie.consent.withdrawnToast'));
+            const { verification: next, withdrawal } = await selfieAttendanceApi.withdrawConsent();
+            setVerification(next);
+            // "Deleted" only when storage confirmed it; otherwise "within about 15 minutes" (the server's purge).
+            setNotice(tx(withdrawalNoticeKey(withdrawal)));
           } catch (error) {
             showError(error);
           } finally {

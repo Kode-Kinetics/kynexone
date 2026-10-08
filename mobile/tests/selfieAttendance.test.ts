@@ -6,17 +6,31 @@ import {
   busyRetryDelayMs,
   REFUSAL_KEYS,
   VERIFICATION_CACHE_MS,
+  SELFIE_IMAGE_TYPE,
   VERIFICATION_OFF,
   buildLocationFields,
   buildPunchBody,
   cacheIsFresh,
   choosePictureSize,
+  clientPlatformHeaders,
   isSelfieBusy,
   mapPunchRefusal,
   mockDetectionFields,
   parseAttendanceVerification,
+  parseWithdrawal,
   planPunch,
+  refusalPrompt,
+  refusalText,
+  withdrawalNoticeKey,
 } from '../src/features/attendance/selfieAttendance.ts';
+import {
+  CaptureGuard,
+  SELFIE_FILE_PREFIX,
+  isCameraCaptureFile,
+  isOwnSelfieFile,
+  selfieFileName,
+  selfieSweepTargets,
+} from '../src/features/attendance/selfiePhotoPolicy.ts';
 import { selfieAr, selfieEn } from '../src/config/selfieStrings.ts';
 
 const consent = { policyVersion: '1', givenAtUtc: '2026-10-08T07:00:00Z', channel: 'Mobile' };
@@ -34,7 +48,6 @@ test('selfie off: no selfie step, no consent prompt', () => {
   const plan = planPunch(discovery({ enabled: false, step: 'optional', consent }));
   assert.equal(plan.selfie, 'skip');
   assert.equal(plan.offerConsent, false);
-  assert.equal(plan.offerWithdraw, false);
 });
 
 test('consent needed: no selfie step, a non-blocking consent prompt', () => {
@@ -43,17 +56,16 @@ test('consent needed: no selfie step, a non-blocking consent prompt', () => {
   assert.equal(plan.offerConsent, true);
 });
 
-test('consented, optional: selfie offered with withdraw', () => {
+test('consented, optional: selfie offered', () => {
   const plan = planPunch(discovery({ step: 'optional', consent }));
   assert.equal(plan.selfie, 'optional');
   assert.equal(plan.offerConsent, false);
-  assert.equal(plan.offerWithdraw, true);
 });
 
-test('consented, required: selfie asked for, withdraw still offered', () => {
+test('consented, required: selfie asked for, and the plan carries no withdraw lever', () => {
   const plan = planPunch(discovery({ step: 'required', requiredForConsented: true, consent }));
   assert.equal(plan.selfie, 'required');
-  assert.equal(plan.offerWithdraw, true);
+  assert.equal('offerWithdraw' in plan, false);
 });
 
 test('a step that asks for a selfie without consent never makes the selfie mandatory', () => {
@@ -69,7 +81,7 @@ test('a step that asks for a selfie without consent never makes the selfie manda
 test('discovery unavailable: punch with location and no selfie step', () => {
   for (const v of [null, undefined, VERIFICATION_OFF]) {
     const plan = planPunch(v);
-    assert.deepEqual(plan, { selfie: 'skip', offerConsent: false, offerWithdraw: false, locationRequired: false, maxAccuracyMeters: null });
+    assert.deepEqual(plan, { selfie: 'skip', offerConsent: false, locationRequired: false, maxAccuracyMeters: null });
   }
 });
 
@@ -188,7 +200,7 @@ test('every documented refusal code maps to its plain-language key and next step
     assert.equal(r.action, action, code);
     assert.equal(r.code, code);
     assert.equal(r.titleKey, `selfie.refusal.${key}.title`);
-    assert.equal(r.nextKey, `selfie.refusal.${key}.next`);
+    assert.equal(r.nextKey, key === 'selfieRequired' ? null : `selfie.refusal.${key}.next`);
   }
 });
 
@@ -306,4 +318,180 @@ test('a busy 429 retries after Retry-After, kept between 1 s and 5 s, or 2 s wit
   assert.equal(busyRetryDelayMs({ response: { headers: { 'retry-after': '0.2' } } }), 1000);
   assert.equal(busyRetryDelayMs({ response: { headers: {} } }), 2000);
   assert.equal(busyRetryDelayMs(new Error('no response')), 2000);
+});
+
+// ---- Review 2, item 8: never present withdrawal as the way past a required selfie ----
+
+const echo = (key: string) => `[${key}]`;
+const SELFIE_PLANS = ['skip', 'optional', 'required'] as const;
+const STAGES = ['upload', 'punch'] as const;
+
+test('selfie_required: no local next line is appended to the server message', () => {
+  const r = mapPunchRefusal(refusal(400, { code: 'selfie_required', message: 'Take a selfie and try again.', messageAr: 'التقط صورة ذاتية.' }), 'en');
+  assert.equal(r.nextKey, null);
+  assert.equal(refusalText(r, echo), 'Take a selfie and try again.');
+  const local = mapPunchRefusal(refusal(400, { code: 'selfie_required' }), 'ar');
+  assert.equal(refusalText(local, echo), '[selfie.refusal.selfieRequired.message]');
+  // Other refusals keep their next line.
+  const geo = mapPunchRefusal(refusal(400, { code: 'outside_geofence', message: 'Too far.' }), 'en');
+  assert.equal(refusalText(geo, echo), 'Too far.\n\n[selfie.refusal.outsideGeofence.next]');
+});
+
+test('selfie_required refusals offer a selfie, never withdrawal or a consent detour', () => {
+  const r = mapPunchRefusal(refusal(400, { code: 'selfie_required', message: 'm' }), 'en');
+  for (const plan of ['optional', 'required'] as const) {
+    const prompt = refusalPrompt(r, plan, 'punch', echo);
+    assert.deepEqual(prompt.buttons, ['cancel', 'take_selfie'], plan);
+    assert.equal(prompt.body, 'm');
+  }
+  // After a refresh shows no consent (plan skip), the punch goes without a selfie.
+  assert.deepEqual(refusalPrompt(r, 'skip', 'punch', echo).buttons, ['cancel', 'without_selfie']);
+});
+
+test('no refusal prompt ever shows a withdraw or consent button, nor withdraw wording in its body', () => {
+  const allowed = new Set(['cancel', 'ok', 'try_again', 'open_settings', 'without_selfie', 'selfie_try_again', 'take_selfie', 'take_new_selfie']);
+  const codes = [...KNOWN_REFUSAL_CODES, 'something_new'];
+  for (const code of codes) {
+    for (const lang of ['en', 'ar'] as const) {
+      const strings = lang === 'en' ? selfieEn : selfieAr;
+      const translate = (key: string) => key.split('.').slice(1).reduce((node: any, part) => node?.[part], strings) ?? key;
+      const r = mapPunchRefusal(refusal(400, { code }), lang);
+      for (const plan of SELFIE_PLANS) {
+        for (const stage of STAGES) {
+          const prompt = refusalPrompt(r, plan, stage, translate);
+          for (const button of prompt.buttons) assert.ok(allowed.has(button), `${code}/${plan}/${stage}: ${button}`);
+          assert.equal(/withdraw|سحب|اسحب/i.test(prompt.body), false, `${code}/${plan}/${stage}/${lang}: ${prompt.body}`);
+        }
+      }
+    }
+  }
+});
+
+test('required selfie: "clock without a selfie" only after a server-side upload failure', () => {
+  const busy = mapPunchRefusal(refusal(429, { code: 'selfie_busy' }), 'en');
+  const serverError = mapPunchRefusal(refusal(500, {}), 'en');
+  const network = mapPunchRefusal(new Error('Network Error'), 'en');
+  assert.deepEqual(refusalPrompt(busy, 'required', 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again']);
+  assert.deepEqual(refusalPrompt(serverError, 'required', 'upload', echo).buttons, ['cancel', 'without_selfie', 'selfie_try_again']);
+  assert.deepEqual(refusalPrompt(network, 'required', 'upload', echo).buttons, ['cancel', 'selfie_try_again']);
+  const limited = mapPunchRefusal(refusal(429, { code: 'selfie_rate_limited' }), 'en');
+  const prompt = refusalPrompt(limited, 'required', 'upload', echo);
+  assert.deepEqual(prompt.buttons, ['cancel', 'selfie_try_again']);
+  assert.equal(prompt.body, '[selfie.refusal.selfieRateLimited.message]\n\n[selfie.punch.requiredHelp]');
+  assert.deepEqual(refusalPrompt(limited, 'optional', 'upload', echo).buttons, ['cancel', 'without_selfie']);
+});
+
+test('the capture and refusal strings no longer carry the withdraw lever', () => {
+  for (const strings of [selfieEn, selfieAr]) {
+    assert.equal('withdrawInstead' in strings.capture, false);
+    assert.equal('reviewConsent' in strings.punch, false);
+    for (const text of [strings.capture.cameraNeededRequiredBody, strings.refusal.selfieRequired.message, strings.refusal.selfieRequired.next, strings.consent.requiredNote]) {
+      assert.equal(/withdraw|سحب|اسحب/i.test(text), false, text);
+    }
+  }
+});
+
+// ---- Review 2, item 10: Arabic says تسجيل الحضور, never بصمة (fingerprint) ----
+
+test('no Arabic selfie string uses بصمة or implies biometrics beyond a photo', () => {
+  const ar = JSON.stringify(selfieAr);
+  assert.equal(ar.includes('بصم'), false);
+  for (const word of ['بيومتر', 'حيوي', 'قزحية', 'مطابقة الوجه']) assert.equal(ar.includes(word), false, word);
+});
+
+// ---- Review 2, item 2-mobile: the withdrawal notice ----
+
+test('withdrawal notice: deleted, awaiting deletion (about 15 minutes), or nothing to delete', () => {
+  assert.deepEqual(parseWithdrawal({ selfie: {}, withdrawal: { unusedSelfiesDeleted: 2, unusedSelfiesAwaitingDeletion: 1 } }), { unusedSelfiesDeleted: 2, unusedSelfiesAwaitingDeletion: 1 });
+  assert.equal(parseWithdrawal({ selfie: {} }), null);
+  assert.equal(parseWithdrawal(null), null);
+  assert.deepEqual(parseWithdrawal({ withdrawal: { unusedSelfiesDeleted: '3', unusedSelfiesAwaitingDeletion: -2 } }), { unusedSelfiesDeleted: 3, unusedSelfiesAwaitingDeletion: 0 });
+
+  assert.equal(withdrawalNoticeKey({ unusedSelfiesDeleted: 2, unusedSelfiesAwaitingDeletion: 1 }), 'selfie.consent.withdrawnPendingToast');
+  assert.equal(withdrawalNoticeKey({ unusedSelfiesDeleted: 0, unusedSelfiesAwaitingDeletion: 3 }), 'selfie.consent.withdrawnPendingToast');
+  assert.equal(withdrawalNoticeKey({ unusedSelfiesDeleted: 2, unusedSelfiesAwaitingDeletion: 0 }), 'selfie.consent.withdrawnDeletedToast');
+  assert.equal(withdrawalNoticeKey({ unusedSelfiesDeleted: 0, unusedSelfiesAwaitingDeletion: 0 }), 'selfie.consent.withdrawnToast');
+  assert.equal(withdrawalNoticeKey(null), 'selfie.consent.withdrawnToast');
+
+  assert.match(selfieEn.consent.withdrawnPendingToast, /within about 15 minutes/);
+  assert.equal(/deleted now/i.test(selfieEn.consent.withdrawnPendingToast), false);
+  assert.match(selfieAr.consent.withdrawnPendingToast, /15 دقيقة/);
+});
+
+// ---- Review 2, item 11-mobile: platform header ----
+
+test('X-Client-Platform is android or ios, and absent elsewhere', () => {
+  assert.deepEqual(clientPlatformHeaders('android'), { 'X-Client-Platform': 'android' });
+  assert.deepEqual(clientPlatformHeaders('ios'), { 'X-Client-Platform': 'ios' });
+  for (const other of ['web', 'windows', 'macos', '', 'Android']) assert.deepEqual(clientPlatformHeaders(other), {}, other);
+});
+
+// ---- JPEG only ----
+
+test('the capture asks for JPEG (the server accepts JPEG only)', () => {
+  assert.equal(SELFIE_IMAGE_TYPE, 'jpg');
+});
+
+// ---- Review 2, item 9: the photo never stays on the phone ----
+
+test('selfie file names carry the prefix and are recognised by the sweep', () => {
+  const name = selfieFileName(1_760_000_000_000, 0.123456);
+  assert.ok(name.startsWith(SELFIE_FILE_PREFIX), name);
+  assert.ok(name.endsWith('.jpg'), name);
+  assert.equal(isOwnSelfieFile(name), true);
+  assert.notEqual(selfieFileName(1_760_000_000_000, 0.5), name);
+  assert.equal(isOwnSelfieFile(selfieFileName(0, 0)), true);
+  assert.equal(isOwnSelfieFile(selfieFileName(Date.now(), 0.999999)), true);
+});
+
+test('the sweep matcher deletes only files the app created', () => {
+  const own = [
+    'kx-selfie-mgcz1k0w-4fzyo8.jpg',
+    'KX-SELFIE-abc-123.JPG',
+    'kx-selfie-abc.jpeg',
+    'kx-selfie-.jpg',
+    'kx-selfie-abc.png',
+    'kx-selfie-abc.jpg.bak',
+    'selfie-abc.jpg',
+    'profile-photo.jpg',
+    '../kx-selfie-abc.jpg',
+    'nested/kx-selfie-abc.jpg',
+    '.kx-selfie-abc.jpg',
+  ];
+  assert.deepEqual(selfieSweepTargets('own', own), ['kx-selfie-mgcz1k0w-4fzyo8.jpg', 'KX-SELFIE-abc-123.JPG', 'kx-selfie-abc.jpeg']);
+
+  const camera = [
+    '3F2504E0-4F89-11D3-9A0C-0305E82C3301.jpg',
+    'b1c2d3e4-0000-4a5b-8c9d-0123456789ab.jpg',
+    'b1c2d3e4-0000-4a5b-8c9d-0123456789ab.mov',
+    'b1c2d3e4-0000-4a5b-8c9d-0123456789ab.mp4',
+    'b1c2d3e4-0000-4a5b-8c9d-0123456789ab.png',
+    'document-scan.jpg',
+    'b1c2d3e4.jpg',
+  ];
+  assert.deepEqual(selfieSweepTargets('camera', camera), ['3F2504E0-4F89-11D3-9A0C-0305E82C3301.jpg', 'b1c2d3e4-0000-4a5b-8c9d-0123456789ab.jpg']);
+  assert.equal(isCameraCaptureFile('kx-selfie-abc.jpg'), false);
+  assert.equal(isOwnSelfieFile('3F2504E0-4F89-11D3-9A0C-0305E82C3301.jpg'), false);
+});
+
+test('a photo that arrives after the modal closed is not kept', () => {
+  const guard = new CaptureGuard();
+  const ticket = guard.begin();
+  assert.equal(guard.isCurrent(ticket), true);
+  guard.close(); // modal closed while the camera was saving
+  assert.equal(guard.isCurrent(ticket), false);
+  guard.open(); // reopened: the old capture stays stale, a new one is wanted
+  assert.equal(guard.isCurrent(ticket), false);
+  assert.equal(guard.isCurrent(guard.begin()), true);
+});
+
+test('a photo that arrives after the app went to the background, or after a retake, is not kept', () => {
+  const guard = new CaptureGuard();
+  const first = guard.begin();
+  guard.cancel(); // AppState background, or retake
+  assert.equal(guard.isCurrent(first), false);
+  const second = guard.begin();
+  assert.equal(guard.isCurrent(second), true);
+  guard.close();
+  assert.equal(guard.isCurrent(guard.begin()), false, 'no capture is wanted while the modal is closed');
 });

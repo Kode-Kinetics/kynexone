@@ -36,12 +36,15 @@ import {
   buildLocationFields,
   buildPunchBody,
   cacheIsFresh,
+  clientPlatformHeaders,
   isSelfieBusy,
+  parseWithdrawal,
   parseAttendanceVerification,
   busyRetryDelayMs,
   type AttendanceVerification,
   type PunchDirection,
   type VerificationCacheEntry,
+  type WithdrawalResult,
 } from '@/features/attendance/selfieAttendance';
 import type {
   AuthUser,
@@ -825,13 +828,17 @@ export const selfieAttendanceApi = {
     return storeVerification(await apiPost<unknown>('/ess/biometric-consent', { policyVersion, channel: 'Mobile' }));
   },
 
-  /** POST /ess/biometric-consent/withdraw. Always allowed, idempotent; answers the discovery body. */
-  async withdrawConsent(): Promise<AttendanceVerification> {
-    return storeVerification(await apiPost<unknown>('/ess/biometric-consent/withdraw', { channel: 'Mobile' }));
+  /**
+   * POST /ess/biometric-consent/withdraw. Always allowed, idempotent; answers the discovery body plus a
+   * `withdrawal` block (unused selfies deleted now, and any still awaiting deletion by the purge).
+   */
+  async withdrawConsent(): Promise<{ verification: AttendanceVerification; withdrawal: WithdrawalResult | null }> {
+    const raw = await apiPost<unknown>('/ess/biometric-consent/withdraw', { channel: 'Mobile' });
+    return { verification: await storeVerification(raw), withdrawal: parseWithdrawal(raw) };
   },
 
   /**
-   * POST /attendance/evidence/selfie (multipart, one `file` part, JPEG ≤ 5 MB). The server re-encodes
+   * POST /attendance/evidence/selfie (multipart, one `file` part, JPEG only, request ≤ 8 MB). The server re-encodes
    * the image and strips EXIF/GPS; the app sends the camera file as captured. Returns the opaque,
    * single-use evidence id (10 minutes, this employee only).
    */
@@ -839,7 +846,11 @@ export const selfieAttendanceApi = {
     const send = () => {
       const form = new FormData();
       form.append('file', filePart({ uri, name: 'attendance-selfie.jpg', mimeType: 'image/jpeg' }));
-      return apiPost<any>('/attendance/evidence/selfie', form, { ...MULTIPART, timeout: 60_000 });
+      return apiPost<any>('/attendance/evidence/selfie', form, {
+        ...MULTIPART,
+        headers: { ...MULTIPART.headers, ...clientPlatformHeaders(Platform.OS) },
+        timeout: 60_000,
+      });
     };
     let result: any;
     try {
@@ -872,11 +883,15 @@ export const attendanceApi = {
       locationName: payload.location ? 'Mobile GPS' : 'Mobile',
       location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
       evidenceId: payload.evidenceId,
-    }));
+    }), { headers: clientPlatformHeaders(Platform.OS) });
     return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded`, verificationMethod: String(result?.verificationMethod ?? 'None') };
   },
 
-  /** Kiosk route remains authenticated and is always called for the signed-in employee. Never carries a selfie. */
+  /**
+   * Kiosk route remains authenticated and is always called for the signed-in employee. Never carries a
+   * selfie. A caller without the kiosk permission gets the mobile rules here (location accuracy, mock
+   * detection, and a selfie where required), so the same location fields and platform header are sent.
+   */
   async punchKiosk(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
     await requirePunchEmployee();
     const direction = punchDirection(payload.punchType);
@@ -884,7 +899,7 @@ export const attendanceApi = {
       direction,
       locationName: payload.location ? 'KynexOne Kiosk GPS' : 'KynexOne Kiosk',
       location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
-    }));
+    }), { headers: clientPlatformHeaders(Platform.OS) });
     return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded` };
   },
 
