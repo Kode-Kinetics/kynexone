@@ -578,6 +578,8 @@ public class AttendanceController : ControllerBase
             var regularization = await _attendance.ApproveRegularizationAsync(RequireTenant(), id, request, Context(), ct);
             return regularization is null ? NotFound() : Ok(regularization);
         }
+        // Someone else decided it first (the transitions are serialised under the employee-day lock): a plain 409.
+        catch (RegularizationConflictException ex) { return Conflict(new { code = "regularization_conflict", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -601,6 +603,8 @@ public class AttendanceController : ControllerBase
             var regularization = await _attendance.RejectRegularizationAsync(RequireTenant(), id, request, Context(), ct);
             return regularization is null ? NotFound() : Ok(regularization);
         }
+        // Someone else decided it first (the transitions are serialised under the employee-day lock): a plain 409.
+        catch (RegularizationConflictException ex) { return Conflict(new { code = "regularization_conflict", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -624,6 +628,8 @@ public class AttendanceController : ControllerBase
             var regularization = await _attendance.CancelRegularizationAsync(RequireTenant(), id, request.Reason ?? string.Empty, Context(), ct);
             return regularization is null ? NotFound() : Ok(regularization);
         }
+        // Someone else decided it first (the transitions are serialised under the employee-day lock): a plain 409.
+        catch (RegularizationConflictException ex) { return Conflict(new { code = "regularization_conflict", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

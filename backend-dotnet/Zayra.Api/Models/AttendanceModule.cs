@@ -196,6 +196,12 @@ public class AttendanceRegularizationRequest : ITenantOwned, ICompanyScopedOpera
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? DecidedAtUtc { get; set; }
     public bool PayrollLockChecked { get; set; }
+    /// <summary>
+    /// Advanced by every status transition (manager approve, HR approve, reject, cancel). An EF concurrency token: the
+    /// UPDATE carries <c>WHERE decision_version = observed</c>, so a transition that slipped past the employee-day lock
+    /// fails (409) instead of silently overwriting another decision.
+    /// </summary>
+    public int DecisionVersion { get; set; }
 }
 
 public class AttendanceCorrectionApproval : ITenantOwned
