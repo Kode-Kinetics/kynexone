@@ -75,7 +75,7 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: 
     try {
       const result = await employeeAccessApi.saveWorkEmails(parsed.rows, false);
       setSaved(result);
-      await sortOutEligible(result.matched.map((r) => r.employeeId));
+      await sortOutEligible(result.matched);
       setStep('saved');
       onSaved();
     } catch (e) {
@@ -85,8 +85,20 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess }: 
     }
   };
 
-  /** Read each saved employee's status (20 at a time): only those who can be given access are offered. */
-  const sortOutEligible = async (ids: number[]) => {
+  /**
+   * Who can be given access now. The save response says so per row (accessState + canIssue); an API
+   * without those fields falls back to reading each saved employee's status, 20 at a time.
+   */
+  const sortOutEligible = async (rows: WorkEmailBackfillResult['matched']) => {
+    const ids = rows.map((r) => r.employeeId);
+    if (rows.length > 0 && rows.every((r) => r.accessState !== undefined && r.canIssue !== undefined)) {
+      const eligible = rows.filter((r) => r.canIssue && BULK_PRINTABLE_STATES.has(r.accessState!)).map((r) => r.employeeId);
+      setEligibleIds(eligible);
+      setAwaitingCount(rows.filter((r) => r.reasonCode === 'awaiting_approval').length);
+      // Email delivery is a company fact: one status read answers it.
+      setCanEmail(eligible.length > 0 ? await employeeAccessApi.get(eligible[0]).then((a) => !!a.emailDelivery).catch(() => false) : false);
+      return;
+    }
     try {
       const statuses: EmployeeAccessDto[] = [];
       for (let i = 0; i < ids.length; i += 20) {

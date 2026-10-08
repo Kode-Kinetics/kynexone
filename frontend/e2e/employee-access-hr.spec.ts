@@ -48,7 +48,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -132,9 +132,11 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
         if (!dryRun) { sara.email = 'sara.ali@evostel.com'; sara.state = 'not_started'; }
         return json({
           matched: [
-            { employeeId: 45, employeeCode: 'EMP-0045', employeeName: 'Sara Ali', oldEmail: null, newEmail: 'sara.ali@evostel.com' },
+            { employeeId: 45, employeeCode: 'EMP-0045', employeeName: 'Sara Ali', oldEmail: null, newEmail: 'sara.ali@evostel.com',
+              ...(dryRun || opts.backfillWithoutState ? {} : { accessState: 'not_started', canIssue: true }) },
             // A draft hire still waiting for approval: saved, but not offered for access yet.
-            { employeeId: 49, employeeCode: 'EMP-0049', employeeName: 'Rana Saeed', oldEmail: 'rana.saeed@evostel.com', newEmail: 'rana.saeed@evostel.com' },
+            { employeeId: 49, employeeCode: 'EMP-0049', employeeName: 'Rana Saeed', oldEmail: 'rana.saeed@evostel.com', newEmail: 'rana.saeed@evostel.com',
+              ...(dryRun || opts.backfillWithoutState ? {} : { accessState: 'not_started', canIssue: false, reasonCode: 'awaiting_approval' }) },
           ],
           notFound: ['E1044'],
           wrongDomain: [{ employeeCode: 'EMP-0060', workEmail: 'someone@gmail.com', expectedDomain: 'evostel.com' }],
@@ -665,4 +667,17 @@ test('approving a new hire offers their sign-in slip', async ({ page }) => {
   await status.getByRole('button', { name: 'Print sign-in slip' }).click();
   await expect(page.getByTestId('sign-in-slip')).toHaveCount(1);
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49], delivery: 'print' }]);
+});
+
+test('Add work emails falls back to each status when the save response has no state', async ({ page }) => {
+  const { requested } = await openPeople(page, { backfillWithoutState: true });
+  await page.getByTestId('access-filter').getByRole('button', { name: 'Waiting for work email' }).click();
+  await page.getByRole('button', { name: 'Add work emails' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara.ali@evostel.com');
+  await dialog.getByRole('button', { name: 'Check the list' }).click();
+  await dialog.getByRole('button', { name: 'Save (2)' }).click();
+  await expect(dialog.getByText('Give access to these employees now (1)?')).toBeVisible();
+  await expect(dialog.getByTestId('work-emails-awaiting')).toHaveText('Waiting for approval, so not included: 1.');
+  expect(requested).toContain('/api/employee-access/49');
 });
