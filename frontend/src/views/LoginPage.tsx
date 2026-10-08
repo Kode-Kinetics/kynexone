@@ -18,6 +18,7 @@ import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
 import { dateLocale } from '../lib/format';
 import { markResetNoticeSeen } from '../components/ResetCodeNotice';
+import { homePathFor } from '../lib/homePath';
 
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
@@ -68,7 +69,7 @@ type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'reset-notice';
  */
 export function LoginPage() {
   return (
-    <LocaleProvider>
+    <LocaleProvider preferDevice>
       <LoginCard />
     </LocaleProvider>
   );
@@ -79,7 +80,11 @@ function LoginCard() {
   const { user, login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
   const router       = useRouter();
   const searchParams = useSearchParams();
-  const from         = safeLocalReturnPath(searchParams?.get('from'));
+  /* An explicit, safe ?from= wins. Otherwise the landing page follows who signed in:
+     self-service-only employees go to /ess, everyone else to /dashboard (lib/homePath.ts). */
+  const fromParam    = searchParams?.get('from') ?? '';
+  const askedFor     = fromParam && safeLocalReturnPath(fromParam) === fromParam ? fromParam : null;
+  const from         = askedFor ?? homePathFor(user);
 
   const [mode,         setMode]         = useState<Mode>('login');
   const [email,        setEmail]        = useState('');
@@ -248,15 +253,19 @@ function LoginCard() {
     finally { setLoading(false); }
   };
 
+  /** The company cannot send email, so a reset link will never arrive: point to HR's welcome code. */
+  const [noEmailDelivery, setNoEmailDelivery] = useState(false);
+
   const handleForgot = async (e: React.FormEvent) => {
-    e.preventDefault(); setError(''); setInfo('');
+    e.preventDefault(); setError(''); setInfo(''); setNoEmailDelivery(false);
     if (!(forgotEmail || email).trim()) { setError(t('Enter your work email.')); return; }
     if (showWorkspace && !tenantSlug.trim()) { setError(t('Enter your company ID.')); return; }
     setLoading(true);
     try {
       // The server's own sentence is English; the page says the same thing in the reader's language.
-      await authApi.forgotPassword(forgotEmail || email, workspaceArg());
-      setInfo(t('If this email has an account, a reset link is on its way to it.'));
+      const res = await authApi.forgotPassword(forgotEmail || email, workspaceArg());
+      if (res?.emailDeliveryConfigured === false) setNoEmailDelivery(true);
+      else setInfo(t('If this email has an account, a reset link is on its way to it.'));
     } catch (err: any) {
       if (err?.response?.status === 400 && err?.response?.data?.code === 'workspace_required') askForWorkspace();
       else if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
@@ -289,7 +298,7 @@ function LoginCard() {
       { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Riyadh' }).format(when);
   })();
 
-  const go = (m: Mode) => { setError(''); setInfo(''); setMode(m); if (m === 'forgot' && email) setForgotEmail(email); };
+  const go = (m: Mode) => { setError(''); setInfo(''); setNoEmailDelivery(false); setMode(m); if (m === 'forgot' && email) setForgotEmail(email); };
 
   const slotRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -452,7 +461,12 @@ function LoginCard() {
                     )}
                     <Feedback error={error} info={info} />
                     <Submit busy={busy} label={t('Send reset link')} busyLabel={t('Sending…')} />
-                    <p className="lx-note">{t('No email from us? Ask HR for a new welcome code.')}</p>
+                    {noEmailDelivery && (
+                      <div className="lx-ok" role="status" data-testid="forgot-ask-hr">
+                        <CheckCircle2 aria-hidden />
+                        <p>{t('Forgot your password? Ask HR for a new welcome code.')}</p>
+                      </div>
+                    )}
                   </form>
                 )}
 

@@ -31,7 +31,8 @@ const session = (extra: Record<string, unknown> = {}) => ({
   accessToken: 'fixture-access', refreshToken: 'fixture-refresh', expiresAtUtc: '2026-10-08T00:00:00Z',
   user: {
     id: 'u-42', tenantId: 't-1', tenantSlug: 'evostel', email: EMAIL, fullName: 'Noah Williams',
-    roles: ['Employee'], permissions: ['ess.self'], employeeId: 42, accessMode: 'ESSOnly', ...extra,
+    roles: ['Employee'], permissions: ['dashboard.read', 'profile.read', 'ess.read', 'ess.write', 'performance.read', 'loans.self'],
+    employeeId: 42, accessMode: 'FullPortal', ...extra,
   },
 });
 
@@ -251,7 +252,7 @@ test.describe('/welcome in Arabic', () => {
 });
 
 test.describe('/login for employees', () => {
-  test('asks for email and password only, and sends no workspace', async ({ page }) => {
+  test('asks for email and password only, sends no workspace, and lands an employee on Self-Service', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto('/login');
     await expect(page.locator('#li-ws')).toHaveCount(0);
@@ -259,7 +260,7 @@ test.describe('/login for employees', () => {
     await page.locator('#li-em').fill(EMAIL);
     await page.locator('#li-pw').fill(NEW_PASSWORD);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL(/\/ess/);
     expect(api.calls.find((c) => c.path === '/api/auth/login')!.body).toEqual({ email: EMAIL, password: NEW_PASSWORD });
   });
 
@@ -274,7 +275,7 @@ test.describe('/login for employees', () => {
     await expect(fault(page)).toHaveText("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is.");
     await page.locator('#li-ws').fill('Evostel');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL(/\/ess/);
     const logins = api.calls.filter((c) => c.path === '/api/auth/login');
     expect(logins.map((c) => c.body.tenantSlug)).toEqual([undefined, 'evostel']);
   });
@@ -286,7 +287,7 @@ test.describe('/login for employees', () => {
     await page.locator('#li-em').fill(EMAIL);
     await page.locator('#li-pw').fill(NEW_PASSWORD);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL(/\/ess/);
     expect(api.calls.find((c) => c.path === '/api/auth/login')!.body.tenantSlug).toBe('evostel');
   });
 
@@ -328,7 +329,7 @@ test.describe('/login for employees', () => {
     await expect(page.getByTestId('login-reset-notice')).toContainText(
       "HR gave you a new sign-in code on 5 October 2026. If you didn't ask for it, tell HR.");
     await page.getByRole('button', { name: 'Continue' }).click();
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL(/\/ess/);
   });
 
   test('Arabic sign-in card with the language switch', async ({ page }) => {
@@ -337,6 +338,71 @@ test.describe('/login for employees', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('تسجيل الدخول');
     await expect(page.getByRole('button', { name: 'أول مرة؟ استخدم رمز التفعيل' })).toBeVisible();
     await expect(page.locator('#li-em')).toHaveAttribute('dir', 'ltr');
+  });
+});
+
+test.describe('where sign-in lands', () => {
+  test('HR keeps landing on the dashboard', async ({ page }) => {
+    await mockApi(page, { login: [{ status: 200, body: session({ roles: ['HR Manager'], permissions: ['dashboard.read', 'ess.read', 'employees.read', 'employees.write'] }) }] });
+    await page.goto('/login');
+    await page.locator('#li-em').fill('sara.ali@evostel.com');
+    await page.locator('#li-pw').fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.waitForURL(/\/dashboard/);
+  });
+
+  test('a manager with approvals is not treated as employee-only', async ({ page }) => {
+    await mockApi(page, { login: [{ status: 200, body: session({ permissions: ['dashboard.read', 'ess.read', 'ess.write', 'manager.read', 'leave.approve'] }) }] });
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.waitForURL(/\/dashboard/);
+  });
+
+  test('an explicit ?from= still wins', async ({ page }) => {
+    await mockApi(page);
+    await page.goto('/login?from=%2Fess%2Fleave');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.waitForURL(/\/ess\/leave/);
+  });
+});
+
+test.describe('device language on an Arabic phone', () => {
+  test.use({ locale: 'ar-SA' });
+
+  test('the slip QR opens /welcome in Arabic with no choice made', async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/welcome#e=${encodeURIComponent(EMAIL)}&c=${CODE}`);
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('مرحباً');
+    await expect(page.getByTestId('welcome-email')).toHaveText(EMAIL);
+  });
+
+  test('an explicit English choice wins over the device', async ({ page }) => {
+    await mockApi(page, { locale: 'en' });
+    await page.goto('/welcome');
+    await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Welcome');
+  });
+});
+
+test.describe('forgot password with no email delivery', () => {
+  test('points to HR for a new welcome code instead of promising an email', async ({ page }) => {
+    await mockApi(page);
+    await page.route('**/api/auth/forgot-password', (route) => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ message: 'SERVER TEXT', emailDeliveryConfigured: false }),
+    }));
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.getByTestId('login-forgot').click();
+    await page.getByRole('button', { name: 'Send reset link' }).click();
+    await expect(page.getByTestId('forgot-ask-hr')).toHaveText('Forgot your password? Ask HR for a new welcome code.');
+    await expect(page.getByText('a reset link is on its way')).toHaveCount(0);
+    await expect(page.getByText('SERVER TEXT')).toHaveCount(0);
   });
 });
 
@@ -349,7 +415,9 @@ test.describe('app shell: a reset code issued while already signed in', () => {
     await page.route('**/api/**', async (route: Route) => {
       const url = new URL(route.request().url());
       const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-      if (url.pathname === '/api/auth/me') return json({ ...session().user, pendingResetNotice: notice });
+      // A user the shell renders without Self-Service data (this mock answers every list with []),
+      // so the page under the banner is the shell's own access screen, not a half-mocked /ess.
+      if (url.pathname === '/api/auth/me') return json({ ...session().user, permissions: ['ess.self'], pendingResetNotice: notice });
       if (url.pathname === '/api/auth/mfa/status') return json({ enabled: false, required: false, promptToEnroll: false });
       return json(route.request().method() === 'GET' ? [] : {});
     });

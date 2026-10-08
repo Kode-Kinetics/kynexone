@@ -43,7 +43,7 @@ type Step = 'code' | 'password';
  */
 export function WelcomePage() {
   return (
-    <LocaleProvider>
+    <LocaleProvider preferDevice>
       <WelcomeCard />
     </LocaleProvider>
   );
