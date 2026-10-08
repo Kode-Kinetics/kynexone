@@ -43,6 +43,8 @@ import type {
   DeviceKeyResult,
 } from '../api/attendance';
 import { employeesApi } from '../api/employees';
+import { SelfieViewerModal } from '../components/attendance/SelfieViewerModal';
+import { useLocale } from '../contexts/LocaleContext';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
 import { useAuth } from '../contexts/AuthContext';
@@ -158,9 +160,15 @@ export function AttendancePage() {
   // Devices and CSV import are `attendance.bulk_import`; processing is `attendance.write`
   // (AttendanceController). Read-only attendance roles (HR Assistant, payroll, managers, auditors)
   // used to be offered these and only ever got a 403.
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canManageSources = hasPermission('attendance.bulk_import');
   const canProcess = hasPermission('attendance.write');
+  // Recording attendance FOR an employee: attendance.write (or attendance.kiosk at the kiosk), as the server
+  // requires. Without it the raw-event and correction forms are not offered. Punching for YOURSELF needs no
+  // permission, so the punch form stays for any linked employee, fixed to their own record.
+  const canPunchForOthers = canProcess || hasPermission('attendance.kiosk');
+  const ownEmployeeId = typeof user?.employeeId === 'number' && user.employeeId > 0 ? user.employeeId : undefined;
+  const canPunch = canPunchForOthers || ownEmployeeId !== undefined;
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [summary, setSummary] = useState<AttendanceDashboardSummary | null>(null);
   const [daily, setDaily] = useState<AttendanceDailyRecord[]>([]);
@@ -184,6 +192,8 @@ export function AttendancePage() {
   const [filterDate, setFilterDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [punchEmployeeId, setPunchEmployeeId] = useState('');
+  // Without the on-behalf right the punch is always the caller's own.
+  useEffect(() => { if (!canPunchForOthers && ownEmployeeId !== undefined) setPunchEmployeeId(String(ownEmployeeId)); }, [canPunchForOthers, ownEmployeeId]);
   const [punchDirection, setPunchDirection] = useState('In');
   const [punchSource, setPunchSource] = useState<'web' | 'mobile' | 'kiosk'>('web');
   const [showAddDevice, setShowAddDevice] = useState(false);
@@ -492,11 +502,12 @@ export function AttendancePage() {
               </div>
             )}
 
-            <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
-              <form onSubmit={submitPunch} className="surface p-4">
+            <div className={canPunch ? "grid gap-5 lg:grid-cols-[360px_1fr]" : "grid gap-5"}>
+              {canPunch && (
+<form onSubmit={submitPunch} className="surface p-4">
                 <SectionTitle icon={CalendarClock} title="Web / Mobile / Kiosk Punch" subtitle={selectedEmployee ? `${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}` : 'Select an employee from live records'} />
                 <div className="mt-4 space-y-3">
-                  <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />
+                  {canPunchForOthers && <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />}
                   <div className="grid grid-cols-2 gap-3">
                     <select value={punchSource} onChange={(e) => setPunchSource(e.target.value as 'web' | 'mobile' | 'kiosk')} className="select w-full" aria-label="Punch source">
                       <option value="web">Web punch</option>
@@ -513,6 +524,7 @@ export function AttendancePage() {
                   <button type="submit" disabled={saving || !punchEmployeeId || !!loadErrors.employees} className="btn-primary w-full justify-center"><Clock className="h-4 w-4" />Save Punch</button>
                 </div>
               </form>
+)}
 
               {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} />}
             </div>
@@ -569,7 +581,8 @@ export function AttendancePage() {
       {activeTab === 'raw' && (
         <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
           <div className="space-y-5">
-            <form onSubmit={submitRawEvent} className="surface p-4">
+            {canProcess && (
+<form onSubmit={submitRawEvent} className="surface p-4">
               <SectionTitle icon={Database} title="Push Raw Event" subtitle="Device/API events are saved before processing." />
               <div className="mt-4 grid gap-3">
                 <input className="input" placeholder="Employee code or use employee ID below" value={rawForm.employeeCode} onChange={(e) => setRawForm({ ...rawForm, employeeCode: e.target.value })} />
@@ -586,6 +599,7 @@ export function AttendancePage() {
                 <button type="submit" disabled={saving || (!rawForm.employeeId && !rawForm.employeeCode)} className="btn-primary justify-center">Save Raw Event</button>
               </div>
             </form>
+)}
             {canManageSources && <form onSubmit={submitImport} className="surface p-4">
               <SectionTitle icon={Upload} title="CSV Attendance Import" subtitle="Columns: employeeCode, punchTimestamp (ISO 8601), punchDirection, location (opt), method (opt)" />
               <div className="mt-4 flex items-center gap-2">
@@ -604,7 +618,7 @@ export function AttendancePage() {
             </form>}
           </div>
           <Panel title="Raw Punch Logs" action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
-            {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} />}
+            {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}
           </Panel>
         </div>
       )}
@@ -630,8 +644,9 @@ export function AttendancePage() {
       )}
 
       {activeTab === 'regularization' && (
-        <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-          <form onSubmit={submitRegularization} className="surface p-4">
+        <div className={canProcess ? "grid gap-5 xl:grid-cols-[420px_1fr]" : "grid gap-5"}>
+          {canProcess && (
+<form onSubmit={submitRegularization} className="surface p-4">
             <SectionTitle icon={ShieldCheck} title="Correction Request" subtitle="Missed punch, wrong punch, WFH, site visit, or manual correction." />
             {regularizationsUnavailable && <div className="mt-4"><DomainUnavailable message={regularizationsUnavailable} /></div>}
             <div className="mt-4 space-y-3">
@@ -648,11 +663,12 @@ export function AttendancePage() {
               <button type="submit" disabled={saving || !regularizationForm.employeeId || !regularizationForm.reason || !!loadErrors.employees || !!loadErrors.regularizations} className="btn-primary w-full justify-center">Submit Request</button>
             </div>
           </form>
+)}
           <Panel title="Pending Approval Queue" action={correctionQueueUnavailable ? 'Unavailable' : `${pendingRegularizations.length} pending`}>
             <input className="input mb-3 w-full" value={decisionComment} onChange={(e) => setDecisionComment(e.target.value)} aria-label="Decision comment" />
             {correctionQueueUnavailable
               ? <DomainUnavailable message={correctionQueueUnavailable} />
-              : <RegularizationTable rows={pendingRegularizations.length ? pendingRegularizations : regularizations} onApprove={(id) => runAction(() => attendanceApi.regularization.approve(id, decisionComment), 'Regularization approved and attendance reprocessed.')} onReject={(id) => runAction(() => attendanceApi.regularization.reject(id, decisionComment), 'Regularization rejected.')} />}
+              : <RegularizationTable rows={pendingRegularizations} onApprove={(id) => runAction(() => attendanceApi.regularization.approve(id, decisionComment), 'Regularization approved and attendance reprocessed.')} onReject={(id) => runAction(() => attendanceApi.regularization.reject(id, decisionComment), 'Regularization rejected.')} />}
           </Panel>
         </div>
       )}
@@ -940,16 +956,28 @@ function DeviceTable({
   );
 }
 
-function RawTable({ rows }: { rows: AttendanceRawEvent[] }) {
+function RawTable({ rows, canViewSelfie }: { rows: AttendanceRawEvent[]; canViewSelfie: boolean }) {
+  const { t } = useLocale();
+  // The punch whose selfie HR is reviewing. The server says which punches have one (hasSelfie), never where it is stored.
+  const [viewing, setViewing] = useState<{ id: string; employee: string; time: string } | null>(null);
+  const closeViewer = useCallback(() => setViewing(null), []);
   if (rows.length === 0) return <Empty text="No raw attendance events found for this date." />;
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}{canViewSelfie && <th className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{t('Selfie')}</th>}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-          {rows.map((r) => <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{dateTime(r.punchTimestampUtc)}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.employeeCode || r.employeeId}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td></tr>)}
+          {rows.map((r) => {
+            const employee = r.employeeCode || String(r.employeeId ?? '');
+            const time = dateTime(r.punchTimestampUtc);
+            return <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{time}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td>{canViewSelfie && <td className="px-4 py-3">{r.hasSelfie && (
+              <button type="button" className="btn-secondary px-3 py-1 text-xs" aria-label={t('View selfie for the punch by {employee} at {time}', { employee, time })}
+                onClick={() => setViewing({ id: r.id, employee, time })}>{t('View selfie')}</button>
+            )}</td>}</tr>;
+          })}
         </tbody>
       </table>
+      {viewing && <SelfieViewerModal rawEventId={viewing.id} employee={viewing.employee} time={viewing.time} onClose={closeViewer} />}
     </div>
   );
 }

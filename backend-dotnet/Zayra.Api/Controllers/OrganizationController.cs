@@ -37,6 +37,7 @@ public class OrganizationController : ControllerBase
             var company = await _organization.CreateCompanyAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/organization/companies/{company.Id}", company);
         }
+        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -48,6 +49,7 @@ public class OrganizationController : ControllerBase
         {
             return await _organization.UpdateCompanyAsync(RequireTenant(), id, request, Context(), cancellationToken) is { } company ? Ok(company) : NotFound();
         }
+        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

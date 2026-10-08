@@ -3,6 +3,7 @@ import { releaseA, releaseASlices } from '../src/i18n/releaseA';
 import { LOCALE_DICTS, translate } from '../src/i18n/translations';
 import { navigationHints, navigationItems } from '../src/routes/navigation';
 import { RELEASE_A_FLAG } from '../src/lib/releaseA';
+import { essNavItems, essPages } from '../src/routes/essSections';
 
 // Release A R0 contract: one string file per slice, every English key translated into Arabic, spread into the
 // dictionaries once, and every Release A screen reachable only behind the release_a flag.
@@ -37,8 +38,9 @@ test('the dictionaries carry the Release A strings', () => {
 });
 
 test('Release A navigation is flag-gated, permission-gated, explained and translated', () => {
-  const releaseAPaths = ['/benefits/by-grade', '/contract-renewals', '/ess/package', '/ess/deductions'];
-  for (const path of releaseAPaths) {
+  // Admin screens are sidebar entries; the employee's own two are tabs inside Self-Service.
+  const menuPaths = ['/benefits/by-grade', '/contract-renewals'];
+  for (const path of menuPaths) {
     const item = navigationItems.find((i) => i.path === path);
     expect(item, path).toBeDefined();
     expect(item!.requiredFeatureKey, path).toBe(RELEASE_A_FLAG);
@@ -46,5 +48,17 @@ test('Release A navigation is flag-gated, permission-gated, explained and transl
     expect(navigationHints[path], path).toBeTruthy();
     expect(ARABIC.test(translate('ar', item!.label)), path).toBe(true);
   }
-  expect(navigationItems.filter((i) => i.requiredFeatureKey === RELEASE_A_FLAG).map((i) => i.path).sort()).toEqual([...releaseAPaths].sort());
+  expect(navigationItems.filter((i) => i.requiredFeatureKey === RELEASE_A_FLAG).map((i) => i.path).sort()).toEqual([...menuPaths].sort());
+
+  const essPaths = ['/ess/package', '/ess/deductions'];
+  for (const path of essPaths) {
+    const page = essPages.find((p) => p.path === path);
+    expect(page, path).toBeDefined();
+    expect(page!.requiredFeatureKey, path).toBe(RELEASE_A_FLAG);
+    expect(essNavItems.find((i) => i.path === path)?.requiredPermissions, path).toEqual(['ess.read']);
+    expect(ARABIC.test(translate('ar', page!.hint)), path).toBe(true);
+    expect(ARABIC.test(translate('ar', page!.label)), path).toBe(true);
+    expect(ARABIC.test(translate('ar', page!.tab)), path).toBe(true);
+  }
+  expect(essPages.filter((p) => p.requiredFeatureKey === RELEASE_A_FLAG).map((p) => p.path).sort()).toEqual([...essPaths].sort());
 });

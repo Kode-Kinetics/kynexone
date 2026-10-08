@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Zayra.Api.Application.Auth;
@@ -161,6 +162,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
+        await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -225,6 +227,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
         // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
@@ -714,6 +717,119 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     /// <summary>
+    /// ONE LIVE CREDENTIAL AT A TIME (employee access, Amendment 3 F3). A welcome code was issued for a login as it
+    /// stood; when that login's roles, permission overrides, company grants, access mode or username change, the code
+    /// no longer describes what it would unlock, so it is forgotten and HR issues a new one. Done here, in the save,
+    /// so no access-changing path can forget it. The redeem itself (which switches the login on) is exempt: it marks
+    /// the code used in the same save.
+    /// </summary>
+    private async Task ClearWelcomeCodesOnAccessChangeAsync(CancellationToken ct, bool synchronous = false)
+    {
+        // COST (the OOM incident is why this matters): this runs on EVERY save. It walks the change tracker exactly
+        // ONCE (one DetectChanges) and keeps only the few access entries it needs; it used to make ~7 typed scans plus
+        // a DbSet.Local read, each of which re-ran DetectChanges over the whole graph. A save that touches no login,
+        // role grant, override or company grant returns here with no further work and no query.
+        List<EntityEntry<EmployeeUserAccount>>? links = null;
+        List<EntityEntry<User>>? users = null;
+        List<EntityEntry>? grants = null; // UserRole / UserPermissionOverride / UserEntityAccess
+        foreach (var e in ChangeTracker.Entries())
+        {
+            switch (e.Entity)
+            {
+                case EmployeeUserAccount link: (links ??= new()).Add(Entry(link)); break; // typed view of the same entry; no graph scan
+                case User user: (users ??= new()).Add(Entry(user)); break;
+                case UserRole or UserPermissionOverride or UserEntityAccess: (grants ??= new()).Add(e); break;
+            }
+        }
+        static bool Changed(EntityEntry e) => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted;
+        if (!(links?.Any(Changed) ?? false) && !(users?.Any(Changed) ?? false) && !(grants?.Any(Changed) ?? false)) return;
+
+        // TENANT BOUNDARY. A tenant request touches its own tenant only: a changed row of any other tenant is ignored
+        // here (the write guard refuses it anyway). A tenantless AUTHENTICATED principal (the platform super-admin) gets
+        // no database read at all; only links already tracked in its own unit of work are cleared. No principal (boot,
+        // background work, the anonymous auth endpoints, tests) works per changed row, in that row's own tenant.
+        var principal = _httpContextAccessor?.HttpContext?.User;
+        var requestTenant = _tenantId;
+        var platform = requestTenant is null && principal?.Identity?.IsAuthenticated == true;
+        bool InScope(Guid tenantId) => requestTenant is not Guid t || t == tenantId;
+
+        var redeeming = new HashSet<Guid>();
+        foreach (var e in links ?? [])
+            if (e.State == EntityState.Modified && e.Entity.UserId is Guid rid && e.Entity.WelcomeCodeRedeemedAtUtc != null
+                && e.Property(x => x.WelcomeCodeRedeemedAtUtc).IsModified)
+                redeeming.Add(rid);
+        var trackedUsers = new Dictionary<Guid, User>();
+        foreach (var e in users ?? []) trackedUsers.TryAdd(e.Entity.Id, e.Entity);
+
+        var affected = new Dictionary<Guid, Guid>(); // userId -> tenantId
+        var tenantUnknown = new HashSet<Guid>();      // userIds whose User row is not tracked
+        void Add(Guid userId, Guid tenantId) { if (!redeeming.Contains(userId) && InScope(tenantId)) affected[userId] = tenantId; }
+        void AddUser(Guid userId)
+        {
+            if (redeeming.Contains(userId)) return;
+            if (trackedUsers.TryGetValue(userId, out var tracked)) Add(userId, tracked.TenantId);
+            else tenantUnknown.Add(userId);
+        }
+        foreach (var e in grants ?? [])
+        {
+            switch (e.Entity)
+            {
+                case UserRole ur when e.State is EntityState.Added or EntityState.Deleted:
+                    if (ur.User is { } u) Add(u.Id, u.TenantId); else AddUser(ur.UserId);
+                    break;
+                case UserPermissionOverride o when Changed(e): Add(o.UserId, o.TenantId); break;
+                case UserEntityAccess a when Changed(e): Add(a.UserId, a.TenantId); break;
+            }
+        }
+        // The login itself, on ADMINISTRATIVE changes only: username, access mode, scope, being switched off (IsActive
+        // false), deleted, or given an admin status (Suspended / Deactivated / Locked — LockUserAsync writes "Locked").
+        // A failed-password lockout (IsLocked / LockoutEnd written by AuthService.LoginAsync) is deliberately NOT one:
+        // anyone who knows the email could otherwise destroy an HR-issued reset code with a few wrong passwords
+        // (PR #210 review). The redeem waits out such a lockout instead (WelcomeCodeRedeemer).
+        foreach (var e in users ?? [])
+            if (e.State == EntityState.Modified
+                && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.NormalizedEmail).IsModified
+                    || e.Property(x => x.IsGroupScope).IsModified
+                    || (e.Property(x => x.IsActive).IsModified && !e.Entity.IsActive)
+                    || (e.Property(x => x.Status).IsModified && e.Entity.Status is "Suspended" or "Deactivated" or "Locked")
+                    || (e.Property(x => x.IsDeleted).IsModified && e.Entity.IsDeleted)))
+                Add(e.Entity.Id, e.Entity.TenantId);
+        foreach (var e in links ?? [])
+            if (e.State == EntityState.Modified && e.Entity.UserId is Guid lu
+                && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.LoginDisabledReason).IsModified
+                    || e.Property(x => x.Status).IsModified))
+                Add(lu, e.Entity.TenantId);
+        // A role assigned by id alone: its login's tenant is read (ambient filters apply — the request's own tenant).
+        // RolePermission edits on a ROLE are not chased here: the redeem re-evaluates the login's privilege and kills
+        // the code when it now holds more than the Employee baseline (EmployeeLoginPrivilege, review P3).
+        tenantUnknown.ExceptWith(affected.Keys);
+        if (tenantUnknown.Count > 0 && !platform)
+        {
+            var ids = tenantUnknown.ToList();
+            var q = Users.AsNoTracking().Where(u => ids.Contains(u.Id)).Select(u => new { u.Id, u.TenantId });
+            foreach (var row in synchronous ? q.ToList() : await q.ToListAsync(ct)) Add(row.Id, row.TenantId);
+        }
+        // A brand-new login (staging) has no code to clear.
+        foreach (var e in users ?? []) if (e.State == EntityState.Added) affected.Remove(e.Entity.Id);
+        if (affected.Count == 0) return;
+
+        foreach (var e in links ?? [])
+            if (e.Entity is { UserId: Guid id, WelcomeCodeHash: not null, WelcomeCodeRedeemedAtUtc: null } link
+                && affected.ContainsKey(id) && InScope(link.TenantId))
+                link.ClearWelcomeCode();
+        if (platform) return;
+        foreach (var group in affected.GroupBy(kv => kv.Value))
+        {
+            var ids = group.Select(kv => kv.Key).ToList();
+            var query = Infrastructure.Data.ScopedBypass.TenantWide(EmployeeUserAccounts, group.Key,
+                    "Welcome-code invalidation on an access change: the changed logins' own employee links are read across legal entities; the tenant of the changed rows is re-applied.")
+                .Where(x => x.UserId != null && ids.Contains(x.UserId.Value) && x.WelcomeCodeHash != null && x.WelcomeCodeRedeemedAtUtc == null);
+            var found = synchronous ? query.ToList() : await query.ToListAsync(ct);
+            foreach (var link in found) link.ClearWelcomeCode();
+        }
+    }
+
+    /// <summary>
     /// User.UpdatedAtUtc is the tenant access-token security stamp (TenantSessionSecurity), compared
     /// at microsecond precision. A plain "= now" could equal or precede the stored stamp (same
     /// microsecond, clock skew between instances, or a stamp already advanced by RotateStamp), which
@@ -773,6 +889,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<AttendanceLockPeriod> AttendanceLockPeriods => Set<AttendanceLockPeriod>();
     public DbSet<AttendanceAIInsight> AttendanceAIInsights => Set<AttendanceAIInsight>();
     public DbSet<AttendanceAuditLog> AttendanceAuditLogs => Set<AttendanceAuditLog>();
+    // Selfie attendance v2: single-use selfie evidence and per-version biometric consent. Mapped in SelfieAttendanceModelConfiguration.
+    public DbSet<AttendanceEvidence> AttendanceEvidence => Set<AttendanceEvidence>();
+    public DbSet<BiometricConsent> BiometricConsents => Set<BiometricConsent>();
     // ── Leave Management ──────────────────────────────────────────────────────────
     public DbSet<LeaveType> LeaveTypes => Set<LeaveType>();
     public DbSet<LeavePolicy> LeavePolicies => Set<LeavePolicy>();
@@ -1340,6 +1459,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.AccessMode).HasMaxLength(40).IsRequired();
             entity.Property(x => x.Status).HasMaxLength(40).IsRequired();
             entity.Property(x => x.InvitationTokenHash).HasMaxLength(128);
+            entity.Property(x => x.WelcomeCodeHash).HasMaxLength(128);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsPrimary });
             entity.HasIndex(x => new { x.TenantId, x.UserId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.InvitationTokenHash });
@@ -1972,6 +2092,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("attendance_regularization_requests");
             entity.HasKey(x => x.Id);
+            // Every status transition advances it (backstop to the employee-day lock): a racing decision fails, never overwrites.
+            entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkDate });
             entity.HasIndex(x => new { x.TenantId, x.Status });
         });
@@ -4378,6 +4500,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        SelfieAttendanceModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

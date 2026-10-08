@@ -105,7 +105,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
-    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default, [FromQuery] string? access = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -114,11 +114,14 @@ public class EmployeesController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
 
         if (scope.IsUnrestricted && entityScope.IsGroupLevel)
-            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, page, pageSize, cancellationToken));
+            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, access, page, pageSize, cancellationToken));
 
         // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
         // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
-        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(e.Status));
+        var accessFilter = EmployeeAccessStates.ParseFilter(access);
+        // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
+        var includeFormer = EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
+        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(e.Status)));
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
@@ -141,10 +144,13 @@ public class EmployeesController : ControllerBase
         // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
         // applied in BOTH scope branches or a scoped user's post-import cleanup link breaks past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
+        // Self-service access state filter (same evaluator as the column), over the whole matching set.
+        query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(e => e.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, string.IsNullOrEmpty(e.Branch) ? (_db.Branches.Where(b => b.Id == e.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : e.Branch, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))
             .ToListAsync(cancellationToken);
+        items = await EmployeeAccessStates.DecorateAsync(_db, tenantId, items, cancellationToken);
         return Ok(new PagedResult<EmployeeListItemDto>(items, total, page, pageSize));
     }
 
@@ -948,6 +954,13 @@ public class EmployeesController : ControllerBase
                     .Select(e => e.WorkEmail).ToListAsync(ct)).Select(AuthService.Normalize),
                 StringComparer.Ordinal);
             var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
+            // Rows whose work email is plus-addressed: the whole file is refused (422) and nothing is written.
+            var plusAddressedRows = new List<int>();
+            var invalidCharacterRows = new List<int>();
+            // Login usernames: a row whose work email already IS a login is warned about (never refused).
+            var existingLoginNorm = (await ScopedBypass.TenantWide(_db.Users, tenantId,
+                    "Employee import: the tenant's login usernames are compared with imported work emails across legal entities, to warn only.")
+                .AsNoTracking().Select(u => u.NormalizedEmail).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
 
             // ── DUPLICATE-PERSON DETECTION preload (accept-never-block) ─────────────────────────────────
             // Preloaded-dictionary path (N1): existing employees loaded ONCE into the matcher — never a DB
@@ -1243,6 +1256,11 @@ public class EmployeesController : ControllerBase
                     }
                 }
 
+                if (WorkEmailPlusAddressException.IsPlusAddressed(workEmail)) plusAddressedRows.Add(rowNum);
+                else if (WorkEmailInvalidCharactersException.IsInvalid(workEmail)) invalidCharacterRows.Add(rowNum);
+                if (!string.IsNullOrWhiteSpace(workEmail) && existingLoginNorm.Contains(AuthService.Normalize(workEmail)))
+                    RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
+
                 // SHARED with ImportPreview: the same builder records the same data:unparsed* gaps in both.
                 var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps);
                 employee.ReadinessState = rowReadiness.State;
@@ -1297,6 +1315,23 @@ public class EmployeesController : ControllerBase
                 }
                 dupMatcher.Register(dupProbe);
             }
+
+            if (plusAddressedRows.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error = WorkEmailPlusAddressException.Code,
+                    code = WorkEmailPlusAddressException.Code,
+                    message = $"{WorkEmailPlusAddressException.Text} Fix row(s) {string.Join(", ", plusAddressedRows)} and import again; nothing was imported.",
+                    rows = plusAddressedRows,
+                });
+            if (invalidCharacterRows.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error = WorkEmailInvalidCharactersException.Code,
+                    code = WorkEmailInvalidCharactersException.Code,
+                    message = $"{WorkEmailInvalidCharactersException.Text} Fix row(s) {string.Join(", ", invalidCharacterRows)} and import again; nothing was imported.",
+                    rows = invalidCharacterRows,
+                });
 
             if (RejectUnstorable(batchCodes.Where(kv => !repairExistingCodes.Contains(kv.Key)).Select(kv => (object)kv.Value), "employees") is { } unstorableEmployee)
                 return unstorableEmployee;
@@ -1682,7 +1717,17 @@ public class EmployeesController : ControllerBase
             }
             if (gapEntities.Count > 0) _db.EmployeeImportGaps.AddRange(gapEntities);
 
-            // Single persist covering Pass 2 links, the advisory re-stamp, and the gap rows.
+            // Every created row's initial work email, attributed to the importer (two-person rule for linking).
+            var importedAtUtc = DateTime.UtcNow;
+            foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
+                _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
+
+            // Every created row with a work email gets its staged login (contract §3), in this same transaction. A row
+            // whose address is on the wrong domain, already someone's login, … gets none and shows as blocked.
+            await new EmployeeLoginProvisioner(_db).EnsureStagedLoginsAsync(
+                tenantId, createdRowMeta.Select(m => m.Emp).ToList(), Context() with { TenantId = tenantId }, ct);
+
+            // Single persist covering Pass 2 links, the advisory re-stamp, the gap rows, the work-email audit and the logins.
             if (await PersistAsync("links") is { } finalSaveError) return finalSaveError;
 
             // A repaired employee's stored readiness badge is recomputed from its now-complete record, so a filled
@@ -2857,8 +2902,16 @@ public class EmployeesController : ControllerBase
         // User-SUPPLIED work-email collision — the one deliberate stop (never silently duplicate the login
         // identity). Advisory: the modal offers the suggested next-free address. Auto-derived never hits this.
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
+        catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
+        catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
+        catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>422 for a refused work email: <c>work_email_wrong_domain</c> ("Work email must end in @{domain}.") or
+    /// <c>work_email_plus_address</c>, with the address on the company domain the modal may offer instead.</summary>
+    private ObjectResult WorkEmailRejected(WorkEmailRejectedException ex) =>
+        UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message, suggestedWorkEmail = ex.SuggestedWorkEmail });
 
     /// <summary>
     /// Advisory pre-create duplicate check the create modal calls before submit. ALWAYS 200 (never blocks) —
@@ -2937,14 +2990,15 @@ public class EmployeesController : ControllerBase
         bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
         var assembled = WorkEmailDeriver.Assemble(local, domain);
         if (!IsTaken(assembled))
-            return Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, true, null, userSupplied ? "user" : "derived"));
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, true, null, userSupplied ? "user" : "derived",
+                userSupplied ? null : assembled));
 
         var suggestion = WorkEmailDeriver.Uniqueify(local, domain, IsTaken);
         return userSupplied
             // Keep the user's local part but flag not-unique + suggest the next-free address (they adjust).
             ? Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, false, suggestion, "conflict"))
             // Auto-derived → return the suffixed unique address directly (req 4).
-            : Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(suggestion), suggestion, true, suggestion, "derived"));
+            : Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(suggestion), suggestion, true, suggestion, "derived", suggestion));
     }
 
     /// <summary>Builds the persisted dup:* gap Detail + RawValue, scope-masked (S3): a counterpart in a
@@ -3120,6 +3174,12 @@ public class EmployeesController : ControllerBase
         _db.EmployeeDrafts.Add(draft);
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.draft_created", "EmployeeDraft", draft.Id.ToString(), cancellationToken);
+        // The drafter set the hire's work email (WorkEmailSetterRule).
+        if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
+        {
+            _db.AuditLogs.Add(DraftWorkEmailSetAudit(draft, null));
+            await _db.SaveChangesAsync(cancellationToken);
+        }
         return Created($"/api/employees/drafts/{draft.Id}", EmployeeDraftDto.Project(draft, CanViewSensitive()));
     }
 
@@ -3134,7 +3194,12 @@ public class EmployeesController : ControllerBase
             if (request.ManagerEmployeeId is { } managerId && managerId != draft.ManagerEmployeeId
                 && await DraftManagerRefusalAsync(tenantId, managerId, ct) is { } managerRefusal)
                 return managerRefusal;
+            var priorDraftWorkEmail = draft.WorkEmail;
             ApplyDraft(draft, request);
+            // Every editor who sets the draft's work email is a setter of the hire's address (WorkEmailSetterRule).
+            if (!string.IsNullOrWhiteSpace(draft.WorkEmail)
+                && !string.Equals(AuthService.Normalize(draft.WorkEmail), AuthService.Normalize(priorDraftWorkEmail ?? string.Empty), StringComparison.Ordinal))
+                _db.AuditLogs.Add(DraftWorkEmailSetAudit(draft, priorDraftWorkEmail));
             var docs = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
                     "A draft's documents carry no company until activation; the draft's visibility was checked under its lock.")
                 .CountAsync(x => x.DraftId == draftId && !x.IsDeleted, ct);
@@ -3348,8 +3413,6 @@ public class EmployeesController : ControllerBase
         // false failure.
         var auditId = Guid.NewGuid();
         var approvedAtUtc = DateTime.UtcNow;
-        var unreachablePasswordHash = _passwordHasher.Hash(
-            Convert.ToBase64String(RandomNumberGenerator.GetBytes(64)));
 
         async Task<bool> ApproveOnceAsync(CancellationToken ct)
         {
@@ -3390,6 +3453,7 @@ public class EmployeesController : ControllerBase
             }
             if (!EmployeeDraftStatuses.IsOpen(draft.Status))
                 throw new DraftApprovalNotReadyException(draft.Status);
+            WorkEmailInvalidCharactersException.ThrowIfNotAllowed(draft.WorkEmail);
 
             // Resolve every mutable draft field again after taking the draft lock. A preflight read
             // is authorization/UX only and is never trusted for the durable employee record. The
@@ -3458,8 +3522,11 @@ public class EmployeesController : ControllerBase
                         document.CompanyId = employee.CompanyId;
                     }
 
-                    employee.UserAccountId = await CreateEmployeeUserAccount(
-                        employee, unreachablePasswordHash, approvedAtUtc, ct);
+                    // The shared provisioner (contract §3): a staged login, or — when the work email already belongs
+                    // to another login, the company has no domain, … — none, and the employee shows as blocked for an
+                    // administrator. Approval is never refused for it; nothing is adopted silently.
+                    await new EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(
+                        tenantId, employee, requestContext with { TenantId = tenantId }, ct);
                     await _db.LinkOnboardingTasksForActivatedDraftAsync(
                         tenantId, draftId, employee, ct);
 
@@ -3494,6 +3561,11 @@ public class EmployeesController : ControllerBase
                         JsonSerializer.Serialize(new { draftId, employeePublicId = employee.PublicId }));
                     marker.CompanyId = employee.CompanyId;
                     _db.AuditLogs.Add(marker);
+                    // The initial work email: set by the approver's decision; the drafter who typed it is recorded too.
+                    if (!string.IsNullOrWhiteSpace(employee.WorkEmail))
+                        _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(
+                            employee, tenantId, requestContext, approvedAtUtc, "draft_approval", draft.CreatedByUserId,
+                            await WorkEmailSetterRule.DraftWorkEmailSettersAsync(_db, tenantId, draftId, ct)));
                     await _db.SaveChangesAsync(ct);
                     return true;
                 }, ct);
@@ -3531,15 +3603,20 @@ public class EmployeesController : ControllerBase
             await Audit("employee.activation_blocked", "EmployeeDraft", draftId.ToString(), cancellationToken);
             return this.NotActivatable(ex);
         }
-        catch (IdentityProvisioningConflictException ex)
-        {
-            _db.ChangeTracker.Clear();
-            return Conflict(new { message = ex.Message });
-        }
         catch (DraftApprovalValidationException ex)
         {
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { message = ex.Message });
+        }
+        catch (WorkEmailPlusAddressException)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text });
+        }
+        catch (WorkEmailInvalidCharactersException)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text });
         }
         catch (DraftApprovalForbiddenException)
         {
@@ -3607,6 +3684,32 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
+        // A WORK-EMAIL edit runs in ONE explicit transaction: the employee row lock WorkEmailLoginGuard takes holds to
+        // commit (serialising with invitations, links and reset links, which read the setter under the same lock), and
+        // the new address commits together with its employee.work_email_changed row — never one without the other.
+        if (!_db.Database.IsRelational()
+            || !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase)))
+            return await UpdateEmployeeCoreAsync(id, request, cancellationToken);
+
+        IActionResult? result = null;
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            result = await UpdateEmployeeCoreAsync(id, request, cancellationToken);
+            if (result is ObjectResult { StatusCode: >= 200 and < 300 } or OkResult or AcceptedResult)
+                await transaction.CommitAsync(cancellationToken);
+            else
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                _db.ChangeTracker.Clear();
+            }
+        });
+        return result!;
+    }
+
+    private async Task<IActionResult> UpdateEmployeeCoreAsync(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
+    {
         var tenantId = RequireTenant();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
@@ -3647,6 +3750,8 @@ public class EmployeesController : ControllerBase
         var priorDesigId = employee.DesignationId;
         // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
         var priorWorkEmail = employee.WorkEmail;
+        // The work email changed but the employee's ACTIVATED login kept its username (WorkEmailLoginGuard).
+        var loginUsernameDiffers = false;
         try
         {
             if (sensitive.Count > 0)
@@ -3684,7 +3789,7 @@ public class EmployeesController : ControllerBase
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
-                    await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
+                    loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
                     await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
                 }
@@ -3736,14 +3841,15 @@ public class EmployeesController : ControllerBase
                     approvalRequestId = approval.Id,
                     requiresApproval = true,
                     sensitiveFields = sensitive,
-                    appliedFields = immediateChanges.Keys.ToList()
+                    appliedFields = immediateChanges.Keys.ToList(),
+                    loginUsernameDiffers
                 });
             }
 
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
-            await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
+            loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
             if (employee.DepartmentId != priorDeptId || employee.DesignationId != priorDesigId)
@@ -3760,10 +3866,13 @@ public class EmployeesController : ControllerBase
                 await _db.SaveChangesAsync(cancellationToken);
             }
             await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers });
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
+        catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
+        catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
+        catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
@@ -4002,7 +4111,8 @@ public class EmployeesController : ControllerBase
     private const int BulkActionMaxIds = 5000;
     private static readonly HashSet<string> BulkDeactivateTargets = new(StringComparer.OrdinalIgnoreCase) { "Suspended", "Inactive" };
 
-    public sealed record BulkSelectAllFilter(string? Search, string? Status, string? Readiness, Guid? ImportBatchId, string? GapType);
+    /// <summary><c>Access</c>: the list's self-service state filter (comma-separated), so "select all matching" selects what the list shows.</summary>
+    public sealed record BulkSelectAllFilter(string? Search, string? Status, string? Readiness, Guid? ImportBatchId, string? GapType, string? Access = null);
     public sealed record BulkActionRequest(
         string? Action,
         string? SelectionMode,          // "ids" | "allMatching" — EXPLICIT; never inferred from field-absence
@@ -4242,6 +4352,7 @@ public class EmployeesController : ControllerBase
             }
             if (!string.IsNullOrWhiteSpace(f.Status)) query = query.Where(e => e.Status == f.Status);
             query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, f.Readiness, f.ImportBatchId, f.GapType);
+            query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, EmployeeAccessStates.ParseFilter(f.Access), ct);
         }
 
         return await query.Select(e => e.Id).ToListAsync(ct);
@@ -4947,6 +5058,11 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(id)) return Forbid();
+        // A registered letter (appointment, experience) is HR's statement about an employee: never issued by
+        // that employee about themselves. They ask for it through Self-Service, and a colleague issues it.
+        if (await Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), id, cancellationToken))
+            return BadRequest(Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.Refusal(
+                "You cannot issue a letter about yourself. Request it in Self-Service, and a colleague in HR will issue it."));
 
         var issuerName = User.FindFirstValue("name") ?? User.FindFirstValue(ClaimTypes.Name) ?? "HR Department";
         if (GetUserId() is Guid uid)
@@ -5573,6 +5689,12 @@ public class EmployeesController : ControllerBase
                 .Select(c => c.LegalNameEn)
                 .FirstOrDefaultAsync(ct);
 
+        if (WorkEmailPlusAddressException.IsPlusAddressed(draft.WorkEmail))
+            problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailPlusAddressException.Text,
+                "Remove the '+' part of the draft's work email."));
+        else if (WorkEmailInvalidCharactersException.IsInvalid(draft.WorkEmail))
+            problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailInvalidCharactersException.Text,
+                "Correct the draft's work email."));
         if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
         {
             var normalized = AuthService.Normalize(draft.WorkEmail);
@@ -5611,6 +5733,15 @@ public class EmployeesController : ControllerBase
 
         return new EmployeeDraftActivationCheck(problems.Count == 0, companyName, problems, advisories);
     }
+
+    private AuditLog DraftWorkEmailSetAudit(EmployeeDraft draft, string? priorWorkEmail) => AuthAuditEntry.Create(
+        Guid.NewGuid(),
+        DateTime.UtcNow,
+        WorkEmailSetterRule.DraftWorkEmailSetAction,
+        "EmployeeDraft",
+        draft.Id.ToString(),
+        Context() with { TenantId = draft.TenantId },
+        JsonSerializer.Serialize(new { oldWorkEmail = priorWorkEmail, newWorkEmail = draft.WorkEmail.Trim() }));
 
     private EmployeeDraft ApplyDraft(EmployeeDraft draft, EmployeeDraftRequest request)
     {
@@ -5760,111 +5891,19 @@ public class EmployeesController : ControllerBase
         };
     }
 
-    private async Task<Guid?> CreateEmployeeUserAccount(
-        Employee employee,
-        string unreachablePasswordHash,
-        DateTime stagedAtUtc,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(employee.WorkEmail) || employee.TenantId is null) return null;
-        var normalized = AuthService.Normalize(employee.WorkEmail);
-        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
-        var matchingIdentityIds = await _db.Users.IgnoreQueryFilters()
-            .TagWith(RowLockingInterceptor.ForUpdateTag)
-            .Where(x => x.TenantId == employee.TenantId && x.NormalizedEmail == normalized)
-            .OrderBy(x => x.Id)
-            .Select(x => x.Id)
-            .Take(2)
-            .ToListAsync(cancellationToken);
-        if (matchingIdentityIds.Count != 0)
-            throw new IdentityProvisioningConflictException(
-                "A login identity already uses this work email. Resolve the identity explicitly before approving the draft.");
-
-        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
-        var role = await _db.Roles.IgnoreQueryFilters().AsNoTracking()
-            .TagWith(RowLockingInterceptor.ForShareTag)
-            .Where(x => (x.TenantId == employee.TenantId || x.TenantId == null)
-                && x.NormalizedName == "EMPLOYEE"
-                && x.IsActive
-                && !x.IsDeleted)
-            .OrderByDescending(x => x.TenantId == employee.TenantId)
-            .FirstOrDefaultAsync(cancellationToken)
-            ?? throw new IdentityProvisioningConflictException(
-                "The Employee access role is unavailable. Restore the role before approving the draft.");
-
-        var user = new User
-        {
-            TenantId = employee.TenantId.Value,
-            Email = employee.WorkEmail.Trim().ToLowerInvariant(),
-            NormalizedEmail = normalized,
-            FullName = employee.FullName,
-            PasswordHash = unreachablePasswordHash,
-            Status = "PendingPasswordSetup",
-            AccessMode = AccessModes.NoLogin,
-            IsActive = false,
-            IsEmailConfirmed = false,
-            MustChangePassword = false,
-            CreatedAtUtc = stagedAtUtc,
-            UpdatedAtUtc = stagedAtUtc
-        };
-        _db.Users.Add(user);
-        user.UserRoles.Add(new UserRole { User = user, RoleId = role.Id });
-        EnsureEmployeeCompanyGrant(user, employee, stagedAtUtc);
-        user.EmployeeUserAccounts.Add(new EmployeeUserAccount
-        {
-            TenantId = employee.TenantId.Value,
-            EmployeeId = employee.Id,
-            User = user,
-            AccessMode = AccessModes.NoLogin,
-            Status = "PendingPasswordSetup",
-            RequiresPasswordSetup = true,
-            InvitationTokenHash = string.Empty,
-            InvitationExpiresAtUtc = null,
-            InvitedAtUtc = null,
-            CreatedAtUtc = stagedAtUtc,
-            CreatedBy = GetUserId()
-        });
-        return user.Id;
-    }
-
-    private void EnsureEmployeeCompanyGrant(User user, Employee employee, DateTime stagedAtUtc)
-    {
-        if (employee.TenantId is null || !employee.CompanyId.HasValue) return;
-        if (user.EntityAccesses.Any(x =>
-                x.TenantId == employee.TenantId.Value
-                && x.CompanyId == employee.CompanyId.Value
-                && x.GrantMode == EntityGrantModes.SelectedCompanies))
-            return;
-        user.EntityAccesses.Add(new UserEntityAccess
-        {
-            TenantId = employee.TenantId.Value,
-            User = user,
-            CompanyId = employee.CompanyId.Value,
-            GrantMode = EntityGrantModes.SelectedCompanies,
-            Role = "Employee",
-            // The identity has no invitation token and cannot authenticate. Keep the legal-entity
-            // grant staged as well; the explicit invitation workflow replaces it with an active
-            // grant only when access is intentionally issued.
-            IsActive = false,
-            CreatedAtUtc = stagedAtUtc,
-            CreatedBy = GetUserId(),
-            GrantedBy = GetUserId(),
-            GrantedAt = stagedAtUtc
-        });
-    }
-
     /// <summary>
     /// Server-authoritative work-email handling for the PATCH edit path — mirrors the create/update service
     /// so the domain "lock" is enforced at the authoritative layer, not just the UI (B3). No-op unless
     /// "workEmail" is among the applied changes. When the employing company has a domain: extract the local
     /// part and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted) and a
-    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity rename
-    /// guard keeps a linked User in sync and blocks a rename that would collide with another login (R1). Sets
-    /// the STRING only — no mailbox is provisioned.
+    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity guard
+    /// (<see cref="WorkEmailLoginGuard"/>): a STAGED login's username follows the work email and its pending
+    /// invitation is cancelled; an ACTIVATED login is never renamed by an employee edit. Returns true when the
+    /// work email now differs from an activated login's username. Sets the STRING only — no mailbox is provisioned.
     /// </summary>
-    private async Task ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
+    private async Task<bool> ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
     {
-        if (!changedKeys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))) return;
+        if (!changedKeys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))) return false;
         var tenantId = employee.TenantId!.Value;
         var company = employee.CompanyId is Guid cid
             ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == cid && !c.IsDeleted)
@@ -5877,39 +5916,32 @@ public class EmployeesController : ControllerBase
             var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
             var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, employee.Id, ct);
             bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
-            var resolved = WorkEmailDeriver.Resolve(employee.WorkEmail, employee.EnglishName, employee.ArabicName,
-                domain, pattern, IsTaken, out var outcome, out var coercedFrom);
-            if (outcome != "manual") employee.WorkEmail = resolved;
-            if (outcome == "derived")
-                await _audit.WriteAsync("employee.work_email_derived", "Employee", employee.Id.ToString(), Context(),
-                    System.Text.Json.JsonSerializer.Serialize(new { pattern, domain, workEmail = resolved, source = "name" }), ct);
-            if (coercedFrom is not null)
-                await _audit.WriteAsync("employee.work_email_domain_coerced", "Employee", employee.Id.ToString(), Context(),
-                    System.Text.Json.JsonSerializer.Serialize(new { provided = coercedFrom, coercedTo = resolved }), ct);
+            // Wrong domain → WorkEmailRejectedException (422); blank stays blank (no derived address is saved).
+            employee.WorkEmail = WorkEmailDeriver.Resolve(employee.WorkEmail, employee.EnglishName, employee.ArabicName,
+                domain, pattern, IsTaken, out _, out _);
         }
 
-        // Login-identity rename guard (same rule as the service).
-        if (employee.UserAccountId is Guid uid)
-        {
-            var newNorm = AuthService.Normalize(employee.WorkEmail);
-            var oldNorm = AuthService.Normalize(priorWorkEmail);
-            if (!string.IsNullOrWhiteSpace(employee.WorkEmail) && !string.Equals(newNorm, oldNorm, StringComparison.Ordinal))
-            {
-                var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tenantId, ct);
-                if (user is not null && !string.Equals(user.NormalizedEmail, newNorm, StringComparison.Ordinal))
-                {
-                    var clash = await _db.Users.AnyAsync(u => u.TenantId == tenantId && u.Id != uid && u.NormalizedEmail == newNorm, ct);
-                    if (clash)
-                        throw new InvalidOperationException(
-                            $"Cannot rename work email to '{employee.WorkEmail}': another login already uses that address. Resolve the conflicting account first.");
-                    var oldEmail = user.Email;
-                    user.Email = employee.WorkEmail.Trim().ToLowerInvariant();
-                    user.NormalizedEmail = newNorm;
-                    await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(),
-                        System.Text.Json.JsonSerializer.Serialize(new { oldEmail, newEmail = user.Email, note = "HR string + login identity synced; no mailbox provisioned." }), ct);
-                }
-            }
-        }
+        // A NEW plus-addressed work email is refused (an existing one is left alone until it is changed).
+        if (!string.Equals(AuthService.Normalize(employee.WorkEmail ?? string.Empty), AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
+            WorkEmailInvalidCharactersException.ThrowIfNotAllowed(employee.WorkEmail);
+
+        // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
+        var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, Context(), DateTime.UtcNow, ct);
+        // Added to the unit of work, never saved here (the hotfix's transaction rule).
+        if (login.RenamedJson is not null) AddWorkEmailAudit(employee, "employee.work_email_renamed", login.RenamedJson);
+        if (login.HeldJson is not null) AddWorkEmailAudit(employee, "employee.work_email_login_held", login.HeldJson);
+        // A work email first set (or changed) on an employee with no login stages one, in this unit of work.
+        await new EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, Context(), ct);
+        return login.LoginUsernameDiffers;
+    }
+
+    /// <summary>A work-email audit row in the caller's unit of work: it commits with the change it describes.</summary>
+    private void AddWorkEmailAudit(Employee employee, string action, string metadata)
+    {
+        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, action, "Employee", employee.Id.ToString(),
+            Context() with { TenantId = employee.TenantId }, metadata);
+        row.CompanyId = employee.CompanyId;
+        _db.AuditLogs.Add(row);
     }
 
     /// <summary>Tenant work-email collision set keyed by the login normalization (AuthService.Normalize),
@@ -6041,7 +6073,13 @@ public class EmployeesController : ControllerBase
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }
 
-public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount, Guid PublicId = default);
+public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, string ArabicName, string Department, string Designation, string Branch, int? ManagerEmployeeId, string Status, decimal ProfileCompletenessScore, DateOnly? VisaExpiryDate, DateOnly? PassportExpiryDate, string ReadinessState, int ActivationBlockersCount, Guid PublicId = default)
+{
+    /// <summary>Where the employee stands on the way to signing in (EmployeeAccessStates): waiting_for_work_email,
+    /// not_started, code_given, active, stopped or blocked. Filter with <c>access=</c>.</summary>
+    public string AccessState { get; init; } = string.Empty;
+    public string WorkEmail { get; init; } = string.Empty;
+}
 
 // ── Duplicate-person detection DTOs (contract mirrors frontend api/employees.ts) ──────────────────
 public record DuplicateIdentityValueDto(string? FieldKey, string? Value);
@@ -6069,8 +6107,11 @@ public record DuplicateCheckResponse(bool HasStrong, bool HasProbable, IReadOnly
 public record DeriveWorkEmailRequest(
     string? EnglishName, string? ArabicName, Guid? CompanyId, string? LocalPart, int? ExcludeEmployeeId);
 
+/// <summary><c>SuggestedWorkEmail</c>: the name-derived address the modal shows as ghost text (accepted with Tab /
+/// "Use"). It is a SUGGESTION only — the server never saves a derived address (employee-access contract §3).</summary>
 public record DeriveWorkEmailResponse(
-    string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status);
+    string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status,
+    string? SuggestedWorkEmail = null);
 
 public record ResolveDuplicateRequest(string Resolution, int? IntoEmployeeId, string? Reason);
 public record ConfirmBankDetailsRequest(string? Note);
@@ -6106,10 +6147,6 @@ public static class ExitEmployeeStatuses
     {
         EmployeeStatuses.Archived, EmployeeStatuses.Terminated, EmployeeStatuses.Exited
     };
-}
-internal sealed class IdentityProvisioningConflictException : InvalidOperationException
-{
-    public IdentityProvisioningConflictException(string message) : base(message) { }
 }
 internal sealed class DraftApprovalValidationException : InvalidOperationException
 {

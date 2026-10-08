@@ -337,6 +337,7 @@ public class OpeningBalanceCutoverTests
         loan.OutstandingBalance.Should().Be(17_000m);
         loan.TotalRepaid.Should().Be(7_000m, "derived as OriginalAmount - OutstandingBalance");
         loan.ApprovedInstallments.Should().Be(24);
+        loan.Currency.Should().Be("SAR", "the loans screen formats every amount in the loan's own currency");
 
         var schedule = await db.LoanInstallments.AsNoTracking()
             .Where(i => i.LoanId == loan.Id).OrderBy(i => i.InstallmentNumber).ToListAsync();

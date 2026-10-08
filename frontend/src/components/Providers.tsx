@@ -24,7 +24,9 @@ import { ChunkErrorReloader } from '@/src/components/ChunkErrorReloader';
 export function Providers({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isPlatform = pathname?.startsWith('/platform') ?? false;
-  const isLogin = pathname === '/login';
+  // /welcome signs the employee in straight after they choose a password, so it needs the same
+  // minimal auth stack as /login, and nothing that fires protected bootstrap requests.
+  const isLogin = pathname === '/login' || pathname === '/welcome';
   const isPublicCredentialRoute = pathname === '/reset-password' || pathname === '/accept-invitation';
 
   return (

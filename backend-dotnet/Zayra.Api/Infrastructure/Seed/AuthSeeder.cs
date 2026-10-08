@@ -23,11 +23,22 @@ public class AuthSeeder : IAuthSeeder
     /// <see cref="EnsureTenantRolesAsync"/> when the platform admin provisions a tenant.
     /// The schema is owned by EF migrations; this never calls EnsureCreated.
     /// </summary>
+    /// <summary>
+    /// Least-privilege keys the Admin role does NOT receive by default (review 3). Both Admin grants — the boot backfill's
+    /// <c>NOT IN</c> literal and <see cref="EnsureTenantRolesAsync"/>'s <c>is not</c> filter — list exactly these
+    /// (AdminWithheldPermissionTests pins it). HR Director and HR Manager still get them through their prefix bundles.
+    /// <para>employees.access.issue / employees.access.reset are deliberately NOT withheld: an Admin must be able to give
+    /// welcome codes and reset an employee's sign-in (employee-access contract §4, Amendment 3 F1).</para>
+    /// </summary>
+    public static readonly IReadOnlyList<string> AdminWithheldPermissions = ["attendance.evidence.view"];
+
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
         await EnsurePermissions(cancellationToken);
 
-        // Backfill EVERY tenant's Admin role with all permissions in a SINGLE set-based statement.
+        // Backfill EVERY tenant's Admin role with all permissions — except AdminWithheldPermissions, the least-privilege
+        // data-access keys Admin does not hold by default (review 3: opening an employee's stored selfie) — in a SINGLE
+        // set-based statement. The NOT IN literal must list exactly AdminWithheldPermissions (AdminWithheldPermissionTests).
         // The previous implementation looped per-tenant-then-per-role with one query each — on a
         // database with many tenants that became thousands of sequential round-trips and made startup
         // take many minutes, so the app never finished booting (health check timed out → the whole
@@ -41,12 +52,18 @@ public class AuthSeeder : IAuthSeeder
                   FROM roles r
                   CROSS JOIN permissions p
                   WHERE r.name = 'Admin'
+                    AND p.permission_key NOT IN ('attendance.evidence.view')
                     AND NOT EXISTS (
                         SELECT 1 FROM role_permissions rp
                         WHERE rp.role_id = r.id AND rp.permission_id = p.id)
                   ON CONFLICT DO NOTHING;", cancellationToken);
         }
         catch (Exception ex) { Console.WriteLine($"[Seed] Admin permission backfill skipped: {ex.Message}"); }
+
+        // employees.access.issue / .reset in EXISTING tenants (built-in HR Manager and HR Officer, and every role holding
+        // security.manage so PrivilegeCeiling keeps its reach) are granted ONCE by migration 20261008000700
+        // (AddEmployeeWelcomeCodes.GrantAccessKeysSql), deliberately not here: a boot backfill re-runs on every deploy and
+        // would silently re-grant a key an Admin had removed from a built-in role.
 
         // PRIVILEGE-ESCALATION-BY-RESTART (removed). This block used to run, tenant-wide on every
         // boot:
@@ -128,13 +145,18 @@ public class AuthSeeder : IAuthSeeder
         var permissions = await EnsurePermissions(cancellationToken);
         var Ps = (string[] keys) => permissions.Where(x => keys.Contains(x.Key)).ToList();
 
-        // Level 1 — Admin: all permissions
-        var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access", permissions, 1, false, cancellationToken);
+        // Level 1 — Admin: all permissions except AdminWithheldPermissions (review 3: an administrator administers access,
+        // and does not by default open employees' face images; the tenant can still grant the key to anyone, Admin users
+        // included, and an Admin can grant it: PrivilegeCeiling treats withheld keys as within an Admin's reach).
+        var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access",
+            permissions.Where(x => x.Key is not "attendance.evidence.view").ToList(), 1, false, cancellationToken);
 
         // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
         // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
+        // employees.access.* (welcome codes) is deliberately NOT HR Director's: issue = Admin, HR Manager, HR Officer;
+        // reset = Admin, HR Manager (employee-access contract, Amendment 3 F1).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
-            x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
+            (x.Key.StartsWith("employees.") && !x.Key.StartsWith("employees.access.")) || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
@@ -183,6 +205,8 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "employees.write", "employees.documents", "employees.templates",
             // employees.bulk_import reconciles HR Officer's existing role-name reach to POST /employees/import(-preview).
             "employees.bulk_import",
+            // Gives employees their welcome code. NOT employees.access.reset: resetting an active login is HR Manager/Admin.
+            "employees.access.issue",
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
             // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
             // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
@@ -309,6 +333,8 @@ public class AuthSeeder : IAuthSeeder
             ("employees.documents", "Employees", "Upload and download employee documents"),
             ("employees.templates", "Employees", "Generate localized employee document templates"),
             ("employees.bulk_import", "Employees", "Bulk import employee records"),
+            ("employees.access.issue", "Employees", "Give employees their KynexOne welcome code (sign-in slips)"),
+            ("employees.access.reset", "Employees", "Reset the sign-in of an employee who already uses KynexOne"),
             // Profile
             ("profile.read", "Profile", "Read own profile"),
             ("profile.write", "Profile", "Update own profile"),
@@ -324,6 +350,9 @@ public class AuthSeeder : IAuthSeeder
             ("attendance.kiosk", "Attendance", "Use kiosk-only attendance capture"),
             ("attendance.bulk_import", "Attendance", "Bulk import attendance data"),
             ("attendance.lock", "Attendance", "Lock/unlock attendance periods"),
+            // Selfie attendance v2: HR opens the stored selfie behind a punch (audited, MFA). HR Director and HR Manager
+            // get it through their attendance.* grant; the tenant's HR decides who else may.
+            ("attendance.evidence.view", "Attendance", "View the stored selfie behind a punch (each view is audited)"),
             // Leave
             ("leave.read", "Leave", "Read leave requests and balances"),
             ("leave.write", "Leave", "Submit and manage leave requests"),

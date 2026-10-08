@@ -82,26 +82,49 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
             .Select(e => e.Id)
             .ToListAsync(ct);
         var days = p.ToDate.DayNumber - p.FromDate.DayNumber + 1;
-        await ctx.SetTotalAsync(employeeIds.Count,
-            $"{employeeIds.Count} employee(s) × {days} day(s), {p.FromDate:yyyy-MM-dd}..{p.ToDate:yyyy-MM-dd}");
-
+        // One item per employee × calendar month (clipped to the range): an item's transaction holds that employee's
+        // daily-record locks until it commits, so a month (≤ 31 locks) — not the whole range (up to 367) — bounds both how
+        // long a punch can wait and the lock-table use. Items are idempotent (re-processing a day recomputes it) and
+        // resumable (each is checkpointed by its key).
+        var months = MonthChunks(p.FromDate, p.ToDate);
         var context = new RequestContext(p.IpAddress, p.UserAgent, p.RequestedByUserId, ctx.TenantId);
-        var remaining = employeeIds.Where(id => !ctx.IsItemCompleted(ItemKey(id))).ToList();
+        // A job checkpointed before items were monthly (key "employee:{id}") already processed that employee's whole range:
+        // one completed (and counted) item each. Everyone else has one item per month, done or not.
+        var legacyDone = employeeIds.Count(id => ctx.IsItemCompleted(LegacyItemKey(id)));
+        var monthlyItems = employeeIds
+            .Where(id => !ctx.IsItemCompleted(LegacyItemKey(id)))
+            .SelectMany(id => months.Select(m => (EmployeeId: id, Month: m)))
+            .ToList();
+        var remaining = monthlyItems.Where(x => !ctx.IsItemCompleted(ItemKey(x.EmployeeId, x.Month.From))).ToList();
+        // The total matches what the progress counter can reach: the old per-employee items already counted, plus every
+        // monthly item (done or remaining), so a resumed job still ends at 100%.
+        await ctx.SetTotalAsync(legacyDone + monthlyItems.Count,
+            $"{employeeIds.Count} employee(s) × {months.Count} month(s) ({days} day(s)), {p.FromDate:yyyy-MM-dd}..{p.ToDate:yyyy-MM-dd}");
         IReadOnlyList<AttendancePolicy> policies = remaining.Count > 0
             ? await _attendance.EnsureActivePoliciesAsync(ctx.TenantId, ct)
             : Array.Empty<AttendancePolicy>();
 
-        foreach (var employeeId in remaining)
+        foreach (var (employeeId, month) in remaining)
         {
             var processedDays = 0;
-            await ctx.RunItemAsync(ItemKey(employeeId), async itemCt =>
+            await ctx.RunItemAsync(ItemKey(employeeId, month.From), async itemCt =>
             {
                 processedDays = 0;
                 var employee = await Employees(ctx, p, companyIds)
                     .FirstOrDefaultAsync(e => e.Id == employeeId, itemCt);
                 if (employee is null) return; // deleted or moved out of scope since the job started
                 processedDays = await _attendance.ProcessEmployeeRangeAsync(
-                    ctx.TenantId, employee, policies, p.FromDate, p.ToDate, context, itemCt);
+                    ctx.TenantId, employee, policies, month.From, month.To, context, itemCt);
+                // Audited with the chunk, in the item's own transaction: a run that stops part-way is recorded up to there.
+                ctx.Db.AttendanceAuditLogs.Add(new AttendanceAuditLog
+                {
+                    TenantId = ctx.TenantId,
+                    UserId = p.RequestedByUserId,
+                    Action = AttendanceService.ProcessedChunkAction,
+                    EntityName = "Employee",
+                    EntityId = employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    MetadataJson = JsonSerializer.Serialize(new { employeeId, from = month.From, to = month.To, days = processedDays, source = "background-job", jobId = ctx.JobId }),
+                });
             }, () => new { days = processedDays });
         }
 
@@ -130,7 +153,25 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
         });
     }
 
-    public static string ItemKey(int employeeId) => $"employee:{employeeId}";
+    /// <summary>The checkpoint key of one employee × calendar month item.</summary>
+    public static string ItemKey(int employeeId, DateOnly monthStart) => $"employee:{employeeId}:{monthStart:yyyy-MM}";
+
+    /// <summary>The per-employee key used before items were monthly; honoured when resuming such a job.</summary>
+    public static string LegacyItemKey(int employeeId) => $"employee:{employeeId}";
+
+    /// <summary>The range split at calendar-month boundaries: [from, end of month], …, [start of month, to].</summary>
+    public static IReadOnlyList<(DateOnly From, DateOnly To)> MonthChunks(DateOnly from, DateOnly to)
+    {
+        var chunks = new List<(DateOnly, DateOnly)>();
+        for (var start = from; start <= to;)
+        {
+            var monthEnd = new DateOnly(start.Year, start.Month, 1).AddMonths(1).AddDays(-1);
+            var end = monthEnd < to ? monthEnd : to;
+            chunks.Add((start, end));
+            start = end.AddDays(1);
+        }
+        return chunks;
+    }
 
     private static IQueryable<Employee> Employees(JobExecutionContext ctx, AttendanceProcessingJobPayload p, List<Guid> companyIds)
     {

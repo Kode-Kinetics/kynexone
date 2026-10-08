@@ -12,6 +12,7 @@ import dynamic from 'next/dynamic';
 const AssistantDrawer = dynamic(() => import('./AssistantDrawer').then((m) => m.AssistantDrawer), { ssr: false });
 import { MobileBottomNav } from './MobileBottomNav';
 import { MfaEnrollmentPrompt } from '../components/MfaEnrollmentPrompt';
+import { ResetCodeNotice } from '../components/ResetCodeNotice';
 import { authApi } from '../api/auth';
 import { employeesApi } from '../api/employees';
 import { reportsApi } from '../api/reports';
@@ -19,7 +20,7 @@ import { usersApi } from '../api/identity';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { LocaleProvider } from '../contexts/LocaleContext';
-import { navigationItems } from '../routes/navigation';
+import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
 
 const HISTORY_KEY = 'kynexone-search-history';
@@ -55,6 +56,9 @@ interface PaletteItem {
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
   const pathname = usePathname();
+  // <main> remounts (and fades in) on navigation. The Self-Service workspace's tabs are one screen:
+  // keyed as one, its tab row stays put and keeps keyboard focus when a tab is chosen.
+  const mainKey = pathname === '/ess' || pathname?.startsWith('/ess/') ? '/ess' : pathname;
   const { hasPermission, beginMfaEnrollment } = useAuth();
   const startMfaEnrollment = useCallback(async () => {
     await beginMfaEnrollment();
@@ -77,7 +81,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   const commandItems = useMemo(() => {
-    const base = navigationItems
+    const base = commandNavigationItems
       .filter((item): item is typeof item & { path: string } => Boolean(item.path))
       .map((item) => ({
         label: item.label,
@@ -100,7 +104,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const visibleModules = useMemo(
     () => commandItems.filter((item) => {
       if (item.path === '/ai-assistant') return mayUseAssistant;
-      const navMatch = navigationItems.find((nav) => nav.path === item.path);
+      const navMatch = commandNavigationItems.find((nav) => nav.path === item.path);
       // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
       if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
@@ -385,8 +389,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             dismissKey="kynexone-mfa-prompt-later"
             className="mx-4 mt-4 sm:mx-6 lg:mx-8"
           />
+          <ResetCodeNotice className="mx-4 mt-4 sm:mx-6 lg:mx-8" />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={pathname} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
+          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
         </div>
       </div>
 

@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, FileUp, History, Lock, Pencil, Plus, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
 import { describeApiError } from '../lib/apiError';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
@@ -19,6 +20,13 @@ import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
+import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
+import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
+import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
+import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
+import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
+import { Ltr } from '../components/employeeAccess/fill';
 
 const employeesImportExport = {
   export: async () => {
@@ -41,6 +49,7 @@ import { Avatar } from '../components/Avatar';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
+import { EMPLOYEE_CREATE_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import {
@@ -244,10 +253,14 @@ interface EmployeeUsageData {
 }
 
 export function EmployeesPage() {
+  const wizardFormat = useFormat();
   const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
+  // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
+  // "Access Denied" toast) for a background read they never asked for. The server still enforces the limit.
+  const canReadUsage = hasPermission('security.manage');
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -264,6 +277,10 @@ export function EmployeesPage() {
   const [gapTypeFilter, setGapTypeFilter] = useState('');
   const [importBatchFilter, setImportBatchFilter] = useState('');
   const [view, setView] = useState<'current' | 'ex'>('current');
+  // Self-service (sign-in access) filter chip: one state, or everyone.
+  const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
+  const [accessSummary, setAccessSummary] = useState<EmployeeAccessSummary | null>(null);
+  const [everyoneCount, setEveryoneCount] = useState<number | null>(null);
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
   // `selectedIds` = page-level picks (persist across pages while the filter is unchanged).
   // `selectAllMatching` = act on the ENTIRE server-resolved filtered set across all pages, not just
@@ -284,6 +301,9 @@ export function EmployeesPage() {
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
+  const [formStep, setFormStep] = useState(0);
+  const createFormRef = useRef<HTMLFormElement>(null);
+  const createErrorRef = useRef<HTMLParagraphElement>(null);
   const [form, setForm] = useState<EmployeeCreateRequest>(emptyEmployee());
   const [formOriginal, setFormOriginal] = useState<EmployeeCreateRequest>(emptyEmployee());
   const [formError, setFormError] = useState('');
@@ -351,6 +371,25 @@ export function EmployeesPage() {
   // "Merge" from the create warning abandons the draft and opens the existing record for editing —
   // this holds the id until its detail has loaded, then an effect opens the edit modal.
   const [autoEditId, setAutoEditId] = useState<number | null>(null);
+  // ── Self-service (employee sign-in access) ──
+  const canIssueAccess = hasPermission('employees.access.issue');
+  const canResetAccess = hasPermission('employees.access.reset');
+  const [accessRefresh, setAccessRefresh] = useState(0);
+  const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
+  // Code given → bulk print confirms first (their old codes stop working).
+  const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[]; delivery: 'print' | 'email' } | null>(null);
+  // Whether the company can email codes: read from one selected employee's access status (null = not checked yet).
+  const [companyEmails, setCompanyEmails] = useState<boolean | null>(null);
+  const [bulkPrintBusy, setBulkPrintBusy] = useState(false);
+  // The single "Add work email" box from the profile card.
+  const [workEmailFor, setWorkEmailFor] = useState<{ id: number; name: string; englishName: string; arabicName?: string; companyId?: string } | null>(null);
+  const [singleWorkEmail, setSingleWorkEmail] = useState('');
+  const [singleWorkEmailBusy, setSingleWorkEmailBusy] = useState(false);
+  const [singleWorkEmailError, setSingleWorkEmailError] = useState('');
+  // Add Employee → "{name} has been added." with the one next step.
+  // Activate employee → "{name} is now active." with the same one next step.
+  const [activatedPrompt, setActivatedPrompt] = useState<{ id: number; name: string; access: EmployeeAccessDto } | null>(null);
+  const [createdEmployee, setCreatedEmployee] = useState<{ id: number; name: string; access: EmployeeAccessDto | null } | null>(null);
 
   const surfaceAdvisoryWarning = (payload: unknown) => {
     const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
@@ -388,9 +427,10 @@ export function EmployeesPage() {
   // import handlers call a `load` captured before the user changed a filter; that call must refresh
   // what is on screen now, not re-run the old query and win the race with it.
   const employeeLoadGate = useMemo(() => createLatestRequestGate(), []);
+  const seenRowsRef = useRef(new Map<number, EmployeeListItem>());
   const employeeQuery = useMemo(
-    () => ({ page, search, status, readinessFilter, gapTypeFilter, importBatchFilter }),
-    [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter],
+    () => ({ page, search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter }),
+    [page, search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter],
   );
   const employeeQueryRef = useRef(employeeQuery);
   employeeQueryRef.current = employeeQuery;
@@ -410,10 +450,17 @@ export function EmployeesPage() {
       readiness: query.readinessFilter || undefined,
       gapType: query.gapTypeFilter || undefined,
       importBatchId: query.importBatchFilter || undefined,
+      access: query.accessFilter || undefined,
     }), {
       onResult: (res) => {
         setEmployees(res.items);
+        // The chip counts follow the list (an issue or a saved work email changes both).
+        void employeeAccessApi.summary().then(setAccessSummary).catch(() => setAccessSummary(null));
+        // "Everyone" is the default list's total (leavers excluded), not the sum of the chips.
+        void employeesApi.list({ page: 1, pageSize: 1 }).then((r) => setEveryoneCount(r.total)).catch(() => setEveryoneCount(null));
         setTotal(res.total);
+        // Remembered so a selection that spans pages still knows each person's self-service state.
+        for (const item of res.items) seenRowsRef.current.set(item.id, item);
       },
       onError: () => setError('Could not load employees from the API.'),
       onSettled: () => setLoading(false),
@@ -444,6 +491,7 @@ export function EmployeesPage() {
   useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
   useEffect(() => {
+    if (!canReadUsage) return;
     client.get<EmployeeUsageData>('/api/tenant-admin/usage')
       .then(r => setUsage(r.data))
       .catch((e: unknown) => {
@@ -452,12 +500,12 @@ export function EmployeesPage() {
           setSubscriptionBanner('Your subscription is inactive or expired. Please contact support.');
         }
       });
-  }, []);
-  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter]);
+  }, [canReadUsage]);
+  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter]);
   useEffect(() => {
     setSelectedId(null);
     setDetail(null);
-  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view]);
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view]);
 
   // ── Bulk selection: derived state + handlers ────────────────────────────────────────────────
   const clearSelection = useCallback(() => {
@@ -469,14 +517,16 @@ export function EmployeesPage() {
   // A stale "select all matching" flag (or a leftover page pick) must never carry across a FILTER
   // change or a tab switch — otherwise a bulk action could resolve against a different set than the
   // operator sees. Page navigation deliberately does NOT clear (cross-page picking is allowed).
-  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, view, clearSelection]);
+  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
 
   const pageIds = useMemo(() => employees.map((e) => e.id), [employees]);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
   const somePageSelected = pageIds.some((id) => selectedIds.has(id));
   const selectionCount = selectAllMatching ? total : selectedIds.size;
   const hasSelection = selectionCount > 0;
-  const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size;
+  // Not under a Self-service filter: the bulk API's "all matching" filter has no access state, so it
+  // would resolve a different set than the one on screen.
+  const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size && !accessFilter;
 
   const canBulkActivate = hasPermission('employees.approve');
   const canBulkDeactivate = hasPermission('employees.write');
@@ -567,6 +617,113 @@ export function EmployeesPage() {
     setBulkReason('');
     setBulkTargetStatus('Suspended');
     setBulkConfirm(action);
+  };
+
+  const welcome = useWelcomeCodes(useCallback(() => {
+    setAccessRefresh((n) => n + 1);
+    void load();
+  }, [load]));
+
+  /** Every employee matching the current filter, page by page (for "all matching" selections). */
+  const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
+    const out: EmployeeListItem[] = [];
+    for (let p = 1; p <= 40; p++) {
+      const res = await employeesApi.list({
+        search: search || undefined, status: status || undefined, readiness: readinessFilter || undefined,
+        gapType: gapTypeFilter || undefined, importBatchId: importBatchFilter || undefined,
+        access: accessFilter || undefined, page: p, pageSize: 100,
+      });
+      out.push(...res.items);
+      if (out.length >= res.total || res.items.length === 0) break;
+    }
+    return out;
+  };
+
+  /**
+   * "Print sign-in slips (N)": people with no access yet or an unused code get a slip. Anyone already
+   * using KynexOne is skipped here (Reset sign-in is one person at a time, from their profile), and
+   * the rest the server explains. A selection with unused codes confirms first.
+   */
+  const checkEmailDelivery = useCallback(
+    (employeeId: number) => employeeAccessApi.get(employeeId).then((a) => !!a.emailDelivery),
+    [],
+  );
+
+  // The first time anything is selected, find out whether "Email sign-in codes" can be offered.
+  const firstSelectedId = selectAllMatching ? employees[0]?.id : selectedIds.values().next().value;
+  useEffect(() => {
+    if (!canIssueAccess || companyEmails !== null || firstSelectedId === undefined) return;
+    let cancelled = false;
+    checkEmailDelivery(firstSelectedId)
+      .then((v) => { if (!cancelled) setCompanyEmails(v); })
+      .catch(() => { if (!cancelled) setCompanyEmails(false); });
+    return () => { cancelled = true; };
+  }, [canIssueAccess, companyEmails, firstSelectedId, checkEmailDelivery]);
+
+  /**
+   * "Print sign-in slips (N)" always prints (delivery "print"); "Email sign-in codes (N)" sends no
+   * delivery, so the server emails where it may and the rest still open the print view.
+   */
+  const startBulkPrint = async (delivery: 'print' | 'email' = 'print') => {
+    setBulkPrintBusy(true);
+    setError('');
+    try {
+      const rows = selectAllMatching
+        ? await resolveAllMatching()
+        : [...selectedIds].map((id) => seenRowsRef.current.get(id) ?? ({ id, fullName: '' } as EmployeeListItem));
+      // Every selected id goes to the server, which says per person why it skipped anyone (yourself,
+      // an admin, someone already using KynexOne, no work email…). The screen does not guess those reasons.
+      const names: Record<number, string> = {};
+      const ids: number[] = [];
+      const preSkipped: SkippedWelcomeCode[] = [];
+      let replacesCode = false;
+      for (const row of rows) {
+        if (row.fullName) names[row.id] = row.fullName;
+        ids.push(row.id);
+        if (row.accessState && REPLACES_A_CODE.has(row.accessState)) replacesCode = true;
+      }
+      if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped, delivery }); return; }
+      await welcome.issue(ids, { names, preSkipped, delivery, companyEmails: !!companyEmails });
+      clearSelection();
+    } catch (e: unknown) {
+      setError(describeApiError(e, t));
+    } finally {
+      setBulkPrintBusy(false);
+    }
+  };
+
+  const confirmBulkPrint = async () => {
+    if (!bulkPrintConfirm) return;
+    const { ids, names, preSkipped, delivery } = bulkPrintConfirm;
+    setBulkPrintConfirm(null);
+    await welcome.issue(ids, { names, preSkipped, delivery, companyEmails: !!companyEmails });
+    clearSelection();
+  };
+
+  const saveSingleWorkEmail = async () => {
+    if (!workEmailFor || !singleWorkEmail.trim()) return;
+    const singleDomain = workEmailDomainProblem(singleWorkEmail, companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain);
+    if (singleDomain) { setSingleWorkEmailError(t('Work email must end in @{domain}.', { domain: singleDomain })); return; }
+    const localProblem = workEmailProblemKey(workEmailLocalProblem(singleWorkEmail));
+    if (localProblem) { setSingleWorkEmailError(t(localProblem)); return; }
+    setSingleWorkEmailBusy(true);
+    setSingleWorkEmailError('');
+    try {
+      await employeesApi.update(workEmailFor.id, new Date().toISOString().slice(0, 10), { workEmail: singleWorkEmail.trim() });
+      setWorkEmailFor(null);
+      setAccessRefresh((n) => n + 1);
+      if (selectedId) await openDetail(selectedId, true);
+      await load();
+    } catch (e: unknown) {
+      const code = workEmailErrorCode(e);
+      const domain = companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain ?? '';
+      const problem = workEmailProblemKey(code);
+      setSingleWorkEmailError(problem ? t(problem)
+        : code === 'work_email_wrong_domain' && domain ? t('Work email must end in @{domain}.', { domain })
+          : describeApiError(e, t));
+    } finally {
+      setSingleWorkEmailBusy(false);
+    }
   };
 
   const runBulkExport = async () => {
@@ -751,6 +908,7 @@ export function EmployeesPage() {
       };
       next.complianceRecords = complianceRecordsForCountry(fieldCatalog, defaultCompany.countryCode);
     }
+    setFormStep(0);
     setForm(next);
     setFormOriginal(next);
     setFormError('');
@@ -810,9 +968,100 @@ export function EmployeesPage() {
       return { ...current, complianceRecords };
     });
 
+  // Step checks reuse the create rules. Activation-only requirements remain advisory.
+  const validateCreateStep = (step: number) => {
+    let message = '';
+    if (step === 0 && !form.englishName.trim()) message = t('Enter the employee’s English full name to continue.');
+    if (step === 1) {
+      const domainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
+      const emailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
+      if (domainProblem) message = t('Work email must end in @{domain}.', { domain: domainProblem });
+      else if (emailProblem) message = t(emailProblem);
+    }
+    if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
+    if (step === 1 && selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
+      message = 'Selected designation is restricted to a different grade.';
+    }
+    if (step === 3 && selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
+      message = `Salary package must be within ${selectedGrade.currency} ${wizardFormat.number(selectedGrade.minSalary)} - ${wizardFormat.number(selectedGrade.maxSalary)} for ${selectedGrade.code}.`;
+    }
+    const invalid = createFormRef.current?.querySelector<HTMLInputElement>(`[data-employee-step="${step}"] input:invalid`);
+    if (!message && invalid) message = `${invalid.closest('label')?.querySelector('span')?.textContent?.trim() || 'This field'}: ${invalid.validationMessage}`;
+    if (!message) return true;
+    setFormStep(step);
+    setFormError(message);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (step === 0 && !form.englishName.trim()) document.getElementById('employee-create-name')?.focus();
+      else if (invalid) invalid.focus();
+      else createErrorRef.current?.focus();
+    }));
+    return false;
+  };
+
+  const changeCreateStep = (step: number) => {
+    if (saving) return;
+    setFormError('');
+    setDuplicateWarning([]);
+    setFormStep(step);
+  };
+
+  const nextCreateStep = () => {
+    if (saving || !validateCreateStep(formStep)) return;
+    changeCreateStep(Math.min(formStep + 1, EMPLOYEE_CREATE_STEPS.length - 1));
+  };
+
+  useEffect(() => {
+    if (formError || duplicateWarning.length) {
+      createErrorRef.current?.focus();
+      createFormRef.current?.parentElement?.scrollTo({ top: 0 });
+    }
+  }, [formError, duplicateWarning]);
+
+  const createReviewSections: Array<{ title: string; rows: Array<[string, string | number | undefined | null]> }> = [
+    { title: 'Profile', rows: [
+      ['English full name', form.englishName], ['Arabic full name', form.arabicName],
+      ['Preferred name', form.preferredName], ['Employee code', form.employeeCode || t('Assigned automatically')],
+      ['Manual override', form.manualEmployeeCode ? 'Yes' : 'No'], ['Gender', form.gender],
+      ['Nationality', form.nationality], ['Date of birth', form.dateOfBirth],
+      ['Marital status', form.maritalStatus], ['Personal email', form.personalEmail], ['Mobile number', form.mobileNumber],
+    ] },
+    { title: 'Employment', rows: [
+      ['Company', nameById(companies, form.companyId, 'legalNameEn')], ['Branch', nameById(branches, form.branchId, 'nameEn')],
+      ['Department', nameById(departments, form.departmentId, 'nameEn')], ['Line manager', selectedLineManager?.fullName],
+      ['Designation', nameById(designations, form.designationId, 'titleEn')], ['Grade', selectedGrade?.name],
+      ['Cost center', nameById(costCenters, form.costCenterId, 'name')], ['Job title', form.jobTitle],
+      ['Employment type', form.employmentType], ['Contract type', form.contractType],
+      ['Joining date', form.joiningDate], ['Work location', form.workLocation], ['Work email', form.workEmail],
+    ] },
+    { title: 'Payroll', rows: [
+      ['Bank name', form.payrollProfile?.bankName], ['IBAN', form.payrollProfile?.iban],
+      ['Account number', form.payrollProfile?.accountNumber], ['Bank routing / sort code', form.payrollProfile?.bankRoutingCode],
+      ['MOL ID / National labour number', form.payrollProfile?.molId],
+      ['Salary currency', form.payrollProfile?.salaryCurrency || currencyCode], ['Payment method', form.payrollProfile?.paymentMethod],
+      ['Payroll group', form.payrollProfile?.payrollGroup], ['Salary structure reference', form.payrollProfile?.salaryStructureReference],
+    ] },
+    { title: 'Salary', rows: [
+      ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
+      ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
+      ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
+      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction], ['Salary structure code', form.salaryBreakdown?.salaryStructureCode],
+      ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
+      ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
+      ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
+    ] },
+    { title: 'Identity', rows: (form.complianceRecords ?? []).flatMap((record): Array<[string, string | undefined | null]> => [
+      [record.fieldLabel, record.fieldValue || (record.isRequired ? t('Missing · check readiness after creation') : undefined)],
+      [`${record.fieldLabel} · expiry`, record.expiryDate],
+    ]) },
+  ];
+
   // `acknowledgeDuplicate` = the operator clicked "Create anyway" on the duplicate warning; it skips
   // the advisory pre-check and sends the audited override so the server proceeds past its 409 backstop.
   const saveEmployee = async (acknowledgeDuplicate = false) => {
+    if (saving || formStep !== EMPLOYEE_CREATE_STEPS.length - 1) return;
+    for (let step = 0; step < formStep; step++) {
+      if (!validateCreateStep(step)) return;
+    }
     setError('');
     setFormError('');
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
@@ -827,6 +1076,16 @@ export function EmployeesPage() {
     }
     if (!form.englishName.trim()) {
       setFormError('English full name is required.');
+      return;
+    }
+    const formDomainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
+    if (formDomainProblem) {
+      setFormError(t('Work email must end in @{domain}.', { domain: formDomainProblem }));
+      return;
+    }
+    const workEmailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
+    if (workEmailProblem) {
+      setFormError(t(workEmailProblem));
       return;
     }
     if (selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
@@ -860,11 +1119,12 @@ export function EmployeesPage() {
       const created = await employeesApi.create(payload);
       surfaceAdvisoryWarning(created);
       setDuplicateWarning([]);
-      setFormOpen(false);
       setForm(emptyEmployee());
       setFormOriginal(emptyEmployee());
+      // The form becomes "{name} has been added." with the one next step (print their sign-in slip).
+      const access = await employeeAccessApi.get(created.id).catch(() => null);
+      setCreatedEmployee({ id: created.id, name: created.fullName || created.englishName || payload.englishName, access });
       await load();
-      await openDetail(created.id);
     } catch (e: unknown) {
       // Server-authoritative duplicate backstop: re-surface the match set as the same warning the
       // pre-check shows, so the operator resolves it (never a silent create, never a hard block).
@@ -886,6 +1146,10 @@ export function EmployeesPage() {
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
       if (status === 402) {
         setFormError('Your subscription is inactive or expired. Please contact support.');
+      } else if (workEmailProblemKey(workEmailErrorCode(e))) {
+        setFormError(t(workEmailProblemKey(workEmailErrorCode(e))!));
+      } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {
+        setFormError(t('Work email must end in @{domain}.', { domain: selectedFormCompany.emailDomain }));
       } else if (status === 422 && data?.error === 'employee_limit_reached') {
         setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
@@ -1029,7 +1293,25 @@ export function EmployeesPage() {
     setEditOpen(false);
   };
 
+  /** "Later" (or closing) after a successful add: open the new profile, where the Self-service card waits. */
+  const finishCreated = (thenOpen = true) => {
+    const id = createdEmployee?.id;
+    setCreatedEmployee(null);
+    setFormOpen(false);
+    setFormError('');
+    if (thenOpen && id) void openDetail(id);
+  };
+
+  const issueCreatedCode = async (delivery?: 'email' | 'print') => {
+    if (!createdEmployee) return;
+    const { id, name, access } = createdEmployee;
+    finishCreated();
+    await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
+  };
+
   const closeCreateModal = () => {
+    if (saving) return;
+    if (createdEmployee) { finishCreated(); return; }
     if (formChanged && !confirm('Discard this employee draft?')) return;
     setFormOpen(false);
     setFormError('');
@@ -1040,12 +1322,14 @@ export function EmployeesPage() {
   // "View existing" opens the matched record; "Merge" abandons the draft and opens that record for
   // editing (augment the existing person instead of creating a second). Both discard the draft.
   const viewExistingFromCreate = (employeeId: number) => {
+    if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
     openDetail(employeeId);
   };
   const mergeFromCreate = (employeeId: number) => {
+    if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
@@ -1055,6 +1339,12 @@ export function EmployeesPage() {
 
   const saveEdit = async () => {
     if (!selectedId || editChangedKeys.length === 0) return;
+    if (editChangedKeys.includes('workEmail')) {
+      const editDomain = workEmailDomainProblem(editForm.workEmail, companies.find((c) => c.id === selectedEmployee?.companyId)?.emailDomain);
+      if (editDomain) { setEditNotice(t('Work email must end in @{domain}.', { domain: editDomain })); return; }
+      const editEmailProblem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
+      if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
+    }
     setEditSaving(true);
     setEditNotice('');
     setActionNotice('');
@@ -1094,6 +1384,8 @@ export function EmployeesPage() {
         setEditSaving(false);
         return;
       }
+      const emailProblem = workEmailProblemKey(workEmailErrorCode(e));
+      if (emailProblem) { setEditNotice(t(emailProblem)); return; }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
       const detailMsg = data?.message ?? (data?.errors ? Object.entries(data.errors).map(([f, m]) => `${f}: ${m.join(' ')}`).join(' · ') : '');
       setEditNotice(detailMsg ? `Could not save — ${detailMsg}` : 'Could not save the changes. Please review the values and try again.');
@@ -1172,6 +1464,14 @@ export function EmployeesPage() {
       setActionNotice('Employee activated and is now live.');
       await load();
       loadReadiness(selectedId);
+      // Add → Activate → Print: offer the sign-in slip when the status says it can be given now.
+      if (canIssueAccess) {
+        const access = await employeeAccessApi.get(updated.id).catch(() => null);
+        if (access && access.canIssue && BULK_PRINTABLE_STATES.has(access.state)) {
+          setActivatedPrompt({ id: updated.id, name: updated.fullName, access });
+        }
+        setAccessRefresh((n) => n + 1);
+      }
     } catch (e: unknown) {
       // Readiness gate (422): render the returned blocking[] inline via the same checklist
       // component — single source of truth = server, never a red banner (§8.3).
@@ -1368,8 +1668,8 @@ export function EmployeesPage() {
       {view === 'ex' ? (
         <ExEmployeesTable />
       ) : (
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <section className="space-y-4">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <section className="min-w-0 space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -1391,6 +1691,37 @@ export function EmployeesPage() {
               Refresh
             </button>
           </div>
+
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('Self-service')} data-testid="access-filter">
+            <span className="me-1 text-xs font-bold uppercase text-slate-400">{t('Self-service')}</span>
+            {(['', ...EMPLOYEE_ACCESS_STATES] as Array<'' | EmployeeAccessState>).map((state) => (
+              <button
+                key={state || 'all'}
+                type="button"
+                aria-pressed={accessFilter === state}
+                onClick={() => setAccessFilter(state)}
+                className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
+              >
+                {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
+                {/* Opaque badge colours keep the count at 4.5:1 or better on the active (blue) and inactive chip, light and dark. */}
+                {accessSummary && (state || everyoneCount !== null) && (
+                  <span className={`ms-1.5 rounded-full px-1.5 text-[11px] font-semibold tabular-nums ${accessFilter === state ? 'bg-white text-blue-800' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100'}`} data-testid="access-chip-count">
+                    {state ? accessSummary[state] ?? 0 : everyoneCount}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {accessFilter === 'waiting_for_work_email' && canIssueAccess && (
+            <div className="flex flex-col gap-2 rounded-lg border border-sapphire/30 bg-sapphire/5 px-3 py-2.5 text-sm text-slate-700 dark:border-sapphire/40 dark:bg-sapphire/10 dark:text-slate-200 sm:flex-row sm:items-center sm:justify-between">
+              <span>{t('Paste two columns from Excel: employee number, then work email. You can also upload a CSV file.')}</span>
+              <button type="button" onClick={() => setWorkEmailsOpen(true)} className="btn-primary h-9 shrink-0 px-3 text-sm">
+                <Mail className="h-4 w-4" aria-hidden="true" />
+                {t('Add work emails')}
+              </button>
+            </div>
+          )}
 
           {importFilterActive && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-sapphire/30 bg-sapphire/5 px-3 py-2 text-xs text-slate-600 dark:border-sapphire/40 dark:bg-sapphire/10 dark:text-slate-300">
@@ -1416,6 +1747,16 @@ export function EmployeesPage() {
                 <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 underline">Clear selection</button>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
+                {canIssueAccess && (
+                  <button type="button" onClick={() => void startBulkPrint('print')} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-primary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <Printer className="h-3.5 w-3.5" aria-hidden="true" /> {t('Print sign-in slips ({n})', { n: selectionCount })}
+                  </button>
+                )}
+                {canIssueAccess && companyEmails && (
+                  <button type="button" onClick={() => void startBulkPrint('email')} disabled={bulkBusy || bulkPrintBusy || welcome.busy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
+                    <Mail className="h-3.5 w-3.5" aria-hidden="true" /> {t('Email sign-in codes ({n})', { n: selectionCount })}
+                  </button>
+                )}
                 {canBulkActivate && (
                   <button type="button" onClick={() => handleBulkAction('activate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
                     <UserCheck className="h-3.5 w-3.5" /> Activate
@@ -1470,7 +1811,7 @@ export function EmployeesPage() {
 
           <div className="surface overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] text-sm">
+              <table className="w-full min-w-[960px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     <th className="w-10 px-4 py-3 text-start">
@@ -1484,7 +1825,11 @@ export function EmployeesPage() {
                         aria-label="Select all on this page"
                       />
                     </th>
-                    {['Employee', 'Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
+                    {['Employee'].map((head) => (
+                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
+                    ))}
+                    <th className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{t('Self-service')}</th>
+                    {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
                       <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
                     ))}
                   </tr>
@@ -1492,11 +1837,11 @@ export function EmployeesPage() {
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {loading && <EmptyRow label="Loading live employees..." />}
                   {!loading && !error && employees.length === 0 && (
-                    <tr><td colSpan={7} className="px-4 py-14 text-center">
-                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive) ? 'No employees match this filter.' : 'No employees yet'}</p>
-                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
-                      {(search || status || readinessFilter || importFilterActive) ? (
-                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); clearImportFilter(); }}>Clear filters</button>
+                    <tr><td colSpan={8} className="px-4 py-14 text-center">
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'No employees match this filter.' : 'No employees yet'}</p>
+                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
+                      {(search || status || readinessFilter || importFilterActive || accessFilter) ? (
+                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); setAccessFilter(''); clearImportFilter(); }}>Clear filters</button>
                       ) : canWriteEmployees ? (
                         <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
                       ) : null}
@@ -1534,6 +1879,11 @@ export function EmployeesPage() {
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3" data-testid="access-pill">
+                        {employee.accessState && ACCESS_STATE_COPY[employee.accessState]
+                          ? <StatusChip label={t(ACCESS_STATE_COPY[employee.accessState].label)} tone={ACCESS_STATE_COPY[employee.accessState].tone} dot />
+                          : <span className="text-xs text-slate-400">-</span>}
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
@@ -1631,6 +1981,23 @@ export function EmployeesPage() {
                     />
                   </div>
                 ) : null}
+
+                <EmployeeAccessCard
+                  key={selectedEmployee.id}
+                  employeeId={selectedEmployee.id}
+                  employeeName={selectedEmployee.fullName}
+                  refreshKey={accessRefresh}
+                  canIssue={canIssueAccess}
+                  canReset={canResetAccess}
+                  isSelf={user?.employeeId != null && user.employeeId === selectedEmployee.id}
+                  issuing={welcome.busy}
+                  onIssue={welcome.issue}
+                  onAddWorkEmail={() => {
+                    setSingleWorkEmail('');
+                    setSingleWorkEmailError('');
+                    setWorkEmailFor({ id: selectedEmployee.id, name: selectedEmployee.fullName, englishName: selectedEmployee.englishName ?? selectedEmployee.fullName, arabicName: selectedEmployee.arabicName, companyId: selectedEmployee.companyId });
+                  }}
+                />
 
                 {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
                     operator confirms it is a distinct person (clears the flag, audited) or merges it
@@ -1939,27 +2306,77 @@ export function EmployeesPage() {
         </div>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size="xl" onClose={closeCreateModal} footer={
+      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
+        headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={saving} />}
+        footer={createdEmployee ? (
         <>
-          <button type="button" onClick={closeCreateModal} className="btn-secondary">Cancel</button>
-          {/* Disabled ONLY on the same predicate the warning above renders, and never silently: the
-              tooltip repeats that warning's sentence and aria-describedby points a screen reader at
-              the warning itself, so the reason is never left to be guessed. */}
-          <button
-            type="button"
-            onClick={() => saveEmployee()}
-            disabled={saving || formCompanyMissingCountry}
-            title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
-            aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
-            className="btn-primary disabled:opacity-60"
-          >
-            {saving ? 'Saving...' : 'Create Employee'}
-          </button>
+          <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
+          {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue && !skipReasonKey(createdEmployee.access.reasonCode))) && (
+            createdEmployee.access?.emailDelivery ? (
+              <>
+                <button type="button" onClick={() => void issueCreatedCode('print')} disabled={welcome.busy} className="btn-secondary disabled:opacity-60">
+                  <Printer className="h-4 w-4" aria-hidden="true" />
+                  {t('Print sign-in slip')}
+                </button>
+                <button type="button" onClick={() => void issueCreatedCode('email')} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+                  <Mail className="h-4 w-4" aria-hidden="true" />
+                  {t('Email sign-in code')}
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={() => void issueCreatedCode()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+                <Printer className="h-4 w-4" aria-hidden="true" />
+                {t('Print sign-in slip')}
+              </button>
+            )
+          )}
         </>
-      }>
-        <div className="space-y-3">
+      ) : (
+          <div className="flex w-full items-center justify-between gap-3">
+            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary disabled:opacity-60">Cancel</button>
+            <div className="flex items-center gap-2">
+              {formStep > 0 && <button type="button" onClick={() => changeCreateStep(formStep - 1)} disabled={saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
+              {formStep < EMPLOYEE_CREATE_STEPS.length - 1 ? (
+                <button type="button" onClick={nextCreateStep} className="btn-primary">
+                  {t('Next: {step}', { step: t(EMPLOYEE_CREATE_STEPS[formStep + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => saveEmployee()}
+                  disabled={saving || formCompanyMissingCountry}
+                  title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
+                  aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
+                  className="btn-primary disabled:opacity-60"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
+                  {saving ? 'Creating…' : 'Create Employee'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      >
+        {createdEmployee ? (
+          <div className="space-y-2 py-2 text-sm text-slate-700 dark:text-slate-200" data-testid="employee-added">
+            <p className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
+              {t('{name} has been added.', { name: createdEmployee.name })}
+            </p>
+            {createdEmployee.access?.state === 'waiting_for_work_email' && <p>{t('Add a work email so {name} can sign in.', { name: createdEmployee.name })}</p>}
+            {createdEmployee.access?.state === 'blocked' && <p>{t('This needs a system admin first.')}</p>}
+            {createdEmployee.access?.reasonCode && skipReasonKey(createdEmployee.access.reasonCode) && (
+              <p data-testid="employee-added-reason">{t(skipReasonKey(createdEmployee.access.reasonCode)!, { name: createdEmployee.name })}</p>
+            )}
+          </div>
+        ) : (
+        <form ref={createFormRef} noValidate aria-busy={saving} className="space-y-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (formStep < EMPLOYEE_CREATE_STEPS.length - 1) nextCreateStep();
+          else void saveEmployee();
+        }}>
           {formError && (
-            <p className="rounded-xl bg-red-50 px-3 py-2.5 text-sm text-red-600 ring-1 ring-red-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-red-500/10 dark:text-red-300 dark:ring-red-500/20">{formError}</p>
+            <p ref={createErrorRef} tabIndex={-1} role="alert" className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{formError}</p>
           )}
 
           {/* HOME JURISDICTION BLOCK — exception-first, at the top of the form rather than buried in the
@@ -2017,8 +2434,8 @@ export function EmployeesPage() {
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
-                          <button type="button" onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
-                          <button type="button" onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
+                          <button type="button" disabled={saving} onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
+                          <button type="button" disabled={saving} onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
                         </div>
                       </div>
                     ) : (
@@ -2028,7 +2445,7 @@ export function EmployeesPage() {
                 ))}
               </ul>
               <div className="mt-2.5 flex items-center justify-end gap-3">
-                <button type="button" onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
+                <button type="button" disabled={saving} onClick={() => setDuplicateWarning([])} className="text-xs font-semibold text-slate-500 underline">Keep editing</button>
                 {/* Same submit, so the same country block applies — "Create anyway" overrides the
                     duplicate warning, never the missing-country refusal the server would return. */}
                 <button
@@ -2044,8 +2461,8 @@ export function EmployeesPage() {
               </div>
             </div>
           )}
-          <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-          <Section title="Master Profile" wide>
+          <EmployeeCreatePanel step={0} activeStep={formStep}>
+          <Section title="Personal details">
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2053,7 +2470,7 @@ export function EmployeesPage() {
               Manual override
             </label>
             </div>
-            <Input label="English full name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
+            <Input label="English full name" inputId="employee-create-name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
             <Input label="Arabic full name" value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} rtl action={<TransliterateButton source={form.englishName} onSuggest={(s) => setField('arabicName', s)} />} />
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
             <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
@@ -2062,22 +2479,12 @@ export function EmployeesPage() {
             <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
-            <WorkEmailField
-              label="Work email"
-              value={form.workEmail ?? ''}
-              onChange={(v) => setField('workEmail', v)}
-              englishName={form.englishName}
-              arabicName={form.arabicName}
-              companyId={form.companyId}
-              domain={selectedFormCompany?.emailDomain ?? ''}
-              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
-              autoDerive
-              info="Auto-built from the name + the company's email domain. Edit only the part before the @ — the domain is locked to the company. Also links this employee to their self-service (ESS) login."
-              infoKey="employees.work_email"
-            />
+
           </Section>
 
-          <Section title="Employment Details">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={1} activeStep={formStep}>
+          <Section title="Employment details">
             <Lookup
               label="Company"
               value={form.companyId ?? ''}
@@ -2108,6 +2515,7 @@ export function EmployeesPage() {
                 <InfoTip text="Auto-selected from the Department master manager. HR can override when the hierarchy requires an exception." fieldKey="employees.line_manager" />
               </span>
               <select
+                aria-label="Line manager"
                 value={form.reportingManagerEmployeeId ? String(form.reportingManagerEmployeeId) : ''}
                 onChange={(e) => setField('reportingManagerEmployeeId', e.target.value ? Number(e.target.value) : undefined)}
                 className="select mt-1.5 w-full"
@@ -2137,9 +2545,22 @@ export function EmployeesPage() {
             <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
             <Input label="Joining date" value={form.joiningDate ?? ''} onChange={(v) => setField('joiningDate', v)} type="date" info="First working day. Used for probation tracking, leave accrual and end-of-service (EOSB) calculations." infoKey="employees.joining_date" />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
+            <WorkEmailField
+              label={t('Work email')}
+              value={form.workEmail ?? ''}
+              onChange={(v) => setField('workEmail', v)}
+              englishName={form.englishName}
+              arabicName={form.arabicName}
+              companyId={form.companyId}
+              domain={selectedFormCompany?.emailDomain ?? ''}
+              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+              suggest
+            />
           </Section>
 
-          <Section title="Payroll Profile">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={2} activeStep={formStep}>
+          <Section title="Bank & payment details">
             <Input label="Bank name" value={form.payrollProfile?.bankName ?? ''} onChange={(v) => setPayrollField('bankName', v)} />
             <Input label="IBAN" ltr value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
             <Input label="Account number" ltr value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
@@ -2151,7 +2572,9 @@ export function EmployeesPage() {
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
           </Section>
 
-          <Section title="Salary Structure Breakdown">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={3} activeStep={formStep}>
+          <Section title="Salary & allowances">
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
             <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
@@ -2169,7 +2592,10 @@ export function EmployeesPage() {
             </div>
           </Section>
 
-          <Section title="Identity & GCC Compliance">
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={4} activeStep={formStep}>
+          <p className="mb-5 text-sm text-slate-600 dark:text-slate-300">{t('Fields marked * may be needed for activation. Add the details you have; remaining requirements are checked after creation.')}</p>
+          <Section title="Identity & compliance">
             {(form.complianceRecords ?? []).length === 0 && (
               formCompanyMissingCountry ? (
                 // The full explanation is the alert at the top of the form (it is what disables Create
@@ -2200,8 +2626,15 @@ export function EmployeesPage() {
               );
             })}
           </Section>
-          </div>
-        </div>
+          </EmployeeCreatePanel>
+          <EmployeeCreatePanel step={5} activeStep={formStep}>
+            <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
+            <p className="mt-5 text-sm text-slate-600 dark:text-slate-300">{t('Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.')}</p>
+          </EmployeeCreatePanel>
+          {/* A native submit target lets Enter advance the active screen. */}
+          <button type="submit" hidden disabled={saving} tabIndex={-1}>Continue</button>
+        </form>
+        )}
       </Modal>
 
       {/* Bulk deactivate / delete confirmation — captures the required reason (and, for deactivate,
@@ -2252,15 +2685,116 @@ export function EmployeesPage() {
         </div>
       </Modal>
 
+      {/* Self-service: IT's work-email list, one person's work email, the bulk-print confirmation, and the slips. */}
+      <AddWorkEmailsDialog
+        isOpen={workEmailsOpen}
+        onClose={() => setWorkEmailsOpen(false)}
+        onSaved={() => { setAccessRefresh((n) => n + 1); void load(); }}
+        onGiveAccess={(ids, names, delivery, emails) => { void welcome.issue(ids, { names, delivery, companyEmails: emails }); }}
+      />
+
+      <Modal
+        isOpen={workEmailFor !== null}
+        title={t('Add work email')}
+        size="md"
+        onClose={() => setWorkEmailFor(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setWorkEmailFor(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => void saveSingleWorkEmail()} disabled={singleWorkEmailBusy || !singleWorkEmail.trim()} className="btn-primary disabled:opacity-60">
+              {singleWorkEmailBusy ? t('Saving…') : t('Save')}
+            </button>
+          </>
+        }
+      >
+        {workEmailFor && (
+          <div className="space-y-2" data-testid="single-work-email">
+            {singleWorkEmailError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{singleWorkEmailError}</p>}
+            <WorkEmailField
+              label={t('Work email')}
+              value={singleWorkEmail}
+              onChange={setSingleWorkEmail}
+              englishName={workEmailFor.englishName}
+              arabicName={workEmailFor.arabicName}
+              companyId={workEmailFor.companyId}
+              domain={companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain ?? ''}
+              pattern={companies.find((c) => c.id === workEmailFor.companyId)?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+              excludeEmployeeId={workEmailFor.id}
+              suggest
+            />
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={bulkPrintConfirm !== null}
+        title={bulkPrintConfirm?.delivery === 'email' ? t('Email sign-in codes ({n})', { n: bulkPrintConfirm.ids.length }) : t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+        size="sm"
+        onClose={() => setBulkPrintConfirm(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setBulkPrintConfirm(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => void confirmBulkPrint()} disabled={welcome.busy} className="btn-primary disabled:opacity-60">
+              {bulkPrintConfirm?.delivery === 'email' ? t('Email sign-in codes ({n})', { n: bulkPrintConfirm.ids.length }) : t('Print sign-in slips ({n})', { n: bulkPrintConfirm?.ids.length ?? 0 })}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-700 dark:text-slate-200" data-testid="bulk-print-confirm">
+          {t('Some selected employees already have a code. Their old codes will stop working. Continue?')}
+        </p>
+      </Modal>
+
+      <Modal
+        isOpen={activatedPrompt !== null}
+        title={t('Self-service')}
+        size="md"
+        onClose={() => setActivatedPrompt(null)}
+        footer={activatedPrompt && (
+          <>
+            <button type="button" onClick={() => setActivatedPrompt(null)} className="btn-secondary">{t('Later')}</button>
+            {(activatedPrompt.access.emailDelivery ? (['print', 'email'] as const) : (['print'] as const)).map((delivery) => (
+              <button
+                key={delivery}
+                type="button"
+                disabled={welcome.busy}
+                onClick={() => {
+                  const { id, name, access } = activatedPrompt;
+                  setActivatedPrompt(null);
+                  void welcome.issue([id], { names: { [id]: name }, delivery: access.emailDelivery ? delivery : undefined, companyEmails: !!access.emailDelivery });
+                }}
+                className={`${delivery === 'email' || !activatedPrompt.access.emailDelivery ? 'btn-primary' : 'btn-secondary'} disabled:opacity-60`}
+              >
+                {delivery === 'email' ? <Mail className="h-4 w-4" aria-hidden="true" /> : <Printer className="h-4 w-4" aria-hidden="true" />}
+                {delivery === 'email' ? t('Email sign-in code') : t('Print sign-in slip')}
+              </button>
+            ))}
+          </>
+        )}
+      >
+        {activatedPrompt && (
+          <p className="flex items-center gap-2 py-2 text-base font-bold text-slate-900 dark:text-white" data-testid="employee-activated">
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
+            {t('{name} is now active.', { name: activatedPrompt.name })}
+          </p>
+        )}
+      </Modal>
+
+      {welcome.view}
+
       {/* Blocked-assignment popup (server-authoritative ESTABLISHMENT_BUDGET_EXCEEDED 409). */}
       <EstablishmentBlockedModal
         block={establishmentBlock?.block ?? null}
         employeeName={establishmentBlock?.employeeName}
         onClose={() => setEstablishmentBlock(null)}
         onChooseDifferentDepartment={establishmentBlock?.refocusId ? () => {
-          const el = document.getElementById(establishmentBlock.refocusId!);
-          el?.scrollIntoView({ block: 'center' });
-          el?.focus();
+          const refocusId = establishmentBlock.refocusId!;
+          if (formOpen && refocusId === 'employee-form-department') changeCreateStep(1);
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const el = document.getElementById(refocusId);
+            el?.scrollIntoView({ block: 'center' });
+            el?.focus();
+          }));
         } : undefined}
       />
     </div>
@@ -2334,7 +2868,7 @@ function statusTone(status: string): { label: string; tone: 'emerald' | 'blue' |
 }
 
 function EmptyRow({ label }: { label: string }) {
-  return <tr><td colSpan={7} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
+  return <tr><td colSpan={8} className="py-16 text-center text-sm text-slate-400">{label}</td></tr>;
 }
 
 function Section({ title, children, wide = false }: { title: string; children: React.ReactNode; wide?: boolean }) {
@@ -2368,7 +2902,7 @@ function splitEmail(value: string): { local: string; domain: string } {
  */
 function WorkEmailField({
   label, value, onChange, englishName, arabicName, companyId, domain, pattern,
-  autoDerive = false, excludeEmployeeId, originalValue, info, infoKey,
+  suggest = false, excludeEmployeeId, originalValue, info, infoKey,
 }: {
   label: string;
   value: string;
@@ -2378,26 +2912,30 @@ function WorkEmailField({
   companyId?: string;
   domain: string;
   pattern: string;
-  autoDerive?: boolean;
+  /**
+   * Offer the derived address as GHOST text while the field is empty. It is a suggestion only:
+   * nothing is saved unless HR accepts it (Tab, or the "Use" button). A blank field is fine.
+   */
+  suggest?: boolean;
   excludeEmployeeId?: number;
   originalValue?: string;
   info?: string;
   infoKey?: string;
 }) {
+  const { t } = useLocale();
   const cleanDomain = (domain ?? '').trim().toLowerCase();
   const manualMode = cleanDomain === '';
   const { local: localPart } = splitEmail(value);
   const [touched, setTouched] = useState(false);
   const [preview, setPreview] = useState<Pick<DeriveWorkEmailResponse, 'status' | 'unique' | 'suggestion'> | null>(null);
   const [checking, setChecking] = useState(false);
-  // Guards a redundant re-derive after auto-fill writes the value back (which changes `localPart`).
+  // The suggested local-part (ghost text). Shown only while the field is empty; never written on its own.
+  const [ghost, setGhost] = useState('');
+  // Guards a redundant re-derive for the same name/company.
   const autoKeyRef = useRef('');
 
-  // Reset touched whenever the widget is (re)mounted for a fresh record — handled by React key on the
-  // create modal; edit remounts per selected employee. No explicit reset needed here.
-
-  // Keep a touched local-part re-domained to the CURRENT company when the company/domain changes
-  // (multi-company: use the employing company's domain). Untouched values are re-derived below instead.
+  // Keep a typed local-part re-domained to the CURRENT company when the company/domain changes
+  // (multi-company: use the employing company's domain).
   useEffect(() => {
     if (manualMode || !touched) return;
     const parts = splitEmail(value);
@@ -2408,16 +2946,16 @@ function WorkEmailField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanDomain]);
 
-  // Debounced preview: auto-derive (untouched) or uniqueness-check (touched), server-authoritative
-  // with a local fallback. Never blocks; advisory only.
+  // Debounced, server-authoritative with a local fallback, advisory only: a suggestion while the
+  // field is empty, a uniqueness check once something is typed.
   useEffect(() => {
-    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); return; }
-    const wantAutoFill = autoDerive && !touched;
-    if (!wantAutoFill && !localPart.trim()) { setPreview(null); return; }        // touched + cleared → nothing to check
-    if (wantAutoFill && !englishName.trim()) { setPreview(null); return; }        // no name yet → nothing to derive
+    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); setGhost(''); return; }
+    const wantSuggestion = suggest && !localPart.trim();
+    if (!wantSuggestion && !localPart.trim()) { setPreview(null); return; }       // empty, no suggestion wanted
+    if (wantSuggestion && !englishName.trim()) { setPreview(null); setGhost(''); autoKeyRef.current = ''; return; }
     const autoKey = `${englishName}|${arabicName ?? ''}|${companyId ?? ''}|${cleanDomain}|${pattern}`;
-    if (wantAutoFill && autoKey === autoKeyRef.current) return;                   // already derived for this input
-    if (wantAutoFill) autoKeyRef.current = autoKey;
+    if (wantSuggestion && autoKey === autoKeyRef.current) return;                  // already suggested for this input
+    if (wantSuggestion) autoKeyRef.current = autoKey;
 
     let cancelled = false;
     setChecking(true);
@@ -2426,12 +2964,12 @@ function WorkEmailField({
       try {
         res = await employeesApi.deriveWorkEmail({
           englishName, arabicName, companyId,
-          localPart: wantAutoFill ? undefined : localPart,
+          localPart: wantSuggestion ? undefined : localPart,
           excludeEmployeeId,
         });
       } catch {
         // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
-        const local = wantAutoFill ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
+        const local = wantSuggestion ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
         res = {
           domain: cleanDomain, pattern, localPart: local,
           workEmail: assembleWorkEmail(local, cleanDomain),
@@ -2441,27 +2979,35 @@ function WorkEmailField({
       }
       if (cancelled) return;
       setChecking(false);
-      setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
-      if (wantAutoFill) {
-        const next = res.workEmail || assembleWorkEmail(res.suggestion || res.localPart, cleanDomain);
-        if (next && next !== value) onChange(next);
+      if (wantSuggestion) {
+        const suggested = splitEmail(res.suggestedWorkEmail || res.workEmail || '').local || res.suggestion || res.localPart || '';
+        setGhost(suggested);
+        setPreview(res.status === 'manual-arabic-only' ? { status: res.status, unique: true, suggestion: '' } : null);
+      } else {
+        setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
       }
     }, 300);
     return () => { cancelled = true; setChecking(false); clearTimeout(handle); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, touched, autoDerive, manualMode, excludeEmployeeId]);
+  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, suggest, manualMode, excludeEmployeeId]);
 
   const handleLocalChange = (raw: string) => {
     setTouched(true);
-    // Local-part only: drop whitespace and any stray "@" the user might paste.
-    const next = raw.replace(/\s+/g, '').replace(/@.*$/, '');
+    const typed = raw.replace(/\s+/g, '');
+    const at = typed.indexOf('@');
+    // "@" + the company's own domain is just the full address: keep the part before it. Any OTHER domain
+    // is kept exactly as typed and refused below (never quietly turned into @company).
+    if (at >= 0 && typed.slice(at + 1).toLowerCase() !== cleanDomain) { onChange(typed); return; }
+    const next = at >= 0 ? typed.slice(0, at) : typed;
     onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
   };
+  const wrongDomain = !manualMode ? workEmailDomainProblem(value, cleanDomain) : null;
+
+  const showGhost = suggest && !localPart && !!ghost;
+  const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
 
   const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const naturalBase = !manualMode ? deriveWorkEmailLocalPart(englishName, pattern) : '';
-  const wasSuffixed = autoDerive && !touched && !!naturalBase && !!localPart
-    && localPart !== naturalBase && localPart.startsWith(naturalBase);
+  const typedProblem = wrongDomain ? null : workEmailProblemKey(workEmailLocalProblem(value));
   const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
   const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
 
@@ -2477,12 +3023,14 @@ function WorkEmailField({
         <>
           <input
             type="email"
+            aria-label={label}
             value={value}
             onChange={(e) => { setTouched(true); onChange(e.target.value); }}
             placeholder="name@company.com"
             className="input mt-1.5 w-full"
             spellCheck={false}
             autoCapitalize="none"
+            dir="ltr"
           />
           <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
             {companyId
@@ -2495,14 +3043,29 @@ function WorkEmailField({
           <span dir="ltr" className={`mt-1.5 flex flex-wrap items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
             <input
               type="text"
-              value={localPart}
+              value={wrongDomain ? value : localPart}
               onChange={(e) => handleLocalChange(e.target.value)}
-              placeholder="john.smith"
-              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
+              onKeyDown={(e) => {
+                // Tab takes the ghost suggestion (and moves on, as Tab does).
+                if (e.key === 'Tab' && !e.shiftKey && showGhost) acceptGhost();
+              }}
+              placeholder={showGhost ? ghost : undefined}
+              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 placeholder:italic focus:ring-0"
               spellCheck={false}
               autoCapitalize="none"
-              aria-label={`${label} local part`}
+              aria-label={label}
+              data-testid="work-email-local-part"
             />
+            {showGhost && (
+              <button
+                type="button"
+                onClick={(e) => { e.preventDefault(); acceptGhost(); }}
+                className="flex min-h-11 items-center px-2.5 text-xs font-semibold text-sapphire hover:underline"
+                aria-label={t('Use')}
+              >
+                {t('Use')}
+              </button>
+            )}
             <span
               className="flex min-h-11 max-w-full items-center gap-1 bg-slate-100 px-2.5 py-2 text-sm font-medium text-slate-600 dark:bg-white/[0.06] dark:text-slate-400"
               title="Domain is locked to the company. Change it in Setup → Companies."
@@ -2529,19 +3092,15 @@ function WorkEmailField({
             <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
               Couldn&apos;t derive a Latin local-part from the name — type the part before the @ manually.
             </p>
-          ) : wasSuffixed ? (
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Auto-adjusted to keep it unique — {naturalBase}@{cleanDomain} was already taken. Edit if you prefer.
-            </p>
           ) : checking ? (
             <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
-          ) : (
-            <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">
-              Editable name only — the @{cleanDomain} domain is locked to the company.
-            </p>
-          )}
+          ) : null}
         </>
       )}
+
+      {wrongDomain && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t('Work email must end in @{domain}.', { domain: wrongDomain })}</p>}
+      {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
+      {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
 
       {changedFromOriginal && originalValue && (
         <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
@@ -2556,27 +3115,30 @@ function WorkEmailField({
 // routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
 // letter+digit run and strands the country code at the wrong end; `field-ltr` (see
 // src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
-function Input({ label, value, onChange, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+function Input({ label, value, onChange, inputId, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+  const generatedId = useId();
+  const controlId = inputId ?? generatedId;
   return (
-    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
-          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
+          <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
+        <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );
 }
 
 function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
+  const controlId = useId();
   return (
-    <label className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
+      <select id={controlId} value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>

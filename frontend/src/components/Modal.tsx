@@ -10,7 +10,8 @@ interface ModalProps {
   onClose: () => void;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'wizard';
+  headerContent?: React.ReactNode;
 }
 
 const sizeClass = {
@@ -18,9 +19,10 @@ const sizeClass = {
   md: 'max-w-lg',
   lg: 'max-w-2xl',
   xl: 'max-w-6xl',
+  wizard: 'max-w-4xl',
 };
 
-export function Modal({ isOpen, title, onClose, children, footer, size = 'md' }: ModalProps) {
+export function Modal({ isOpen, title, onClose, children, footer, headerContent, size = 'md' }: ModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -48,7 +50,7 @@ export function Modal({ isOpen, title, onClose, children, footer, size = 'md' }:
         dialogRef.current.querySelectorAll<HTMLElement>(
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
         )
-      ).filter((item) => !item.hasAttribute('aria-hidden'));
+      ).filter((item) => !item.hasAttribute('aria-hidden') && !item.closest('[inert]') && item.getClientRects().length > 0);
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -100,6 +102,8 @@ export function Modal({ isOpen, title, onClose, children, footer, size = 'md' }:
             <X className="h-4 w-4" />
           </button>
         </div>
+
+        {headerContent && <div className="shrink-0">{headerContent}</div>}
 
         {/* Body — scrolls within the constrained dialog */}
         <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">{children}</div>

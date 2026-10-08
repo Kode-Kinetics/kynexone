@@ -15,6 +15,7 @@ import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
 import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
+import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
 
 interface AuthState {
@@ -32,7 +33,8 @@ interface AuthState {
   mfaEnrolledNotice: { email: string; tenantId: string } | null;
 
   initialize: () => Promise<void>;
-  login: (username: string, password: string, tenantId: string) => Promise<LoginOutcome>;
+  /** The company ID is optional: without it the server finds the company from the email. */
+  login: (username: string, password: string, tenantId?: string) => Promise<LoginOutcome>;
   completeMfa: (challengeToken: string, totpCode: string, tenantId: string) => Promise<void>;
   refreshMfaStatus: () => Promise<void>;
   dismissMfaPrompt: () => void;
@@ -167,18 +169,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username, password, tenantId) => {
     set({ isLoading: true, error: null });
     try {
-      const workspace = requireWorkspace(tenantId);
+      const requested = normalizeWorkspace(tenantId);
       const email = normalizeEmail(username);
       if (!email) throw new Error('Work email is required.');
-      const outcome = await authApi.login(email, password, workspace);
+      const outcome = await authApi.login(email, password, requested || undefined);
       if (outcome.kind === 'authenticated') {
-        await get().finishLogin(outcome.user, outcome.tokens, workspace);
+        // Signed in by email alone: the session names its company, and the API client needs it.
+        await get().finishLogin(outcome.user, outcome.tokens, requireWorkspace(requested || outcome.user.tenantSlug));
       } else {
         set({ isLoading: false });
       }
       return outcome;
     } catch (error: unknown) {
-      set({ isLoading: false, error: extractAuthError(error) });
+      // The sign-in screen answers these itself (ask for the company ID; or send a welcome code typed
+      // as a password to the welcome screen), so no generic alert is raised for them.
+      set({ isLoading: false, error: handledBySignInScreen(error, password) ? null : extractAuthError(error) });
       throw error;
     }
   },
@@ -187,9 +192,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // Touching the shared isLoading/error here would raise the sign-in screen's alert
   // underneath the code screen for every wrong code.
   completeMfa: async (challengeToken, totpCode, tenantId) => {
-    const workspace = requireWorkspace(tenantId);
-    const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, workspace);
-    await get().finishLogin(session.user, session.tokens, workspace);
+    const requested = normalizeWorkspace(tenantId);
+    const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, requested);
+    await get().finishLogin(session.user, session.tokens, requireWorkspace(requested || session.user.tenantSlug));
   },
 
   refreshMfaStatus: async () => {
@@ -285,6 +290,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return hasEffectivePermission(user, `${module}.*`);
   },
 }));
+
+/** HTTP status and `{ code }` of a failed request, if it had a response. */
+export function authFailure(error: unknown): { status?: number; code?: string } {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return {};
+  const response = (error as { response?: { status?: number; data?: { code?: unknown } } }).response;
+  return { status: response?.status, code: typeof response?.data?.code === 'string' ? response.data.code : undefined };
+}
+
+function handledBySignInScreen(error: unknown, password: string): boolean {
+  const { status, code } = authFailure(error);
+  if (status === 400 && code === 'workspace_required') return true;
+  return (status === 401 || status === 400) && isWelcomeCode(password);
+}
 
 function extractAuthError(error: unknown, fallback = 'Login failed. Please try again.'): string {
   if (typeof error === 'object' && error !== null && 'response' in error) {

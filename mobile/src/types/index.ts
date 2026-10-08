@@ -35,6 +35,10 @@ export interface Permission {
 export interface AuthUser {
   id: string;
   tenantId: string;
+  /** The company ID (tenant slug) the session belongs to; signing in by email alone learns it from here. */
+  tenantSlug?: string;
+  /** Set while HR has issued a reset code for this login that is still unused (ISO date issued). */
+  pendingResetNotice?: { date: string } | null;
   employeeId: string;
   username: string;
   email: string;
@@ -76,7 +80,10 @@ export type AttendanceStatus =
 export interface GeoLocation {
   latitude: number;
   longitude: number;
+  /** Device-reported horizontal accuracy in metres; the server's geofence refuses a fix worse than the tenant limit. */
   accuracy?: number;
+  /** Android isFromMockProvider. Undefined where the platform does not expose it (iOS): then omitted. */
+  mocked?: boolean;
   timestamp: number;
 }
 
@@ -86,7 +93,8 @@ export interface MobilePunchPayload {
   location?: GeoLocation;
   workLocationId?: string;
   deviceInfo: DeviceInfo;
-  selfieBase64?: string; // optional, if policy requires
+  /** Opaque single-use id from POST /attendance/evidence/selfie; omitted for a punch without a selfie. */
+  evidenceId?: string;
   notes?: string;
 }
 

@@ -335,8 +335,20 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.EmployeeAccessService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceVerificationService>();
+// The owner's time-boxed selfie DEMO EXCEPTION (decision 2026-10-08): listed tenant slugs get selfie attendance without
+// the DPIA and KSA-residency gates until SelfieDemoException:ExpiresUtc, and every selfie taken under it is deleted
+// EvidenceRetentionDays after capture. Empty by default (nobody); no expiry means off.
+var selfieDemoException = Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions.From(builder.Configuration);
+builder.Services.AddSingleton(selfieDemoException);
+// One gate per process for selfie image work (decode/re-encode): Selfie:ImageConcurrency slots (default 1); an upload
+// waits up to 3 s for one and is then answered 429 selfie_busy.
+builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Attendance.SelfieImageGate(
+    builder.Configuration.GetValue(Zayra.Api.Infrastructure.Attendance.SelfieImageGate.ConfigKey,
+        Zayra.Api.Infrastructure.Attendance.SelfieImageGate.DefaultConcurrency)));
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
 // Establishment matrix: the ONE budget guard every assignment path shares, plus the per-tenant
@@ -545,6 +557,18 @@ builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChange
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
 
+// Selfie attendance v2 (rule 7): selfie blobs are deleted 90 days after the punch's payroll month locks, at work date
+// + 120 days when no run locks it, 24 hours after an upload no punch used (at once when the employee has no open
+// consent), and 1 hour after an upload that never completed. The scheduler runs every 15 minutes, so a delete storage
+// did not confirm is retried within about 15 minutes. The row and its SHA-256 are kept. ON by default — the retention
+// rule is a promise to employees; SelfieEvidencePurge__Enabled=false is the kill switch.
+var selfiePurgeOptions = builder.Configuration.GetSection(Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions.SectionName)
+    .Get<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions>() ?? new Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeOptions();
+builder.Services.AddSingleton(selfiePurgeOptions);
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeJobHandler>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvidencePurgeScheduler>();
+
 // Release A (grade entitlements, contract-year package, contract renewals, deductions statement). Every service
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
@@ -679,6 +703,18 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // Welcome-code redeem and the password-policy probe (Amendment 3 F6): 30 per minute per client address.
+    o.AddPolicy("auth_welcome", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            RateLimitPartitionKey(ctx),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("WelcomePermitLimit", 30),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("WelcomeWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
     o.AddPolicy("auth_refresh", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
             RateLimitPartitionKey(ctx),
@@ -757,6 +793,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+if (selfieDemoException.ConfigError is { } selfieDemoConfigError)
+    app.Logger.LogWarning("Selfie demo exception is OFF because its configuration is malformed: {Error}", selfieDemoConfigError);
 
 app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
 

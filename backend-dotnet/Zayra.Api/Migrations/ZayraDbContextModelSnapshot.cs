@@ -3395,6 +3395,157 @@ namespace Zayra.Api.Migrations
                     b.ToTable("attendance_device_sync_logs", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.AttendanceEvidence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int?>("ByteSize")
+                        .HasColumnType("integer")
+                        .HasColumnName("byte_size");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("content_type");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("FailedReason")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("failed_reason");
+
+                    b.Property<DateTime?>("PurgeDueAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("purge_due_at_utc");
+
+                    b.Property<string>("PurgeState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Pending")
+                        .HasColumnName("purge_state");
+
+                    b.Property<DateTime?>("PurgedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("purged_at_utc");
+
+                    b.Property<string>("Sha256")
+                        .HasColumnType("character(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UsedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("used_at_utc");
+
+                    b.Property<Guid?>("UsedByRawEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("used_by_raw_event_id");
+
+                    b.Property<DateTime?>("WaiverCancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("waiver_cancelled_at_utc");
+
+                    b.Property<DateTime?>("WaiverConsumedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("waiver_consumed_at_utc");
+
+                    b.Property<Guid?>("WaiverRawEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("waiver_raw_event_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("UsedByRawEventId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")
+                        .HasFilter("used_by_raw_event_id IS NOT NULL");
+
+                    b.HasIndex("WaiverRawEventId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_attendance_evidence__waiver_raw_event")
+                        .HasFilter("waiver_raw_event_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "CreatedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__purge_due")
+                        .HasFilter("purge_state IN ('Pending','Active')");
+
+                    NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("TenantId", "CreatedAtUtc"), new[] { "UsedAtUtc" });
+
+                    b.HasIndex("TenantId", "PurgeDueAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__purge_due_override")
+                        .HasFilter("purge_due_at_utc IS NOT NULL AND purge_state IN ('Pending','Active')");
+
+                    b.HasIndex("TenantId", "UsedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__used_purge_due")
+                        .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
+
+                    b.HasIndex("TenantId", "WaiverConsumedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__waived_punches")
+                        .HasFilter("waiver_consumed_at_utc IS NOT NULL");
+
+                    b.HasIndex("TenantId", "EmployeeId", "CreatedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__employee_created");
+
+                    b.ToTable("attendance_evidence", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_attendance_evidence__active_payload", "purge_state <> 'Active' OR (sha256 IS NOT NULL AND byte_size IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__byte_size", "byte_size IS NULL OR byte_size > 0");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__failed_never_active", "failed_reason IS NULL OR (purge_state <> 'Active' AND used_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__failed_reason", "failed_reason IS NULL OR failed_reason IN ('Busy','Storage','Timeout','Aborted','DeniedFailure')");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__purge_due_after_capture", "purge_due_at_utc IS NULL OR purge_due_at_utc > created_at_utc");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Pending','Active','Purged')");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__purged_pair", "(purge_state = 'Purged') = (purged_at_utc IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__used_pair", "(used_at_utc IS NULL) = (used_by_raw_event_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "(failed_reason IS NOT NULL AND failed_reason IN ('Busy','Storage')) OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_once", "waiver_consumed_at_utc IS NULL OR waiver_cancelled_at_utc IS NULL");
+
+                            t.HasCheckConstraint("ck_attendance_evidence__waiver_pair", "(waiver_consumed_at_utc IS NULL) = (waiver_raw_event_id IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.AttendanceException", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4008,6 +4159,11 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime?>("DecidedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("decided_at_utc");
+
+                    b.Property<int>("DecisionVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("decision_version");
 
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
@@ -4793,6 +4949,63 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "CompanyId", "IsActive");
 
                     b.ToTable("benefit_plans", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.BiometricConsent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("channel");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateTime>("GivenAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("given_at_utc");
+
+                    b.Property<string>("PolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("policy_version");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("WithdrawnAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("withdrawn_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("TenantId", "EmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_biometric_consents__one_open_per_employee")
+                        .HasFilter("withdrawn_at_utc IS NULL");
+
+                    b.HasIndex("TenantId", "EmployeeId", "GivenAtUtc")
+                        .HasDatabaseName("ix_biometric_consents__employee_history");
+
+                    b.ToTable("biometric_consents", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_biometric_consents__channel", "channel IN ('Mobile','Web')");
+
+                            t.HasCheckConstraint("ck_biometric_consents__policy_version", "policy_version <> ''");
+
+                            t.HasCheckConstraint("ck_biometric_consents__withdrawn_after_given", "withdrawn_at_utc IS NULL OR withdrawn_at_utc >= given_at_utc");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.BonusApproval", b =>
@@ -12221,6 +12434,31 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
+
+                    b.Property<DateTime?>("WelcomeCodeExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_expires_at_utc");
+
+                    b.Property<int>("WelcomeCodeFailedAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("welcome_code_failed_attempts");
+
+                    b.Property<string>("WelcomeCodeHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("welcome_code_hash");
+
+                    b.Property<DateTime?>("WelcomeCodeIssuedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_issued_at_utc");
+
+                    b.Property<Guid?>("WelcomeCodeIssuedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("welcome_code_issued_by");
+
+                    b.Property<DateTime?>("WelcomeCodeRedeemedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("welcome_code_redeemed_at_utc");
 
                     b.HasKey("Id");
 
@@ -26591,12 +26829,40 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.AttendanceEvidence", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.AttendanceRawEvent", null)
+                        .WithMany()
+                        .HasForeignKey("UsedByRawEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.AttendanceRawEvent", null)
+                        .WithMany()
+                        .HasForeignKey("WaiverRawEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.BackgroundJobItem", b =>
                 {
                     b.HasOne("Zayra.Api.Models.BackgroundJob", null)
                         .WithMany()
                         .HasForeignKey("JobId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.BiometricConsent", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

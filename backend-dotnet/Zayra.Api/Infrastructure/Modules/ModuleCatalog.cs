@@ -160,7 +160,7 @@ public static class ModuleCatalog
             LockReason = CoreHrReason,
             RoutePrefixes =
             [
-                "/api/employees", "/api/branches", "/api/departments", "/api/designations",
+                "/api/employees", "/api/employee-access", "/api/branches", "/api/departments", "/api/designations",
                 "/api/grades", "/api/cost-centers", "/api/locations", "/api/positions",
                 "/api/companies", "/api/organization", "/api/reference", "/api/establishment",
                 "/api/jobs", "/api/planning",
@@ -512,6 +512,13 @@ public static class ModuleCatalog
                 "Release A (benefits by grade, contract renewals, the deductions statement) is an opt-in "
                 + "feature switched on per tenant by the platform team while it is being rolled out. It is off "
                 + "unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.SelfieAttendance] =
+                "Selfie attendance collects a face image, so it is an opt-in feature only the platform team can switch "
+                + "on, and only once the owner's DPIA sign-off and KSA data-residency confirmation are recorded on the "
+                + "flag. Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.PunchGeofence] =
+                "The attendance geofence is an opt-in setting the platform team switches on per tenant with its "
+                + "accuracy and mock-location rules. It is enforced inside every self-punch, not a module of its own.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

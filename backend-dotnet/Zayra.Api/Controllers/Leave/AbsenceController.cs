@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -199,6 +200,9 @@ public class AbsenceController : ControllerBase
 
         if (regularization.Status != "Pending")
             return BadRequest(new { message = "Only pending regularization requests can be approved." });
+        // The person the absence is about never decides its regularization, whatever their role.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), regularization.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot approve the regularization of your own absence. Another approver must decide it."));
 
         regularization.Status = "Approved";
         regularization.ManagerNotes = req.Notes ?? string.Empty;
@@ -231,6 +235,9 @@ public class AbsenceController : ControllerBase
 
         if (regularization.Status != "Pending")
             return BadRequest(new { message = "Only pending regularization requests can be rejected." });
+        // The person the absence is about never decides its regularization, whatever their role.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), regularization.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot reject the regularization of your own absence. Another approver must decide it."));
 
         regularization.Status = "Rejected";
         regularization.HRNotes = req.Notes ?? string.Empty;

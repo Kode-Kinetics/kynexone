@@ -1,6 +1,8 @@
 import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
+import { essWorkspace } from './essWorkspace';
+import { attendanceEvidence } from './attendanceEvidence';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -16,6 +18,35 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  // Guided employee creation
+  "Profile": "Profile",
+  "Employment": "Employment",
+  "Salary": "Salary",
+  "Identity": "Identity",
+  "Start with the person": "Start with the person",
+  "Add their name and contact details. Fields marked with an asterisk are required.": "Add their name and contact details. Fields marked with an asterisk are required.",
+  "Place them in the organization": "Place them in the organization",
+  "Choose their company, role and reporting line, then confirm their joining details.": "Choose their company, role and reporting line, then confirm their joining details.",
+  "Set up payroll": "Set up payroll",
+  "Add payment and bank details so their payroll profile is ready.": "Add payment and bank details so their payroll profile is ready.",
+  "Build the salary package": "Build the salary package",
+  "Enter the salary and allowances. The package total updates as you go.": "Enter the salary and allowances. The package total updates as you go.",
+  "Add identity documents": "Add identity documents",
+  "Add identity records and expiry dates for the employing company.": "Add identity records and expiry dates for the employing company.",
+  "Review employee details": "Review employee details",
+  "Check the information below. You can edit any section before creating the employee.": "Check the information below. You can edit any section before creating the employee.",
+  "Employee setup progress": "Employee setup progress",
+  "Step {step} of {total}": "Step {step} of {total}",
+  "Step {step}: {label}, completed": "Step {step}: {label}, completed",
+  "Step {step}: {label}": "Step {step}: {label}",
+  "Edit {section}": "Edit {section}",
+  "Not provided": "Not provided",
+  "Next: {step}": "Next: {step}",
+  "Enter the employee’s English full name to continue.": "Enter the employee’s English full name to continue.",
+  "Fields marked * may be needed for activation. Add the details you have; remaining requirements are checked after creation.": "Fields marked * may be needed for activation. Add the details you have; remaining requirements are checked after creation.",
+  "Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.": "Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.",
+  "Assigned automatically": "Assigned automatically",
+  "Missing · check readiness after creation": "Missing · check readiness after creation",
   'Saved, never applied': 'Saved, never applied',
   'Payroll uses the GOSI-published rate.': 'Payroll uses the GOSI-published rate.',
   'GOSI-published rate — cannot be overridden': 'GOSI-published rate — cannot be overridden',
@@ -1160,7 +1191,6 @@ const en: Dict = {
   'Request leave': 'Request leave',
   '{hours} h {minutes} min': '{hours} h {minutes} min',
   'Your account can view self-service but cannot send requests. Ask HR if you need to.': 'Your account can view self-service but cannot send requests. Ask HR if you need to.',
-  'Back to Self-Service': 'Back to Self-Service',
   'Sending…': 'Sending…',
   'Send for approval': 'Send for approval',
   'Reason (required)': 'Reason (required)',
@@ -1247,12 +1277,46 @@ const en: Dict = {
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.',
 
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.en,
+  // HR's selfie review on the Attendance page — see ./attendanceEvidence.
+  ...attendanceEvidence.en,
+
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  // Guided employee creation
+  "Profile": "الملف الشخصي",
+  "Employment": "التوظيف",
+  "Salary": "الراتب",
+  "Identity": "الهوية",
+  "Start with the person": "ابدأ ببيانات الموظف",
+  "Add their name and contact details. Fields marked with an asterisk are required.": "أضف اسم الموظف وبيانات التواصل معه. الحقول المميزة بنجمة مطلوبة.",
+  "Place them in the organization": "حدد موقع الموظف في المؤسسة",
+  "Choose their company, role and reporting line, then confirm their joining details.": "اختر الشركة والدور الوظيفي والمدير المباشر، ثم تأكد من بيانات الالتحاق بالعمل.",
+  "Set up payroll": "إعداد كشوف الرواتب",
+  "Add payment and bank details so their payroll profile is ready.": "أضف بيانات الدفع والحساب البنكي لتجهيز ملف الرواتب.",
+  "Build the salary package": "حدد مكونات الراتب",
+  "Enter the salary and allowances. The package total updates as you go.": "أدخل الراتب والبدلات. يتحدث الإجمالي تلقائياً أثناء الإدخال.",
+  "Add identity documents": "أضف وثائق الهوية",
+  "Add identity records and expiry dates for the employing company.": "أضف سجلات الهوية وتواريخ انتهائها حسب متطلبات الشركة الموظفة.",
+  "Review employee details": "راجع بيانات الموظف",
+  "Check the information below. You can edit any section before creating the employee.": "راجع المعلومات أدناه. يمكنك تعديل أي قسم قبل إنشاء سجل الموظف.",
+  "Employee setup progress": "تقدم إعداد سجل الموظف",
+  "Step {step} of {total}": "الخطوة {step} من {total}",
+  "Step {step}: {label}, completed": "الخطوة {step}: {label}، مكتملة",
+  "Step {step}: {label}": "الخطوة {step}: {label}",
+  "Edit {section}": "تعديل {section}",
+  "Not provided": "لم تُدخل",
+  "Next: {step}": "التالي: {step}",
+  "Enter the employee’s English full name to continue.": "أدخل الاسم الكامل للموظف بالإنجليزية للمتابعة.",
+  "Fields marked * may be needed for activation. Add the details you have; remaining requirements are checked after creation.": "قد تكون الحقول المميزة بعلامة * مطلوبة للتفعيل. أضف البيانات المتوفرة لديك؛ وسيتم التحقق من المتطلبات المتبقية بعد إنشاء السجل.",
+  "Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.": "يحفظ زر «إنشاء موظف» هذا السجل. يمكنك بعدها إعداد صلاحية تسجيل الدخول والتحقق من المتطلبات المتبقية في الملف الشخصي.",
+  "Assigned automatically": "يُعيّن تلقائياً",
+  "Missing · check readiness after creation": "غير متوفر · تحقق من الجاهزية بعد إنشاء السجل",
   'Saved, never applied': 'حُفظ ولم يُطبَّق',
   'Payroll uses the GOSI-published rate.': 'يستخدم مسير الرواتب النسبة المنشورة من المؤسسة العامة للتأمينات الاجتماعية.',
   'GOSI-published rate — cannot be overridden': 'نسبة منشورة من المؤسسة العامة للتأمينات الاجتماعية — لا يمكن تجاوزها',
@@ -2366,7 +2430,7 @@ const ar: Dict = {
   'No upcoming items or alerts.': 'لا توجد عناصر قادمة أو تنبيهات.',
   'Leave from {start} to {end}': 'إجازة من {start} إلى {end}',
   '{type}, {days} days': '{type}، {days} يوم',
-  '{document} is expiring': 'ينتهي {document} قريباً',
+  '{document} is expiring': 'تنتهي صلاحية {document} قريباً',
   'Expires on {date}': 'ينتهي في {date}',
   'Expiry date not set': 'لم يُحدَّد تاريخ الانتهاء',
   'Alert': 'تنبيه',
@@ -2397,7 +2461,6 @@ const ar: Dict = {
   'Request leave': 'اطلب إجازة',
   '{hours} h {minutes} min': '{hours} س {minutes} د',
   'Your account can view self-service but cannot send requests. Ask HR if you need to.': 'يمكن لحسابك عرض الخدمة الذاتية لكن لا يمكنه إرسال الطلبات. تواصل مع الموارد البشرية إذا احتجت إلى ذلك.',
-  'Back to Self-Service': 'العودة إلى الخدمة الذاتية',
   'Sending…': 'جارٍ الإرسال…',
   'Send for approval': 'إرسال للاعتماد',
   'Reason (required)': 'السبب (مطلوب)',
@@ -2484,6 +2547,11 @@ const ar: Dict = {
   'Row {row}: {problem}': 'الصف {row}: {problem}',
   'Nothing has been imported. This check ran the import itself and then undid it, so it shows exactly what the import would do.': 'لم يُستورد أي شيء. شغّل هذا الفحص عملية الاستيراد نفسها ثم تراجع عنها، لذلك يعرض بالضبط ما سيفعله الاستيراد.',
   'Rows to correct: {count}. See the rows marked Refused. The import is all-or-nothing, so nothing is imported until the file is corrected.': 'صفوف يجب تصحيحها: {count}. راجع الصفوف المعلّمة «مرفوض». الاستيراد يتم كاملاً أو لا يتم، فلن يُستورد شيء حتى يُصحَّح الملف.',
+
+  // Self-Service workspace — see ./essWorkspace.
+  ...essWorkspace.ar,
+  // HR's selfie review on the Attendance page — see ./attendanceEvidence.
+  ...attendanceEvidence.ar,
 
   ...releaseA.ar,
 };

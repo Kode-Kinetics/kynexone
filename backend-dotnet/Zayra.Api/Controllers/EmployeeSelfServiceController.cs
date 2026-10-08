@@ -9,6 +9,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
@@ -333,8 +334,14 @@ public class EmployeeSelfServiceController : ControllerBase
         var change = await _db.EmployeeProfileChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (change is null) return NotFound();
         if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
+        if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "approve", cancellationToken) is { } refusal) return refusal;
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
+        // Segregation of duties (employee access F1): the subject is already refused above (SubjectDecisionBar,
+        // #209); whoever was shown this employee's welcome code may not approve their changes for 30 days after redeem.
+        if (GetUserId() is Guid deciderId
+            && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, employee.Id, deciderId, DateTime.UtcNow, cancellationToken))
+            return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
         foreach (var (field, value) in values)
         {
@@ -353,7 +360,8 @@ public class EmployeeSelfServiceController : ControllerBase
         change.Status = "Approved";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();
-        await _db.SaveChangesAsync(cancellationToken);
+        // The decision, the applied profile values and the audit row are saved in one SaveChanges, so a
+        // decision never lands without its audit record.
         await EssAudit(tenantId, employee.Id, "ess.profile_change.approved", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
         return Ok(change);
     }
@@ -367,11 +375,36 @@ public class EmployeeSelfServiceController : ControllerBase
         var change = await _db.EmployeeProfileChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (change is null) return NotFound();
         if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
+        if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "reject", cancellationToken) is { } refusal) return refusal;
         change.Status = "Rejected";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();
-        await _db.SaveChangesAsync(cancellationToken);
+        // A rejection is a decision too: it is audited exactly as an approval is (who, when, which request),
+        // saved in the same SaveChanges as the status change.
+        await EssAudit(tenantId, change.EmployeeId, "ess.profile_change.rejected", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
         return Ok(change);
+    }
+
+    /// <summary>
+    /// Strict separation of duties on a personal-detail change: the employee the change is about never
+    /// decides it (any login linked to them, read tenant-wide by <see cref="SubjectDecisionBar"/>, plus the
+    /// caller's own employee link), and neither does whoever submitted it, if that was someone else.
+    /// Null when the caller may decide.
+    /// </summary>
+    private async Task<IActionResult?> ProfileChangeDecisionRefusalAsync(
+        Guid tenantId, EmployeeProfileChangeRequest change, string verb, CancellationToken cancellationToken)
+    {
+        var callerUserId = GetUserId();
+        var callerIsSubject =
+            (int.TryParse(User.FindFirstValue("employee_id"), out var callerEmployeeId) && callerEmployeeId == change.EmployeeId)
+            || await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, callerUserId, change.EmployeeId, cancellationToken);
+        if (callerIsSubject)
+            return BadRequest(SubjectDecisionBar.Refusal(
+                $"You cannot {verb} a change to your own profile. Another HR user must decide it."));
+        if (change.CreatedBy is Guid requester && requester == callerUserId)
+            return BadRequest(SubjectDecisionBar.Refusal(
+                $"You cannot {verb} a profile change you submitted. Another HR user must decide it."));
+        return null;
     }
 
     /// <summary>
@@ -1377,9 +1410,11 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
-        return Ok(await _db.EmployeeDocuments.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy")) && !x.IsDeleted
-                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
+        // The caller's OWN policy-type documents only. This used to add every colleague's document whose type
+        // contained "Policy" (an "Insurance Policy" file name and expiry leaked), and the document type is
+        // free text on upload, so any employee could publish a "Policy" to the whole company. A real
+        // company-policy entity is a separate feature; until it exists nothing here crosses employees.
+        return Ok(await OwnPolicyDocuments(tenantId, employeeId)
             .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
             .ToListAsync(cancellationToken));
     }
@@ -1390,9 +1425,8 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken, requireWrite: true);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
-        if (!await _db.EmployeeDocuments.AnyAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted
-                && (x.EmployeeId == employeeId || x.DocumentType.Contains("Policy"))
-                && x.DocumentType.Contains("Policy"), cancellationToken)) return NotFound();
+        // Only a document GET policies would show this caller; anything else is 404, never 403.
+        if (!await OwnPolicyDocuments(tenantId, employeeId).AnyAsync(x => x.Id == id, cancellationToken)) return NotFound();
         var existing = await _db.EmployeePolicyAcknowledgements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.PolicyId == id, cancellationToken);
         if (existing is not null) return Ok(existing);
         var ack = new EmployeePolicyAcknowledgement { TenantId = tenantId, EmployeeId = employeeId, PolicyId = id, UserId = GetUserId() };
@@ -1442,6 +1476,14 @@ public class EmployeeSelfServiceController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
+
+    /// <summary>The policy-type documents on the caller's own record that self-service may show: the one
+    /// predicate GET policies lists and the acknowledgement accepts, so they cannot drift apart.</summary>
+    private IQueryable<EmployeeDocument> OwnPolicyDocuments(Guid tenantId, int employeeId) =>
+        _db.EmployeeDocuments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted
+                        && x.DocumentType.Contains("Policy")
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()));
 
     private IQueryable<EmployeeAnnouncement> ActiveAnnouncements(Guid tenantId) =>
         _db.EmployeeAnnouncements.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > DateTime.UtcNow)).OrderByDescending(x => x.PublishedAtUtc);

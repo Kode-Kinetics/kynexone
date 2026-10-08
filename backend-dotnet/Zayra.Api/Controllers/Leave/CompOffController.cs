@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -71,6 +72,12 @@ public class CompOffController : ControllerBase
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
         if (employee is null)
             return BadRequest(new { message = "Employee not found." });
+        // A comp-off credit is time off owed: it must be for someone in the caller's scope, and never for the
+        // caller themselves (crediting yourself, then having it approved, sidestepped the overtime bar).
+        var createScope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!createScope.CanAccessEmployee(req.EmployeeId)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), req.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot create a comp-off credit for yourself. Ask HR or your manager to record it."));
 
         var credit = new CompOffCredit
         {
@@ -105,6 +112,8 @@ public class CompOffController : ControllerBase
 
         if (credit.Status != "Pending")
             return BadRequest(new { message = "Only pending comp-off requests can be approved." });
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), credit.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot approve your own comp-off credit. Another approver must decide it."));
 
         credit.Status = "Approved";
         credit.ManagerApprovalNotes = req.Notes ?? string.Empty;

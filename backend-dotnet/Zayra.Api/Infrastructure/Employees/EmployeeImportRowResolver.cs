@@ -300,7 +300,7 @@ public static class EmployeeImportRowResolver
         r.CompanyId = company?.Id;
         r.CompanyCountryCode = company?.CountryCode ?? string.Empty;
 
-        // ── Work email (auto-derive when blank / validate against company domain; accept-never-block) ──
+        // ── Work email (validate against company domain; accept-never-block) ──
         var workEmailRaw = V("WorkEmail");
         var emailDomain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
         var emailPattern = Models.WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
@@ -316,16 +316,8 @@ public static class EmployeeImportRowResolver
         }
         else if (string.IsNullOrWhiteSpace(workEmailRaw))
         {
-            // Blank + domain present → derive a candidate local part from the name; controller finalizes uniqueness.
-            var local = WorkEmailDeriver.BuildLocalPart(V("FullName"), V("ArabicName"), emailPattern);
-            if (!string.IsNullOrEmpty(local))
-                r.WorkEmailLocalPart = local;
-            else
-            {
-                // No romanizable (Latin) name (e.g. Arabic-only) — cannot derive an ASCII local part.
-                r.Gaps.Add(new ImportGap("email:needs-info", "readiness", "Work email not derived — name has no romanizable form; enter it manually.", null));
-                r.Warnings.Add("Work email not derived — name has no romanizable (Latin) form; enter it manually.");
-            }
+            // Blank stays blank: a derived address is a SUGGESTION only, never saved (employee-access contract §3).
+            // The employee waits for their real work email (Employees → "Add work emails").
         }
         else
         {

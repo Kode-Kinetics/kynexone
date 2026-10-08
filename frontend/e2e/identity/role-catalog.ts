@@ -11,7 +11,9 @@ import { resolve } from 'node:path';
  * serves exactly this catalog (so a stale build or a stale database is caught too).
  *
  * The parser understands the three bundle shapes AuthSeeder uses today:
- *   • `permissions`                                   — every permission (Admin);
+ *   • `permissions`                                   — every permission;
+ *   • `permissions.Where(x => x.Key is not "a" and not "b").ToList()` — every permission but those (Admin, which
+ *     withholds AuthSeeder.AdminWithheldPermissions, review 3);
  *   • `Ps(new[] { "a", "b", ... })`                   — an explicit list;
  *   • `permissions.Where(x => x.Key.StartsWith("p.") || ... || x.Key is "a" or "b").ToList()`.
  * Anything else throws with the role's name, so a refactor of AuthSeeder fails here loudly instead of
@@ -126,8 +128,13 @@ function parsePermissionKeys(source: string): string[] {
   return [...keys].sort();
 }
 
-/** Evaluate `x.Key.StartsWith("a") || ... || x.Key is "b" or "c"` — and nothing else. */
+/** Evaluate `x.Key.StartsWith("a") || (x.Key.StartsWith("p") && !x.Key.StartsWith("q")) || ... || x.Key is "b" or "c"`
+ *  — and nothing else. The `(p && !q)` group is "prefix p, except prefix q" (e.g. HR Director's employees.* without
+ *  employees.access.*). */
 function evaluatePredicate(role: string, predicate: string, catalog: string[]): { keys: string[]; unknown: string[] } {
+  const exceptRe = /\(\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*&&\s*!\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*\)/g;
+  const excepts = [...predicate.matchAll(exceptRe)].map((m) => ({ prefix: m[1], without: m[2] }));
+  predicate = predicate.replace(exceptRe, '');
   const prefixes = [...predicate.matchAll(/x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
   let exact: string[] = [];
   const isClause = /x\.Key\s+is\s+((?:"[^"]+"\s*(?:or\s*)?)+)/.exec(predicate);
@@ -146,7 +153,8 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[]): 
     );
   }
   return {
-    keys: catalog.filter((key) => prefixes.some((p) => key.startsWith(p)) || exact.includes(key)),
+    keys: catalog.filter((key) => prefixes.some((p) => key.startsWith(p)) || exact.includes(key)
+      || excepts.some((e) => key.startsWith(e.prefix) && !key.startsWith(e.without))),
     unknown: exact.filter((key) => !catalog.includes(key)),
   };
 }
@@ -161,6 +169,16 @@ function resolveBundle(role: string, expression: string, catalog: string[]): { k
     return {
       keys: catalog.filter((key) => named.includes(key)),
       unknown: named.filter((key) => !catalog.includes(key)),
+    };
+  }
+
+  // Every permission except an explicit list: `x.Key is not "a"` or `x.Key is not "a" and not "b"`.
+  const allBut = /^permissions\.Where\(\s*x\s*=>\s*x\.Key\s+is\s+not\s+("[^"]+"(?:\s+and\s+not\s+"[^"]+")*)\s*\)\s*\.ToList\(\)$/.exec(expr);
+  if (allBut) {
+    const withheld = literals(allBut[1]);
+    return {
+      keys: catalog.filter((key) => !withheld.includes(key)),
+      unknown: withheld.filter((key) => !catalog.includes(key)),
     };
   }
 

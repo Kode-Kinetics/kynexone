@@ -11,18 +11,21 @@ public sealed class RequiredWorkspaceAttribute : ValidationAttribute
         value is string workspace && !string.IsNullOrWhiteSpace(workspace);
 }
 
+/// <summary>TenantSlug is optional: without it the email's domain routes to a workspace on a unique match only,
+/// otherwise the answer is 400 <c>{ code: "workspace_required" }</c> (contract §4).</summary>
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record RefreshTokenRequest([Required] string RefreshToken);
 
 public record LogoutRequest([Required] string RefreshToken);
 
+/// <summary>Without a workspace nothing is mailed: 400 <c>workspace_required</c> (F5).</summary>
 public record ForgotPasswordRequest(
     [Required, EmailAddress] string Email,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record ResetPasswordRequest(
     [Required] string ResetToken,
@@ -47,7 +50,10 @@ public record InviteEmployeeLoginRequest(
     string? Email,
     [Required] string AccessMode,
     IReadOnlyCollection<string>? Roles,
-    int InvitationHours = 72);
+    int InvitationHours = 72,
+    // Required (400 confirm_work_email) when the work email was changed after the record was created and the
+    // employee has no activated login: the caller confirms they checked the address with the person.
+    bool ConfirmedWorkEmail = false);
 
 public record EmployeeLoginInvitationDto(
     Guid UserId,
@@ -63,7 +69,12 @@ public record EmployeeLoginInvitationDto(
     // "invited — tell them to check their inbox" over a workspace with no SMTP configured.
     bool EmailDeliveryConfigured = false,
     bool EmailSent = false,
-    string DeliveryMessage = "");
+    string DeliveryMessage = "")
+{
+    /// <summary>The caller set this employee's work email (WorkEmailSetterRule): the link is never emailed — it is
+    /// returned to the caller to hand over in person, and that disclosure is recorded.</summary>
+    public bool HandOverInPerson { get; init; }
+}
 
 /// <summary>A login as the employee-link screen shows it: who, what state, what access mode.</summary>
 public record LinkedLoginDto(Guid UserId, string Email, string Status, string AccessMode, bool IsActive);
@@ -86,6 +97,15 @@ public record EmployeeLoginStatusDto(
     public string? ReasonCode { get; init; }
     /// <summary>The name a coded refusal cites: the company (<c>login_other_company</c>) or employee (<c>login_pointer_conflict</c>).</summary>
     public string? ReasonSubject { get; init; }
+    /// <summary>For <c>link_existing</c>: someone other than the person has held a credential for this login, so the
+    /// link will make its password unusable and invite the person to set their own.</summary>
+    public bool WillResetCredential { get; init; }
+    /// <summary>Who last set the employee's work email — the address every credential is sent to — and when. Null when not recorded.</summary>
+    public string? WorkEmailSetBy { get; init; }
+    public DateTime? WorkEmailSetAtUtc { get; init; }
+    /// <summary>The work email was changed after the record was created and there is no activated login: an
+    /// invitation or link must carry <c>confirmedWorkEmail: true</c>.</summary>
+    public bool WorkEmailChangedAfterCreation { get; init; }
 }
 
 public static class EmployeeLoginNextActions
@@ -100,7 +120,8 @@ public static class EmployeeLoginNextActions
 public record LinkExistingLoginRequest(
     [Required] int EmployeeId,
     [Required] Guid UserId,
-    [Required, MaxLength(500)] string Reason);
+    [Required, MaxLength(500)] string Reason,
+    bool ConfirmedWorkEmail = false);
 
 public record EmployeeLoginLinkResultDto(
     int EmployeeId,
@@ -109,7 +130,23 @@ public record EmployeeLoginLinkResultDto(
     string Status,
     string AccessMode,
     bool IsActive,
-    bool AlreadyLinked);
+    bool AlreadyLinked)
+{
+    /// <summary>
+    /// True when someone other than the person had held a credential for the login (created it, set its password,
+    /// or was shown a reset or invitation link): the link made the old password unusable, and the person sets their
+    /// own from a fresh invitation to their work email.
+    /// </summary>
+    public bool CredentialReset { get; init; }
+    /// <summary>The invitation link, returned ONLY when it could not be emailed — the linker passes it on by hand.</summary>
+    public string? InvitationUrl { get; init; }
+    public DateTime? InvitationExpiresAtUtc { get; init; }
+    public bool EmailSent { get; init; }
+    /// <summary>What happened to the invitation, in plain words. Empty when the credential was not reset.</summary>
+    public string DeliveryMessage { get; init; } = string.Empty;
+    /// <summary>The caller set the employee's work email: the rotation invitation was not emailed but handed back.</summary>
+    public bool HandOverInPerson { get; init; }
+}
 
 public record AccessModeRequest([Required] string AccessMode, string? Reason);
 
@@ -195,9 +232,24 @@ public record AuthUserDto(
     // Company-scope capability payload (final batch): drives the frontend company switcher.
     string AccountType = "SingleCompany",
     bool IsGroupScope = false,
-    IReadOnlyCollection<CompanyAccessDto>? Companies = null);
+    IReadOnlyCollection<CompanyAccessDto>? Companies = null)
+{
+    /// <summary>F1: non-null while a sign-in code HR issued for this ACTIVE login is live ("HR gave you a new sign-in code on {date}").</summary>
+    public PendingResetNoticeDto? PendingResetNotice { get; init; }
+}
 
-public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc);
+public record PendingResetNoticeDto(DateTime Date);
+
+/// <summary>GET api/auth/password-policy — what the welcome screen's live ticks check.</summary>
+public record PasswordPolicyDto(int MinLength);
+
+public record ForgotPasswordResponse(string Message, string? ResetToken, DateTime? ResetTokenExpiresAtUtc)
+{
+    /// <summary>Whether the RESOLVED workspace can send email at all (never whether the address exists). Lets the
+    /// employee screens say "Ask HR for a new welcome code" when nothing can be mailed. False for an unknown workspace (no enumeration).</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EmailDeliveryConfigured { get; init; }
+}
 
 public record RoleDto(
     Guid Id,
@@ -304,7 +356,11 @@ public record AdminPasswordResetLinkDto(
     string FullName,
     string ResetToken,
     string ResetUrl,
-    DateTime ExpiresAtUtc);
+    DateTime ExpiresAtUtc)
+{
+    /// <summary>The caller set a linked employee's work email: the link is never emailed, only handed back.</summary>
+    public bool HandOverInPerson { get; init; }
+}
 
 public record UserListQuery(string? Search, string? Status, string? Role, int Page = 1, int PageSize = 30);
 

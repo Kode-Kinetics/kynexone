@@ -12,4 +12,17 @@ public interface IAuthService
     Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken);
     /// <summary>Atomically verifies and consumes a tenant-login MFA challenge, then issues one session.</summary>
     Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
+
+    /// <summary>The workspace slug the email's domain routes to (unique active match only), or null.</summary>
+    Task<string?> ResolveWorkspaceAsync(string? email, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+
+    /// <summary>POST api/auth/welcome/redeem. Never issues a session.</summary>
+    Task<Zayra.Api.Infrastructure.Auth.WelcomeRedeemResponse> RedeemWelcomeCodeAsync(
+        Zayra.Api.Infrastructure.Auth.WelcomeRedeemRequest request, RequestContext context,
+        Zayra.Api.Infrastructure.Auth.WelcomeCodeRedeemer.Presenter presenter, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    /// <summary>GET api/auth/password-policy.</summary>
+    Task<PasswordPolicyDto> GetPasswordPolicyAsync(string? tenantSlug, CancellationToken cancellationToken) =>
+        Task.FromResult(new PasswordPolicyDto(10));
 }

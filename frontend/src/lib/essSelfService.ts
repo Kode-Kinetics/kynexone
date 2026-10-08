@@ -82,3 +82,32 @@ export function hrRequestStatus(responseStatus: string): { label: string; tone: 
   if (responseStatus.startsWith('Overdue')) return { label: 'Overdue: HR has not replied yet', tone: 'rose' };
   return { label: 'Waiting for HR to reply', tone: 'amber' };
 }
+
+/**
+ * HR replies the employee has already opened, remembered in this browser per login. The server has no
+ * "read" marker for an HR request, and its "Responded" status lasts until HR closes the request, so
+ * without this a reply would sit in "Needs your attention" long after it was read. Storage can be
+ * blocked or cleared; then a reply simply shows again, which is the safe direction.
+ */
+const seenKey = (userId: string) => `kx-ess-seen-replies:${userId}`;
+
+export function readSeenReplies(userId: string | undefined): Set<string> {
+  if (!userId) return new Set();
+  try {
+    const raw = localStorage.getItem(seenKey(userId));
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function markReplySeen(userId: string | undefined, requestId: string): void {
+  if (!userId) return;
+  try {
+    const seen = readSeenReplies(userId);
+    seen.add(requestId);
+    // Bounded: the newest 200 are plenty for one employee's open requests.
+    localStorage.setItem(seenKey(userId), JSON.stringify([...seen].slice(-200)));
+  } catch { /* storage unavailable: the reply shows again, never hidden */ }
+}

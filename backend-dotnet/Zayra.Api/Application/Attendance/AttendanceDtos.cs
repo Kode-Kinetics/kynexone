@@ -245,7 +245,44 @@ public record AttendanceRawEventRequest(
     string? VerificationMethod,
     decimal? ConfidenceScore);
 
-public record WebPunchRequest(int EmployeeId, string PunchDirection, string? LocationName, decimal? Latitude, decimal? Longitude);
+/// <summary>
+/// An employee self-punch (punch/web, punch/mobile, punch/kiosk). Selfie attendance v2 adds the device's location
+/// accuracy and mock flag (read by the server-side geofence) and <see cref="EvidenceId"/>, the opaque single-use id
+/// returned by POST /api/attendance/evidence/selfie — never a storage key.
+/// <para><see cref="VerificationMethod"/>, <see cref="ConfidenceScore"/> and <see cref="ClientBiometricVerified"/> are
+/// accepted so older clients still bind, and are IGNORED: the server stores what it verified itself.</para>
+/// <para><see cref="MockDetection"/> is <c>Supported</c> (Android: <see cref="LocationMocked"/> is meaningful) or
+/// <c>Unsupported</c> (iOS cannot detect a mocked location). Under an enforced geofence a punch/mobile request with
+/// neither field is from an old app and is refused.</para>
+/// </summary>
+public record WebPunchRequest(
+    int EmployeeId,
+    string PunchDirection,
+    string? LocationName,
+    decimal? Latitude,
+    decimal? Longitude,
+    decimal? AccuracyMeters = null,
+    bool? LocationMocked = null,
+    Guid? EvidenceId = null,
+    string? VerificationMethod = null,
+    decimal? ConfidenceScore = null,
+    bool? ClientBiometricVerified = null,
+    string? MockDetection = null);
+
+/// <summary>
+/// What the server verified for a punch, handed to the write so it is stored with the raw event.
+/// <see cref="GeofenceFellBackToAllSites"/> and <see cref="MockDetectionUnavailable"/> are audited with the punch: the
+/// employee matched no site of their own, or their phone (iOS) cannot report a mocked location.
+/// <see cref="ClientPlatform"/> is what the server could tell about the phone (android, ios or unknown) for that audit.
+/// <see cref="SelfieRequirementWaivedReason"/> is set when a REQUIRED selfie was waived because the server failed the
+/// employee's upload (busy, storage): the punch is recorded None and the waiver audited with this reason.
+/// </summary>
+public sealed record PunchVerification(string Method, Guid? EvidenceId, string? GeofenceSite, double? DistanceMeters,
+    bool GeofenceFellBackToAllSites = false, bool MockDetectionUnavailable = false, string? ClientPlatform = null,
+    string? SelfieRequirementWaivedReason = null)
+{
+    public static readonly PunchVerification Unverified = new(Zayra.Api.Models.AttendanceVerificationMethods.None, null, null, null);
+}
 
 // ── Device-key-authenticated ingest (generic webhook connector) ──────────────
 public record DeviceIngestPunch(
@@ -310,4 +347,38 @@ public static class AttendanceMappings
         r.Id, r.EmployeeId, r.EmployeeName, r.Department, r.Branch, r.WorkDate, r.FirstInUtc, r.LastOutUtc,
         r.TotalWorkedMinutes, r.LateMinutes, r.EarlyExitMinutes, r.OvertimeMinutes, r.UndertimeMinutes,
         r.MissingPunch, r.Status, r.ManualCorrectionStatus, r.IsPayrollLocked);
+}
+
+/// <summary>
+/// One raw punch as the punch log returns it: the stored row's fields plus <see cref="HasSelfie"/>, whether a stored
+/// selfie (Active, not purged) backs it, so HR can open it with GET /api/attendance/evidence/{id}/selfie. The selfie's
+/// storage key is never exposed.
+/// </summary>
+public sealed record AttendanceRawEventDto(
+    Guid Id,
+    Guid TenantId,
+    int? EmployeeId,
+    string EmployeeCode,
+    Guid? DeviceId,
+    string Source,
+    DateTime PunchTimestampUtc,
+    string PunchDirection,
+    string LocationName,
+    decimal? Latitude,
+    decimal? Longitude,
+    string IpAddress,
+    string PhotoReference,
+    string RawPayloadJson,
+    string SyncBatchReference,
+    string VerificationMethod,
+    decimal? ConfidenceScore,
+    bool IsProcessed,
+    DateTime CreatedAtUtc,
+    Guid? CreatedBy,
+    bool HasSelfie)
+{
+    public static AttendanceRawEventDto From(Zayra.Api.Models.AttendanceRawEvent r, bool hasSelfie) => new(
+        r.Id, r.TenantId, r.EmployeeId, r.EmployeeCode, r.DeviceId, r.Source, r.PunchTimestampUtc, r.PunchDirection, r.LocationName,
+        r.Latitude, r.Longitude, r.IpAddress, r.PhotoReference, r.RawPayloadJson, r.SyncBatchReference, r.VerificationMethod,
+        r.ConfidenceScore, r.IsProcessed, r.CreatedAtUtc, r.CreatedBy, hasSelfie);
 }

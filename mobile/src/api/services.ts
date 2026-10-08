@@ -8,6 +8,7 @@
 // FeatureUnavailableError and the screen hides/disables the control
 // (see src/config/features.ts).
 
+import { Platform } from 'react-native';
 import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
 import { tokenStorage, userStorage, appStorage } from '@/storage';
 import { APP_CONFIG } from '@/config';
@@ -15,11 +16,13 @@ import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
 import {
   normalizeEmail,
+  normalizeWorkspace,
+  optionalWorkspace,
   publicInvitationInput,
   publicLoginInput,
   publicResetInput,
-  requireWorkspace,
 } from '@/auth/publicAuthInput';
+import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode } from '@/auth/welcomeCode';
 import { mapEmployeeProfile } from './profileMapper';
 import { fetchAllPages } from './paging';
 import {
@@ -31,6 +34,20 @@ import {
   type MfaPrompt,
 } from '@/auth/mfaFlow';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
+import {
+  buildLocationFields,
+  buildPunchBody,
+  cacheIsFresh,
+  clientPlatformHeaders,
+  isSelfieBusy,
+  parseWithdrawal,
+  parseAttendanceVerification,
+  busyRetryDelayMs,
+  type AttendanceVerification,
+  type PunchDirection,
+  type VerificationCacheEntry,
+  type WithdrawalResult,
+} from '@/features/attendance/selfieAttendance';
 import type {
   AuthUser,
   AuthTokens,
@@ -130,6 +147,8 @@ function toAuthUser(raw: any): AuthUser {
   return {
     id: String(raw.id ?? ''),
     tenantId: String(raw.tenantId ?? ''),
+    tenantSlug: typeof raw.tenantSlug === 'string' ? normalizeWorkspace(raw.tenantSlug) : undefined,
+    pendingResetNotice: raw.pendingResetNotice?.date ? { date: String(raw.pendingResetNotice.date) } : null,
     employeeId: raw.employeeId == null ? '' : String(raw.employeeId),
     username: raw.email ?? '',
     email: raw.email ?? '',
@@ -493,8 +512,11 @@ function authenticatedSession(data: any): AuthenticatedSession {
   if (!data?.accessToken || !data?.user) {
     throw new Error('Unexpected sign-in response from the server.');
   }
+  const user = toAuthUser(data.user);
+  // HR's live reset code may be reported on the reply or on the user; keep it on the user.
+  if (!user.pendingResetNotice && data.pendingResetNotice?.date) user.pendingResetNotice = { date: String(data.pendingResetNotice.date) };
   return {
-    user: toAuthUser(data.user),
+    user,
     tokens: {
       accessToken: data.accessToken,
       refreshToken: data.refreshToken,
@@ -505,15 +527,15 @@ function authenticatedSession(data: any): AuthenticatedSession {
 
 // ---- Auth ----
 export const authApi = {
-  async login(username: string, password: string, tenantId: string): Promise<LoginOutcome> {
+  async login(username: string, password: string, tenantId?: string): Promise<LoginOutcome> {
     const input = publicLoginInput(username, password, tenantId);
     const res = await createPublicAuthClient().post('/auth/login', input);
     const step = classifyLoginResponse(unwrapApiData<unknown>(res.data));
     if (step.kind === 'mfaChallenge') {
-      return { ...step, tenantId: input.tenantSlug, email: input.email };
+      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
     }
     if (step.kind === 'mfaEnrollment') {
-      return { ...step, tenantId: input.tenantSlug, email: input.email };
+      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
     }
     return { kind: 'authenticated', ...authenticatedSession(step.payload) };
   },
@@ -523,7 +545,7 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<AuthenticatedSession> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/challenge/verify', {
       challengeToken,
       totpCode,
@@ -536,7 +558,7 @@ export const authApi = {
     enrollmentToken: string,
     tenantId: string
   ): Promise<{ provisioningUri: string; tempSecret: string }> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/setup', {
       enrollmentToken,
     });
@@ -560,7 +582,7 @@ export const authApi = {
     totpCode: string,
     tenantId: string
   ): Promise<{ recoveryCodes: string[] | null }> {
-    requireWorkspace(tenantId);
+    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
@@ -599,13 +621,50 @@ export const authApi = {
     await apiPost('/auth/change-password', { currentPassword: oldPassword, newPassword });
   },
 
-  async forgotPassword(email: string, tenantSlug: string): Promise<void> {
+  /**
+   * Resolves to `{ emailDelivery: false }` when the reply says no email can be sent for this
+   * company (then only HR's welcome code helps); otherwise the reply says nothing either way.
+   */
+  async forgotPassword(email: string, tenantSlug?: string): Promise<{ emailDelivery?: boolean }> {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) throw new Error('Work email is required.');
-    await createPublicAuthClient().post('/auth/forgot-password', {
+    const res = await createPublicAuthClient().post('/auth/forgot-password', {
       email: normalizedEmail,
-      tenantSlug: requireWorkspace(tenantSlug),
+      ...optionalWorkspace(tenantSlug),
     });
+    const data = unwrapApiData<Record<string, unknown> | undefined>(res?.data);
+    const noDelivery = data?.emailDeliveryConfigured === false || data?.emailed === false || data?.emailSent === false;
+    return noDelivery ? { emailDelivery: false } : {};
+  },
+
+  /**
+   * First sign-in: exchange HR's welcome code for a password the employee chooses. 200
+   * `{ tenantSlug }` and NO session; the caller signs in next with that company ID. Refusals are
+   * 400 `{ code }` (see auth/welcomeCode.ts welcomeErrorKey) or 429.
+   */
+  async welcomeRedeem(email: string, code: string, newPassword: string, tenantSlug?: string): Promise<{ tenantSlug?: string }> {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) throw new Error('Work email is required.');
+    const res = await createPublicAuthClient().post('/auth/welcome/redeem', {
+      email: normalizedEmail,
+      code: normalizeWelcomeCode(code),
+      newPassword,
+      ...optionalWorkspace(tenantSlug),
+    });
+    const data = unwrapApiData<{ tenantSlug?: string } | undefined>(res?.data);
+    const slug = normalizeWorkspace(data?.tenantSlug);
+    return slug ? { tenantSlug: slug } : {};
+  },
+
+  /** The company's minimum password length for the live tick; 10 when unknown or unreachable. */
+  async passwordPolicy(tenantSlug?: string): Promise<number> {
+    try {
+      const res = await createPublicAuthClient().get('/auth/password-policy', { params: optionalWorkspace(tenantSlug) });
+      const n = Number(unwrapApiData<{ minLength?: number }>(res.data)?.minLength);
+      return Number.isInteger(n) && n >= 1 && n <= 128 ? n : DEFAULT_MIN_PASSWORD_LENGTH;
+    } catch {
+      return DEFAULT_MIN_PASSWORD_LENGTH;
+    }
   },
 
   async resetPassword(resetToken: string, newPassword: string, tenantSlug: string): Promise<void> {
@@ -764,32 +823,128 @@ export const dashboardApi = {
 };
 
 // ---- Attendance ----
-export const attendanceApi = {
-  async punch(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
-    const employeeId = await requireEmployeeId();
-    const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
-    const result = await apiPost<any>('/attendance/punch/mobile', {
-      employeeId,
-      punchDirection: direction,
-      locationName: payload.location ? 'Mobile GPS' : 'Mobile',
-      latitude: payload.location?.latitude,
-      longitude: payload.location?.longitude,
-    });
-    return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+/** The punch pre-check for a login with no employee link, carrying the server's code so it maps to plain words. */
+async function requirePunchEmployee(): Promise<void> {
+  if (await getCurrentEmployeeId()) return;
+  throw Object.assign(new Error('Your login is not linked to an employee record. Please contact HR.'), { code: 'employee_not_linked' });
+}
+
+function punchDirection(punchType: MobilePunchPayload['punchType']): PunchDirection {
+  return punchType === 'CLOCK_OUT' || punchType === 'BREAK_OUT' ? 'Out' : 'In';
+}
+
+// ---- Selfie attendance v2 (discovery, consent, evidence) ----
+// Every call acts on the caller's own linked employee; none takes an employee id.
+
+let verificationCache: VerificationCacheEntry | null = null;
+
+async function verificationCacheKey(): Promise<string> {
+  const user = await userStorage.getUser();
+  return `${user?.tenantId ?? ''}:${user?.employeeId ?? ''}:${user?.id ?? ''}`;
+}
+
+async function storeVerification(raw: unknown): Promise<AttendanceVerification> {
+  const value = parseAttendanceVerification(raw);
+  verificationCache = { key: await verificationCacheKey(), at: Date.now(), value };
+  return value;
+}
+
+export const selfieAttendanceApi = {
+  /** GET /ess/attendance-verification, cached in memory for a minute (JSON only; images are never cached). */
+  async getVerification(options: { force?: boolean } = {}): Promise<AttendanceVerification> {
+    const key = await verificationCacheKey();
+    if (!options.force && cacheIsFresh(verificationCache, key, Date.now())) return verificationCache!.value;
+    return storeVerification(await apiGet<unknown>('/ess/attendance-verification'));
   },
 
-  /** Kiosk route remains authenticated and is always called for the signed-in employee. */
+  /** The last answer for this sign-in, if still fresh; lets a screen render without a spinner. */
+  async peekVerification(): Promise<AttendanceVerification | null> {
+    const key = await verificationCacheKey();
+    return cacheIsFresh(verificationCache, key, Date.now()) ? verificationCache!.value : null;
+  },
+
+  clearVerificationCache(): void {
+    verificationCache = null;
+  },
+
+  /** POST /ess/biometric-consent. 201 new, 200 already recorded; both answer the discovery body. */
+  async giveConsent(policyVersion: string): Promise<AttendanceVerification> {
+    return storeVerification(await apiPost<unknown>('/ess/biometric-consent', { policyVersion, channel: 'Mobile' }));
+  },
+
+  /**
+   * POST /ess/biometric-consent/withdraw. Always allowed, idempotent; answers the discovery body plus a
+   * `withdrawal` block (unused selfies deleted now, and any still awaiting deletion by the purge).
+   */
+  async withdrawConsent(): Promise<{ verification: AttendanceVerification; withdrawal: WithdrawalResult | null }> {
+    const raw = await apiPost<unknown>('/ess/biometric-consent/withdraw', { channel: 'Mobile' });
+    return { verification: await storeVerification(raw), withdrawal: parseWithdrawal(raw) };
+  },
+
+  /**
+   * POST /attendance/evidence/selfie (multipart, one `file` part, JPEG only, request ≤ 8 MB). The server re-encodes
+   * the image and strips EXIF/GPS; the app sends the camera file as captured. Returns the opaque,
+   * single-use evidence id (10 minutes, this employee only).
+   */
+  async uploadSelfie(uri: string): Promise<{ evidenceId: string; expiresAtUtc: string }> {
+    const send = () => {
+      const form = new FormData();
+      form.append('file', filePart({ uri, name: 'attendance-selfie.jpg', mimeType: 'image/jpeg' }));
+      return apiPost<any>('/attendance/evidence/selfie', form, {
+        ...MULTIPART,
+        headers: { ...MULTIPART.headers, ...clientPlatformHeaders(Platform.OS) },
+        timeout: 60_000,
+      });
+    };
+    let result: any;
+    try {
+      result = await send();
+    } catch (error) {
+      // The server answers a fast 429 when its image processing is busy: retry once after its Retry-After
+      // (1–5 s), then let the caller show "Selfie processing is busy". The hourly limit is not retried.
+      if (!isSelfieBusy(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, busyRetryDelayMs(error)));
+      result = await send();
+    }
+    const evidenceId = String(result?.evidenceId ?? '');
+    if (!evidenceId) throw new Error('The selfie upload returned no evidence id.');
+    return { evidenceId, expiresAtUtc: String(result?.expiresAtUtc ?? '') };
+  },
+};
+
+export const attendanceApi = {
+  /**
+   * POST /attendance/punch/mobile for the signed-in employee only (employeeId 0: the server resolves
+   * the caller's own link). Sends latitude, longitude, accuracy and the mocked flag for the server-side
+   * geofence, and the selfie evidence id when there is one. No verification claim is sent: the server
+   * decides what was verified.
+   */
+  async punch(payload: MobilePunchPayload): Promise<{ recordId: string; message: string; verificationMethod: string }> {
+    await requirePunchEmployee();
+    const direction = punchDirection(payload.punchType);
+    const result = await apiPost<any>('/attendance/punch/mobile', buildPunchBody({
+      direction,
+      locationName: payload.location ? 'Mobile GPS' : 'Mobile',
+      location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
+      evidenceId: payload.evidenceId,
+    }), { headers: clientPlatformHeaders(Platform.OS) });
+    return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded`, verificationMethod: String(result?.verificationMethod ?? 'None') };
+  },
+
+  /**
+   * Kiosk route remains authenticated and is always called for the signed-in employee. Never carries a
+   * selfie. A caller without the kiosk permission gets the mobile rules here (location accuracy, mock
+   * detection, and a selfie where required), so the same location fields and platform header are sent.
+   */
   async punchKiosk(payload: MobilePunchPayload): Promise<{ recordId: string; message: string }> {
-    const employeeId = await requireEmployeeId();
-    const direction = payload.punchType === 'CLOCK_OUT' || payload.punchType === 'BREAK_OUT' ? 'Out' : 'In';
-    const result = await apiPost<any>('/attendance/punch/kiosk', {
-      employeeId,
-      punchDirection: direction,
+    await requirePunchEmployee();
+    const direction = punchDirection(payload.punchType);
+    const result = await apiPost<any>('/attendance/punch/kiosk', buildPunchBody({
+      direction,
       locationName: payload.location ? 'KynexOne Kiosk GPS' : 'KynexOne Kiosk',
-      latitude: payload.location?.latitude,
-      longitude: payload.location?.longitude,
-    });
-    return { recordId: String(result.id ?? ''), message: `${direction} punch recorded` };
+      location: buildLocationFields(payload.location ? { coords: payload.location, mocked: payload.location.mocked } : null, Platform.OS),
+    }), { headers: clientPlatformHeaders(Platform.OS) });
+    return { recordId: String(result?.id ?? ''), message: `${direction} punch recorded` };
   },
 
   /** Caller-scoped raw events make a just-recorded kiosk punch immediately visible. */

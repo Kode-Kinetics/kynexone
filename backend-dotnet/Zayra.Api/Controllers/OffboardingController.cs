@@ -1430,6 +1430,7 @@ public class OffboardingController : ControllerBase
             link.LoginDisabledReason = unlinkAccount
                 ? "Offboarding completed"
                 : "Offboarding — access revoked";
+            link.ClearWelcomeCode(); // access stopped: any live welcome code dies with it
             link.UpdatedAtUtc = changedAtUtc;
             link.UpdatedBy = actorUserId;
         }
@@ -1598,6 +1599,7 @@ public class OffboardingController : ControllerBase
             link.Status = "NoLogin";
             link.RequiresPasswordSetup = false;
             link.LoginDisabledReason = unlinkAccount ? "Offboarding completed" : "Offboarding — access revoked";
+            link.ClearWelcomeCode(); // access stopped: any live welcome code dies with it
             link.UpdatedAtUtc = DateTime.UtcNow;
             link.UpdatedBy = actorUserId;
         }

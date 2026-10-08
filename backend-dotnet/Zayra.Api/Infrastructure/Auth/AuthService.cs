@@ -54,7 +54,10 @@ public class AuthService : IAuthService
 
     public async Task<AuthLoginResult> LoginAsync(LoginRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        // Workspace optional (contract §4 / F5): routed by the email's domain on a unique active match only.
+        var tenantSlug = string.IsNullOrWhiteSpace(request.TenantSlug)
+            ? await ResolveWorkspaceAsync(request.Email, cancellationToken) ?? throw new WorkspaceRequiredException()
+            : RequireWorkspace(request.TenantSlug);
         var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
 
         // Phase 1 — one fail-closed eligibility definition is shared with MFA, refresh and
@@ -133,8 +136,19 @@ public class AuthService : IAuthService
 
         // Phase 4 — password verification; increment failure counter on mismatch and lock if threshold reached
         var storedHash = user.PasswordHash;
+        // F10: the raw password first, then its digit-normalised form (Arabic-Indic / Persian digits → 0-9), which is
+        // how a welcome-code redeem stores it. Only a normalised match is then the password this login proves.
+        var normalisedPassword = WelcomeCodes.NormalizeDigits(request.Password);
+        var provenPassword = request.Password;
         if (!await PasswordVerificationGate.RunAsync(_passwordGate,
-                () => _passwordHasher.Verify(request.Password, storedHash), cancellationToken))
+                () =>
+                {
+                    if (_passwordHasher.Verify(request.Password, storedHash)) return true;
+                    if (string.Equals(normalisedPassword, request.Password, StringComparison.Ordinal)) return false;
+                    if (!_passwordHasher.Verify(normalisedPassword, storedHash)) return false;
+                    provenPassword = normalisedPassword;
+                    return true;
+                }, cancellationToken))
         {
             if (knownDevice)
             {
@@ -201,7 +215,7 @@ public class AuthService : IAuthService
         // any challenge or session is minted, so both see the stored hash this login verified.
         var verifiedPasswordHash = user.PasswordHash;
         if (_passwordHasher.NeedsRehash(verifiedPasswordHash))
-            verifiedPasswordHash = await UpgradePasswordHashAsync(user, request.Password, cancellationToken);
+            verifiedPasswordHash = await UpgradePasswordHashAsync(user, provenPassword, cancellationToken);
 
         // Phase 4a' — the owner proved the password from a trusted known device during a lockout.
         // They get through it; the lockout itself and the shared failure counter are left exactly as
@@ -615,14 +629,22 @@ public class AuthService : IAuthService
 
     public async Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        // F5: with no workspace nothing is ever mailed; the client asks for the Company ID.
+        if (string.IsNullOrWhiteSpace(request.TenantSlug)) throw new WorkspaceRequiredException();
         var tenantSlug = RequireWorkspace(request.TenantSlug);
 
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
 
+        // Workspace-level only (the same for every address in it), so it reveals nothing about the email.
+        var resolvedTenantId = await _db.Tenants.AsNoTracking().Where(t => t.Slug == tenantSlug && t.IsActive)
+            .Select(t => (Guid?)t.Id).FirstOrDefaultAsync(cancellationToken);
+        // An unknown workspace answers a constant false: the flag never tells which workspaces exist.
+        bool? deliveryConfigured = resolvedTenantId is Guid rt && await _emailService.IsConfiguredAsync(rt, cancellationToken);
+
         var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
         if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
-            return new ForgotPasswordResponse(safeMessage, null, null);
+            return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
 
         var resetToken = _tokenService.CreateSecureToken();
         var expiresAt = DateTime.UtcNow.AddHours(1);
@@ -674,7 +696,7 @@ public class AuthService : IAuthService
             _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
-        return new ForgotPasswordResponse(safeMessage, null, null);
+        return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
     }
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -796,6 +818,11 @@ public class AuthService : IAuthService
     /// </summary>
     private async Task InvalidateUserCredentialsAsync(Guid userId, DateTime atUtc, string? ipAddress, CancellationToken ct)
     {
+        // A completed reset or change makes any welcome code for this login moot (F3).
+        foreach (var link in await _db.EmployeeUserAccounts.TagWith(RowLockingInterceptor.ForUpdateTag)
+                     .Where(x => x.UserId == userId && x.WelcomeCodeHash != null && x.WelcomeCodeRedeemedAtUtc == null)
+                     .OrderBy(x => x.Id).ToListAsync(ct))
+            link.ClearWelcomeCode();
         if (_db.Database.IsRelational())
         {
             await _db.PasswordResetTokens
@@ -1032,6 +1059,7 @@ public class AuthService : IAuthService
 
             invitation.InvitationTokenHash = string.Empty;
             invitation.InvitationExpiresAtUtc = null;
+            invitation.ClearWelcomeCode(); // one live credential at a time (F3)
             invitation.RequiresPasswordSetup = false;
             invitation.Status = "Active";
             invitation.InvitationAcceptedAtUtc = acceptedAtUtc;
@@ -1817,7 +1845,7 @@ public class AuthService : IAuthService
     private Task<SecuritySetting?> LoadSecuritySettingAsync(Guid tenantId, CancellationToken cancellationToken) =>
         _db.SecuritySettings.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
 
-    private static void ValidatePasswordAgainstPolicy(string password, SecuritySetting? policy)
+    internal static void ValidatePasswordAgainstPolicy(string password, SecuritySetting? policy)
     {
         var minimumLength = Math.Max(10, policy?.PasswordMinLength ?? 10);
         var scalarCount = 0;
@@ -1924,7 +1952,10 @@ public class AuthService : IAuthService
             link?.RequiresPasswordSetup ?? false,
             user.Tenant!.AccountType,
             IsGroupScopeDecision(user),
-            companies);
+            companies)
+        {
+            PendingResetNotice = PendingResetNoticeFor(user),
+        };
     }
 
     /// <summary>
@@ -2013,13 +2044,56 @@ public class AuthService : IAuthService
     {
         AccessModes.EssOnly => new[] { "ess.read", "ess.write", "profile.read" },
         AccessModes.ManagerPortal => new[] { "ess.read", "ess.write", "manager.read", "approvals.read", "approvals.decide", "profile.read" },
-        AccessModes.Mobile => new[] { "ess.read", "ess.write", "attendance.write", "profile.read" },
+        // No attendance.write: an employee's own clock-in needs no permission (AttendanceController.Punch resolves
+        // the caller's own employee). The key here also let a Mobile-mode manager punch for their team and let any
+        // Mobile user push backdated raw events for themselves.
+        AccessModes.Mobile => new[] { "ess.read", "ess.write", "profile.read" },
         AccessModes.KioskOnly => new[] { "attendance.kiosk" },
         AccessModes.NoLogin => Array.Empty<string>(),
         _ => Array.Empty<string>()
     };
 
     public static string Normalize(string value) => value.Trim().ToUpperInvariant();
+
+    /// <summary>
+    /// F1 notice: HR issued a sign-in code for this ACTIVE login and it is still live. The signed-in person is told,
+    /// so a reset they didn't ask for is reported. Null otherwise.
+    /// </summary>
+    public static PendingResetNoticeDto? PendingResetNoticeFor(User user)
+    {
+        if (!user.IsActive) return null;
+        var live = user.EmployeeUserAccounts
+            .Where(x => !x.IsDeleted && WelcomeCodes.IsLive(x, DateTime.UtcNow))
+            .OrderByDescending(x => x.WelcomeCodeIssuedAtUtc)
+            .FirstOrDefault();
+        return live?.WelcomeCodeIssuedAtUtc is { } issued ? new PendingResetNoticeDto(DateTime.SpecifyKind(issued, DateTimeKind.Utc)) : null;
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> ResolveWorkspaceAsync(string? email, CancellationToken cancellationToken)
+    {
+        var slug = await WorkspaceResolver.ResolveSlugAsync(_db, email, cancellationToken);
+        if (slug is null) await WorkspaceResolver.SpendDummyAsync(_passwordHasher, _passwordGate, cancellationToken);
+        return slug;
+    }
+
+    /// <inheritdoc />
+    public Task<WelcomeRedeemResponse> RedeemWelcomeCodeAsync(WelcomeRedeemRequest request, RequestContext context,
+        WelcomeCodeRedeemer.Presenter presenter, CancellationToken cancellationToken) =>
+        new WelcomeCodeRedeemer(_db, _passwordHasher, _jwtOptions.SigningKey, _abuse, _passwordGate)
+            .RedeemAsync(request, context, presenter, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<PasswordPolicyDto> GetPasswordPolicyAsync(string? tenantSlug, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantSlug)) return new PasswordPolicyDto(10);
+        var slug = tenantSlug.Trim().ToLowerInvariant();
+        var min = await _db.SecuritySettings.AsNoTracking()
+            .Where(s => _db.Tenants.Any(t => t.Id == s.TenantId && t.Slug == slug && t.IsActive))
+            .Select(s => (int?)s.PasswordMinLength)
+            .FirstOrDefaultAsync(cancellationToken);
+        return new PasswordPolicyDto(Math.Max(10, min ?? 10));
+    }
 
     public static string RequireWorkspace(string? value)
     {

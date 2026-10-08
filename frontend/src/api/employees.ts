@@ -2,6 +2,7 @@ import client from './client';
 import { fetchAllPages } from '../lib/paging';
 import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
+import type { EmployeeAccessState } from './employeeAccess';
 
 export interface OrgChartNodeDto {
   id: number;
@@ -45,6 +46,9 @@ export interface EmployeeListItem {
   // re-evaluates live). readinessState ∈ "Ready" | "NeedsAttention" | "Blocked".
   readinessState: string;
   activationBlockersCount: number;
+  // Employee sign-in access (api/employee-access). Optional so an older API still renders.
+  workEmail?: string | null;
+  accessState?: EmployeeAccessState;
 }
 
 /** Read-only Ex-Employees archive row (former staff retained for statutory audit). */
@@ -249,6 +253,8 @@ export interface DeriveWorkEmailResponse {
   /** The next free local-part when there was a collision (e.g. "john.smith2"); else same as localPart. */
   suggestion: string;
   status: 'derived' | 'conflict' | 'manual-no-domain' | 'manual-arabic-only';
+  /** The address the create form offers as a suggestion. Never saved unless HR accepts it. */
+  suggestedWorkEmail?: string | null;
 }
 
 /**
@@ -764,6 +770,8 @@ export const employeesApi = {
       readiness?: string;
       gapType?: string;
       importBatchId?: string;
+      /** Sign-in access state(s), comma-separated (e.g. "not_started,code_given"). */
+      access?: string;
       page?: number;
       pageSize?: number;
     } = {},

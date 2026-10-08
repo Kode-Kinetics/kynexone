@@ -41,7 +41,8 @@ const sharpMod = await load('sharp');
 const sharp = sharpMod.default || sharpMod;
 
 // ---------------------------------------------------------------------- setup
-const URL_ = process.argv[2] || process.env.VERIFY_URL || 'http://localhost:3111/login';
+// With a workspace link: plain /login shows the workspace field only when the API asks for it.
+const URL_ = process.argv[2] || process.env.VERIFY_URL || 'http://localhost:3111/login?workspace=verify';
 // A fixed path under the OS temp dir is world-predictable: on a shared machine
 // another user can pre-create it as a symlink and every screenshot below is
 // written through it. mkdtemp creates a uniquely-named directory with 0700.

@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Common;
 
 namespace Zayra.Api.Controllers;
@@ -28,7 +29,15 @@ public class MobileController : ControllerBase
 {
     private readonly ZayraDbContext _db;
 
-    public MobileController(ZayraDbContext db) => _db = db;
+    private readonly AttendanceVerificationService _verification;
+
+    // The verification service is optional so existing constructions compile; DI supplies the registered one (with the
+    // deploy's storage residency). Without it a service over the same context is used, with selfie attendance off.
+    public MobileController(ZayraDbContext db, AttendanceVerificationService? verification = null)
+    {
+        _db = db;
+        _verification = verification ?? new AttendanceVerificationService(db);
+    }
 
     /// <summary>
     /// Resolves the authenticated caller's own employee id from the JWT (employee_id claim from the
@@ -178,42 +187,52 @@ public class MobileController : ControllerBase
         var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
         if (employeeId is null) return Forbid();
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-
-        var existing = await _db.AttendanceDailyRecords
-            .FirstOrDefaultAsync(a => a.TenantId == tenantId
-                && a.EmployeeId == employeeId
-                && a.WorkDate == today, ct);
+        // Selfie attendance v2: this legacy route carries no location and no selfie, so it must not become a way round
+        // the server-side geofence or a tenant's selfie requirement. It applies the same decision as punch/* and is
+        // refused whenever that decision needs something this request cannot carry.
+        var decision = await _verification.EvaluatePunchAsync(
+            tenantId.Value, employeeId.Value, null, new PunchLocation(null, null, null, null), PunchChannel.SelfMobileLegacy, ct);
+        if (decision.Refusal is { } refusal)
+            return BadRequest((refusal.Code == AttendanceRefusals.LocationRequired.Code ? AttendanceRefusals.LegacyPunchNeedsLocation : refusal).Body);
 
         var nowUtc = DateTime.UtcNow;
-        if (existing is null)
-        {
-            existing = new AttendanceDailyRecord
-            {
-                TenantId = tenantId.Value,
-                EmployeeId = employeeId.Value,
-                WorkDate = today,
-                Status = "Present"
-            };
-            _db.AttendanceDailyRecords.Add(existing);
-        }
+        var today = DateOnly.FromDateTime(nowUtc);
 
-        if (req.Direction == "In")
+        // Race-safe like AttendanceService.PunchAsync: two first-of-day punches used to both insert the daily record and
+        // the loser got an unhandled 23505 (a 500). Under the per-(tenant, employee, work date) lock the second one finds
+        // and updates the first's row.
+        AttendanceDailyRecord existing = null!;
+        await AttendanceDailyRecordLock.RunAsync(_db, tenantId.Value, employeeId.Value, today, async () =>
         {
-            existing.FirstInUtc = nowUtc;
-            existing.Status = "Present";
-        }
-        else if (req.Direction == "Out")
-        {
-            existing.LastOutUtc = nowUtc;
-            if (existing.FirstInUtc.HasValue && existing.LastOutUtc.HasValue)
+            existing = await _db.AttendanceDailyRecords
+                .FirstOrDefaultAsync(a => a.TenantId == tenantId
+                    && a.EmployeeId == employeeId
+                    && a.WorkDate == today, ct)
+                ?? _db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+                {
+                    TenantId = tenantId.Value,
+                    EmployeeId = employeeId.Value,
+                    WorkDate = today,
+                    Status = "Present"
+                }).Entity;
+
+            if (req.Direction == "In")
             {
-                var worked = existing.LastOutUtc.Value - existing.FirstInUtc.Value;
-                existing.TotalWorkedMinutes = worked.TotalMinutes > 0 ? (int)worked.TotalMinutes : 0;
+                existing.FirstInUtc = nowUtc;
+                existing.Status = "Present";
             }
-        }
+            else if (req.Direction == "Out")
+            {
+                existing.LastOutUtc = nowUtc;
+                if (existing.FirstInUtc.HasValue && existing.LastOutUtc.HasValue)
+                {
+                    var worked = existing.LastOutUtc.Value - existing.FirstInUtc.Value;
+                    existing.TotalWorkedMinutes = worked.TotalMinutes > 0 ? (int)worked.TotalMinutes : 0;
+                }
+            }
 
-        await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(ct);
+        }, ct);
         return Ok(new
         {
             employeeId,

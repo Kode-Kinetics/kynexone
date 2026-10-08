@@ -102,13 +102,15 @@ public static class PrivilegedMfaPolicy
         "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         // Employee records and bulk changes.
         "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
-        "employees.bulk_import", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
+        "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
         // Organisation, policy and configuration.
         "organization.write", "organization.delete", "organization.establishment.write", "organization.setup.apply",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "notifications.manage", "localization.manage",
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
         // Attendance that drives pay.
         "attendance.write", "attendance.delete", "attendance.bulk_import", "attendance.lock",
+        // Selfie attendance: opening an employee's stored face image (sensitive personal data under the PDPL).
+        "attendance.evidence.view",
         // Approvals beyond one's own line, recruitment, performance and compliance decisions.
         "approvals.override", "approvals.manage", "recruitment.write", "recruitment.approve", "recruitment.delete",
         "performance.approve", "performance.cycle_manage", "compliance.write", "compliance.approve",
@@ -121,11 +123,12 @@ public static class PrivilegedMfaPolicy
 
     /// <summary>
     /// Access-mode bundle keys that are privileged in general but scoped to the person's own record
-    /// inside that bundle. Mobile's <c>attendance.write</c> is the employee's own clock-in; counting it
-    /// would put every mobile user behind MFA. Any OTHER privileged key that appears in a bundle counts.
+    /// inside that bundle. Empty: Mobile used to carry <c>attendance.write</c> for the employee's own
+    /// clock-in, which now needs no permission, so the bundle no longer holds it. Any privileged key
+    /// that appears in a bundle counts.
     /// </summary>
     public static readonly IReadOnlySet<(string AccessMode, string Permission)> SelfScopedBundleKeys =
-        new HashSet<(string, string)> { (AccessModes.Mobile, "attendance.write") };
+        new HashSet<(string, string)>();
 
     /// <summary>The privileged keys an access-mode bundle contributes (after the self-scoped exemptions).</summary>
     public static IEnumerable<string> PrivilegedBundleKeys(string? accessMode, IEnumerable<string> bundle)
