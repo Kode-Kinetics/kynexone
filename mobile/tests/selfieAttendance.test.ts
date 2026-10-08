@@ -495,3 +495,9 @@ test('a photo that arrives after the app went to the background, or after a reta
   guard.close();
   assert.equal(guard.isCurrent(guard.begin()), false, 'no capture is wanted while the modal is closed');
 });
+
+test('review-2 codes map to an existing plain-language refusal', () => {
+  assert.equal(REVIEW_API_CODES.mock_detection_required, 'appUpdateRequired');
+  assert.equal(REVIEW_API_CODES.selfie_storage_unavailable, 'selfieBusy');
+  assert.equal(REVIEW_API_CODES.selfie_upload_interrupted, 'selfieUnusable');
+});

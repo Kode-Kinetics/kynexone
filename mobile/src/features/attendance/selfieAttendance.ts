@@ -272,6 +272,12 @@ export const REVIEW_API_CODES: Readonly<Record<string, RefusalKey>> = {
   app_update_required: 'appUpdateRequired',
   mobile_app_required: 'mobileAppRequired',
   selfie_busy: 'selfieBusy',
+  // Review 2: an Android build claiming it cannot detect mocked locations is out of date or tampered with;
+  // storage being down is the server's fault (the punch may go ahead without a selfie); an upload cut off
+  // by a consent change mid-flight is simply retaken.
+  mock_detection_required: 'appUpdateRequired',
+  selfie_storage_unavailable: 'selfieBusy',
+  selfie_upload_interrupted: 'selfieUnusable',
 };
 
 const CODE_TO_KEY: Record<string, RefusalKey> = {
