@@ -23,24 +23,26 @@ namespace Zayra.Api.Migrations
                     tenant_id = table.Column<Guid>(type: "uuid", nullable: false),
                     employee_id = table.Column<int>(type: "integer", nullable: false),
                     storage_key = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
-                    sha256 = table.Column<string>(type: "character(64)", nullable: false),
+                    sha256 = table.Column<string>(type: "character(64)", nullable: true),
                     content_type = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
-                    byte_size = table.Column<int>(type: "integer", nullable: false),
+                    byte_size = table.Column<int>(type: "integer", nullable: true),
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     expires_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     used_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     used_by_raw_event_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    purge_state = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false, defaultValue: "Active"),
+                    purge_state = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false, defaultValue: "Pending"),
                     purged_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_attendance_evidence", x => x.id);
-                    table.CheckConstraint("ck_attendance_evidence__byte_size", "byte_size > 0");
+                    table.CheckConstraint("ck_attendance_evidence__active_payload", "purge_state <> 'Active' OR (sha256 IS NOT NULL AND byte_size IS NOT NULL)");
+                    table.CheckConstraint("ck_attendance_evidence__byte_size", "byte_size IS NULL OR byte_size > 0");
                     table.CheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
-                    table.CheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Active','Purged')");
+                    table.CheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN ('Pending','Active','Purged')");
                     table.CheckConstraint("ck_attendance_evidence__purged_pair", "(purge_state = 'Purged') = (purged_at_utc IS NOT NULL)");
                     table.CheckConstraint("ck_attendance_evidence__used_pair", "(used_at_utc IS NULL) = (used_by_raw_event_id IS NULL)");
+                    table.CheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
                     table.ForeignKey(
                         name: "FK_attendance_evidence_attendance_raw_events_used_by_raw_event~",
                         column: x => x.used_by_raw_event_id,
@@ -89,8 +91,9 @@ namespace Zayra.Api.Migrations
             migrationBuilder.CreateIndex(
                 name: "ix_attendance_evidence__purge_due",
                 table: "attendance_evidence",
-                columns: new[] { "purge_state", "created_at_utc" },
-                filter: "purge_state = 'Active'");
+                columns: new[] { "tenant_id", "created_at_utc" },
+                filter: "purge_state IN ('Pending','Active')")
+                .Annotation("Npgsql:IndexInclude", new[] { "used_at_utc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_attendance_evidence_employee_id",
@@ -128,13 +131,13 @@ namespace Zayra.Api.Migrations
         /// <summary>Table and index comments (docs/schema: every table names its owner and retention, every index its query).</summary>
         public const string Comments = """
             COMMENT ON TABLE attendance_evidence IS
-                'One selfie an employee uploaded for an attendance punch: the envelope (owner, SHA-256, single-use evidence id, expiry, the punch that used it) of a re-encoded EXIF-free JPEG in document storage. No face matching. Blob purged 90 days after the punch''s payroll month locks, at work date + 120 days without a lock, or 24 hours after an unused upload; the row and its sha256 are kept. @tier:E @owner:HR @retention:E';
+                'One selfie an employee uploaded for an attendance punch: the envelope (owner, SHA-256, single-use evidence id, expiry, the punch that used it) of a re-encoded EXIF-free JPEG in document storage. Inserted Pending before the upload (every attempt counts toward the hourly limit), Active once the file is stored. No face matching. Blob purged 90 days after the punch''s payroll month locks, at work date + 120 days without a lock, 24 hours after an unused upload, 1 hour after an unfinished one, at once for unused selfies when consent is withdrawn, and before tenant erasure; the row and its sha256 are kept. @tier:E @owner:HR @retention:E';
             COMMENT ON TABLE biometric_consents IS
                 'An employee''s consent to selfie attendance per policy version, with the channel it was given on and when it was withdrawn. Without open consent the employee punches without a selfie. @tier:E @owner:HR @retention:employment+statutory';
             COMMENT ON INDEX ix_attendance_evidence__employee_created IS
-                'Upload rate limit: COUNT(*) of one employee''s attendance_evidence rows with created_at_utc in the last hour (SelfieAttendanceController.StoreAsync).';
+                'Upload rate limit: COUNT(*) of one employee''s attendance_evidence rows (every attempt, any purge_state) with created_at_utc in the last hour, under the per-employee advisory lock (AttendanceEvidenceController.ReserveAttemptAsync).';
             COMMENT ON INDEX ix_attendance_evidence__purge_due IS
-                'Selfie purge: Active rows old enough to be due, oldest first (SelfieEvidencePurgeScheduler.EnqueueDueAsync, SelfieEvidencePurger.FindDueAsync). Partial on purge_state = ''Active'' so purged rows never bloat it.';
+                'Selfie purge: SELECT DISTINCT tenant_id over rows not yet purged that can be due (SelfieEvidencePurgeScheduler.EnqueueDueAsync), and one tenant''s due rows oldest first (SelfieEvidencePurger.FindDueAsync). Partial on purge_state IN (Pending, Active) so purged rows never bloat it; INCLUDE used_at_utc answers the due predicate from the index.';
             COMMENT ON INDEX ux_attendance_evidence__used_by_raw_event IS
                 'One selfie per punch, and punch -> selfie lookup by attendance_raw_events.id. Partial: unused rows carry NULL.';
             COMMENT ON INDEX "IX_attendance_evidence_employee_id" IS

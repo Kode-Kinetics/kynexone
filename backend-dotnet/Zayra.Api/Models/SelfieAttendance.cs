@@ -11,10 +11,16 @@ namespace Zayra.Api.Models;
 /// the storage key never leaves the server. No face matching is performed, so this row proves only that a photo was
 /// taken by the signed-in employee's app at upload time — it is not a biometric verification.</para>
 ///
+/// <para><b>Lifecycle.</b> The upload inserts the row as <c>Pending</c> (its storage key derived from its id, so the
+/// file can be found even if the request dies), stores the file, then flips it to <c>Active</c> with its SHA-256 and
+/// size. Every attempt therefore leaves a row, which is what the hourly upload limit counts.</para>
+///
 /// <para><b>Retention (class E).</b> The blob is deleted by <c>SelfieEvidencePurgeJobHandler</c>: 90 days after the
 /// punch's payroll month is locked, or at work date + 120 days when no run locked that month, or 24 hours after upload
-/// when no punch ever used it. The ROW is kept, with its <see cref="Sha256"/>, as the record that a photo existed and
-/// was disposed of; <see cref="PurgeState"/> and <see cref="PurgedAtUtc"/> say so.</para>
+/// when no punch ever used it, or 1 hour after a <c>Pending</c> upload that never completed; immediately for unused
+/// selfies when the employee withdraws consent; and before a tenant is erased. The ROW is kept, with its
+/// <see cref="Sha256"/>, as the record that a photo existed and was disposed of; <see cref="PurgeState"/> and
+/// <see cref="PurgedAtUtc"/> say so.</para>
 /// </summary>
 public class AttendanceEvidence : ITenantOwned
 {
@@ -27,11 +33,16 @@ public class AttendanceEvidence : ITenantOwned
     /// <summary>Document-storage key of the sanitised JPEG. Server-only; never returned to a client.</summary>
     public string StorageKey { get; set; } = string.Empty;
 
-    /// <summary>Lower-case hex SHA-256 of the stored (re-encoded) bytes. Kept after the blob is purged.</summary>
-    public string Sha256 { get; set; } = string.Empty;
+    /// <summary>
+    /// Lower-case hex SHA-256 of the stored (re-encoded) bytes. Null only while <c>Pending</c> (or for an attempt that
+    /// was purged before it completed); an <c>Active</c> row always has it (CHECK). Kept after the blob is purged.
+    /// </summary>
+    public string? Sha256 { get; set; }
 
     public string ContentType { get; set; } = "image/jpeg";
-    public int ByteSize { get; set; }
+
+    /// <summary>Size of the stored bytes; null while <c>Pending</c>, like <see cref="Sha256"/>.</summary>
+    public int? ByteSize { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
     /// <summary>The evidence id may be used by a punch until this instant (upload + 10 minutes).</summary>
@@ -46,8 +57,8 @@ public class AttendanceEvidence : ITenantOwned
     /// <summary>The raw punch that used it. Set together with <see cref="UsedAtUtc"/> (CHECK).</summary>
     public Guid? UsedByRawEventId { get; set; }
 
-    /// <summary><see cref="AttendanceEvidencePurgeStates"/>.</summary>
-    public string PurgeState { get; set; } = AttendanceEvidencePurgeStates.Active;
+    /// <summary><see cref="AttendanceEvidencePurgeStates"/>. A new row is an unfinished attempt until its file is stored.</summary>
+    public string PurgeState { get; set; } = AttendanceEvidencePurgeStates.Pending;
 
     public DateTime? PurgedAtUtc { get; set; }
 }
@@ -55,12 +66,14 @@ public class AttendanceEvidence : ITenantOwned
 /// <summary>Values of <c>attendance_evidence.purge_state</c> (CHECK <c>ck_attendance_evidence__purge_state</c>).</summary>
 public static class AttendanceEvidencePurgeStates
 {
+    /// <summary>The upload was reserved (the attempt counts) but the file is not confirmed stored yet. Never usable by a punch.</summary>
+    public const string Pending = "Pending";
     /// <summary>The blob is in storage.</summary>
     public const string Active = "Active";
-    /// <summary>The blob was deleted by the retention job; the row and its SHA-256 remain.</summary>
+    /// <summary>The blob was deleted (confirmed, every version); the row and its SHA-256 remain.</summary>
     public const string Purged = "Purged";
 
-    public static readonly IReadOnlyList<string> All = [Active, Purged];
+    public static readonly IReadOnlyList<string> All = [Pending, Active, Purged];
 }
 
 /// <summary>
@@ -122,7 +135,7 @@ public static class AttendanceVerificationMethods
 /// <summary>EF mapping for the two selfie-attendance tables; called once from <c>ZayraDbContext.OnModelCreating</c>.</summary>
 public static class SelfieAttendanceModelConfiguration
 {
-    public const string PurgeStatesIn = "('Active','Purged')";
+    public const string PurgeStatesIn = "('Pending','Active','Purged')";
     public const string ChannelsIn = "('Mobile','Web')";
 
     public static void Configure(ModelBuilder modelBuilder)
@@ -134,24 +147,31 @@ public static class SelfieAttendanceModelConfiguration
                 t.HasCheckConstraint("ck_attendance_evidence__purge_state", "purge_state IN " + PurgeStatesIn);
                 t.HasCheckConstraint("ck_attendance_evidence__purged_pair", "(purge_state = 'Purged') = (purged_at_utc IS NOT NULL)");
                 t.HasCheckConstraint("ck_attendance_evidence__used_pair", "(used_at_utc IS NULL) = (used_by_raw_event_id IS NULL)");
-                t.HasCheckConstraint("ck_attendance_evidence__byte_size", "byte_size > 0");
+                t.HasCheckConstraint("ck_attendance_evidence__byte_size", "byte_size IS NULL OR byte_size > 0");
+                // A usable (Active) selfie always carries its hash and size; only an unfinished or abandoned attempt lacks them.
+                t.HasCheckConstraint("ck_attendance_evidence__active_payload", "purge_state <> 'Active' OR (sha256 IS NOT NULL AND byte_size IS NOT NULL)");
+                // Only an Active selfie can have been used by a punch.
+                t.HasCheckConstraint("ck_attendance_evidence__used_was_active", "used_at_utc IS NULL OR purge_state <> 'Pending'");
                 t.HasCheckConstraint("ck_attendance_evidence__expiry", "expires_at_utc > created_at_utc");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.StorageKey).HasMaxLength(500).IsRequired();
-            entity.Property(x => x.Sha256).HasColumnType("character(64)").IsRequired();
+            entity.Property(x => x.Sha256).HasColumnType("character(64)");
             entity.Property(x => x.ContentType).HasMaxLength(64).IsRequired();
-            entity.Property(x => x.PurgeState).HasMaxLength(16).HasDefaultValue(AttendanceEvidencePurgeStates.Active);
+            entity.Property(x => x.PurgeState).HasMaxLength(16).HasDefaultValue(AttendanceEvidencePurgeStates.Pending);
             entity.Property(x => x.UsedAtUtc).IsConcurrencyToken();
             entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<AttendanceRawEvent>().WithMany().HasForeignKey(x => x.UsedByRawEventId).OnDelete(DeleteBehavior.Restrict);
-            // Serves the upload rate limit: COUNT(*) of one employee's uploads in the last hour.
+            // Serves the upload rate limit: COUNT(*) of one employee's upload attempts in the last hour.
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__employee_created");
-            // Serves the purge scheduler and job: Active rows ordered by age.
-            entity.HasIndex(x => new { x.PurgeState, x.CreatedAtUtc })
+            // Serves the purge: the scheduler's SELECT DISTINCT tenant_id over not-yet-purged rows that can be due, and
+            // one tenant's due rows oldest first. Partial (purged rows never enter it), so no constant leading column;
+            // used_at_utc is included so the due predicate is answered from the index alone.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__purge_due")
-                .HasFilter("purge_state = 'Active'");
+                .HasFilter("purge_state IN ('Pending','Active')")
+                .IncludeProperties(x => x.UsedAtUtc);
             // One evidence row per punch; serves punch -> selfie lookups and backs the FK.
             entity.HasIndex(x => x.UsedByRawEventId)
                 .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")

@@ -20,6 +20,8 @@ using Zayra.Api.Infrastructure.Filters;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Invoices;
@@ -1122,20 +1124,20 @@ public class PlatformController : ControllerBase
             .FirstOrDefaultAsync(f => f.TenantId == tenantId && f.FeatureKey == featureKey, ct);
 
         // Selfie attendance collects a face image. The two owner decisions — the DPIA sign-off (legal) and the KSA
-        // data-residency confirmation (spend) — must be recorded in ConfigJson before it can be switched on. Disabling
-        // is always allowed and keeps the recorded sign-offs (a null ConfigJson does not erase them).
+        // data-residency confirmation (spend) — must be recorded before it can be switched on. Disabling is always
+        // allowed (Owner or Admin: it is the kill switch) and keeps the recorded sign-offs.
         var effectiveConfig = req.ConfigJson;
         if (featureKey == FeatureKeys.SelfieAttendance)
         {
             effectiveConfig ??= flag?.ConfigJson;
-            if (req.IsEnabled && SelfieAttendanceConfig.MissingSignOffs(effectiveConfig) is { Count: > 0 } missing)
-                return UnprocessableEntity(new
-                {
-                    code = "selfie_signoff_missing",
-                    message = "Selfie attendance cannot be switched on until the DPIA sign-off and the KSA data-residency "
-                              + "confirmation are recorded in ConfigJson.",
-                    missing,
-                });
+            if (req.IsEnabled)
+            {
+                if (await SelfieEnableRefusalAsync(effectiveConfig, ct) is { } refusal) return refusal;
+                // The server stamps who enabled it, when, who confirmed residency and where storage really is; the
+                // request cannot supply any of those.
+                effectiveConfig = SelfieAttendanceConfig.StampServerFields(effectiveConfig, GetPlatformUserId()!.Value,
+                    PlatformActorEmail(), DateTime.UtcNow, SelfieResidency().ActualLocation);
+            }
         }
         else if (featureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } problems)
         {
@@ -1177,6 +1179,53 @@ public class PlatformController : ControllerBase
             await _db.SaveChangesAsync(ct);
         return Ok(flag);
     }
+
+    /// <summary>
+    /// Why an Owner may not switch selfie attendance on with this config, or null. Review item 7: platform OWNER only
+    /// (a named account), <c>dpia.signedOffBy</c> an existing platform user id, <c>dpia.reference</c> in the
+    /// <c>DPIA-YYYY-NNN</c> format, the sign-off date neither in the future nor before 2026-01-01, region KSA. Review
+    /// item 2: this deploy's storage must be on the KSA residency allow-list.
+    /// </summary>
+    private async Task<IActionResult?> SelfieEnableRefusalAsync(string? config, CancellationToken ct)
+    {
+        if (!string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
+            || GetPlatformUserId() is null)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = "selfie_owner_only",
+                message = "Only a platform Owner, signed in with a named account, can switch selfie attendance on. "
+                          + "An Admin can switch it off.",
+            });
+
+        var missing = SelfieAttendanceConfig.RequestProblems(config, DateTime.UtcNow).ToList();
+        if (!missing.Contains("dpia.signedOffBy") && SelfieAttendanceConfig.SignedOffBy(config) is Guid signer
+            && !await _db.PlatformUsers.AsNoTracking().AnyAsync(u => u.Id == signer, ct))
+            missing.Add("dpia.signedOffBy");
+        if (missing.Count > 0)
+            return UnprocessableEntity(new
+            {
+                code = "selfie_signoff_missing",
+                message = "Selfie attendance cannot be switched on until the DPIA sign-off is recorded: dpia.signedOffBy "
+                          + "must be the id of an existing platform user, dpia.reference must look like DPIA-2026-007, "
+                          + "dpia.signedOffAtUtc must be a date from 2026-01-01 up to now, and dataResidency.region must be KSA.",
+                missing,
+            });
+
+        var residency = SelfieResidency().Check(SelfieAttendanceConfig.RequiredRegion);
+        if (!residency.Resident)
+            return UnprocessableEntity(new
+            {
+                code = "selfie_residency_unverified",
+                message = "Selfie attendance cannot be switched on: " + residency.Reason
+                          + " An operator must point storage at an approved KSA bucket and list it in Storage:ResidencyAllowList:KSA.",
+                storageLocation = residency.ActualLocation,
+            });
+        return null;
+    }
+
+    /// <summary>This deploy's storage residency (DI); unconfigured, so nothing is resident, when none is registered.</summary>
+    private StorageResidency SelfieResidency() =>
+        HttpContext?.RequestServices?.GetService(typeof(StorageResidency)) as StorageResidency ?? StorageResidency.Unconfigured;
 
     // ── Branding & Localization ───────────────────────────────────────────────
 
@@ -1322,6 +1371,27 @@ public class PlatformController : ControllerBase
             return BadRequest(new { message = "Only a soft-deleted tenant can be purged. Delete it first." });
 
         var name = tenant.Name;
+
+        // Selfie images first (review item 4): erasing attendance_evidence rows would orphan the files they point at.
+        // Each file not already confirmed deleted is strictly deleted (every version); if one cannot be confirmed,
+        // nothing is erased and the operator retries.
+        try
+        {
+            await SelfieEvidenceErasure.DeleteAllFilesAsync(
+                ScopedBypass.TenantWide(_db.AttendanceEvidence, tenantId, TenantPurgeEvidenceScope),
+                HttpContext?.RequestServices?.GetService(typeof(IDocumentStorage)) as IDocumentStorage, tenantId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Tenant purge of {TenantId} stopped: selfie files could not be confirmed deleted.", tenantId);
+            return Conflict(new
+            {
+                code = "selfie_files_not_deleted",
+                message = "The tenant's selfie images could not be confirmed deleted from storage, so nothing was erased. Try again; "
+                          + "files already deleted are skipped.",
+            });
+        }
+
         // Audit BEFORE erasure (the audit log row is tenant-scoped but retained as the legal record).
         AuditTenant(tenantId, "TenantPurged",
             new { tenantName = name, slug = tenant.Slug },
@@ -1370,6 +1440,10 @@ public class PlatformController : ControllerBase
             return Ok(new { tenantId, purged = true, incomplete = true, unresolvedTables = failures, message = $"Tenant '{name}' erased with {failures.Count} unresolved table(s) — review audit log." });
         return Ok(new { tenantId, purged = true, message = $"Tenant '{name}' and its data have been permanently erased." });
     }
+
+    private const string TenantPurgeEvidenceScope =
+        "Owner-confirmed tenant purge runs as a platform operator with no tenant principal; it reads the purged tenant's "
+        + "selfie evidence storage keys, pinned to that tenant id, to delete the files before the rows.";
 
     private static readonly System.Reflection.MethodInfo _purgeRowsMethod =
         typeof(PlatformController).GetMethod(nameof(PurgeTenantRowsCoreAsync), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;

@@ -338,6 +338,8 @@ builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceVerificationService>();
+// One gate per process for selfie image work (decode/re-encode): two at a time, the rest answered 429 at once.
+builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Attendance.SelfieImageGate());
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
 // Establishment matrix: the ONE budget guard every assignment path shares, plus the per-tenant

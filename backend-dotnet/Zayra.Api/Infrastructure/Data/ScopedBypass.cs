@@ -161,6 +161,29 @@ public static class ScopedBypass
         return set.IgnoreQueryFilters().Where(predicate).OrderBy(orderBy).Take(batchSize);
     }
 
+    /// <summary>
+    /// <see cref="SystemWide{T,TKey}"/> for a sweep that needs only WHICH keys (e.g. tenant ids) have matching rows:
+    /// <c>SELECT DISTINCT key … WHERE predicate ORDER BY key LIMIT batchSize</c>. The bound applies to distinct keys,
+    /// not rows, so one key's backlog of rows can never crowd the others out of the batch.
+    /// </summary>
+    public static IQueryable<TKey> SystemWideDistinct<T, TKey>(
+        DbSet<T> set, int batchSize, string justification,
+        System.Linq.Expressions.Expression<Func<T, bool>> predicate,
+        System.Linq.Expressions.Expression<Func<T, TKey>> key)
+        where T : class
+    {
+        RequireJustification(justification);
+        if (batchSize is < 1 or > 1000)
+            throw new ArgumentOutOfRangeException(nameof(batchSize), batchSize,
+                "A cross-tenant system sweep must be bounded (1..1000). An unbounded sweep lets one " +
+                "tenant's backlog stall every other tenant's delivery.");
+        ArgumentNullException.ThrowIfNull(predicate);
+        ArgumentNullException.ThrowIfNull(key);
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed — worker-only sweep with no request
+        // principal. Restriction is structural: filter, project to the key, distinct, order, then bound.
+        return set.IgnoreQueryFilters().Where(predicate).Select(key).Distinct().OrderBy(k => k).Take(batchSize);
+    }
+
     private static void RequireJustification(string justification)
     {
         if (string.IsNullOrWhiteSpace(justification) || justification.Trim().Length < 20)

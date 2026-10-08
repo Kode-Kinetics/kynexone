@@ -29,7 +29,15 @@ public class MobileController : ControllerBase
 {
     private readonly ZayraDbContext _db;
 
-    public MobileController(ZayraDbContext db) => _db = db;
+    private readonly AttendanceVerificationService _verification;
+
+    // The verification service is optional so existing constructions compile; DI supplies the registered one (with the
+    // deploy's storage residency). Without it a service over the same context is used, with selfie attendance off.
+    public MobileController(ZayraDbContext db, AttendanceVerificationService? verification = null)
+    {
+        _db = db;
+        _verification = verification ?? new AttendanceVerificationService(db);
+    }
 
     /// <summary>
     /// Resolves the authenticated caller's own employee id from the JWT (employee_id claim from the
@@ -182,8 +190,8 @@ public class MobileController : ControllerBase
         // Selfie attendance v2: this legacy route carries no location and no selfie, so it must not become a way round
         // the server-side geofence or a tenant's selfie requirement. It applies the same decision as punch/* and is
         // refused whenever that decision needs something this request cannot carry.
-        var decision = await new AttendanceVerificationService(_db).EvaluatePunchAsync(
-            tenantId.Value, employeeId.Value, null, new PunchLocation(null, null, null, null), ct);
+        var decision = await _verification.EvaluatePunchAsync(
+            tenantId.Value, employeeId.Value, null, new PunchLocation(null, null, null, null), PunchChannel.SelfMobileLegacy, ct);
         if (decision.Refusal is { } refusal)
             return BadRequest((refusal.Code == AttendanceRefusals.LocationRequired.Code ? AttendanceRefusals.LegacyPunchNeedsLocation : refusal).Body);
 

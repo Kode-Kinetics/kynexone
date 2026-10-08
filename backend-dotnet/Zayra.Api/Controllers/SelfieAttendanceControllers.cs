@@ -66,27 +66,49 @@ public abstract class SelfieAttendanceControllerBase : ControllerBase
 [Authorize]
 public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBase
 {
-    private const long MaxSelfieBytes = EssUploadPolicy.MaxPhotoBytes;
+    /// <summary>The whole request, file and multipart framing: anything larger is refused before it is read.</summary>
+    public const long MaxRequestBytes = 8L * 1024 * 1024;
+    /// <summary>The largest photo accepted, by its declared canvas (checked from the header, before any decode).</summary>
+    public const long MaxSourcePixels = 16_000_000;
+    /// <summary>JPEGs are decoded downsampled toward this long edge, then re-encoded at ≤ <see cref="ProfilePhotoProcessor.MaxEdge"/> px.</summary>
+    public const int DecodeLongEdge = 1080;
 
     private readonly IDocumentStorage _storage;
+    private readonly SelfieImageGate _gate;
 
-    public AttendanceEvidenceController(ZayraDbContext db, IDocumentStorage storage, AttendanceVerificationService? verification = null)
+    public AttendanceEvidenceController(ZayraDbContext db, IDocumentStorage storage, AttendanceVerificationService? verification = null,
+        SelfieImageGate? gate = null)
         : base(db, verification)
     {
         _storage = storage;
+        // DI supplies the process-wide singleton; a hand-built controller (tests) gets its own.
+        _gate = gate ?? new SelfieImageGate();
     }
 
     /// <summary>
     /// Stores one selfie for the caller and returns an opaque evidence id: single-use, bound to the caller, valid for
-    /// 10 minutes. The image is decoded and re-encoded server-side (EXIF and GPS stripped, ≤512 px); the original bytes
-    /// are never stored. At most 10 uploads per employee per hour.
+    /// 10 minutes. In this order, so a hostile upload costs as little as possible:
+    /// <list type="number">
+    ///   <item>the caller, the flag (with sign-offs and storage residency) and consent — nothing is read yet;</item>
+    ///   <item>the declared size (≤ 8 MB) and the hourly limit: the attempt is RESERVED as a <c>Pending</c> row under a
+    ///     per-employee advisory lock, so every attempt counts, finished or not, and parallel uploads cannot overshoot;</item>
+    ///   <item>only then the body is read; the photo's canvas is checked from its header (≤ 16 MP) and it is decoded
+    ///     downsampled inside a process-wide gate of two (busy: 429 at once);</item>
+    ///   <item>the re-encoded JPEG (EXIF and GPS stripped, ≤ 512 px) is stored at the key derived from the row's id, and
+    ///     the row flips to <c>Active</c>. The original bytes are never stored.</item>
+    /// </list>
+    /// A Pending row whose upload never completed is purged (with any file) after an hour.
     /// </summary>
     [HttpPost("selfie")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(MaxSelfieBytes + EssUploadPolicy.MultipartOverheadBytes)]
-    [RequestFormLimits(MultipartBodyLengthLimit = MaxSelfieBytes + EssUploadPolicy.MultipartOverheadBytes)]
-    public async Task<IActionResult> UploadSelfie([FromForm] SelfieUploadForm form, CancellationToken ct)
+    [RequestSizeLimit(MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes)]
+    // NO parameters, deliberately: an action with any parameter makes MVC build its value providers, and the form value
+    // provider reads the entire multipart body before the action runs — which would undo the order below. The
+    // cancellation token comes from the request instead.
+    public async Task<IActionResult> UploadSelfie()
     {
+        var ct = HttpContext.RequestAborted;
         var (ok, tenantId, employeeId, error) = await CallerAsync(ct, requireActive: true);
         if (!ok) return error!;
 
@@ -94,103 +116,132 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         if (!policy.SelfieEnabled) return StatusCode(StatusCodes.Status403Forbidden, AttendanceRefusals.SelfieNotEnabled.Body);
         if (await Verification.ActiveConsentAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct) is null)
             return StatusCode(StatusCodes.Status403Forbidden, AttendanceRefusals.ConsentRequired.Body);
+        if (Request.ContentLength > MaxRequestBytes) return TooLarge();
 
-        if (form.File is null || form.File.Length <= 0)
+        var attempt = await ReserveAttemptAsync(tenantId, employeeId, ct);
+        if (attempt is null) return StatusCode(StatusCodes.Status429TooManyRequests, AttendanceRefusals.RateLimited.Body);
+
+        // ── Only now is the body read. ──
+        IFormFile? file;
+        try
+        {
+            var form = await Request.ReadFormAsync(ct);
+            file = form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+        }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge) { return TooLarge(); }
+        catch (InvalidDataException ex) when (ex.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)) { return TooLarge(); }
+        catch (InvalidDataException) { return BadRequest(Refusal("selfie_invalid", "The selfie could not be read. Take it again.", "تعذّرت قراءة الصورة. التقطها مرة أخرى.")); }
+        if (file is null || file.Length <= 0)
             return BadRequest(Refusal("selfie_missing", "Take a selfie first, then try again.", "التقط صورة ذاتية أولًا ثم حاول مرة أخرى."));
-        if (form.File.Length > MaxSelfieBytes)
-            return BadRequest(Refusal("selfie_too_large", "The selfie is larger than 5 MB. Take it again at a lower resolution.", "حجم الصورة أكبر من 5 ميغابايت. التقطها مرة أخرى بدقة أقل."));
+        if (file.Length > MaxRequestBytes) return TooLarge();
 
         byte[] source;
-        await using (var input = form.File.OpenReadStream())
-        using (var buffer = new MemoryStream((int)form.File.Length))
+        await using (var input = file.OpenReadStream())
+        using (var buffer = new MemoryStream((int)file.Length))
         {
             await input.CopyToAsync(buffer, ct);
             source = buffer.ToArray();
         }
-        var verdict = EssUploadPolicy.Check(form.File.ContentType, form.File.FileName, source, MaxSelfieBytes, EssUploadPolicy.PhotoTypes);
+        var verdict = EssUploadPolicy.Check(file.ContentType, file.FileName, source, MaxRequestBytes, EssUploadPolicy.PhotoTypes);
         if (!verdict.Ok) return BadRequest(Refusal("selfie_invalid", verdict.Error ?? "The selfie must be a JPEG or PNG photo.", "يجب أن تكون الصورة بصيغة JPEG أو PNG."));
 
+        if (!_gate.TryEnter())
+        {
+            Response.Headers.RetryAfter = "5";
+            return StatusCode(StatusCodes.Status429TooManyRequests, AttendanceRefusals.SelfieBusy.Body);
+        }
         byte[] jpeg;
-        try { jpeg = ProfilePhotoProcessor.ToSanitisedJpeg(source); }
+        try { jpeg = ProfilePhotoProcessor.ToSanitisedJpeg(source, MaxSourcePixels, DecodeLongEdge); }
+        catch (ImageTooLargeException)
+        {
+            return BadRequest(Refusal("selfie_too_large",
+                "The photo is larger than 16 megapixels. Take it again with the app's camera.",
+                "الصورة أكبر من 16 ميغابكسل. التقطها مرة أخرى بكاميرا التطبيق."));
+        }
         catch (InvalidDataException) { return BadRequest(Refusal("selfie_invalid", "The selfie could not be read as a photo. Take it again.", "تعذّرت قراءة الصورة. التقطها مرة أخرى.")); }
+        finally { _gate.Exit(); }
+        source = [];
         var sha256 = Convert.ToHexString(SHA256.HashData(jpeg)).ToLowerInvariant();
 
-        AttendanceEvidence? created = null;
-        var storedKeys = new List<string>();
-        try
-        {
-            if (Db.Database.IsRelational())
-            {
-                var strategy = Db.Database.CreateExecutionStrategy();
-                await strategy.ExecuteAsync(async () =>
-                {
-                    // A retried attempt starts clean: nothing else is tracked on this request's context.
-                    Db.ChangeTracker.Clear();
-                    await using var tx = await Db.Database.BeginTransactionAsync(ct);
-                    created = await StoreAsync(tenantId, employeeId, jpeg, sha256, storedKeys.Add, ct);
-                    if (created is not null) await tx.CommitAsync(ct);
-                });
-            }
-            else
-            {
-                created = await StoreAsync(tenantId, employeeId, jpeg, sha256, storedKeys.Add, ct);
-            }
-        }
+        try { await _storage.PutAtAsync(tenantId, attempt.StorageKey, jpeg, EssUploadPolicy.Jpeg, ct); }
         catch
         {
-            // The row did not commit: remove every blob this request stored so a failed upload leaves no image behind.
-            foreach (var key in storedKeys) await _storage.TryDeleteAsync(tenantId, key, CancellationToken.None);
+            // The row stays Pending (unusable) and the purge deletes any partial file within the hour; try now too.
+            try { await _storage.DeleteStrictAsync(tenantId, attempt.StorageKey, CancellationToken.None); } catch { /* the purge retries */ }
             throw;
         }
-        // A transient retry may have stored a blob for an attempt that then rolled back; only the committed one stays.
-        foreach (var key in storedKeys.Where(k => k != created?.StorageKey))
-            await _storage.TryDeleteAsync(tenantId, key, CancellationToken.None);
 
-        if (created is null) return StatusCode(StatusCodes.Status429TooManyRequests, AttendanceRefusals.RateLimited.Body);
-        return StatusCode(StatusCodes.Status201Created, new { evidenceId = created.Id, expiresAtUtc = created.ExpiresAtUtc });
+        Db.ChangeTracker.Clear();
+        var row = await Db.AttendanceEvidence.FirstAsync(e => e.TenantId == tenantId && e.Id == attempt.Id, ct);
+        if (row.PurgeState != AttendanceEvidencePurgeStates.Pending)
+        {
+            await _storage.DeleteStrictAsync(tenantId, attempt.StorageKey, CancellationToken.None);
+            throw new InvalidOperationException($"Selfie evidence {row.Id} left Pending before its upload finished.");
+        }
+        var now = DateTime.UtcNow;
+        row.PurgeState = AttendanceEvidencePurgeStates.Active;
+        row.Sha256 = sha256;
+        row.ByteSize = jpeg.Length;
+        row.ExpiresAtUtc = now + AttendanceVerificationService.EvidenceLifetime;
+        Audit(tenantId, "attendance.selfie.uploaded", "AttendanceEvidence", row.Id.ToString(),
+            new { employeeId, sha256, byteSize = jpeg.Length, expiresAtUtc = row.ExpiresAtUtc });
+        await Db.SaveChangesAsync(ct);
+        return StatusCode(StatusCodes.Status201Created, new { evidenceId = row.Id, expiresAtUtc = row.ExpiresAtUtc });
     }
 
-    /// <summary>
-    /// Inside the caller's transaction: locks the employee row (so concurrent uploads for one employee serialise on the
-    /// rate limit), counts the last hour, stores the blob and stages the row and its audit. Null when rate-limited.
-    /// </summary>
-    private async Task<AttendanceEvidence?> StoreAsync(Guid tenantId, int employeeId, byte[] jpeg, string sha256, Action<string> onStored, CancellationToken ct)
-    {
-        await Db.Employees.Where(e => e.TenantId == tenantId && e.Id == employeeId)
-            .Select(e => e.Id)
-            .TagWith(RowLockingInterceptor.ForUpdateTag)
-            .FirstOrDefaultAsync(ct);
+    private ObjectResult TooLarge() => StatusCode(StatusCodes.Status413PayloadTooLarge, Refusal("selfie_too_large",
+        "The selfie is larger than 8 MB. Take it again at a lower resolution.",
+        "حجم الصورة أكبر من 8 ميغابايت. التقطها مرة أخرى بدقة أقل."));
 
+    /// <summary>
+    /// Reserves one upload attempt: under a transaction-scoped advisory lock on (tenant, employee), counts the
+    /// employee's attempts in the last hour (every row, whatever its state) and, below the limit, inserts the Pending
+    /// row with its storage key derived from its id. Null when rate-limited. Commits before the body is read, so the
+    /// attempt counts even if the upload then fails.
+    /// </summary>
+    private async Task<AttendanceEvidence?> ReserveAttemptAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        if (!Db.Database.IsRelational()) return await ReserveCoreAsync(tenantId, employeeId, ct);
+        var strategy = Db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // A retried attempt starts clean: nothing else is tracked on this request's context yet.
+            Db.ChangeTracker.Clear();
+            await using var tx = await Db.Database.BeginTransactionAsync(ct);
+            if ((Db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                var lockKey = $"attendance-evidence-upload:{tenantId:N}:{employeeId}";
+                await Db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({lockKey}, 0))", ct);
+            }
+            var reserved = await ReserveCoreAsync(tenantId, employeeId, ct);
+            await tx.CommitAsync(ct);
+            return reserved;
+        });
+    }
+
+    private async Task<AttendanceEvidence?> ReserveCoreAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
         var now = DateTime.UtcNow;
         var since = now.AddHours(-1);
-        var recent = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since, ct);
-        if (recent >= AttendanceVerificationService.MaxUploadsPerHour) return null;
+        var attempts = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since, ct);
+        if (attempts >= AttendanceVerificationService.MaxUploadsPerHour) return null;
 
-        var stored = await _storage.SaveAsync(tenantId, new FormFile(new MemoryStream(jpeg), 0, jpeg.Length, "file", "attendance-selfie.jpg")
-        {
-            Headers = new HeaderDictionary(),
-            ContentType = EssUploadPolicy.Jpeg,
-        }, ct);
-        onStored(stored.StorageUrl);
-
+        var id = Guid.NewGuid();
         var evidence = new AttendanceEvidence
         {
+            Id = id,
             TenantId = tenantId,
             EmployeeId = employeeId,
-            StorageKey = stored.StorageUrl,
-            Sha256 = sha256,
+            StorageKey = _storage.TenantKey(tenantId, $"attendance-evidence/{id:N}.jpg"),
             ContentType = EssUploadPolicy.Jpeg,
-            ByteSize = jpeg.Length,
+            PurgeState = AttendanceEvidencePurgeStates.Pending,
             CreatedAtUtc = now,
             ExpiresAtUtc = now + AttendanceVerificationService.EvidenceLifetime,
         };
         Db.AttendanceEvidence.Add(evidence);
-        Audit(tenantId, "attendance.selfie.uploaded", "AttendanceEvidence", evidence.Id.ToString(),
-            new { employeeId, sha256, byteSize = jpeg.Length, expiresAtUtc = evidence.ExpiresAtUtc });
         await Db.SaveChangesAsync(ct);
         return evidence;
     }
-
 }
 
 /// <summary>
@@ -202,8 +253,16 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
 [Authorize]
 public sealed class EssAttendanceVerificationController : SelfieAttendanceControllerBase
 {
-    public EssAttendanceVerificationController(ZayraDbContext db, AttendanceVerificationService? verification = null)
-        : base(db, verification) { }
+    private readonly IDocumentStorage? _storage;
+    private readonly ILogger<EssAttendanceVerificationController>? _log;
+
+    public EssAttendanceVerificationController(ZayraDbContext db, AttendanceVerificationService? verification = null,
+        IDocumentStorage? storage = null, ILogger<EssAttendanceVerificationController>? log = null)
+        : base(db, verification)
+    {
+        _storage = storage;
+        _log = log;
+    }
 
     /// <summary>
     /// What the app needs before a punch: whether the selfie step applies (flag on, the caller's consent, whether the
@@ -270,6 +329,10 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
     /// <summary>
     /// Withdraws the caller's consent. Always possible — with the feature off, with no write permission, and when there
     /// is nothing open (a no-op that still answers 200). Afterwards the caller punches without a selfie.
+    /// <para>Review item 8: the caller's UNUSED selfies (Active or Pending) are then deleted at once, strictly (every
+    /// version, confirmed). A selfie a punch already used keeps its retention window, because it backs a pay record
+    /// (docs/schema/OWNERSHIP_AND_RETENTION.md). A delete storage cannot confirm leaves that row for the purge job,
+    /// which retries it within the hour; the withdrawal itself never fails because of it.</para>
     /// </summary>
     [HttpPost("biometric-consent/withdraw")]
     [HttpDelete("biometric-consent")]
@@ -292,19 +355,52 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
             }
             await Db.SaveChangesAsync(ct);
         }
-        return Ok(await BuildViewAsync(tenantId, employeeId, ct));
+        var (deleted, awaiting) = await PurgeUnusedSelfiesAsync(tenantId, employeeId, ct);
+        var view = await BuildViewAsync(tenantId, employeeId, ct);
+        view["withdrawal"] = new { unusedSelfiesDeleted = deleted, unusedSelfiesAwaitingDeletion = awaiting };
+        return Ok(view);
     }
 
-    private async Task<object> BuildViewAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    private async Task<(int Deleted, int Awaiting)> PurgeUnusedSelfiesAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var unused = await Db.AttendanceEvidence
+            .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.UsedAtUtc == null
+                        && (e.PurgeState == AttendanceEvidencePurgeStates.Active || e.PurgeState == AttendanceEvidencePurgeStates.Pending))
+            .ToListAsync(ct);
+        if (unused.Count == 0) return (0, 0);
+        if (_storage is null) return (0, unused.Count);
+
+        var purger = new SelfieEvidencePurger(Db, _storage);
+        var deleted = 0;
+        foreach (var evidence in unused)
+        {
+            try
+            {
+                // Strict: throws before touching the row when the delete is not confirmed.
+                await purger.PurgeNowAsync(evidence, DateTime.UtcNow, "Consent withdrawn: an unused selfie is deleted at once.", ct);
+                await Db.SaveChangesAsync(ct);
+                deleted++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log?.LogWarning(ex, "Selfie {EvidenceId} could not be confirmed deleted on consent withdrawal; the purge job will retry.", evidence.Id);
+            }
+        }
+        return (deleted, unused.Count - deleted);
+    }
+
+    private async Task<Dictionary<string, object?>> BuildViewAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {
         var policy = await Verification.GetPolicyAsync(tenantId, ct);
         var consent = await Verification.ActiveConsentAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct);
         var sites = policy.GeofenceEnforced ? await Verification.SitesForAsync(tenantId, employeeId, ct) : [];
-        return new
+        return new Dictionary<string, object?>
         {
-            selfie = new
+            ["selfie"] = new
             {
                 enabled = policy.SelfieEnabled,
+                // Why a tenant that switched selfie attendance on still sees it off (sign-offs or storage residency); null otherwise.
+                offReason = policy.SelfieOffReason,
                 // The step is offered only to a consenting employee; required only if the tenant chose so for them.
                 step = !policy.SelfieEnabled ? "off" : consent is null ? "consent_needed" : policy.RequireSelfieForConsented ? "required" : "optional",
                 requiredForConsented = policy.RequireSelfieForConsented,
@@ -313,21 +409,18 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
                 evidenceLifetimeSeconds = (int)AttendanceVerificationService.EvidenceLifetime.TotalSeconds,
                 maxUploadsPerHour = AttendanceVerificationService.MaxUploadsPerHour,
             },
-            geofence = new
+            ["geofence"] = new
             {
                 enforced = policy.GeofenceEnforced,
                 maxAccuracyMeters = policy.GeofenceEnforced ? policy.MaxAccuracyMeters : (int?)null,
                 allowMockedLocation = policy.GeofenceEnforced ? policy.AllowMockedLocation : (bool?)null,
                 sites = sites.Select(s => new { s.Name, s.Latitude, s.Longitude, s.RadiusMeters }),
+                // The app is required for self punches while the geofence is enforced (a browser cannot attest to a mock).
+                webPunchAllowed = !policy.GeofenceEnforced,
             },
         };
     }
 
-}
-
-public sealed class SelfieUploadForm
-{
-    public IFormFile? File { get; set; }
 }
 
 public sealed record GiveBiometricConsentRequest(string? PolicyVersion, string? Channel);
