@@ -132,8 +132,6 @@ export interface PunchPlan {
   selfie: 'skip' | 'optional' | 'required';
   /** Show the non-blocking "read and decide" prompt for the consent screen. Never a gate. */
   offerConsent: boolean;
-  /** Offer "withdraw consent" next to the selfie step so the employee can switch to punching without one. */
-  offerWithdraw: boolean;
   /** The server refuses a punch without a location: block early with a clear message if location is denied. */
   locationRequired: boolean;
   /** Ask the OS for its best fix: the server compares accuracy against this many metres. */
@@ -159,7 +157,6 @@ export function planPunch(verification: AttendanceVerification | null | undefine
   return {
     selfie,
     offerConsent: step === 'consent_needed',
-    offerWithdraw: selfie !== 'skip',
     locationRequired: v.geofence.enforced,
     maxAccuracyMeters: v.geofence.enforced ? v.geofence.maxAccuracyMeters : null,
   };
@@ -330,13 +327,114 @@ export interface PunchRefusal {
   key: RefusalKey;
   /** i18n keys under the `selfie` namespace. */
   titleKey: string;
-  nextKey: string;
+  /**
+   * The local "what to do next" line appended to the message, or null when nothing is appended.
+   * `selfie_required` has none: the server's message already says "take a selfie and try again", and
+   * the app never adds a line that could read as "withdraw your consent to get past this" (review 2, item 8).
+   */
+  nextKey: string | null;
   /** The server's plain-language message in the app language, or null to use the local fallback (`messageKey`). */
   serverMessage: string | null;
   messageKey: string;
   action: RefusalAction;
   /** Discovery may be stale (consent or tenant settings changed): re-read it before acting. */
   refreshVerification: boolean;
+}
+
+/** Refusals shown without a local "next" line (see PunchRefusal.nextKey). */
+const NO_NEXT_LINE: ReadonlySet<RefusalKey> = new Set<RefusalKey>(['selfieRequired']);
+
+/** The refusal text for an alert: the server's message (or the local fallback), then the local next line if any. */
+export function refusalText(refusal: PunchRefusal, translate: (key: string) => string): string {
+  const message = refusal.serverMessage ?? translate(refusal.messageKey);
+  return refusal.nextKey ? `${message}\n\n${translate(refusal.nextKey)}` : message;
+}
+
+/**
+ * The buttons a refusal alert may show. There is deliberately no "withdraw consent" or "review consent"
+ * button: withdrawal is an ordinary choice on the consent screen and is never offered as the way past a
+ * refusal (review 2, item 8).
+ * - try_again: punch again (with the same evidence, while valid);
+ * - selfie_try_again / take_selfie / take_new_selfie: open the selfie step again;
+ * - without_selfie: punch with no selfie.
+ */
+export type RefusalButton =
+  | 'cancel'
+  | 'ok'
+  | 'try_again'
+  | 'open_settings'
+  | 'without_selfie'
+  | 'selfie_try_again'
+  | 'take_selfie'
+  | 'take_new_selfie';
+
+export interface RefusalPrompt {
+  titleKey: string;
+  body: string;
+  buttons: RefusalButton[];
+}
+
+/**
+ * The alert for a refusal. `selfie` is the plan after any discovery refresh; `stage` says whether the
+ * selfie upload or the punch was refused.
+ * - Where a selfie is required, "Clock without a selfie" is offered only when the upload failed on the
+ *   server's side (the server then lets the punch through, review 2 item 7); otherwise the employee can
+ *   retry, and is told to contact HR if they cannot take a selfie.
+ */
+export function refusalPrompt(
+  refusal: PunchRefusal,
+  selfie: 'skip' | 'optional' | 'required',
+  stage: 'upload' | 'punch',
+  translate: (key: string) => string,
+): RefusalPrompt {
+  const required = selfie === 'required';
+  const openSelfie = (button: RefusalButton): RefusalButton => (selfie === 'skip' ? 'without_selfie' : button);
+  let body = refusalText(refusal, translate);
+  let buttons: RefusalButton[];
+
+  if (stage === 'upload' && refusal.action === 'retry') {
+    buttons = required && !isServerSideUploadFailure(refusal)
+      ? ['cancel', 'selfie_try_again']
+      : ['cancel', 'without_selfie', openSelfie('selfie_try_again')];
+  } else {
+    switch (refusal.action) {
+      case 'retry':
+        buttons = ['cancel', 'try_again'];
+        break;
+      case 'open_settings':
+        buttons = ['cancel', 'open_settings', 'try_again'];
+        break;
+      case 'retake_selfie':
+        buttons = required ? ['cancel', 'take_new_selfie'] : ['cancel', 'without_selfie', openSelfie('take_new_selfie')];
+        break;
+      case 'take_selfie':
+        buttons = selfie === 'skip' ? ['cancel', 'without_selfie'] : ['cancel', 'take_selfie'];
+        break;
+      case 'without_selfie':
+        if (required) {
+          // The local next line suggests clocking without a selfie, which a required selfie rules out.
+          body = `${refusal.serverMessage ?? translate(refusal.messageKey)}\n\n${translate('selfie.punch.requiredHelp')}`;
+          buttons = ['cancel', 'selfie_try_again'];
+        } else {
+          buttons = ['cancel', 'without_selfie'];
+        }
+        break;
+      default:
+        buttons = ['ok'];
+    }
+  }
+  // De-duplicate (openSelfie can turn a selfie button into a second without_selfie).
+  buttons = buttons.filter((button, index) => buttons.indexOf(button) === index);
+  return { titleKey: refusal.titleKey, body, buttons };
+}
+
+/**
+ * Upload failures that are the server's fault (busy image processing, or an unexpected server error).
+ * Where the tenant requires a selfie, the server then lets the punch through without one (review 2,
+ * item 7), so the app offers "Clock without a selfie" instead of leaving the employee stuck.
+ */
+export function isServerSideUploadFailure(refusal: PunchRefusal): boolean {
+  return refusal.key === 'selfieBusy' || refusal.key === 'unknown';
 }
 
 const STALE_DISCOVERY: ReadonlySet<RefusalKey> = new Set<RefusalKey>([
@@ -376,7 +474,7 @@ export function mapPunchRefusal(error: unknown, language: string): PunchRefusal 
     code: localCode ?? (!response ? 'network' : rawCode || 'unknown'),
     key,
     titleKey: `selfie.refusal.${key}.title`,
-    nextKey: `selfie.refusal.${key}.next`,
+    nextKey: NO_NEXT_LINE.has(key) ? null : `selfie.refusal.${key}.next`,
     serverMessage,
     messageKey: `selfie.refusal.${key}.message`,
     action: KEY_TO_ACTION[key],
@@ -384,7 +482,6 @@ export function mapPunchRefusal(error: unknown, language: string): PunchRefusal 
   };
 }
 
-/** The refusal keys the app knows; tests check each has EN and AR strings. */
 /** A busy refusal is retried once, after this delay, before it is shown. */
 export const SELFIE_BUSY_RETRY_MS = 2_000;
 
@@ -404,11 +501,49 @@ export function isSelfieBusy(error: unknown): boolean {
   return mapPunchRefusal(error, 'en').key === 'selfieBusy';
 }
 
+// ---- Platform header ----
+
+/**
+ * `X-Client-Platform: android|ios` for punches and evidence uploads. The server uses it to cross-check
+ * `mockDetection: "Unsupported"` (an Android phone can detect a mock location, so it may not claim it
+ * cannot). Any other platform (web, tests) sends no header rather than a guess.
+ */
+export function clientPlatformHeaders(platform: string): Record<string, string> {
+  return platform === 'android' || platform === 'ios' ? { 'X-Client-Platform': platform } : {};
+}
+
+// ---- Consent withdrawal ----
+
+export interface WithdrawalResult {
+  unusedSelfiesDeleted: number;
+  unusedSelfiesAwaitingDeletion: number;
+}
+
+/** Reads the `withdrawal` block of the withdraw response; null when the server sent none (older server). */
+export function parseWithdrawal(raw: unknown): WithdrawalResult | null {
+  const w = raw && typeof raw === 'object' ? (raw as Record<string, any>).withdrawal : null;
+  if (!w || typeof w !== 'object') return null;
+  const count = (value: unknown) => Math.max(0, Math.floor(num(value) ?? 0));
+  return { unusedSelfiesDeleted: count(w.unusedSelfiesDeleted), unusedSelfiesAwaitingDeletion: count(w.unusedSelfiesAwaitingDeletion) };
+}
+
+/**
+ * The notice after a withdrawal. If storage did not confirm every delete, the photos are deleted by the
+ * server's 15-minute purge, so the app says "within about 15 minutes", never "deleted now".
+ */
+export function withdrawalNoticeKey(result: WithdrawalResult | null): string {
+  if (result && result.unusedSelfiesAwaitingDeletion > 0) return 'selfie.consent.withdrawnPendingToast';
+  if (result && result.unusedSelfiesDeleted > 0) return 'selfie.consent.withdrawnDeletedToast';
+  return 'selfie.consent.withdrawnToast';
+}
+
 // ---- Selfie size ----
 
 /** Target long edge for the selfie (the upload is capped at 8 MB; the server re-encodes to ≤ 512 px). */
 export const SELFIE_TARGET_LONG_EDGE = 1080;
 export const SELFIE_JPEG_QUALITY = 0.8;
+/** The server accepts JPEG only (checked by magic bytes). expo-camera's default is JPEG; the app also asks for it explicitly. */
+export const SELFIE_IMAGE_TYPE = 'jpg' as const;
 
 /**
  * Picks the camera picture size whose long edge is closest to the target, preferring the larger on a
@@ -432,6 +567,7 @@ export function choosePictureSize(sizes: readonly string[] | null | undefined, t
   return best?.size;
 }
 
+/** The refusal keys the app knows; tests check each has EN and AR strings. */
 export const REFUSAL_KEYS: readonly RefusalKey[] = Object.keys(KEY_TO_ACTION) as RefusalKey[];
 export const KNOWN_REFUSAL_CODES: readonly string[] = Object.keys(CODE_TO_KEY);
 

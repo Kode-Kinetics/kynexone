@@ -6,13 +6,16 @@ import { useTranslation } from 'react-i18next';
 import { attendanceApi, selfieAttendanceApi } from '@/api/services';
 import { getDeviceInfo } from '@/utils/device';
 import type { GeoLocation, PunchType } from '@/types';
-import { SelfieCaptureModal, deleteTempPhoto } from './SelfieCaptureModal';
+import { SelfieCaptureModal } from './SelfieCaptureModal';
+import { deleteTempPhoto } from './selfieFiles';
 import {
   mapPunchRefusal,
   planPunch,
+  refusalPrompt,
   type AttendanceVerification,
   type PunchPlan,
   type PunchRefusal,
+  type RefusalButton,
 } from './selfieAttendance';
 
 /** Plain-language lines for the attendance card: what applies to this employee's punch, with a way to the consent screen. */
@@ -29,7 +32,7 @@ export interface PunchOutcome {
 interface Options {
   /** Called after the server recorded the punch (refresh the screen's attendance here). */
   onPunched: (outcome: PunchOutcome) => Promise<void> | void;
-  /** Opens the consent screen (review, agree or withdraw). */
+  /** Opens the consent screen (review, agree or withdraw). Only from the attendance card's link, never from a refusal. */
   onOpenConsent: () => void;
 }
 
@@ -120,64 +123,36 @@ export function usePunchFlow({ onPunched, onOpenConsent }: Options) {
   ) => {
     const fresh = refusal.refreshVerification ? (await refresh(true)) ?? latest.current : latest.current;
     const plan = planPunch(fresh);
-    const message = refusal.serverMessage ?? tx(refusal.messageKey);
-    const body = `${message}\n\n${tx(refusal.nextKey)}`;
-    const cancel: AlertButton = { text: tx('common.cancel'), style: 'cancel' };
-    const reviewConsent: AlertButton = { text: tx('selfie.punch.reviewConsent'), onPress: onOpenConsent };
-    const withoutSelfie: AlertButton = {
-      text: tx('selfie.punch.withoutSelfie'),
-      onPress: () => void submitRef.current(punchType, undefined),
+    const prompt = refusalPrompt(refusal, plan.selfie, stage, tx);
+    const openSelfie = () => {
+      if (plan.selfie === 'skip') return void submitRef.current(punchType, undefined);
+      busy.current = true;
+      setPunching(true);
+      setSelfie({ punchType, mode: plan.selfie });
     };
-    const openSelfie = (label: string): AlertButton => ({
-      text: label,
-      onPress: () => {
-        if (plan.selfie === 'skip') return void submitRef.current(punchType, undefined);
-        busy.current = true;
-        setPunching(true);
-        setSelfie({ punchType, mode: plan.selfie });
-      },
-    });
-
-    let buttons: AlertButton[];
-    if (stage === 'upload' && refusal.action === 'retry') {
-      buttons = plan.selfie === 'required'
-        ? [cancel, openSelfie(tx('selfie.punch.tryAgain'))]
-        : [cancel, withoutSelfie, openSelfie(tx('selfie.punch.tryAgain'))];
-      Alert.alert(tx(refusal.titleKey), body, buttons);
-      return;
-    }
-    switch (refusal.action) {
-      case 'retry':
-        // A location refusal does not use the evidence: retry with it while it is still valid.
-        buttons = [cancel, { text: tx('selfie.punch.tryAgain'), onPress: () => void submitRef.current(punchType, evidenceId) }];
-        break;
-      case 'open_settings':
-        buttons = [
-          cancel,
-          { text: tx('selfie.punch.openSettings'), onPress: () => void Linking.openSettings() },
-          { text: tx('selfie.punch.tryAgain'), onPress: () => void submitRef.current(punchType, evidenceId) },
-        ];
-        break;
-      case 'retake_selfie':
-        buttons = plan.selfie === 'required'
-          ? [cancel, reviewConsent, openSelfie(tx('selfie.punch.takeNewSelfie'))]
-          : [cancel, withoutSelfie, openSelfie(tx('selfie.punch.takeNewSelfie'))];
-        break;
-      case 'take_selfie':
-        buttons = plan.selfie === 'skip'
-          ? [cancel, reviewConsent, withoutSelfie]
-          : [cancel, reviewConsent, openSelfie(tx('selfie.punch.takeSelfie'))];
-        break;
-      case 'without_selfie':
-        // The non-biometric alternative is always available. Where the tenant still requires a selfie
-        // from this (consenting) employee, the way out is withdrawing consent on the consent screen.
-        buttons = plan.selfie === 'required' ? [cancel, reviewConsent] : [cancel, withoutSelfie];
-        break;
-      default:
-        buttons = [{ text: tx('selfie.punch.ok'), style: 'cancel' }];
-    }
-    Alert.alert(tx(refusal.titleKey), body, buttons);
-  }, [onOpenConsent, refresh, tx]);
+    const toAlertButton = (button: RefusalButton): AlertButton => {
+      switch (button) {
+        case 'cancel':
+          return { text: tx('common.cancel'), style: 'cancel' };
+        case 'ok':
+          return { text: tx('selfie.punch.ok'), style: 'cancel' };
+        case 'try_again':
+          // A location refusal does not use the evidence: retry with it while it is still valid.
+          return { text: tx('selfie.punch.tryAgain'), onPress: () => void submitRef.current(punchType, evidenceId) };
+        case 'open_settings':
+          return { text: tx('selfie.punch.openSettings'), onPress: () => void Linking.openSettings() };
+        case 'without_selfie':
+          return { text: tx('selfie.punch.withoutSelfie'), onPress: () => void submitRef.current(punchType, undefined) };
+        case 'selfie_try_again':
+          return { text: tx('selfie.punch.tryAgain'), onPress: openSelfie };
+        case 'take_selfie':
+          return { text: tx('selfie.punch.takeSelfie'), onPress: openSelfie };
+        case 'take_new_selfie':
+          return { text: tx('selfie.punch.takeNewSelfie'), onPress: openSelfie };
+      }
+    };
+    Alert.alert(tx(prompt.titleKey), prompt.body, prompt.buttons.map(toAlertButton));
+  }, [refresh, tx]);
 
   const submit = useCallback(async (punchType: PunchType, evidenceId: string | undefined) => {
     busy.current = true;
@@ -263,29 +238,6 @@ export function usePunchFlow({ onPunched, onOpenConsent }: Options) {
     void submit(punchType, undefined);
   }, [closeSelfie, selfie, submit]);
 
-  const onWithdraw = useCallback(() => {
-    if (!selfie) return;
-    const { punchType } = selfie;
-    Alert.alert(tx('selfie.consent.withdrawConfirmTitle'), tx('selfie.consent.withdrawConfirmBody'), [
-      { text: tx('common.cancel'), style: 'cancel' },
-      {
-        text: tx('selfie.consent.withdrawConfirm'),
-        style: 'destructive',
-        onPress: async () => {
-          closeSelfie();
-          try {
-            remember(await selfieAttendanceApi.withdrawConsent());
-          } catch (error) {
-            finish();
-            await showRefusal(mapPunchRefusal(error, i18n.language), punchType, undefined);
-            return;
-          }
-          await submit(punchType, undefined);
-        },
-      },
-    ]);
-  }, [closeSelfie, finish, i18n.language, remember, selfie, showRefusal, submit, tx]);
-
   const onCancel = useCallback(() => {
     closeSelfie();
     finish();
@@ -299,7 +251,6 @@ export function usePunchFlow({ onPunched, onOpenConsent }: Options) {
       uploading={uploading}
       onUse={(uri) => void onUse(uri)}
       onSkip={selfie?.mode === 'optional' ? onSkip : undefined}
-      onWithdraw={onWithdraw}
       onCancel={onCancel}
     />
   );

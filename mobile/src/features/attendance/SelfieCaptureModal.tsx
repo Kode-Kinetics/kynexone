@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Modal, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, Linking, Modal, StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { GlassSurface, LiquidButton, MotionPressable } from '@/components/ui';
 import type { PunchType } from '@/types';
-import { SELFIE_JPEG_QUALITY, choosePictureSize } from './selfieAttendance';
+import { SELFIE_IMAGE_TYPE, SELFIE_JPEG_QUALITY, choosePictureSize } from './selfieAttendance';
+import { CaptureGuard } from './selfiePhotoPolicy';
+import { adoptCapturedPhoto, deleteTempPhoto } from './selfieFiles';
 
 interface Props {
   visible: boolean;
@@ -20,70 +21,116 @@ interface Props {
   onUse: (uri: string) => void;
   /** Punch without a selfie (optional mode). */
   onSkip?: () => void;
-  /** Withdraw consent and punch without a selfie. Always offered with the selfie step. */
-  onWithdraw?: () => void;
   onCancel: () => void;
-}
-
-/** Deletes a camera temp file. Best effort: the OS cache is the fallback, the photo is never kept on purpose. */
-export async function deleteTempPhoto(uri: string | null | undefined): Promise<void> {
-  if (!uri) return;
-  try {
-    await FileSystem.deleteAsync(uri, { idempotent: true });
-  } catch (error) {
-    console.warn('[Selfie] Could not delete the temporary photo:', error);
-  }
 }
 
 /**
  * Front-camera capture for one punch: capture, review, then hand the file to the parent. No face
  * matching and no device biometric step: the server stores the selfie as evidence only, and the app
  * never claims any verification.
+ *
+ * Withdrawing consent is deliberately NOT offered here: it is an ordinary choice on the consent screen
+ * (Settings, or the attendance card's link), never presented as the way past a required selfie.
+ *
+ * The photo never outlives its use: it is deleted on retake, on close, when the app goes to the
+ * background, and if it arrives after the capture stopped being wanted (CaptureGuard).
  */
-export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse, onSkip, onWithdraw, onCancel }: Props) {
+export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse, onSkip, onCancel }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [pictureSize, setPictureSize] = useState<string | undefined>(undefined);
+  const [cameraProblem, setCameraProblem] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
   // A photo handed to the parent is the parent's to delete; any other leftover is deleted here.
   const handedOff = useRef<string | null>(null);
+  const guard = useRef(new CaptureGuard());
 
   const photoRef = useRef<string | null>(null);
   useEffect(() => { photoRef.current = photoUri; }, [photoUri]);
 
+  /** Deletes the photo on screen unless the parent owns it, and forgets it. */
+  const discardPhoto = useCallback(() => {
+    const leftover = photoRef.current;
+    if (leftover && leftover !== handedOff.current) void deleteTempPhoto(leftover);
+    photoRef.current = null;
+    setPhotoUri(null);
+  }, []);
+
   useEffect(() => {
     if (visible) {
+      guard.current.open();
       handedOff.current = null;
       if (permission && !permission.granted && permission.canAskAgain) void requestPermission();
       return;
     }
-    const leftover = photoRef.current;
-    if (leftover && leftover !== handedOff.current) void deleteTempPhoto(leftover);
+    guard.current.close();
+    discardPhoto();
     setCameraReady(false);
     setCapturing(false);
-    setPhotoUri(null);
-  }, [permission, requestPermission, visible]);
+    setCameraProblem(false);
+  }, [discardPhoto, permission, requestPermission, visible]);
 
-  // Unmounting with a captured photo that was never handed off (screen left mid-capture): delete it.
+  // Unmounting (screen left mid-capture): a pending capture is unwanted and a shown photo is deleted.
   useEffect(() => () => {
+    guard.current.close();
     const leftover = photoRef.current;
     if (leftover && leftover !== handedOff.current) void deleteTempPhoto(leftover);
   }, []);
 
+  // Background: delete the photo on screen and drop any capture in flight. Back to the foreground:
+  // re-read the camera permission (the employee may have allowed it in Settings) so they can retry.
+  const visibleRef = useRef(visible);
+  useEffect(() => { visibleRef.current = visible; }, [visible]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (!visibleRef.current) return;
+      if (next === 'background') {
+        guard.current.cancel();
+        discardPhoto();
+        setCapturing(false);
+        setCameraReady(false);
+        setCameraKey((key) => key + 1);
+      } else if (next === 'active') {
+        void getPermission().catch(() => undefined);
+      }
+    });
+    return () => subscription.remove();
+  }, [discardPhoto, getPermission]);
+
   const take = useCallback(async () => {
     if (!cameraReady || capturing || !cameraRef.current) return;
+    const ticket = guard.current.begin();
     setCapturing(true);
+    setCameraProblem(false);
     try {
       // About a 1080 px long edge (pictureSize) at JPEG quality 0.8 keeps the upload far below the 8 MB cap.
-      // exif: false — nothing extra is read on the device; the server re-encodes and strips metadata anyway.
-      const photo = await cameraRef.current.takePictureAsync({ quality: SELFIE_JPEG_QUALITY, exif: false, shutterSound: false });
-      if (photo?.uri) setPhotoUri(photo.uri);
+      // JPEG explicitly: the server accepts JPEG only. exif: false: nothing extra is read on the device.
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: SELFIE_JPEG_QUALITY,
+        imageType: SELFIE_IMAGE_TYPE,
+        exif: false,
+        shutterSound: false,
+      });
+      if (!photo?.uri) return;
+      if (!guard.current.isCurrent(ticket)) {
+        // The modal closed or the app went to the background while the camera was saving.
+        void deleteTempPhoto(photo.uri);
+        return;
+      }
+      const kept = await adoptCapturedPhoto(photo.uri);
+      if (!guard.current.isCurrent(ticket)) {
+        void deleteTempPhoto(kept);
+        return;
+      }
+      setPhotoUri(kept);
     } catch (error) {
       console.warn('[Selfie] Capture failed:', error);
+      if (guard.current.isCurrent(ticket)) setCameraProblem(true);
     } finally {
       setCapturing(false);
     }
@@ -100,11 +147,24 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
       .catch((error) => console.warn('[Selfie] Picture sizes unavailable; using the camera default:', error));
   }, [pictureSize]);
 
-  const retake = useCallback(() => {
-    void deleteTempPhoto(photoUri);
-    setPhotoUri(null);
+  const onMountError = useCallback((event: { message?: string }) => {
+    console.warn('[Selfie] Camera could not start:', event?.message);
     setCameraReady(false);
-  }, [photoUri]);
+    setCameraProblem(true);
+  }, []);
+
+  /** Restart the camera after a problem (remounts the CameraView). */
+  const retryCamera = useCallback(() => {
+    setCameraProblem(false);
+    setCameraReady(false);
+    setCameraKey((key) => key + 1);
+  }, []);
+
+  const retake = useCallback(() => {
+    guard.current.cancel();
+    discardPhoto();
+    setCameraReady(false);
+  }, [discardPhoto]);
 
   const use = useCallback(() => {
     if (!photoUri || uploading) return;
@@ -115,27 +175,24 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
   const action = punchType === 'CLOCK_OUT' || punchType === 'BREAK_OUT' ? t('selfie.capture.clockOut') : t('selfie.capture.clockIn');
   const granted = permission?.granted === true;
 
-  const secondaryActions = (
+  const secondaryActions = mode === 'optional' && onSkip ? (
     <View style={styles.secondaryRow}>
-      {mode === 'optional' && onSkip ? (
-        <TextAction label={t('selfie.capture.skip')} onPress={onSkip} disabled={uploading} />
-      ) : null}
-      {onWithdraw ? (
-        <TextAction label={t('selfie.capture.withdrawInstead')} onPress={onWithdraw} disabled={uploading} muted />
-      ) : null}
+      <TextAction label={t('selfie.capture.skip')} onPress={onSkip} disabled={uploading} />
     </View>
-  );
+  ) : null;
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={uploading ? () => undefined : onCancel}>
       <View style={styles.root}>
-        {granted && !photoUri ? (
+        {granted && !photoUri && !cameraProblem && !uploading ? (
           <CameraView
+            key={cameraKey}
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             facing="front"
             pictureSize={pictureSize}
             onCameraReady={onCameraReady}
+            onMountError={onMountError}
           />
         ) : null}
         {photoUri ? <Image source={{ uri: photoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
@@ -180,6 +237,14 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
                 />
                 {secondaryActions}
               </>
+            ) : cameraProblem && !photoUri ? (
+              <>
+                <Text style={styles.body}>
+                  {mode === 'required' ? t('selfie.capture.cameraProblemRequired') : t('selfie.capture.cameraProblem')}
+                </Text>
+                <LiquidButton label={t('selfie.capture.tryAgain')} icon="refresh" onPress={retryCamera} />
+                {secondaryActions}
+              </>
             ) : uploading ? (
               <View style={styles.centerRow} accessibilityLiveRegion="polite">
                 <ActivityIndicator color="#FFFFFF" />
@@ -214,7 +279,7 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
   );
 }
 
-function TextAction({ label, onPress, disabled, muted }: { label: string; onPress: () => void; disabled?: boolean; muted?: boolean }) {
+function TextAction({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) {
   return (
     <MotionPressable
       onPress={onPress}
@@ -224,7 +289,7 @@ function TextAction({ label, onPress, disabled, muted }: { label: string; onPres
       accessibilityLabel={label}
       contentStyle={styles.textAction}
     >
-      <Text style={[styles.textActionLabel, muted && styles.textActionMuted]}>{label}</Text>
+      <Text style={styles.textActionLabel}>{label}</Text>
     </MotionPressable>
   );
 }
@@ -253,5 +318,4 @@ const styles = StyleSheet.create({
   secondaryRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6 },
   textAction: { minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 14 },
   textActionLabel: { color: '#A5F3FC', fontSize: 14, fontWeight: '700', textAlign: 'center' },
-  textActionMuted: { color: 'rgba(255,255,255,0.72)', fontWeight: '600' },
 });

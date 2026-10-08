@@ -387,7 +387,7 @@ const ar: TranslationResources = {
     onLeave: 'في إجازة',
     holiday: 'عطلة',
     weekend: 'نهاية الأسبوع',
-    missingPunch: 'بصمة مفقودة',
+    missingPunch: 'تسجيل حضور مفقود',
     correction: 'طلب تصحيح',
     history: 'سجل الحضور',
     monthView: 'عرض شهري',
