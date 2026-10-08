@@ -52,6 +52,15 @@ public sealed record IssuedCodeDto(
 {
     public const string EmailDelivery = "email";
     public const string PrintDelivery = "print";
+
+    /// <summary>Why a code is printed (only when <see cref="Delivery"/> is "print"): "setter" (the caller set the work
+    /// email), "requested" (delivery:"print"), or "no_email" (no working transport, or the send failed / was captured).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PrintReason { get; init; }
+
+    public const string PrintBecauseSetter = "setter";
+    public const string PrintBecauseRequested = "requested";
+    public const string PrintBecauseNoEmail = "no_email";
 }
 
 public sealed record SkippedCodeDto(int EmployeeId, string ReasonCode, string Reason);
@@ -60,12 +69,23 @@ public sealed record IssueCodesResponse(IReadOnlyList<IssuedCodeDto> Issued, IRe
 
 public sealed record WorkEmailBackfillRow(string? EmployeeCode, string? WorkEmail);
 public sealed record WorkEmailBackfillRequest(IReadOnlyList<WorkEmailBackfillRow>? Rows, bool DryRun);
-public sealed record BackfillMatchDto(int EmployeeId, string EmployeeCode, string EmployeeName, string OldEmail, string NewEmail);
+public sealed record BackfillMatchDto(int EmployeeId, string EmployeeCode, string EmployeeName, string OldEmail, string NewEmail)
+{
+    /// <summary>On a SAVE: the post-save access state (same values as the list), and whether the caller can give a code
+    /// now — the same evaluation as GET status (<see cref="ReasonCode"/> says why not). Null on a dry run.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? AccessState { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? CanIssue { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ReasonCode { get; init; }
+}
 public sealed record BackfillWrongDomainDto(string EmployeeCode, string WorkEmail, string ExpectedDomain);
 public sealed record BackfillConflictDto(string EmployeeCode, string WorkEmail, string Reason);
 public sealed record WorkEmailBackfillResponse(
     IReadOnlyList<BackfillMatchDto> Matched, IReadOnlyList<string> NotFound, IReadOnlyList<BackfillWrongDomainDto> WrongDomain,
-    IReadOnlyList<BackfillConflictDto> Conflicts, int Saved);
+    IReadOnlyList<BackfillConflictDto> Conflicts, int Saved)
+{
+    /// <summary>On a SAVE: the workspace has a working email transport (codes would be emailed).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? EmailDelivery { get; init; }
+}
 
 /// <summary>A whole-request refusal (400 with <c>code</c>).</summary>
 public sealed class EmployeeAccessRequestException(string code, string message) : Exception(message)
@@ -153,16 +173,9 @@ public sealed class EmployeeAccessService
             issuerName = await ScopedBypass.TenantWide(_db.Users, tenantId, Why).AsNoTracking()
                 .Where(u => u.Id == issuer).Select(u => u.FullName).FirstOrDefaultAsync(ct);
 
-        var isReset = facts.Login is { IsActive: true };
-        var issuable = state.State is EmployeeAccessStates.NotStarted or EmployeeAccessStates.CodeGiven or EmployeeAccessStates.Active;
-        // Same order as issuing: awaiting approval, self, then the permission this button needs.
-        string? reasonCode = !issuable ? null
-            : string.Equals(facts.Status, EmployeeStatuses.Draft, StringComparison.Ordinal) ? Skip.AwaitingApproval
-            : !AuthCurrentEligibility.IsEmployeeLifecycleEligible(facts.Status) ? Skip.Blocked
-            : caller.UserId is Guid me && facts.Login?.UserId == me ? Skip.SelfIssue
-            : (isReset ? !canReset : !canIssue) ? Skip.ResetNeedsPermission
-            : null;
-        var allowed = issuable && reasonCode is null;
+        var verdict = (await IssueVerdictsAsync(tenantId, new[] { employeeId }, caller.UserId, canIssue, canReset, ct))[employeeId];
+        var reasonCode = verdict.ReasonCode;
+        var allowed = verdict.CanIssue;
 
         return new EmployeeAccessDto(facts.EmployeeId, facts.EmployeeName, facts.EmployeeCode, facts.WorkEmail, state.State,
             state.CodeExpiresAtUtc, issuerName, state.LastCodeExpiredAtUtc, state.LastSignInAtUtc,
@@ -250,7 +263,13 @@ public sealed class EmployeeAccessService
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, DisclosedAction, "User", p.UserId.ToString(),
                 caller with { TenantId = tenantId },
                 JsonSerializer.Serialize(new { employeeId = p.Item.EmployeeId, expiresAtUtc = p.Item.ExpiresAtUtc, emailDeliveryConfigured = configured, resetOfActiveLogin = p.ResetOfActive, workEmailSetByIssuer = p.SetterPrintOnly })));
-            items.Add(p.Item with { Delivery = IssuedCodeDto.PrintDelivery });
+            items.Add(p.Item with
+            {
+                Delivery = IssuedCodeDto.PrintDelivery,
+                PrintReason = !p.ResetOfActive && p.SetterPrintOnly ? IssuedCodeDto.PrintBecauseSetter
+                    : !p.ResetOfActive && request.PrintOnly ? IssuedCodeDto.PrintBecauseRequested
+                    : IssuedCodeDto.PrintBecauseNoEmail,
+            });
         }
         // Saved BEFORE any code leaves the server: no disclosure without its record.
         if (issued.Count > 0) await _db.SaveChangesAsync(ct);
@@ -272,6 +291,72 @@ public sealed class EmployeeAccessService
     }
 
     private sealed record OneOutcome(string? Skip, Pending? Issued, string? Reason = null);
+
+    private sealed record IssueVerdict(string State, bool CanIssue, string? ReasonCode);
+
+    /// <summary>
+    /// For each employee: its access state and whether the caller can give a code now (one at a time), running the SAME
+    /// checks issuing runs (<see cref="CheckIssueAsync"/>), so the card never offers what POST codes refuses. Batched:
+    /// one state evaluation and one login-graph load for the whole set.
+    /// </summary>
+    private async Task<Dictionary<int, IssueVerdict>> IssueVerdictsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, Guid? callerUserId,
+        bool canIssue, bool canReset, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var evaluated = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, employeeIds, now, ct);
+        var callerCeiling = callerUserId is Guid me ? await PrivilegeCeilingGraph.TryLoadCallerAsync(_db, tenantId, me, ct) : null;
+        var loginIds = evaluated.Values.Where(v => v.Facts.Login is not null).Select(v => v.Facts.Login!.UserId).Distinct().ToList();
+        var graphs = loginIds.Count == 0
+            ? new Dictionary<Guid, Domain.Entities.User>()
+            : (await PrivilegeCeilingGraph.LoadUsersAsync(_db, tenantId, loginIds, ct)).ToDictionary(u => u.Id);
+        var result = new Dictionary<int, IssueVerdict>();
+        foreach (var (id, (facts, state)) in evaluated)
+        {
+            var issuable = state.State is EmployeeAccessStates.NotStarted or EmployeeAccessStates.CodeGiven or EmployeeAccessStates.Active;
+            string? reason = null;
+            if (issuable)
+            {
+                if (callerCeiling is null) reason = "caller_unknown";
+                else
+                {
+                    var login = facts.Login is { } fl && graphs.TryGetValue(fl.UserId, out var g) ? g : null;
+                    var (refusal, _) = await CheckIssueAsync(tenantId, id, facts.Status, login, facts.Link, facts.Login is { IsActive: true },
+                        callerCeiling.UserId, callerCeiling, single: true, canIssue, canReset, now, ct);
+                    reason = refusal?.Code;
+                }
+            }
+            result[id] = new IssueVerdict(state.State, issuable && reason is null, reason);
+        }
+        return result;
+    }
+
+    private sealed record Refusal(string Code, string? Reason);
+
+    /// <summary>
+    /// THE issuing checks, in order (UAT): awaiting approval, lifecycle, self, privileged, ceiling, the permission the
+    /// button needs. Shared by issuing and by the card's <c>canIssue</c>, so the card never offers what issuing refuses.
+    /// <paramref name="login"/> is the login graph when the employee has one (null before staging).
+    /// </summary>
+    private async Task<(Refusal? Refusal, bool Privileged)> CheckIssueAsync(Guid tenantId, int employeeId, string employeeStatus,
+        Domain.Entities.User? login, EmployeeUserAccount? link, bool isReset, Guid callerId, PrivilegeCeiling.Caller callerCeiling,
+        bool single, bool canIssue, bool canReset, DateTime nowUtc, CancellationToken ct)
+    {
+        if (string.Equals(employeeStatus, EmployeeStatuses.Draft, StringComparison.Ordinal)) return (new(Skip.AwaitingApproval, null), false);
+        if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employeeStatus)) return (new(Skip.Blocked, SkipReason(Skip.NotActive)), false);
+        if (login?.Id == callerId) return (new(Skip.SelfIssue, null), false);
+        var privileged = false;
+        if (login is not null)
+        {
+            privileged = await EmployeeLoginPrivilege.IsPrivilegedAsync(_db, tenantId, login, link, employeeId, nowUtc, ct);
+            // A login with extra access is never RESET from here: a security administrator does it (P2 review).
+            if (privileged && isReset) return (new(Skip.Privileged, PrivilegedResetReason), true);
+            if (privileged && !(single && canReset)) return (new(Skip.Privileged, null), true);
+            if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(login, tenantId), AuthService.GetPermissions(login)) is not null)
+                return (new(Skip.AboveCeiling, null), privileged);
+        }
+        if (isReset ? !canReset : !canIssue) return (new(Skip.ResetNeedsPermission, null), privileged);
+        return (null, privileged);
+    }
 
     private async Task<OneOutcome> IssueOneAsync(Guid tenantId, string tenantSlug, int employeeId, EntityScopeContext scope,
         RequestContext caller, Guid callerId, PrivilegeCeiling.Caller callerCeiling, bool single, bool canIssue, bool canReset,
@@ -300,12 +385,15 @@ public sealed class EmployeeAccessService
                 case EmployeeAccessStates.Blocked: result = new(Skip.Blocked, null, state.BlockedReason); return;
             }
             // Refusal ORDER (UAT): awaiting approval, then self, then privileged, then the ceiling, then the reset permission.
-            if (string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.Ordinal)) { result = new(Skip.AwaitingApproval, null); return; }
-            if (!AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status)) { result = new(Skip.Blocked, null, SkipReason(Skip.NotActive)); return; }
-            if (facts.Login?.UserId == callerId) { result = new(Skip.SelfIssue, null); return; }
             // A login already in use (active, or active with a live reset code) is a RESET (F1), whatever the state shows.
             var resetOfActive = facts.Login is { IsActive: true };
-            if (!resetOfActive && !canIssue) { result = new(Skip.ResetNeedsPermission, null); return; }
+            // The checks before staging a login (no login graph yet); repeated in full once the login is loaded.
+            var existing = facts.Login is { } fl
+                ? (await PrivilegeCeilingGraph.LoadUsersAsync(_db, tenantId, new Guid[] { fl.UserId }, token)).SingleOrDefault()
+                : null;
+            var (pre, _) = await CheckIssueAsync(tenantId, employeeId, employee.Status, existing, facts.Link, resetOfActive, callerId, callerCeiling,
+                single, canIssue, canReset, nowUtc, token);
+            if (pre is not null) { result = new(pre.Code, null, pre.Reason); return; }
             // Work-email setter rule for welcome codes (Integration Owner): it blocks the EMAIL channel only — the code is
             // issued, but printed and handed over in person; the disclosure makes the issuer its handler (30-day bar).
             var setterPrintOnly = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, callerId, token);
@@ -328,14 +416,9 @@ public sealed class EmployeeAccessService
                 .Where(u => u.Id == userId).Select(u => u.Id).ToListAsync(token);
             var user = (await PrivilegeCeilingGraph.LoadUsersAsync(_db, tenantId, new Guid[] { userId }, token)).Single();
 
-            if (user.Id == callerId) { result = new(Skip.SelfIssue, null); return; }
-            var privileged = await EmployeeLoginPrivilege.IsPrivilegedAsync(_db, tenantId, user, link, employeeId, nowUtc, token);
-            // A login with extra access is never RESET from here: a security administrator does it (P2 review).
-            if (privileged && resetOfActive) { result = new(Skip.Privileged, null, PrivilegedResetReason); return; }
-            if (privileged && !(single && canReset)) { result = new(Skip.Privileged, null); return; }
-            if (PrivilegeCeiling.AboveCallerRefusal(callerCeiling, PrivilegeCeilingGraph.HoldsAdmin(user, tenantId), AuthService.GetPermissions(user)) is not null)
-            { result = new(Skip.AboveCeiling, null); return; }
-            if (resetOfActive && !canReset) { result = new(Skip.ResetNeedsPermission, null); return; }
+            var (refused, privileged) = await CheckIssueAsync(tenantId, employeeId, employee.Status, user, link, resetOfActive, callerId, callerCeiling,
+                single, canIssue, canReset, nowUtc, token);
+            if (refused is not null) { result = new(refused.Code, null, refused.Reason); return; }
             if (!resetOfActive && await SeatsFullAsync(tenantId, userId, nowUtc, token)) { result = new(Skip.SeatLimit, null); return; }
 
             // ONE LIVE CREDENTIAL (F3): the code supersedes any invitation, earlier code and unused reset link.
@@ -439,8 +522,9 @@ public sealed class EmployeeAccessService
     public async Task<Dictionary<string, int>> SummaryAsync(Guid tenantId, EntityScopeContext scope, IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct)
     {
         var exit = Zayra.Api.Controllers.ExitEmployeeStatuses.Exit;
+        // Former employees are taken in and counted only when their access is stopped (UAT: "Access stopped" shows leavers).
         var query = ScopedBypass.NullableTenantWide(_db.Employees, tenantId, Why).AsNoTracking()
-            .Where(e => !e.IsDeleted && !exit.Contains(e.Status));
+            .Where(e => !e.IsDeleted);
         if (!scope.IsGroupLevel)
         {
             var companies = scope.AccessibleCompanyIds;
@@ -450,14 +534,17 @@ public sealed class EmployeeAccessService
         var ids = await query.Select(e => e.Id).ToListAsync(ct);
         var evaluated = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, ids, DateTime.UtcNow, ct);
         var counts = EmployeeAccessStates.All.ToDictionary(s => s, _ => 0, StringComparer.Ordinal);
-        foreach (var (_, value) in evaluated) counts[value.State.State]++;
+        foreach (var (_, value) in evaluated)
+            if (value.State.State == EmployeeAccessStates.Stopped || !exit.Contains(value.Facts.Status, StringComparer.OrdinalIgnoreCase))
+                counts[value.State.State]++;
         return counts;
     }
 
     // ── POST work-emails (backfill from IT) ─────────────────────────────────────────────────────────────
 
     public async Task<WorkEmailBackfillResponse> BackfillWorkEmailsAsync(Guid tenantId, WorkEmailBackfillRequest request,
-        EntityScopeContext scope, RequestContext caller, CancellationToken ct, IReadOnlyCollection<int>? allowedEmployeeIds = null)
+        EntityScopeContext scope, RequestContext caller, CancellationToken ct, IReadOnlyCollection<int>? allowedEmployeeIds = null,
+        bool canIssue = true, bool canReset = false)
     {
         var rows = request.Rows ?? Array.Empty<WorkEmailBackfillRow>();
         if (rows.Count == 0) throw new EmployeeAccessRequestException("rows_required", "Add at least one row.");
@@ -477,9 +564,16 @@ public sealed class EmployeeAccessService
             lateConflicts.AddRange(chunkConflicts);
         }
         var failed = lateConflicts.Select(c => c.EmployeeCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return new WorkEmailBackfillResponse(
-            plan.Matched.Where(m => !failed.Contains(m.EmployeeCode)).ToList(),
-            plan.NotFound, plan.WrongDomain, plan.Conflicts.Concat(lateConflicts).ToList(), saved);
+        var matched = plan.Matched.Where(m => !failed.Contains(m.EmployeeCode)).ToList();
+        // One batched evaluation, so the HR screen needs no status call per employee.
+        var verdicts = await IssueVerdictsAsync(tenantId, matched.Select(m => m.EmployeeId).ToList(), caller.UserId, canIssue, canReset, ct);
+        matched = matched.Select(m => verdicts.TryGetValue(m.EmployeeId, out var v)
+            ? m with { AccessState = v.State, CanIssue = v.CanIssue, ReasonCode = v.ReasonCode }
+            : m).ToList();
+        return new WorkEmailBackfillResponse(matched, plan.NotFound, plan.WrongDomain, plan.Conflicts.Concat(lateConflicts).ToList(), saved)
+        {
+            EmailDelivery = await _email.IsConfiguredAsync(tenantId, ct),
+        };
     }
 
     private sealed record BackfillPlan(List<BackfillMatchDto> Matched, List<string> NotFound, List<BackfillWrongDomainDto> WrongDomain, List<BackfillConflictDto> Conflicts);

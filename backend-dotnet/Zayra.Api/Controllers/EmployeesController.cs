@@ -118,7 +118,10 @@ public class EmployeesController : ControllerBase
 
         // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
         // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
-        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(e.Status));
+        var accessFilter = EmployeeAccessStates.ParseFilter(access);
+        // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
+        var includeFormer = EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
+        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(e.Status)));
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
@@ -142,7 +145,7 @@ public class EmployeesController : ControllerBase
         // applied in BOTH scope branches or a scoped user's post-import cleanup link breaks past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         // Self-service access state filter (same evaluator as the column), over the whole matching set.
-        query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, EmployeeAccessStates.ParseFilter(access), cancellationToken);
+        query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(e => e.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
             .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, string.IsNullOrEmpty(e.Branch) ? (_db.Branches.Where(b => b.Id == e.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : e.Branch, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))

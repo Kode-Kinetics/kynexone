@@ -82,7 +82,8 @@ public sealed class EmployeeAccessController : ControllerBase
             // Company- or data-scoped callers may backfill their own people: rows for anyone else land in notFound.
             var scope = await _dataScope.ResolveAsync(User, tenantId, ct);
             return Ok(await _access.BackfillWorkEmailsAsync(tenantId, request, this.GetEntityScope(), Context(tenantId), ct,
-                scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList()));
+                scope.IsUnrestricted ? null : scope.AllowedEmployeeIds!.ToList(),
+                canIssue: true, canReset: User.HasPermission(ResetPermission)));
         }
         catch (EmployeeAccessRequestException ex) { return BadRequest(new { code = ex.Code, message = ex.Message }); }
     }

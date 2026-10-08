@@ -258,9 +258,21 @@ public static class EmployeeAccessStates
         if (states.Count == 0) return query.Where(_ => false);
         var ids = await query.Select(e => e.Id).ToListAsync(ct);
         var evaluated = await EvaluateAsync(db, tenantId, ids, DateTime.UtcNow, ct);
-        var keep = evaluated.Where(kv => states.Contains(kv.Value.State.State)).Select(kv => kv.Key).ToList();
+        // A former employee (see IncludesFormerEmployees) is kept only for "stopped" — HR sees whose access ended.
+        var keep = evaluated.Where(kv => states.Contains(kv.Value.State.State)
+                && (kv.Value.State.State == Stopped || !IsFormer(kv.Value.Facts)))
+            .Select(kv => kv.Key).ToList();
         return query.Where(e => keep.Contains(e.Id));
     }
+
+    /// <summary>
+    /// True when the list's base query must also take in FORMER employees (Archived / Offboarded / Terminated / Exited):
+    /// only for the "stopped" filter, so "Access stopped" shows leavers; every other state keeps excluding them.
+    /// </summary>
+    public static bool IncludesFormerEmployees(IReadOnlySet<string>? states) => states?.Contains(Stopped) == true;
+
+    private static bool IsFormer(Facts f) =>
+        f.IsDeleted || Zayra.Api.Controllers.ExitEmployeeStatuses.Exit.Contains(f.Status, StringComparer.OrdinalIgnoreCase);
     /// <summary>Fills <c>AccessState</c> and <c>WorkEmail</c> on a page of list items.</summary>
     public static async Task<List<Zayra.Api.Controllers.EmployeeListItemDto>> DecorateAsync(
         ZayraDbContext db, Guid tenantId, List<Zayra.Api.Controllers.EmployeeListItemDto> items, CancellationToken ct)

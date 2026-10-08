@@ -66,7 +66,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         pageSize = Math.Clamp(pageSize, 1, 100);
         // Active People list: exclude soft-deleted AND every terminal/former-employee status
         // (Archived / Offboarded / Terminated / Exited) — those live in the Ex-Employees archive.
-        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(x.Status));
+        var accessFilter = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ParseFilter(access);
+        // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
+        var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
+        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(x.Status)));
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
@@ -76,8 +79,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
-        query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId,
-            Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ParseFilter(access), cancellationToken);
+        query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
