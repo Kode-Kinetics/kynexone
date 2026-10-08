@@ -105,7 +105,7 @@ test('the work-email local part is checked with the server rule as HR types', ()
   expect(workEmailProblemKey('work_email_invalid_characters')).toBe('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
   expect(workEmailProblemKey('work_email_wrong_domain')).toBeNull();
   expect(workEmailErrorCode({ response: { status: 422, data: { error: 'work_email_invalid_characters' } } })).toBe('work_email_invalid_characters');
-  expect(skipReasonKey('privileged_login')).toBe('This person has admin permissions. A security admin must reset their sign-in.');
+  expect(skipReasonKey('privileged_login')).toBe('This person has HR or admin permissions. A security admin must reset their sign-in.');
 });
 
 test('a different domain is reported, the company one is fine, and reason codes have sentences', () => {

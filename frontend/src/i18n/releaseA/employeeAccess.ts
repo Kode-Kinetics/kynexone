@@ -52,8 +52,8 @@ const en: Record<string, string> = {
   'Access has been stopped for this employee.': 'Access has been stopped for this employee.',
   "You can't give access to yourself.": "You can't give access to yourself.",
   'This person has more permissions than you.': 'This person has more permissions than you.',
-  'This person has admin permissions. A security admin must reset their sign-in.':
-    'This person has admin permissions. A security admin must reset their sign-in.',
+  'This person has HR or admin permissions. A security admin must reset their sign-in.':
+    'This person has HR or admin permissions. A security admin must reset their sign-in.',
   'This needs a system admin first.': 'This needs a system admin first.',
   "You set this person's work email, so another HR colleague must give access.":
     "You set this person's work email, so another HR colleague must give access.",
@@ -83,6 +83,7 @@ const en: Record<string, string> = {
   'Work email can only use English letters, numbers, dots, dashes and underscores before the @.':
     'Work email can only use English letters, numbers, dots, dashes and underscores before the @.',
   '{name} has been added.': '{name} has been added.',
+  '{name} is now active.': '{name} is now active.',
   'Print sign-in slip': 'Print sign-in slip',
   'Later': 'Later',
 
@@ -169,8 +170,8 @@ const ar: Record<string, string> = {
   'Access has been stopped for this employee.': 'تم إيقاف دخول هذا الموظف.',
   "You can't give access to yourself.": 'لا يمكنك إصدار رمز لنفسك.',
   'This person has more permissions than you.': 'لدى هذا الشخص صلاحيات أعلى من صلاحياتك.',
-  'This person has admin permissions. A security admin must reset their sign-in.':
-    'لدى هذا الشخص صلاحيات إدارية، ويجب أن يعيد مسؤول الأمن ضبط دخوله.',
+  'This person has HR or admin permissions. A security admin must reset their sign-in.':
+    'لدى هذا الشخص صلاحيات في الموارد البشرية أو صلاحيات إدارية، ويجب أن يعيد مسؤول الأمن ضبط دخوله.',
   'This needs a system admin first.': 'يتطلب ذلك تدخّل مسؤول النظام أولاً.',
   "You set this person's work email, so another HR colleague must give access.":
     'أنت من أدخل البريد الوظيفي لهذا الموظف، لذا يجب أن يمنح الدخول زميل آخر في الموارد البشرية.',
@@ -199,6 +200,7 @@ const ar: Record<string, string> = {
   'Work email can only use English letters, numbers, dots, dashes and underscores before the @.':
     'يمكن أن يحتوي البريد الإلكتروني الوظيفي قبل علامة @ على أحرف إنجليزية وأرقام ونقاط وشرطات فقط.',
   '{name} has been added.': 'تمت إضافة {name}.',
+  '{name} is now active.': 'أصبح {name} نشطاً.',
   'Print sign-in slip': 'طباعة ورقة تسجيل الدخول',
   'Later': 'لاحقاً',
 
