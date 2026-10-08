@@ -1,0 +1,303 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
+using Testcontainers.PostgreSql;
+using Zayra.Api.Application.Attendance;
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Documents;
+using Zayra.Api.Infrastructure.Jobs;
+using Zayra.Api.Models;
+
+namespace Zayra.Api.Tests.SelfieAttendance;
+
+/// <summary>
+/// Selfie attendance v2 on real PostgreSQL, where InMemory cannot speak: the purge job through the F3 queue (leases,
+/// per-item transactions, a second run), and the single-use evidence id under two concurrent punches.
+/// </summary>
+[Trait("Category", "Integration")]
+[Collection("Integration")]
+public sealed class SelfieAttendancePostgresTests
+{
+    private readonly PostgresFixture _fx;
+    public SelfieAttendancePostgresTests(PostgresFixture fx) => _fx = fx;
+
+    [Fact]
+    public async Task PurgeJob_DeletesDueBlobs_KeepsRowsAndSha_WritesRetentionAudits_AndASecondRunIsANoOp()
+    {
+        var storage = new MemoryDocumentStorage();
+        var (tenantId, employeeId) = await SeedEmployeeAsync();
+        var now = DateTime.UtcNow;
+        Guid dueId, freshId;
+        await using (var db = _fx.CreateDb())
+        {
+            dueId = await AddEvidenceAsync(db, storage, tenantId, employeeId, now.AddHours(-30));
+            freshId = await AddEvidenceAsync(db, storage, tenantId, employeeId, now.AddHours(-2));
+        }
+
+        await using var sp = BuildInstance(storage);
+        Assert.Equal("Succeeded", await RunJobAsync(sp, tenantId, now));
+
+        await using (var db = _fx.CreateDb())
+        {
+            var due = await db.AttendanceEvidence.IgnoreQueryFilters().SingleAsync(e => e.Id == dueId);
+            Assert.Equal(AttendanceEvidencePurgeStates.Purged, due.PurgeState);
+            Assert.NotNull(due.PurgedAtUtc);
+            Assert.Equal(new string('b', 64), due.Sha256);
+            Assert.False(storage.Objects.ContainsKey(due.StorageKey));
+            var fresh = await db.AttendanceEvidence.IgnoreQueryFilters().SingleAsync(e => e.Id == freshId);
+            Assert.Equal(AttendanceEvidencePurgeStates.Active, fresh.PurgeState);
+            Assert.True(storage.Objects.ContainsKey(fresh.StorageKey));
+            var audits = await db.RetentionPurgeAudits.IgnoreQueryFilters().Where(a => a.TenantId == tenantId).ToListAsync();
+            Assert.Equal(dueId.ToString(), Assert.Single(audits).EntityId);
+            Assert.Equal(SelfieEvidenceRetention.RuleKey, audits[0].RuleKey);
+            Assert.NotNull(audits[0].JobId);
+        }
+
+        // An hour later (a new job key): nothing new is due, nothing is deleted again, no second audit row.
+        Assert.Equal("Succeeded", await RunJobAsync(sp, tenantId, now.AddHours(1)));
+        await using (var db = _fx.CreateDb())
+            Assert.Equal(1, await db.RetentionPurgeAudits.IgnoreQueryFilters().CountAsync(a => a.TenantId == tenantId));
+        Assert.Single(storage.Deleted);
+    }
+
+    [Fact]
+    public async Task Evidence_TwoConcurrentPunchesWithTheSameId_ExactlyOneWins()
+    {
+        var storage = new MemoryDocumentStorage();
+        var (tenantId, employeeId) = await SeedEmployeeAsync();
+        Guid evidenceId;
+        await using (var db = _fx.CreateDb())
+        {
+            evidenceId = await AddEvidenceAsync(db, storage, tenantId, employeeId, DateTime.UtcNow);
+        }
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<bool> AttemptAsync(string direction)
+        {
+            await using var db = _fx.CreateDb();
+            var service = new AttendanceService(db, new NullNotifications(), new NullHttpClients());
+            await gate.Task;
+            try
+            {
+                await service.PunchAsync(tenantId, new WebPunchRequest(employeeId, direction, null, null, null, EvidenceId: evidenceId), "Mobile app punch",
+                    new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenantId), default,
+                    new PunchVerification(AttendanceVerificationMethods.Selfie, evidenceId, null, null));
+                return true;
+            }
+            catch (AttendanceRefusalException ex) when (ex.Refusal.Code == "evidence_used") { return false; }
+        }
+
+        var first = AttemptAsync("In");
+        var second = AttemptAsync("Out");
+        gate.SetResult();
+        var outcomes = await Task.WhenAll(first, second);
+
+        Assert.Equal(1, outcomes.Count(x => x));
+        await using var verify = _fx.CreateDb();
+        Assert.Equal(1, await verify.AttendanceRawEvents.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId));
+        var used = await verify.AttendanceEvidence.IgnoreQueryFilters().SingleAsync(e => e.Id == evidenceId);
+        Assert.NotNull(used.UsedByRawEventId);
+    }
+
+    [Fact]
+    public async Task Upload_OnPostgres_LocksTheEmployee_StoresTheRow_AndEnforcesTheHourlyLimit()
+    {
+        var storage = new MemoryDocumentStorage();
+        var (tenantId, employeeId) = await SeedEmployeeAsync();
+        var userId = Guid.NewGuid();
+        await using (var db = _fx.CreateDb())
+        {
+            db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.SelfieAttendance, IsEnabled = true, ConfigJson = SelfieWorld.SignedOffConfig() });
+            db.BiometricConsents.Add(new BiometricConsent { TenantId = tenantId, EmployeeId = employeeId, PolicyVersion = "1", Channel = BiometricConsentChannels.Mobile });
+            for (var i = 0; i < 9; i++) await AddEvidenceAsync(db, storage, tenantId, employeeId, DateTime.UtcNow.AddMinutes(-5));
+            await db.SaveChangesAsync();
+        }
+        var principal = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+        [
+            new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+            new System.Security.Claims.Claim("sub", userId.ToString()),
+            new System.Security.Claims.Claim("employee_id", employeeId.ToString()),
+        ], "Test"));
+
+        async Task<int?> UploadAsync()
+        {
+            await using var db = _fx.CreateDb();
+            var controller = new Zayra.Api.Controllers.AttendanceEvidenceController(db, storage)
+            {
+                ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext { User = principal } },
+            };
+            var bytes = SelfieAttendanceTests.SelfieJpeg();
+            var result = await controller.UploadSelfie(new Zayra.Api.Controllers.SelfieUploadForm
+            {
+                File = new Microsoft.AspNetCore.Http.FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", "s.jpg")
+                {
+                    Headers = new Microsoft.AspNetCore.Http.HeaderDictionary(), ContentType = "image/jpeg",
+                },
+            }, default);
+            return (result as Microsoft.AspNetCore.Mvc.ObjectResult)?.StatusCode;
+        }
+
+        Assert.Equal(201, await UploadAsync());   // the tenth this hour
+        Assert.Equal(429, await UploadAsync());   // the eleventh
+        await using var verify = _fx.CreateDb();
+        Assert.Equal(10, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.EmployeeId == employeeId));
+        Assert.Equal(1, await verify.AttendanceAuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == tenantId && a.Action == "attendance.selfie.uploaded"));
+    }
+
+    private async Task<(Guid TenantId, int EmployeeId)> SeedEmployeeAsync()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = $"SELFIE-{Guid.NewGuid():N}"[..20], FullName = "Selfie Person",
+            Status = EmployeeStatuses.Active, JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        return (tenantId, employee.Id);
+    }
+
+    private static async Task<Guid> AddEvidenceAsync(ZayraDbContext db, MemoryDocumentStorage storage, Guid tenantId, int employeeId, DateTime createdAt)
+    {
+        var key = (await storage.SaveAsync(tenantId, new Microsoft.AspNetCore.Http.FormFile(new MemoryStream([1, 2, 3]), 0, 3, "file", "s.jpg")
+        {
+            Headers = new Microsoft.AspNetCore.Http.HeaderDictionary(), ContentType = "image/jpeg",
+        }, default)).StorageUrl;
+        var row = new AttendanceEvidence
+        {
+            TenantId = tenantId, EmployeeId = employeeId, StorageKey = key, Sha256 = new string('b', 64), ByteSize = 3,
+            CreatedAtUtc = createdAt, ExpiresAtUtc = createdAt.AddMinutes(10),
+        };
+        db.AttendanceEvidence.Add(row);
+        await db.SaveChangesAsync();
+        return row.Id;
+    }
+
+    private async Task<string> RunJobAsync(ServiceProvider sp, Guid tenantId, DateTime asOf)
+    {
+        Guid jobId;
+        await using (var db = _fx.CreateDb())
+        {
+            var store = new BackgroundJobStore(db, sp.GetRequiredService<BackgroundJobTypeRegistry>());
+            jobId = (await store.EnqueueAsync(tenantId, SelfieEvidencePurgeJobHandler.JobType,
+                SelfieEvidencePurgeJobHandler.IdempotencyKey(asOf), new SelfieEvidencePurgePayload(asOf), null, default)).Job.Id;
+        }
+        var runner = sp.GetRequiredService<BackgroundJobRunner>();
+        for (var i = 0; i < 40; i++)
+        {
+            await using (var db = _fx.CreateDb())
+            {
+                var job = await db.BackgroundJobs.IgnoreQueryFilters().Where(j => j.Id == jobId).Select(j => new { j.Status, j.LastError }).SingleAsync();
+                if (BackgroundJobStatuses.IsTerminal(job.Status))
+                {
+                    Assert.True(job.Status == BackgroundJobStatuses.Succeeded, job.LastError ?? "no error recorded");
+                    return job.Status;
+                }
+            }
+            if (!await runner.RunNextAsync("w", default, default, [SelfieEvidencePurgeJobHandler.JobType]))
+                await Task.Delay(50);
+        }
+        throw new TimeoutException($"Selfie purge job {jobId} did not finish.");
+    }
+
+    private ServiceProvider BuildInstance(IDocumentStorage storage)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddScoped(_ => _fx.CreateDb());
+        services.AddSingleton(storage);
+        services.AddSingleton(new SelfieEvidencePurgeOptions());
+        services.AddSingleton(new BackgroundJobOptions { LeaseDuration = TimeSpan.FromMinutes(2), HeartbeatInterval = TimeSpan.FromSeconds(30) });
+        services.AddSingleton(SelfieEvidencePurgeJobHandler.Descriptor);
+        services.AddScoped<SelfieEvidencePurgeJobHandler>();
+        services.AddSingleton<BackgroundJobTypeRegistry>();
+        services.AddScoped<BackgroundJobStore>();
+        services.AddSingleton<BackgroundJobRunner>();
+        return services.BuildServiceProvider();
+    }
+}
+
+/// <summary>
+/// The migration itself (20261008000500_AddSelfieEvidenceAndBiometricConsent) on a fresh PostgreSQL 16 built by the real
+/// migration chain — the shared fixture uses EnsureCreated, which cannot prove a migration. Applies, re-runs as a no-op,
+/// enforces every CHECK and the one-open-consent index, refuses to roll back over rows, then rolls back and re-applies.
+/// </summary>
+[Trait("Category", "Integration")]
+public sealed class SelfieAttendanceMigrationPostgresTests
+{
+    private const string ThisMigration = "20261008000500_AddSelfieEvidenceAndBiometricConsent";
+
+    [Fact]
+    public async Task Migration_Applies_ReRuns_EnforcesItsConstraints_RefusesRollbackOverRows_AndReapplies()
+    {
+        await using var container = new PostgreSqlBuilder().WithImage("postgres:16-alpine").Build();
+        await container.StartAsync();
+        var options = new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(container.GetConnectionString()).Options;
+        await using var db = new ZayraDbContext(options);
+        var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
+        var all = db.Database.GetMigrations().ToList();
+        var before = all[all.IndexOf(ThisMigration) - 1];
+
+        await migrator.MigrateAsync();
+        await migrator.MigrateAsync(); // re-run is a no-op
+        Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+        foreach (var name in new[] { "ck_attendance_evidence__purge_state", "ck_attendance_evidence__purged_pair", "ck_attendance_evidence__used_pair",
+                     "ck_attendance_evidence__byte_size", "ck_attendance_evidence__expiry", "ck_biometric_consents__channel",
+                     "ck_biometric_consents__withdrawn_after_given", "ck_biometric_consents__policy_version" })
+            Assert.Equal(1L, await Scalar<long>(db, $"SELECT count(*) FROM pg_constraint WHERE conname = '{name}'"));
+        Assert.Equal("r", await Scalar<string>(db, "SELECT confdeltype::text FROM pg_constraint WHERE conname = 'FK_attendance_evidence_employees_employee_id'"));
+        Assert.Contains("@retention:E", await Scalar<string>(db, "SELECT obj_description('attendance_evidence'::regclass, 'pg_class')"));
+        Assert.Contains("rate limit", await Scalar<string>(db, "SELECT obj_description('ix_attendance_evidence__employee_created'::regclass, 'pg_class')"));
+
+        var tenant = Guid.NewGuid();
+        db.Tenants.Add(new Tenant { Id = tenant, Name = "M", Slug = $"m-{tenant:N}" });
+        var employee = new Employee { TenantId = tenant, EmployeeCode = "M-1", FullName = "M", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var e = employee.Id;
+        string Evidence(string purgeState = "Active", string purgedAt = "NULL", string usedAt = "NULL") =>
+            $"INSERT INTO attendance_evidence (id,tenant_id,employee_id,storage_key,sha256,content_type,byte_size,created_at_utc,expires_at_utc,used_at_utc,used_by_raw_event_id,purge_state,purged_at_utc) " +
+            $"VALUES (gen_random_uuid(),'{tenant}',{e},'k','{new string('c', 64)}','image/jpeg',10,now(),now() + interval '10 minutes',{usedAt},NULL,'{purgeState}',{purgedAt})";
+
+        await Sql(db, Evidence());
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(purgeState: "Gone")));
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(purgeState: "Purged")));          // purged without purged_at
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Evidence(usedAt: "now()")));               // used without a raw event
+        await Sql(db, $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Mobile')");
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db,                                             // a second open consent
+            $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Web')"));
+        await Assert.ThrowsAsync<PostgresException>(() => Sql(db,
+            $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Fax')"));
+
+        // Down refuses while rows exist; with them gone it rolls back cleanly and the migration re-applies.
+        await Assert.ThrowsAnyAsync<Exception>(() => migrator.MigrateAsync(before));
+        Assert.Equal(1L, await Scalar<long>(db, "SELECT count(*) FROM attendance_evidence"));
+        await Sql(db, "DELETE FROM attendance_evidence; DELETE FROM biometric_consents;");
+        await migrator.MigrateAsync(before);
+        Assert.Equal(0L, await Scalar<long>(db, "SELECT count(*) FROM pg_tables WHERE tablename IN ('attendance_evidence','biometric_consents')"));
+        await migrator.MigrateAsync();
+        Assert.Equal(2L, await Scalar<long>(db, "SELECT count(*) FROM pg_tables WHERE tablename IN ('attendance_evidence','biometric_consents')"));
+    }
+
+    private static async Task Sql(ZayraDbContext db, string sql)
+    {
+        var connection = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<T> Scalar<T>(ZayraDbContext db, string sql)
+    {
+        var connection = (NpgsqlConnection)db.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        return (T)(await command.ExecuteScalarAsync())!;
+    }
+}
