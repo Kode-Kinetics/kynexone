@@ -5,7 +5,7 @@ import { Modal } from '../Modal';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../EmployeeSearchSelect';
 import { usersApi } from '../../api/identity';
 import { employeesApi, type EmployeeListItem } from '../../api/employees';
-import type { EmployeeLoginInvitation, EmployeeLoginStatus, UserListItem } from '../../api/identity';
+import type { EmployeeLoginInvitation, EmployeeLoginLinkResult, EmployeeLoginStatus, UserListItem } from '../../api/identity';
 import { localizedRefusal } from '../../lib/accessCeiling';
 import { useLocale } from '../../contexts/LocaleContext';
 
@@ -25,7 +25,7 @@ interface Props {
 }
 
 type Outcome =
-  | { kind: 'linked'; employeeName: string }
+  | { kind: 'linked'; employeeName: string; linked: EmployeeLoginLinkResult }
   | { kind: 'invited'; invitation: EmployeeLoginInvitation };
 
 /** The server's refusal codes this dialog words itself, so the reader gets their own language. */
@@ -33,6 +33,12 @@ const LOGIN_OTHER_COMPANY = 'login_other_company';
 const LOGIN_POINTER_CONFLICT = 'login_pointer_conflict';
 const LOGIN_NEEDS_GROUP_ADMIN = 'login_needs_group_admin';
 const LOGIN_NOT_MANAGEABLE = 'login_not_manageable';
+const LOGIN_CREDENTIAL_HANDLED_BY_CALLER = 'login_credential_handled_by_caller';
+const WORK_EMAIL_CHANGED_BY_PARTY = 'work_email_changed_by_party';
+const WORK_EMAIL_SET_BY_CALLER = 'work_email_set_by_caller';
+/** The server's delivery sentence when the caller entered the work email (never emailed; worded here for Arabic). */
+const HAND_OVER_IN_PERSON = 'You entered this work email, so hand the link over in person.';
+const WORK_EMAIL_SET_BY_HANDLER = 'work_email_set_by_handler';
 /** The lifecycle states that can hold a login (AuthCurrentEligibility). */
 const LINKABLE_STATUSES = ['Active', 'Invited'] as const;
 
@@ -47,6 +53,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [statusError, setStatusError] = useState('');
   const [reason, setReason] = useState('');
+  const [emailConfirmed, setEmailConfirmed] = useState(false);
+  const confirmId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -112,7 +120,7 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
   // A new employee starts a new question: forget the previous answer, error and outcome.
   useEffect(() => {
-    setStatus(null); setStatusError(''); setError(''); setOutcome(null); setCopied(false);
+    setStatus(null); setStatusError(''); setError(''); setOutcome(null); setCopied(false); setEmailConfirmed(false);
     if (!employee) return;
     let current = true;
     setLoadingStatus(true);
@@ -136,6 +144,10 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
         : t('This login is still recorded on another employee record. Contact support to resolve it.');
     if (code === LOGIN_NEEDS_GROUP_ADMIN) return t('Only a group-level administrator can link a login that has no company access yet.');
     if (code === LOGIN_NOT_MANAGEABLE) return t('A login already uses this work email, but it is outside your access. An administrator who manages it must link it.');
+    if (code === LOGIN_CREDENTIAL_HANDLED_BY_CALLER) return t("You have handled this login's credentials (you created it, set its password, or were shown a reset or invitation link for it), so you cannot link it to an employee record. Another administrator must link it.");
+    if (code === WORK_EMAIL_CHANGED_BY_PARTY) return t('The work email on this employee record was set by this login itself, so it cannot be linked on it. Have an administrator confirm and set the work email first.');
+    if (code === WORK_EMAIL_SET_BY_CALLER) return t("You set this employee's work email, so you cannot also issue or link a credential for their login. Another administrator must do it.");
+    if (code === WORK_EMAIL_SET_BY_HANDLER) return t("The work email on this employee record was set by someone who has handled this login's credentials, so the login cannot be linked to it. Have a different administrator confirm and set the work email first.");
     return null;
   };
 
@@ -150,8 +162,11 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (!reason.trim()) { setError(t('Give a reason. It is kept in the audit trail.')); return; }
     setSubmitting(true); setError('');
     try {
-      await usersApi.linkExistingLogin({ employeeId: status.employeeId, userId, reason: reason.trim() });
-      setOutcome({ kind: 'linked', employeeName: status.employeeName });
+      const linked = await usersApi.linkExistingLogin({
+        employeeId: status.employeeId, userId, reason: reason.trim(),
+        ...(status.workEmailChangedAfterCreation ? { confirmedWorkEmail: emailConfirmed } : {}),
+      });
+      setOutcome({ kind: 'linked', employeeName: status.employeeName, linked });
       onChanged();
     } catch (e: unknown) {
       setError(writeError(e, t('The login could not be linked.')));
@@ -163,17 +178,21 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     if (!status) return;
     setSubmitting(true); setError('');
     try {
-      const invitation = await usersApi.inviteEmployee({ employeeId: status.employeeId, accessMode: 'ESSOnly' });
+      const invitation = await usersApi.inviteEmployee({
+        employeeId: status.employeeId, accessMode: 'ESSOnly',
+        ...(status.workEmailChangedAfterCreation ? { confirmedWorkEmail: emailConfirmed } : {}),
+      });
       setOutcome({ kind: 'invited', invitation });
       onChanged();
     } catch (e: unknown) {
-      setError(localizedRefusal(e, locale) ?? t('The invitation could not be sent.'));
+      setError(writeError(e, t('The invitation could not be sent.')));
     }
     setSubmitting(false);
   };
 
   // What to say, and the one action that matches the server's next step.
   let explanation: string | null = null;
+  let resetNotice: string | null = null;
   let action: { label: string; run: () => void; needsReason: boolean } | null = null;
   if (status && !outcome) {
     const pendingInvitation = status.linkedLogin && !status.linkedLogin.isActive
@@ -198,6 +217,8 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
             { name, email: status.matchingLogin.email });
           const target = status.matchingLogin.userId;
           action = { label: t('Link this login'), run: () => { void link(target); }, needsReason: true };
+          if (status.willResetCredential)
+            resetNotice = t("Linking will reset this login's password. {name} will set a new one from an invitation.", { name });
         }
         break;
       case 'invite':
@@ -220,7 +241,9 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
     <div className="flex justify-end gap-2">
       <button type="button" onClick={onClose} className={btnSecondary}>{outcome ? t('Close') : t('Cancel')}</button>
       {action && (
-        <button type="button" onClick={action.run} disabled={submitting || (action.needsReason && !reason.trim())} className={btnPrimary}>
+        <button type="button" onClick={action.run}
+          disabled={submitting || (action.needsReason && !reason.trim()) || (!!status?.workEmailChangedAfterCreation && !emailConfirmed)}
+          className={btnPrimary}>
           {submitting ? t('Working…') : action.label}
         </button>
       )}
@@ -294,6 +317,24 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
               <dd className="break-all text-slate-800 dark:text-slate-200">{status.linkedLogin?.email ?? t('No linked login')}</dd>
             </dl>
             {explanation && <p className="text-sm text-slate-700 dark:text-slate-300">{explanation}</p>}
+            {action && status.workEmailChangedAfterCreation && (
+              <div data-testid="work-email-confirmation" className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-800 dark:bg-amber-900/20">
+                {status.workEmailSetBy && status.workEmailSetAtUtc && (
+                  <p data-testid="work-email-set-by" className="text-xs text-slate-600 dark:text-slate-400">
+                    {t('Work email set by {name} on {date}.', { name: status.workEmailSetBy, date: status.workEmailSetAtUtc.slice(0, 10) })}
+                  </p>
+                )}
+                <label htmlFor={confirmId} className="flex items-start gap-2 text-slate-800 dark:text-slate-200">
+                  <input id={confirmId} type="checkbox" checked={emailConfirmed} onChange={(e) => setEmailConfirmed(e.target.checked)} className="mt-0.5" />
+                  <span>{t('I confirmed this email address with {name}.', { name })}</span>
+                </label>
+              </div>
+            )}
+            {resetNotice && (
+              <p data-testid="link-will-reset-credential" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                {resetNotice}
+              </p>
+            )}
             {action?.needsReason && (
               <div className="flex flex-col gap-1">
                 <label htmlFor={reasonId} className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('Reason (kept in the audit trail)')}</label>
@@ -313,17 +354,58 @@ export function LinkEmployeeLoginDialog({ user, onClose, onChanged }: Props) {
 
         {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-        {outcome?.kind === 'linked' && (
+        {outcome?.kind === 'linked' && !outcome.linked.credentialReset && (
           <div role="status" className="space-y-1 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
             <p className="font-medium">{t('Linked to {name}.', { name: outcome.employeeName })}</p>
             <p>{t('{name} must sign out and sign in again to see Self-Service.', { name: outcome.employeeName })}</p>
           </div>
         )}
 
+        {outcome?.kind === 'linked' && outcome.linked.credentialReset && (
+          <div role="status" className="space-y-3">
+            <div className="space-y-1 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+              <p className="font-medium">{t('Linked. {name} must set a new password from the invitation.', { name: outcome.employeeName })}</p>
+              <p>{t("Someone other than {name} had handled this login's password, so the old password no longer works.", { name: outcome.employeeName })}</p>
+            </div>
+            {outcome.linked.deliveryMessage && (
+              <p className={`text-sm ${outcome.linked.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                {outcome.linked.handOverInPerson ? t(HAND_OVER_IN_PERSON) : outcome.linked.deliveryMessage}
+              </p>
+            )}
+            {outcome.linked.invitationUrl && !outcome.linked.emailSent && (
+              <div>
+                <p className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  {t('Invitation link — copy it now and send it to them yourself')}
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    aria-label={t('Invitation link')}
+                    value={outcome.linked.invitationUrl}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="field-ltr w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(outcome.linked.invitationUrl ?? '')
+                        .then(() => setCopied(true))
+                        .catch(() => setCopied(false));
+                    }}
+                    className={`shrink-0 ${btnSecondary}`}
+                  >
+                    {copied ? t('Link copied') : t('Copy link')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {outcome?.kind === 'invited' && (
           <div role="status" className="space-y-3">
             <p className={`text-sm ${outcome.invitation.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
-              {outcome.invitation.deliveryMessage}
+              {outcome.invitation.handOverInPerson ? t(HAND_OVER_IN_PERSON) : outcome.invitation.deliveryMessage}
             </p>
             {outcome.invitation.invitationUrl && !outcome.invitation.emailSent && (
               <div>

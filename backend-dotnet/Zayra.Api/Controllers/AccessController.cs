@@ -366,7 +366,8 @@ public class AccessController : ControllerBase
             var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId.Value, cancellationToken);
             var emailSent = false;
             var captured = false;
-            if (emailDeliveryConfigured)
+            // WorkEmailSetterRule: the caller set the address this link would go to — never email it.
+            if (emailDeliveryConfigured && !link.HandOverInPerson)
             {
                 try
                 {
@@ -393,7 +394,9 @@ public class AccessController : ControllerBase
                 }
             }
 
-            var message = emailSent
+            var message = link.HandOverInPerson
+                ? WorkEmailSetterRule.HandOverMessage
+                : emailSent
                 ? $"Reset link accepted by the mail server for {link.Email}. It can be used once and expires at {link.ExpiresAtUtc:HH:mm} UTC."
                 : captured
                     ? "This server is in test delivery mode, so the email was captured and not sent. Copy the link below and give it to the user directly — it can be used once and expires in 1 hour."
@@ -433,6 +436,7 @@ public class AccessController : ControllerBase
                 // Withheld once the user has it in their inbox; there is no reason for a second copy
                 // to sit in an admin's browser or in an API log.
                 resetUrl = emailSent ? null : link.ResetUrl,
+                handOverInPerson = link.HandOverInPerson,
                 message
             });
         }
@@ -514,9 +518,26 @@ public class AccessController : ControllerBase
             // with no SMTP (the production default) nothing ever did. The invitation is now actually
             // emailed when a transport exists, and the response states plainly which happened.
             invite = await AttachInvitationDeliveryAsync(tenantId.Value, invite, cancellationToken);
+
+            // The raw token never leaves the server; the link is handed back ONLY when nothing reached the
+            // invitee, and then the inviter has held a credential for this login — recorded, so the two-person
+            // rule (AccessManagementService.TwoPersonRefusalAsync) never lets them link it to an employee.
+            var disclosed = !invite.EmailSent && !string.IsNullOrEmpty(invite.InvitationUrl);
+            if (disclosed)
+                await RecordInvitationLinkDisclosedAsync(tenantId.Value, invite.UserId, invite.EmployeeId,
+                    invite.EmailDeliveryConfigured, invite.InvitationExpiresAtUtc, "invite", cancellationToken);
+            invite = invite with
+            {
+                InvitationToken = string.Empty,
+                InvitationUrl = disclosed ? invite.InvitationUrl : string.Empty
+            };
             return Created($"/api/access/users/{invite.UserId}", invite);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_invited", "Employee", request.EmployeeId.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+        catch (WorkEmailConfirmationRequiredException ex)
+        {
+            return BadRequest(new { error = ex.Code, code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
+        }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -549,8 +570,23 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null || GetUserId() is null) return Unauthorized();
-            return Ok(await _accessManagement.LinkExistingLoginAsync(
-                tenantId.Value, request, this.GetEntityScope(), GetContext(), cancellationToken));
+            var linked = await _accessManagement.LinkExistingLoginAsync(
+                tenantId.Value, request, this.GetEntityScope(), GetContext(), cancellationToken);
+            if (!linked.CredentialReset || string.IsNullOrEmpty(linked.InvitationUrl)) return Ok(linked with { InvitationUrl = null });
+
+            // The link rotated the credential: deliver the fresh invitation exactly as the invite endpoint does.
+            var delivered = await AttachInvitationDeliveryAsync(tenantId.Value, new EmployeeLoginInvitationDto(
+                linked.UserId, linked.EmployeeId, linked.Email, linked.AccessMode, linked.Status, string.Empty,
+                linked.InvitationExpiresAtUtc, linked.InvitationUrl) { HandOverInPerson = linked.HandOverInPerson }, cancellationToken);
+            if (!delivered.EmailSent)
+                await RecordInvitationLinkDisclosedAsync(tenantId.Value, linked.UserId, linked.EmployeeId,
+                    delivered.EmailDeliveryConfigured, linked.InvitationExpiresAtUtc, "link_credential_reset", cancellationToken);
+            return Ok(linked with
+            {
+                InvitationUrl = delivered.EmailSent ? null : linked.InvitationUrl,
+                EmailSent = delivered.EmailSent,
+                DeliveryMessage = delivered.DeliveryMessage,
+            });
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.employee_login_linked", "User", request.UserId.ToString()); }
         catch (AccessTargetNotFoundException ex) { return NotFound(new { message = ex.Message }); }
@@ -562,6 +598,24 @@ public class AccessController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// An invitation link was handed back to the caller instead of reaching the invitee: the caller has held a
+    /// credential for that login. Recorded so the two-person rule never lets them link it to an employee.
+    /// </summary>
+    private async Task RecordInvitationLinkDisclosedAsync(Guid tenantId, Guid userId, int employeeId, bool emailDeliveryConfigured,
+        DateTime? expiresAtUtc, string source, CancellationToken cancellationToken)
+    {
+        _db.AuditLogs.Add(AuthAuditEntry.Create(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            AccessManagementService.InvitationLinkDisclosedAction,
+            "User",
+            userId.ToString(),
+            GetContext() with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new { employeeId, emailDeliveryConfigured, expiresAtUtc, source })));
+        await _db.SaveChangesAsync(cancellationToken);
+    }
+
     private async Task<EmployeeLoginInvitationDto> AttachInvitationDeliveryAsync(
         Guid tenantId, EmployeeLoginInvitationDto invite, CancellationToken cancellationToken)
     {
@@ -571,6 +625,15 @@ public class AccessController : ControllerBase
             return invite with
             {
                 DeliveryMessage = "This person was given employee access without a portal login, so no invitation was sent."
+            };
+
+        // WorkEmailSetterRule: the caller set the address — the invitation is handed back, never emailed.
+        if (invite.HandOverInPerson)
+            return invite with
+            {
+                EmailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken),
+                EmailSent = false,
+                DeliveryMessage = WorkEmailSetterRule.HandOverMessage,
             };
 
         var emailDeliveryConfigured = await _emailService.IsConfiguredAsync(tenantId, cancellationToken);

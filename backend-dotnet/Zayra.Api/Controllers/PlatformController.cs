@@ -2006,6 +2006,9 @@ public class PlatformController : ControllerBase
             user.NormalizedEmail = normalizedEmail;
             user.FullName = fullName;
             user.PasswordHash = _passwordHasher.Hash(req.Password);
+            // An operator chose this password: stamp it, so the restored login's older owner-set history
+            // never counts as "the person set their own password" (AccessManagementService link check).
+            user.LastPasswordChangedAt = DateTime.UtcNow;
             user.AccessMode = "FullPortal";
             user.Status = "Active";
             user.IsActive = true;
