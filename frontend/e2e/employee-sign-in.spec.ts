@@ -360,6 +360,14 @@ test.describe('where sign-in lands', () => {
     await page.waitForURL(/\/dashboard/);
   });
 
+  test('HR redeeming a reset code lands on their usual home, not Self-Service', async ({ page }) => {
+    await mockApi(page, { login: [{ status: 200, body: session({ roles: ['HR Manager'], permissions: ['dashboard.read', 'ess.read', 'employees.read', 'employees.write'] }) }] });
+    await page.goto(`/welcome#e=${encodeURIComponent('sara.ali@evostel.com')}&c=${CODE}`);
+    await passwordBox(page).fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Save password and sign in' }).click();
+    await page.waitForURL(/\/dashboard/);
+  });
+
   test('an explicit ?from= still wins', async ({ page }) => {
     await mockApi(page);
     await page.goto('/login?from=%2Fess%2Fleave');
