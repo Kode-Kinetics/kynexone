@@ -639,8 +639,13 @@ public class AttendanceService : IAttendanceService
             var policy = await _db.AttendancePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct) ?? DefaultPolicy(tenantId);
             var ctx = new RequestContext(ip, "device-ingest", null, tenantId);
             // One employee-day per transaction, under the same per-(tenant, employee, work date) lock as a punch, in the
-            // global order (employee, then date): a punch racing this ingest can neither 23505 nor lose its update.
+            // global order (employee, then date): a punch racing this ingest can neither 23505 nor lose its update. The
+            // batch above is saved, so the change tracker is cleared after each committed day (it would otherwise grow
+            // with every day and make the run quadratic), and each employee's committed days are audited as they finish.
+            _db.ChangeTracker.Clear();
             foreach (var emp in matchedEmployees.Values.OrderBy(e => e.Id))
+            {
+                var employeeDays = new List<DateOnly>();
                 foreach (var date in affectedDates.Order())
                 {
                     if (await IsLocked(tenantId, date, ct)) continue;
@@ -649,8 +654,13 @@ public class AttendanceService : IAttendanceService
                         await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
                         await _db.SaveChangesAsync(ct);
                     }, ct);
+                    _db.ChangeTracker.Clear();
+                    employeeDays.Add(date);
                     processedDays++;
                 }
+                if (employeeDays.Count > 0)
+                    await AuditProcessedChunkAsync(tenantId, ctx, emp.Id, employeeDays.Min(), employeeDays.Max(), employeeDays.Count, "device-ingest", ct);
+            }
         }
 
         return new DeviceIngestResult(punches.Count, accepted, duplicates, unmatched, processedDays, syncLog.Id);
@@ -718,10 +728,18 @@ public class AttendanceService : IAttendanceService
     {
         await ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct);
 
-        var employees = await _db.Employees.Where(x => x.TenantId == tenantId && !x.IsDeleted
+        // The change tracker is cleared after each committed employee-day — it would otherwise keep every day's rows and
+        // make a long run quadratic — unless the caller handed in unsaved changes of its own (then it is left alone).
+        var clearAfterEachDay = !_db.ChangeTracker.HasChanges();
+        var employees = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted
             && x.Status == EmployeeStatuses.Active
             && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
         var policies = await EnsureActivePoliciesAsync(tenantId, ct);
+        // Days commit one at a time, so the run is audited as it goes: a "started" entry now, then one entry per employee
+        // whose days have committed. A run that dies part-way is visible as such.
+        await Audit(tenantId, context, "attendance.process_started", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}",
+            JsonSerializer.Serialize(new { from = request.FromDate, to = request.ToDate, employees = employees.Count, employeeId = request.EmployeeId }), ct);
+        await _db.SaveChangesAsync(ct);
         var processed = 0;
         // One employee-day per transaction under the punch's per-(tenant, employee, work date) lock, in the global order
         // (employee, then date), so a punch racing this run can neither 23505 nor lose its update, and no run ever holds
@@ -729,6 +747,7 @@ public class AttendanceService : IAttendanceService
         foreach (var employee in employees.OrderBy(e => e.Id))
         {
             var policy = ResolveAttendancePolicy(employee, policies);
+            var days = 0;
             for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
             {
                 var day = date;
@@ -737,8 +756,12 @@ public class AttendanceService : IAttendanceService
                     await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
                 }, ct);
+                if (clearAfterEachDay) _db.ChangeTracker.Clear();
                 processed++;
+                days++;
             }
+            await AuditProcessedChunkAsync(tenantId, context, employee.Id, request.FromDate, request.ToDate, days, "process", ct);
+            if (clearAfterEachDay) _db.ChangeTracker.Clear();
         }
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}", ct);
         await _db.SaveChangesAsync(ct);
@@ -789,8 +812,11 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Employee does not belong to the tenant being processed.");
         var policy = ResolveAttendancePolicy(employee, policies);
         var days = 0;
-        // Dates ascending under the punch's per-(tenant, employee, work date) lock: inside the job item's transaction the
-        // locks are held until it commits, always in the global order, so neither a punch nor another run can deadlock it.
+        // Dates ascending under the punch's per-(tenant, employee, work date) lock. Inside a caller's transaction (the
+        // processing job's item) every lock taken is held until that transaction commits, so the job calls this for ONE
+        // employee × calendar month per item: at most 31 locks per transaction, always taken in the global order
+        // (employee, then date), so neither a punch nor another run can deadlock it. Without a transaction, each day is
+        // its own transaction holding one lock.
         for (var date = fromDate; date <= toDate; date = date.AddDays(1))
         {
             var day = date;
@@ -959,12 +985,10 @@ public class AttendanceService : IAttendanceService
             return reg;
         }
 
-        reg.Status = "Approved";
-        reg.DecidedAtUtc = DateTime.UtcNow;
-        await ApplyRegularization(tenantId, reg, context, ct);
-        await Audit(tenantId, context, "attendance.regularization.approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
-            JsonSerializer.Serialize(new { before = beforeStatus, after = "Approved" }), ct);
-        await _db.SaveChangesAsync(ct);
+        // HR's final approval moves pay: it is ONE transaction under the employee-day lock (ApplyRegularizationAsync). The
+        // reads above were checks only; everything is re-read and written inside, so a retried attempt starts clean.
+        _db.ChangeTracker.Clear();
+        reg = await ApplyRegularizationAsync(tenantId, id, request, beforeStatus, context, ct);
         await _notifications.NotifyAsync(tenantId, reg.RequestedByUserId,
             "Correction Request Approved",
             $"Your attendance correction for {reg.WorkDate:yyyy-MM-dd} has been approved.",
@@ -1220,16 +1244,100 @@ public class AttendanceService : IAttendanceService
         await UpsertExceptions(tenantId, daily, ct);
     }
 
-    private async Task ApplyRegularization(Guid tenantId, AttendanceRegularizationRequest reg, RequestContext context, CancellationToken ct)
+    /// <summary>
+    /// The audit entry for one committed chunk of a processing run (one employee's days, or one employee-month in the
+    /// job): <c>attendance.processed_employee</c>, saved at once, so a run that stops part-way is recorded up to there.
+    /// </summary>
+    private async Task AuditProcessedChunkAsync(Guid tenantId, RequestContext context, int employeeId, DateOnly from, DateOnly to, int days,
+        string source, CancellationToken ct)
     {
-        if (reg.RequestedInUtc is not null)
-            _db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = tenantId, EmployeeId = reg.EmployeeId, Source = "Manual HR correction", PunchTimestampUtc = reg.RequestedInUtc.Value, PunchDirection = "In", VerificationMethod = "Manual", RawPayloadJson = JsonSerializer.Serialize(reg), CreatedBy = context.UserId });
-        if (reg.RequestedOutUtc is not null)
-            _db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = tenantId, EmployeeId = reg.EmployeeId, Source = "Manual HR correction", PunchTimestampUtc = reg.RequestedOutUtc.Value, PunchDirection = "Out", VerificationMethod = "Manual", RawPayloadJson = JsonSerializer.Serialize(reg), CreatedBy = context.UserId });
-        await ProcessAsync(tenantId, new ProcessAttendanceRequest(reg.WorkDate, reg.WorkDate, reg.EmployeeId), context, ct);
-        var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate, ct);
-        if (daily is not null) daily.ManualCorrectionStatus = "Approved";
+        await Audit(tenantId, context, ProcessedChunkAction, "Employee", employeeId.ToString(CultureInfo.InvariantCulture),
+            JsonSerializer.Serialize(new { employeeId, from, to, days, source }), ct);
+        await _db.SaveChangesAsync(ct);
     }
+
+    /// <summary>Audit action of one committed chunk of attendance processing (an employee's days; an employee-month in the job).</summary>
+    public const string ProcessedChunkAction = "attendance.processed_employee";
+
+    /// <summary>The plain answer when HR's approval could not be written because the database was briefly unavailable.</summary>
+    public const string ApprovalTransientFailureMessage =
+        "The correction could not be approved because the database was briefly unavailable. Nothing was changed. Try again.";
+
+    /// <summary>
+    /// HR's final approval of a correction, as ONE transaction under the employee-day lock
+    /// (<see cref="AttendanceDailyRecordLock"/>): the request's status and the HR decision, the corrected raw punches
+    /// (SAVED first, inside the transaction, so the recompute — which reads punches from the database — sees them), the
+    /// tenant's first DEFAULT policy if there is none (inside this transaction too, so it never commits the approval on
+    /// its own), the recomputed daily record, and the audit. All of it commits together or not at all.
+    /// <para>It used to add the punches without saving and then recompute, so the daily record was rebuilt WITHOUT the
+    /// correction while the request said Approved — wrong pay, silently.</para>
+    /// A transient database failure is retried from scratch by the execution strategy; if it persists, nothing has been
+    /// written and the caller gets <see cref="ApprovalTransientFailureMessage"/>.
+    /// </summary>
+    private async Task<AttendanceRegularizationRequest> ApplyRegularizationAsync(Guid tenantId, Guid id, RegularizationDecisionRequest request,
+        string beforeStatus, RequestContext context, CancellationToken ct)
+    {
+        var target = await _db.AttendanceRegularizationRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => new { x.EmployeeId, x.WorkDate }).FirstAsync(ct);
+        AttendanceRegularizationRequest? approved = null;
+        try
+        {
+            await AttendanceDailyRecordLock.RunAsync(_db, tenantId, target.EmployeeId, target.WorkDate, async () =>
+            {
+                var reg = await _db.AttendanceRegularizationRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+                if (reg.Status != "PendingHRApproval")
+                    throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
+                if (await IsLocked(tenantId, reg.WorkDate, ct))
+                    throw new InvalidOperationException("Attendance period is payroll locked.");
+                var now = DateTime.UtcNow;
+                var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId
+                    && x.RegularizationRequestId == id && x.ApprovalLevel == "HR", ct);
+                if (approval is not null)
+                {
+                    approval.Decision = "Approved";
+                    approval.Comments = Clean(request.Comments);
+                    approval.DecidedAtUtc = now;
+                    approval.DecidedByUserId = context.UserId;
+                }
+                reg.Status = "Approved";
+                reg.DecidedAtUtc = now;
+                if (reg.RequestedInUtc is not null)
+                    _db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = tenantId, EmployeeId = reg.EmployeeId, Source = "Manual HR correction", PunchTimestampUtc = reg.RequestedInUtc.Value, PunchDirection = "In", VerificationMethod = "Manual", RawPayloadJson = JsonSerializer.Serialize(reg), CreatedBy = context.UserId });
+                if (reg.RequestedOutUtc is not null)
+                    _db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = tenantId, EmployeeId = reg.EmployeeId, Source = "Manual HR correction", PunchTimestampUtc = reg.RequestedOutUtc.Value, PunchDirection = "Out", VerificationMethod = "Manual", RawPayloadJson = JsonSerializer.Serialize(reg), CreatedBy = context.UserId });
+                // Saved INSIDE the transaction: the recompute below reads punches from the database.
+                await _db.SaveChangesAsync(ct);
+
+                var employee = await ResolveEmployee(tenantId, reg.EmployeeId, null, ct);
+                if (employee is not null)
+                {
+                    var policies = await EnsureActivePoliciesAsync(tenantId, ct);
+                    await ProcessEmployeeDay(tenantId, employee, reg.WorkDate, ResolveAttendancePolicy(employee, policies), context, ct);
+                    var daily = _db.AttendanceDailyRecords.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate)
+                                ?? await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate, ct);
+                    if (daily is not null) daily.ManualCorrectionStatus = "Approved";
+                    await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", $"{reg.WorkDate}:{reg.WorkDate}",
+                        JsonSerializer.Serialize(new { employeeId = reg.EmployeeId, reason = "regularization approved", regularizationId = reg.Id }), ct);
+                }
+                await Audit(tenantId, context, "attendance.regularization.approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
+                    JsonSerializer.Serialize(new { before = beforeStatus, after = "Approved" }), ct);
+                await _db.SaveChangesAsync(ct);
+                approved = reg;
+            }, ct);
+        }
+        catch (Exception ex) when (IsTransientDatabaseFailure(ex))
+        {
+            _db.ChangeTracker.Clear();
+            throw new InvalidOperationException(ApprovalTransientFailureMessage, ex);
+        }
+        return approved!;
+    }
+
+    /// <summary>The execution strategy gave up on a transient failure, or a transient provider failure escaped it.</summary>
+    private static bool IsTransientDatabaseFailure(Exception ex) =>
+        ex is Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException
+        || ex is Npgsql.NpgsqlException { IsTransient: true }
+        || ex.InnerException is Npgsql.NpgsqlException { IsTransient: true };
 
     /// <summary>
     /// WAVE 1 B1 (round 2) — THE SECOND HALF OF THE DEVICE-INGEST DEFECT.

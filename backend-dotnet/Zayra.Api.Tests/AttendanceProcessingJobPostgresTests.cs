@@ -148,6 +148,37 @@ public sealed class AttendanceProcessingJobPostgresTests
         Assert.Equal(companyAEmployees.OrderBy(x => x), processedEmployees.OrderBy(x => x));
     }
 
+    /// <summary>
+    /// PR #213 review, item 5: a job item is one employee × calendar month, so an item's transaction holds at most a
+    /// month of that employee's daily-record locks — not the whole range — and each committed item is audited.
+    /// </summary>
+    [Fact]
+    public async Task AJobAcrossAMonthBoundary_RunsOneItemPerEmployeeAndMonth_AndAuditsEachChunk()
+    {
+        var (tenant, _, _) = await SeedAsync();
+        await using var sp = BuildInstance();
+        var from = new DateOnly(2026, 7, 30);
+        Guid jobId;
+        await using (var scope = sp.CreateAsyncScope())
+        {
+            var payload = new AttendanceProcessingJobPayload(from, To, null, GroupScope: true, CompanyIds: [],
+                RequestedByUserId: null, IpAddress: null, UserAgent: null);
+            jobId = (await scope.ServiceProvider.GetRequiredService<BackgroundJobStore>().EnqueueAsync(tenant,
+                AttendanceProcessingJobHandler.JobType, AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload), payload, null, default)).Job.Id;
+        }
+        await RunUntilTerminalAsync(sp, jobId);
+
+        await using var verify = _fx.CreateDb();
+        var job = await verify.BackgroundJobs.SingleAsync(j => j.Id == jobId);
+        Assert.True(job.Status == BackgroundJobStatuses.Succeeded, $"{job.Status}: {job.LastError}");
+        Assert.Equal(6, job.ProgressTotal); // 3 employees × 2 months
+        var keys = await verify.BackgroundJobItems.Where(i => i.JobId == jobId).Select(i => i.ItemKey).ToListAsync();
+        Assert.Equal(3, keys.Count(k => k.EndsWith(":2026-07", StringComparison.Ordinal)));
+        Assert.Equal(3, keys.Count(k => k.EndsWith(":2026-08", StringComparison.Ordinal)));
+        Assert.Equal(6, await verify.AttendanceAuditLogs.CountAsync(a => a.TenantId == tenant && a.Action == "attendance.processed_employee"));
+        Assert.Equal(18, await verify.AttendanceDailyRecords.CountAsync(r => r.TenantId == tenant)); // 3 × 6 days, as before
+    }
+
     // ───────────────────────────── helpers ─────────────────────────────
 
     /// <summary>
