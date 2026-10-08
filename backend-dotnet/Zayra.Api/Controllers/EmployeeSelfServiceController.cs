@@ -337,15 +337,11 @@ public class EmployeeSelfServiceController : ControllerBase
         if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "approve", cancellationToken) is { } refusal) return refusal;
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
-        // Segregation of duties (employee access F1): the person the request is about never approves it, nor does
-        // whoever was shown their welcome code, for 30 days after it was redeemed.
-        if (GetUserId() is Guid deciderId)
-        {
-            if ((await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, employee.Id, cancellationToken)).Contains(deciderId))
-                return Conflict(new { code = "subject_cannot_decide", message = "This request is about you, so someone else must decide it." });
-            if (await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, employee.Id, deciderId, DateTime.UtcNow, cancellationToken))
-                return Conflict(new { code = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
-        }
+        // Segregation of duties (employee access F1): the subject is already refused above (SubjectDecisionBar,
+        // #209); whoever was shown this employee's welcome code may not approve their changes for 30 days after redeem.
+        if (GetUserId() is Guid deciderId
+            && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, employee.Id, deciderId, DateTime.UtcNow, cancellationToken))
+            return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
         foreach (var (field, value) in values)
         {

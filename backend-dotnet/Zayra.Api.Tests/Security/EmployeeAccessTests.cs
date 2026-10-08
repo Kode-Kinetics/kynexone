@@ -954,7 +954,8 @@ public sealed class EmployeeAccessTests
         verify.EmployeeProfileChangeRequests.Add(change);
         await verify.SaveChangesAsync();
         var refused = await Ess(verify, w, w.HrOfficerId).ApproveProfileChange(change.Id, new ProfileChangeDecisionDto(null), default);
-        JsonSerializer.SerializeToElement(Assert.IsType<ConflictObjectResult>(refused).Value).GetProperty("code").GetString()
+        // Same shape as #209's SubjectDecisionBar refusals: 400 { error, message }.
+        JsonSerializer.SerializeToElement(Assert.IsType<BadRequestObjectResult>(refused).Value).GetProperty("error").GetString()
             .Should().Be("credential_handler_cannot_decide");
         Assert.IsType<OkObjectResult>(await Ess(verify, w, w.HrOfficer2Id).ApproveProfileChange(change.Id, new ProfileChangeDecisionDto(null), default));
     }
