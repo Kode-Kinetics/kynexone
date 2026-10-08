@@ -1545,7 +1545,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // A NEW plus-addressed work email is refused; an existing one is left alone until it is changed.
         if (!isUpdate || !string.Equals(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(employee.WorkEmail ?? string.Empty),
                 Zayra.Api.Infrastructure.Auth.AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
-            WorkEmailPlusAddressException.ThrowIfPlusAddressed(employee.WorkEmail);
+            WorkEmailInvalidCharactersException.ThrowIfNotAllowed(employee.WorkEmail);
 
         // ── Login-identity guard (req 8 / R1, P0 login takeover) ──────────────────────────────────
         // A STAGED login's username follows the work email (and its invitation is cancelled); an ACTIVATED

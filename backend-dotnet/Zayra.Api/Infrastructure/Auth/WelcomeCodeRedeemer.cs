@@ -37,6 +37,11 @@ public sealed class WelcomeCodeRedeemer
 {
     public const string RedeemedAction = "auth.welcome_code_redeemed";
     public const string FailedAction = "auth.welcome_code_failed";
+    /// <summary>A wrong code against a LIVE code: the only failure the tenant budget counts (unknown emails and
+    /// malformed input never exhaust a tenant's budget).</summary>
+    public const string WrongCodeAction = "auth.welcome_code_wrong";
+    /// <summary>Login statuses that stop a code being redeemed (an admin suspension, deactivation or lock).</summary>
+    private static readonly string[] StoppedLoginStatuses = ["Suspended", "Deactivated", "Locked"];
     public const string BurnedAction = "access.welcome_code_burned";
     public const string IssuerDeviceAction = "access.welcome_code_redeemed_from_issuer_device";
     public const string SignOutFirstAction = "auth.welcome_code_sign_out_first";
@@ -74,7 +79,7 @@ public sealed class WelcomeCodeRedeemer
     /// <summary>Who the browser already is, for <c>sign_out_first</c> (F11).</summary>
     public sealed record Presenter(Guid? SessionUserId, Guid? SessionTenantId, string? KnownDeviceCookie);
 
-    private enum Verdict { Ok, Invalid, Expired, Used, Locked, PasswordPolicy, SeatLimit }
+    private enum Verdict { Ok, Invalid, Expired, Used, PasswordPolicy, SeatLimit }
 
     public async Task<WelcomeRedeemResponse> RedeemAsync(WelcomeRedeemRequest request, RequestContext context, Presenter presenter, CancellationToken ct)
     {
@@ -107,7 +112,7 @@ public sealed class WelcomeCodeRedeemer
             throw new WelcomeRedeemRefusedException(Codes.TryLater, 429);
         var since = nowUtc - WelcomeCodes.TenantBudgetWindow;
         var tenantFailures = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenant.Id, Why).AsNoTracking()
-            .CountAsync(a => a.Action == FailedAction && a.CreatedAtUtc >= since, ct);
+            .CountAsync(a => a.Action == WrongCodeAction && a.CreatedAtUtc >= since, ct);
         if (tenantFailures >= WelcomeCodes.TenantFailureBudget)
             throw new WelcomeRedeemRefusedException(Codes.TryLater, 429);
 
@@ -118,11 +123,6 @@ public sealed class WelcomeCodeRedeemer
             if (presenter.SessionUserId is Guid s && s != tid) throw await SignOutFirstAsync(tenant.Id, tid, context, ct);
             if (_abuse is not null && _abuse.KnownDeviceBelongsToAnother(presenter.KnownDeviceCookie, tid))
                 throw await SignOutFirstAsync(tenant.Id, tid, context, ct);
-        }
-        if (targetId is null || code is null)
-        {
-            await RecordFailureAsync(tenant.Id, null, context, "no_live_code", ct);
-            throw new WelcomeRedeemRefusedException(Codes.Invalid);
         }
 
         var password = WelcomeCodes.NormalizeDigits(request.NewPassword ?? string.Empty);
@@ -137,8 +137,18 @@ public sealed class WelcomeCodeRedeemer
             verdict = Verdict.Invalid;
             var at = DateTime.UtcNow;
             _ = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag).SingleAsync(t => t.Id == tenant.Id, token);
+            // Unknown email or malformed code: the same transaction, lock and HMAC work as a real miss, so the
+            // answer's timing does not say whether the address exists.
+            var probeId = targetId ?? Guid.Empty;
             var user = await ScopedBypass.TenantWide(_db.Users, tenant.Id, Why).TagWith(RowLockingInterceptor.ForUpdateTag)
-                .SingleAsync(u => u.Id == targetId.Value, token);
+                .SingleOrDefaultAsync(u => u.Id == probeId, token);
+            if (user is null || code is null)
+            {
+                _ = WelcomeCodes.Hash(_key, Guid.Empty, normalizedEmail, code ?? "00000000");
+                StageFailure(tenant.Id, null, context, at, "no_live_code");
+                await _db.SaveChangesAsync(token);
+                return;
+            }
             var link = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenant.Id, Why).TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(l => l.UserId == user.Id && !l.IsDeleted)
                 .OrderByDescending(l => l.IsPrimary).ThenByDescending(l => l.CreatedAtUtc)
@@ -154,12 +164,13 @@ public sealed class WelcomeCodeRedeemer
             if (WelcomeCodes.LockedUntil(link.WelcomeCodeFailedAttempts, link.UpdatedAtUtc) is { } until && until > at
                 && link.WelcomeCodeFailedAttempts < WelcomeCodes.BurnAt)
             {
-                verdict = Verdict.Locked;
+                verdict = Verdict.Invalid; // a locked code answers like a wrong one (never a tell)
                 return;
             }
 
             if (!WelcomeCodes.Matches(_key, link, user.NormalizedEmail, code))
             {
+                var live = WelcomeCodes.IsLive(link, at);
                 if (link.WelcomeCodeRedeemedAtUtc is null && link.WelcomeCodeFailedAttempts < WelcomeCodes.BurnAt)
                 {
                     link.WelcomeCodeFailedAttempts++;
@@ -167,7 +178,7 @@ public sealed class WelcomeCodeRedeemer
                     if (link.WelcomeCodeFailedAttempts >= WelcomeCodes.BurnAt)
                         await StageBurnAsync(tenant.Id, link, user, context, at, token);
                 }
-                StageFailure(tenant.Id, link.Id, context, at, "wrong_code");
+                StageFailure(tenant.Id, link.Id, context, at, "wrong_code", live ? WrongCodeAction : FailedAction);
                 await _db.SaveChangesAsync(token);
                 return;
             }
@@ -186,6 +197,8 @@ public sealed class WelcomeCodeRedeemer
             if (employee is null || employee.IsDeleted || employee.DuplicateOfEmployeeId is not null
                 || !AuthCurrentEligibility.IsEmployeeLifecycleEligible(employee.Status)
                 || user.IsDeleted || !string.Equals(user.IdentityProvider, "Local", StringComparison.OrdinalIgnoreCase)
+                // An administrator suspended, deactivated or locked the login: a code never revives it.
+                || StoppedLoginStatuses.Contains(user.Status, StringComparer.Ordinal)
                 || (privilegedNow && !issuedForPrivileged))
             {
                 // The login changed under the code (F4/F11): the code dies.
@@ -311,7 +324,6 @@ public sealed class WelcomeCodeRedeemer
             Verdict.Ok => new WelcomeRedeemResponse(tenant.Slug),
             Verdict.Expired => throw new WelcomeRedeemRefusedException(Codes.Expired),
             Verdict.Used => throw new WelcomeRedeemRefusedException(Codes.Used),
-            Verdict.Locked => throw new WelcomeRedeemRefusedException(Codes.TryLater, 429),
             Verdict.PasswordPolicy => throw new WelcomeRedeemRefusedException(Codes.PasswordPolicy, 400, policyMessage),
             Verdict.SeatLimit => throw new WelcomeRedeemRefusedException(Codes.SeatLimit, 400, "Your company's KynexOne plan is full. Ask HR."),
             _ => throw new WelcomeRedeemRefusedException(Codes.Invalid),
@@ -333,17 +345,9 @@ public sealed class WelcomeCodeRedeemer
         catch (JsonException) { return false; }
     }
 
-    private void StageFailure(Guid tenantId, Guid? linkId, RequestContext context, DateTime at, string reason) =>
-        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, FailedAction, "EmployeeUserAccount", linkId?.ToString(),
+    private void StageFailure(Guid tenantId, Guid? linkId, RequestContext context, DateTime at, string reason, string action = FailedAction) =>
+        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, "EmployeeUserAccount", linkId?.ToString(),
             context with { TenantId = tenantId, UserId = null }, JsonSerializer.Serialize(new { reason })));
-
-    private async Task RecordFailureAsync(Guid tenantId, Guid? linkId, RequestContext context, string reason, CancellationToken ct)
-    {
-        _db.ChangeTracker.Clear();
-        StageFailure(tenantId, linkId, context, DateTime.UtcNow, reason);
-        await _db.SaveChangesAsync(ct);
-        _db.ChangeTracker.Clear();
-    }
 
     private async Task StageBurnAsync(Guid tenantId, EmployeeUserAccount link, User user, RequestContext context, DateTime at, CancellationToken ct)
     {

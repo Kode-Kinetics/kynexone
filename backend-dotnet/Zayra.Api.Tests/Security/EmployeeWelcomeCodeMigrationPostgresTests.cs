@@ -41,6 +41,19 @@ public sealed class EmployeeWelcomeCodeMigrationPostgresTests
         (await db.Database.SqlQueryRaw<int>("SELECT welcome_code_failed_attempts AS \"Value\" FROM employee_user_accounts").SingleAsync()).Should().Be(0);
         (await db.Database.SqlQueryRaw<int>("SELECT count(*)::int AS \"Value\" FROM employee_user_accounts WHERE welcome_code_hash IS NULL").SingleAsync()).Should().Be(1);
 
+        // An ACTIVE email domain belongs to one tenant: a second tenant is refused; the same tenant may share it.
+        string Insert(Guid tenant, string name, bool active = true) =>
+            "INSERT INTO companies (id, tenant_id, legal_name_en, legal_name_ar, trade_name, country_code, jurisdiction, registration_number, " +
+            "tax_number, wps_employer_id, gosi_employer_id, qiwa_establishment_id, default_currency, email_domain, work_email_pattern, is_active, " +
+            "approval_status, created_at_utc, is_deleted) VALUES (gen_random_uuid(), '" + tenant + "', '" + name + "', '', '', 'SA', 'SA', '" + name +
+            "', '', '', '', '', 'SAR', 'Shared.Test', 'first.last', " + (active ? "true" : "false") + ", 'Active', now(), false)";
+        var a = Guid.NewGuid();
+        await db.Database.ExecuteSqlRawAsync(Insert(a, "A1"));
+        await db.Database.ExecuteSqlRawAsync(Insert(a, "A2"));
+        await db.Database.ExecuteSqlRawAsync(Insert(Guid.NewGuid(), "B0", active: false));
+        var clash = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => db.Database.ExecuteSqlRawAsync(Insert(Guid.NewGuid(), "B1")));
+        clash.SqlState.Should().Be("23P01");
+
         await migrator.MigrateAsync(before);
         (await Columns(db)).Should().NotContain(c => c.StartsWith("welcome_code_"));
         await migrator.MigrateAsync();

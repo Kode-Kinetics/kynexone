@@ -363,7 +363,7 @@ public sealed class EmployeeAccessTests
         (await withMail.ForgotPasswordAsync(new ForgotPasswordRequest($"ghost@{w.Domain}", w.Slug), new RequestContext("1.1.1.1", "x"), default))
             .EmailDeliveryConfigured.Should().BeTrue();
         (await withMail.ForgotPasswordAsync(new ForgotPasswordRequest(staff, "no-such-workspace"), new RequestContext("1.1.1.1", "x"), default))
-            .EmailDeliveryConfigured.Should().BeNull();
+            .EmailDeliveryConfigured.Should().BeFalse("an unknown workspace answers a constant, so workspaces cannot be enumerated");
     }
 
     [Fact]
@@ -480,6 +480,137 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
+    public async Task SuspendingOrLockingTheLogin_KillsTheLiveCode_AndRedeemIsRefused()
+    {
+        var w = await SeedAsync();
+        foreach (var how in new[] { "Suspended", "Locked" })
+        {
+            var email = $"{how.ToLowerInvariant()}.person@{w.Domain}";
+            var id = await AddStagedAsync(w, email);
+            var code = (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!;
+            await using (var db = _fx.CreateDb())
+            {
+                var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == id);
+                var user = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == link.UserId);
+                user.Status = how; // what SuspendUserAsync / LockUserAsync write
+                if (how == "Locked") { user.IsLocked = true; user.LockoutEnd = DateTime.UtcNow.AddDays(1); }
+                await db.SaveChangesAsync();
+                (await db.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.EmployeeId == id))
+                    .WelcomeCodeHash.Should().BeNull($"{how}: the code dies with the change");
+            }
+            (await RedeemRefusedAsync(w, email, code)).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+            (await StateAsync(w, id)).Should().Be(EmployeeAccessStates.Stopped);
+        }
+    }
+
+    [Fact]
+    public async Task Redeem_RefusesASuspendedLogin_EvenIfTheCodeSurvived()
+    {
+        // Defence in depth: a status written around the save hook (raw SQL) is still refused at redeem.
+        var w = await SeedAsync();
+        var email = $"raw.suspend@{w.Domain}";
+        var id = await AddStagedAsync(w, email);
+        var code = (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!;
+        await using (var db = _fx.CreateDb())
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE users SET status = 'Suspended' WHERE id = (SELECT user_id FROM employee_user_accounts WHERE employee_id = {id})");
+        (await RedeemRefusedAsync(w, email, code)).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+        await using var verify = _fx.CreateDb();
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == id)).WelcomeCodeHash.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AnHrManagersSignIn_IsNeverResetFromEmployeeAccess()
+    {
+        var w = await SeedAsync();
+        var email = $"other.hr.manager@{w.Domain}";
+        var id = await AddEmployeeAsync(w, email);
+        var login = await AddUserAsync(w, email, ["HR Manager"], active: true);
+        await AddLinkAsync(w, id, login);
+        var response = await IssueAsync(w, w.HrManagerId, [id], canReset: true);
+        response.Issued.Should().BeEmpty();
+        var skip = response.Skipped.Single();
+        skip.ReasonCode.Should().Be(EmployeeAccessService.Skip.Privileged);
+        skip.Reason.Should().Be("A security admin must reset their sign-in.");
+    }
+
+    [Fact]
+    public async Task AResetOfAnActiveLogin_IsEmailed_WhenEmailExists_EvenIfPrintWasAsked()
+    {
+        var w = await SeedAsync();
+        var email = $"active.reset@{w.Domain}";
+        var id = await AddStagedAsync(w, email);
+        await RedeemAsync(w, email, (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!);
+        var mail = new RecordingEmail(configured: true);
+        var reset = await IssueAsync(w, w.HrManagerId, [id], canReset: true, email: mail, delivery: "print");
+        reset.Issued.Single().Delivery.Should().Be(IssuedCodeDto.EmailDelivery);
+        reset.Issued.Single().Code.Should().BeNull();
+        mail.Sent.Should().ContainSingle(m => m.To == email);
+        // Without an email transport it is printed.
+        var printed = await IssueAsync(w, w.HrManagerId, [id], canReset: true);
+        printed.Issued.Single().Delivery.Should().Be(IssuedCodeDto.PrintDelivery);
+    }
+
+    [Fact]
+    public async Task TheTenantBudget_CountsOnlyWrongCodesAgainstLiveCodes()
+    {
+        var w = await SeedAsync();
+        for (var i = 0; i < 3; i++)
+            (await RedeemRefusedAsync(w, $"nobody{i}@{w.Domain}", "12345678")).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+        var id = await AddStagedAsync(w, $"budget@{w.Domain}");
+        var code = (await IssueAsync(w, w.HrOfficerId, [id])).Issued.Single().Code!;
+        (await RedeemRefusedAsync(w, $"budget@{w.Domain}", Wrong(code))).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+        await using var db = _fx.CreateDb();
+        (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == w.TenantId && a.Action == WelcomeCodeRedeemer.WrongCodeAction)).Should().Be(1);
+        (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == w.TenantId && a.Action == WelcomeCodeRedeemer.FailedAction)).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task OnlyASecurityAdmin_SetsACompanyEmailDomain_WhateverTheEndpoint()
+    {
+        var w = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        OrganizationController Org(Guid caller) => new(new OrganizationSetupService(db, new AuditService(db)))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, caller.ToString()),
+                        new Claim(ClaimTypes.Role, "HR Manager"),
+                    }, "Test")),
+                },
+            },
+        };
+        var request = new Zayra.Api.Application.Organization.CompanyRequest("Gate Co", null, "Gate", "SA", "SA", $"RC-{Guid.NewGuid():N}"[..20],
+            null, null, null, null, "SAR", EmailDomain: $"gate-{Guid.NewGuid():N}.test");
+        var refused = Assert.IsType<ObjectResult>((await Org(w.HrManagerId).CreateCompany(request, default)).Result);
+        refused.StatusCode.Should().Be(403);
+        JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be(CompanyEmailDomainRules.NeedsSecurityAdminCode);
+        // Changing an existing company's domain through the update path is refused too; leaving it alone is fine.
+        var update = new Zayra.Api.Application.Organization.CompanyRequest("Access Co renamed", null, "Access", "SA", "SA", $"RC-{Guid.NewGuid():N}"[..20],
+            null, null, null, null, "SAR", EmailDomain: "changed.test");
+        Assert.IsType<ObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update, default)).Result).StatusCode.Should().Be(403);
+        Assert.IsType<OkObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update with { EmailDomain = w.Domain }, default)).Result);
+        // The security admin may.
+        Assert.IsType<CreatedResult>((await Org(w.AdminId).CreateCompany(request, default)).Result);
+    }
+
+    [Theory]
+    [InlineData("noah williams")]
+    [InlineData("nöah")]
+    [InlineData("noah'o")]
+    public async Task Create_RefusesNonAsciiWorkEmailCharacters(string local)
+    {
+        var w = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        await Assert.ThrowsAsync<WorkEmailInvalidCharactersException>(() => Employees(db).CreateAsync(
+            w.TenantId, Hire("Char Test", $"{local}@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
+    }
+
+    [Fact]
     public async Task ResetSignIn_KeepsTheOldPasswordUntilRedeem_ThenRotatesPasswordSessionsAndMfa()
     {
         var w = await SeedAsync();
@@ -585,9 +716,10 @@ public sealed class EmployeeAccessTests
         for (var i = 0; i < WelcomeCodes.FirstLockAt; i++)
             (await RedeemRefusedAsync(w, email, Wrong(code))).Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
         // Locked: even the right code is not evaluated.
+        // Locked: even the right code is not evaluated, and the answer is the generic one (never a tell).
         var locked = await RedeemRefusedAsync(w, email, code);
-        locked.Code.Should().Be(WelcomeCodeRedeemer.Codes.TryLater);
-        locked.Status.Should().Be(429);
+        locked.Code.Should().Be(WelcomeCodeRedeemer.Codes.Invalid);
+        locked.Status.Should().Be(400);
 
         // Fast-forward past the locks to the burn.
         await using (var db = _fx.CreateDb())
@@ -839,9 +971,11 @@ public sealed class EmployeeAccessTests
         await AddEmployeeAsync(w, "", code: "PL-A");
         await AddEmployeeAsync(w, "", code: "PL-B");
         await AddEmployeeAsync(w, $"holder@{w.Domain}", code: "PL-C");
-        var result = await BackfillAsync(w, [new("PL-A", $"a+b@{w.Domain}"), new("PL-B", $"holder@{w.Domain}")], dryRun: false);
+        await AddEmployeeAsync(w, "", code: "PL-D");
+        var result = await BackfillAsync(w, [new("PL-A", $"a+b@{w.Domain}"), new("PL-B", $"holder@{w.Domain}"), new("PL-D", $"zoë@{w.Domain}")], dryRun: false);
         result.Saved.Should().Be(0);
-        result.Conflicts.Select(c => c.Reason).Should().BeEquivalentTo([WorkEmailPlusAddressException.Code, "email_used_by_another_employee"]);
+        result.Conflicts.Select(c => c.Reason).Should().BeEquivalentTo(
+            [WorkEmailPlusAddressException.Code, "email_used_by_another_employee", WorkEmailInvalidCharactersException.Code]);
     }
 
     // ── Isolation ──────────────────────────────────────────────────────────────────────────────────────

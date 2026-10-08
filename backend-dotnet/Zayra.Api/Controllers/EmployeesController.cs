@@ -953,6 +953,7 @@ public class EmployeesController : ControllerBase
             var claimedEmailNorm = new HashSet<string>(StringComparer.Ordinal);
             // Rows whose work email is plus-addressed: the whole file is refused (422) and nothing is written.
             var plusAddressedRows = new List<int>();
+            var invalidCharacterRows = new List<int>();
             // Login usernames: a row whose work email already IS a login is warned about (never refused).
             var existingLoginNorm = (await ScopedBypass.TenantWide(_db.Users, tenantId,
                     "Employee import: the tenant's login usernames are compared with imported work emails across legal entities, to warn only.")
@@ -1253,6 +1254,7 @@ public class EmployeesController : ControllerBase
                 }
 
                 if (WorkEmailPlusAddressException.IsPlusAddressed(workEmail)) plusAddressedRows.Add(rowNum);
+                else if (WorkEmailInvalidCharactersException.IsInvalid(workEmail)) invalidCharacterRows.Add(rowNum);
                 if (!string.IsNullOrWhiteSpace(workEmail) && existingLoginNorm.Contains(AuthService.Normalize(workEmail)))
                     RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
 
@@ -1318,6 +1320,14 @@ public class EmployeesController : ControllerBase
                     code = WorkEmailPlusAddressException.Code,
                     message = $"{WorkEmailPlusAddressException.Text} Fix row(s) {string.Join(", ", plusAddressedRows)} and import again; nothing was imported.",
                     rows = plusAddressedRows,
+                });
+            if (invalidCharacterRows.Count > 0)
+                return UnprocessableEntity(new
+                {
+                    error = WorkEmailInvalidCharactersException.Code,
+                    code = WorkEmailInvalidCharactersException.Code,
+                    message = $"{WorkEmailInvalidCharactersException.Text} Fix row(s) {string.Join(", ", invalidCharacterRows)} and import again; nothing was imported.",
+                    rows = invalidCharacterRows,
                 });
 
             if (RejectUnstorable(batchCodes.Where(kv => !repairExistingCodes.Contains(kv.Key)).Select(kv => (object)kv.Value), "employees") is { } unstorableEmployee)
@@ -2891,6 +2901,7 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
+        catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -3428,7 +3439,7 @@ public class EmployeesController : ControllerBase
             }
             if (!EmployeeDraftStatuses.IsOpen(draft.Status))
                 throw new DraftApprovalNotReadyException(draft.Status);
-            WorkEmailPlusAddressException.ThrowIfPlusAddressed(draft.WorkEmail);
+            WorkEmailInvalidCharactersException.ThrowIfNotAllowed(draft.WorkEmail);
 
             // Resolve every mutable draft field again after taking the draft lock. A preflight read
             // is authorization/UX only and is never trusted for the durable employee record. The
@@ -3586,6 +3597,11 @@ public class EmployeesController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text });
+        }
+        catch (WorkEmailInvalidCharactersException)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text });
         }
         catch (DraftApprovalForbiddenException)
         {
@@ -3815,6 +3831,7 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
+        catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
@@ -5629,6 +5646,9 @@ public class EmployeesController : ControllerBase
         if (WorkEmailPlusAddressException.IsPlusAddressed(draft.WorkEmail))
             problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailPlusAddressException.Text,
                 "Remove the '+' part of the draft's work email."));
+        else if (WorkEmailInvalidCharactersException.IsInvalid(draft.WorkEmail))
+            problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailInvalidCharactersException.Text,
+                "Correct the draft's work email."));
         if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
         {
             var normalized = AuthService.Normalize(draft.WorkEmail);
@@ -5848,7 +5868,7 @@ public class EmployeesController : ControllerBase
 
         // A NEW plus-addressed work email is refused (an existing one is left alone until it is changed).
         if (!string.Equals(AuthService.Normalize(employee.WorkEmail ?? string.Empty), AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
-            WorkEmailPlusAddressException.ThrowIfPlusAddressed(employee.WorkEmail);
+            WorkEmailInvalidCharactersException.ThrowIfNotAllowed(employee.WorkEmail);
 
         // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
         var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, Context(), DateTime.UtcNow, ct);

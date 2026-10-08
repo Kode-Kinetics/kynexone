@@ -738,24 +738,48 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             .Where(id => id.HasValue).Select(id => id!.Value)
             .ToHashSet();
         var affected = new Dictionary<Guid, Guid>(); // userId -> tenantId
+        var tenantUnknown = new HashSet<Guid>();      // userIds whose User row is not tracked
         void Add(Guid userId, Guid tenantId) { if (!redeeming.Contains(userId)) affected[userId] = tenantId; }
+        void AddUser(Guid userId)
+        {
+            if (redeeming.Contains(userId)) return;
+            if (Users.Local.FirstOrDefault(x => x.Id == userId) is { } tracked) affected[userId] = tracked.TenantId;
+            else tenantUnknown.Add(userId);
+        }
         foreach (var e in ChangeTracker.Entries<UserRole>())
-            if (e.State is EntityState.Added or EntityState.Deleted && e.Entity.User is { } u1) Add(u1.Id, u1.TenantId);
-            else if (e.State is EntityState.Added or EntityState.Deleted && Users.Local.FirstOrDefault(x => x.Id == e.Entity.UserId) is { } u2) Add(u2.Id, u2.TenantId);
+            if (e.State is EntityState.Added or EntityState.Deleted)
+            {
+                if (e.Entity.User is { } u) Add(u.Id, u.TenantId);
+                else AddUser(e.Entity.UserId);
+            }
         foreach (var e in ChangeTracker.Entries<UserPermissionOverride>())
             if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
         foreach (var e in ChangeTracker.Entries<UserEntityAccess>())
             if (e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified) Add(e.Entity.UserId, e.Entity.TenantId);
+        // The login itself: username, access mode, scope, and its standing (active, status, lock, deletion). A suspended,
+        // deactivated or locked login must never be revived by a code issued before (review P1).
         foreach (var e in ChangeTracker.Entries<User>())
             if (e.State == EntityState.Modified
                 && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.NormalizedEmail).IsModified
-                    || e.Property(x => x.IsGroupScope).IsModified))
+                    || e.Property(x => x.IsGroupScope).IsModified || e.Property(x => x.IsActive).IsModified
+                    || e.Property(x => x.Status).IsModified || e.Property(x => x.IsLocked).IsModified
+                    || e.Property(x => x.IsDeleted).IsModified))
                 Add(e.Entity.Id, e.Entity.TenantId);
         foreach (var e in ChangeTracker.Entries<EmployeeUserAccount>())
             if (e.State == EntityState.Modified && e.Entity.UserId is Guid lu
                 && (e.Property(x => x.AccessMode).IsModified || e.Property(x => x.LoginDisabledReason).IsModified
                     || e.Property(x => x.Status).IsModified))
                 Add(lu, e.Entity.TenantId);
+        // A role assigned by id alone: its login's tenant is read (ambient filters apply — the request's own tenant).
+        // RolePermission edits on a ROLE are not chased here: the redeem re-evaluates the login's privilege and kills
+        // the code when it now holds more than the Employee baseline (EmployeeLoginPrivilege, review P3).
+        tenantUnknown.ExceptWith(affected.Keys);
+        if (tenantUnknown.Count > 0)
+        {
+            var ids = tenantUnknown.ToList();
+            var q = Users.AsNoTracking().Where(u => ids.Contains(u.Id)).Select(u => new { u.Id, u.TenantId });
+            foreach (var row in synchronous ? q.ToList() : await q.ToListAsync(ct)) affected[row.Id] = row.TenantId;
+        }
         // A brand-new login (staging) has no code to clear.
         foreach (var added in ChangeTracker.Entries<User>().Where(e => e.State == EntityState.Added)) affected.Remove(added.Entity.Id);
         if (affected.Count == 0) return;

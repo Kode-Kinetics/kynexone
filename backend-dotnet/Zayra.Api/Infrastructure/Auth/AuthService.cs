@@ -639,7 +639,8 @@ public class AuthService : IAuthService
         // Workspace-level only (the same for every address in it), so it reveals nothing about the email.
         var resolvedTenantId = await _db.Tenants.AsNoTracking().Where(t => t.Slug == tenantSlug && t.IsActive)
             .Select(t => (Guid?)t.Id).FirstOrDefaultAsync(cancellationToken);
-        bool? deliveryConfigured = resolvedTenantId is Guid rt ? await _emailService.IsConfiguredAsync(rt, cancellationToken) : null;
+        // An unknown workspace answers a constant false: the flag never tells which workspaces exist.
+        bool? deliveryConfigured = resolvedTenantId is Guid rt && await _emailService.IsConfiguredAsync(rt, cancellationToken);
 
         var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
         if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
