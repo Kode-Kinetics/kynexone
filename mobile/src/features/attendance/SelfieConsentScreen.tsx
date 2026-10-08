@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { selfieAttendanceApi } from '@/api/services';
 import { useTheme } from '@/theme/ThemeProvider';
 import { GlassSurface, LiquidBackdrop, LiquidButton, MotionPressable, ScreenHero } from '@/components/ui';
-import { mapPunchRefusal, withdrawalNoticeKey, type AttendanceVerification } from './selfieAttendance';
+import { demoNoticeText, mapPunchRefusal, withdrawalNoticeKey, type AttendanceVerification } from './selfieAttendance';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -95,6 +95,8 @@ export default function SelfieConsentScreen() {
   const consent = selfie?.consent ?? null;
   const enabled = selfie?.enabled === true;
   const givenDate = consent?.givenAtUtc ? formatDate(consent.givenAtUtc, i18n.language) : null;
+  // Only under the owner's time-boxed demo exception: where the photos are and when they go, before anything else.
+  const demoNotice = demoNoticeText(verification, i18n.language, tx('selfie.demo.notice'));
 
   const sections: { icon: IconName; title: string; body: string }[] = [
     { icon: 'camera-outline', title: tx('selfie.consent.whatTitle'), body: tx('selfie.consent.whatBody') },
@@ -129,6 +131,22 @@ export default function SelfieConsentScreen() {
           </View>
         ) : (
           <>
+            {demoNotice ? (
+              <View style={styles.section}>
+                <View
+                  style={[styles.demoCard, { borderColor: theme.colors.warning, backgroundColor: `${theme.colors.warning}1F` }]}
+                  accessibilityRole="alert"
+                  accessibilityLabel={demoNotice}
+                >
+                  <Ionicons name="warning-outline" size={22} color={theme.colors.warning} />
+                  <View style={styles.flex}>
+                    <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{tx('selfie.demo.label')}</Text>
+                    <Text style={[theme.typography.body, styles.body, { color: theme.colors.text }]}>{demoNotice}</Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
             <View style={styles.section}>
               <GlassSurface radius={theme.radius.xl} contentStyle={styles.statusCard}>
                 <Ionicons
@@ -242,6 +260,7 @@ const styles = StyleSheet.create({
   center: { paddingVertical: 40, alignItems: 'center' },
   card: { padding: 16, gap: 16 },
   statusCard: { padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  demoCard: { padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 12, borderWidth: 1.5, borderRadius: 20 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   icon: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   flex: { flex: 1, minWidth: 0 },

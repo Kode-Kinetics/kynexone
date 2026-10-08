@@ -221,3 +221,21 @@ services:
         sync: false
       - key: Storage__Region            # pin to an approved GCC/KSA region (or R2 bucket's jurisdiction)
         sync: false
+
+      # ── SELFIE ATTENDANCE DEMO EXCEPTION (owner decision 2026-10-08) ─────────────────
+      # Selfie attendance normally needs a DPIA sign-off AND storage verified on the KSA allow-list.
+      # For the Evostel client demo ONLY (test data), the `evostel` tenant gets it WITHOUT those two
+      # gates until ExpiresUtc; consent, limits, audit and the purge are unchanged, and every photo
+      # taken under it is deleted 7 days after capture (used or not), even after the expiry.
+      # After ExpiresUtc it does nothing. No other tenant is affected. To END IT EARLY, set ExpiresUtc
+      # to a past instant in the same format (removing keys here does NOT delete them from Render).
+      # A malformed value switches the exception OFF with a startup warning; it never stops the API.
+      # Photos are stored outside KSA meanwhile.
+      - key: SelfieDemoException__TenantSlugs__0
+        value: evostel
+      - key: SelfieDemoException__ExpiresUtc
+        value: "2026-10-22T23:59:59Z"
+      - key: SelfieDemoException__EvidenceRetentionDays
+        value: "7"
+      - key: SelfieDemoException__ApprovedBy
+        value: "owner 2026-10-08 (demo, test data only)"

@@ -20,6 +20,9 @@ namespace Zayra.Api.Infrastructure.Attendance;
 ///   <item>A selfie no punch ever used (failed or abandoned upload): deleted 24 hours after upload — or at once when the
 ///     employee has no open consent (a withdrawal whose own delete storage did not confirm).</item>
 ///   <item>An upload that never completed (still <c>Pending</c>): its file, if any, deleted 1 hour after the attempt.</item>
+///   <item>A selfie taken under the demo exception (<see cref="AttendanceEvidence.PurgeDueAtUtc"/> stamped at upload):
+///     deleted at that instant (capture + the exception's retention days), used or not, overriding the two rules above
+///     for used selfies. The shorter of the stamp and the normal rule wins; the stamp outlives the exception.</item>
 /// </list>
 /// The blob goes (every version, confirmed); the <c>attendance_evidence</c> row stays with its SHA-256,
 /// <c>purge_state = 'Purged'</c>. The scheduler runs every 15 minutes, so a delete that failed is retried within about
@@ -47,7 +50,15 @@ public static class SelfieEvidenceRetention
     /// employee's company (null when none). <paramref name="consentOpen"/> false makes an unused selfie due at once.
     /// </summary>
     public static DateTime DueAtUtc(DateTime createdAtUtc, DateTime? usedAtUtc, DateOnly? workDate, DateTime? monthLockedAtUtc,
-        string purgeState = AttendanceEvidencePurgeStates.Active, bool consentOpen = true)
+        string purgeState = AttendanceEvidencePurgeStates.Active, bool consentOpen = true, DateTime? purgeDueOverrideUtc = null)
+    {
+        var standard = StandardDueAtUtc(createdAtUtc, usedAtUtc, workDate, monthLockedAtUtc, purgeState, consentOpen);
+        // A demo-exception selfie: due at its stamp when that comes first (used or not; payroll lock and 120 days ignored).
+        return purgeDueOverrideUtc is { } stamped && stamped < standard ? stamped : standard;
+    }
+
+    private static DateTime StandardDueAtUtc(DateTime createdAtUtc, DateTime? usedAtUtc, DateOnly? workDate, DateTime? monthLockedAtUtc,
+        string purgeState, bool consentOpen)
     {
         if (purgeState == AttendanceEvidencePurgeStates.Pending) return createdAtUtc + AbandonedPending;
         if (usedAtUtc is null || workDate is null) return consentOpen ? createdAtUtc + UnusedUpload : createdAtUtc;
@@ -68,6 +79,8 @@ public static class SelfieEvidenceRetention
         var unusedBefore = nowUtc - UnusedUpload;
         var usedBefore = nowUtc - UsedScanFloor;
         return e => (e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.CreatedAtUtc <= pendingBefore)
+                    // A demo-exception selfie whose stamped due date has passed (Pending or Active).
+                    || (e.PurgeDueAtUtc != null && e.PurgeDueAtUtc <= nowUtc && e.PurgeState != AttendanceEvidencePurgeStates.Purged)
                     || (e.PurgeState == AttendanceEvidencePurgeStates.Active
                         && ((e.UsedAtUtc == null
                              && (e.CreatedAtUtc <= unusedBefore
@@ -161,6 +174,13 @@ public sealed class SelfieEvidencePurger
         }
         AddAll(await Project(c1.OrderBy(e => e.UsedAtUtc).ThenBy(e => e.Id).Take(limit)).ToListAsync(ct));
 
+        // (d) Selfies taken under the demo exception whose stamped due date has passed, used or not (its own limit;
+        // ix_attendance_evidence__purge_due_override). Every row it returns is due.
+        AddAll(await Project(tenantRows
+            .Where(e => e.PurgeDueAtUtc != null && e.PurgeDueAtUtc <= nowUtc
+                        && (e.PurgeState == AttendanceEvidencePurgeStates.Pending || e.PurgeState == AttendanceEvidencePurgeStates.Active))
+            .OrderBy(e => e.PurgeDueAtUtc).ThenBy(e => e.Id).Take(limit)).ToListAsync(ct));
+
         // (c2) Used selfies inside a payroll month locked at least 90 days ago (and not already past the fallback).
         var lockedBefore = nowUtc - SelfieEvidenceRetention.AfterPayrollLock;
         var earliestUse = nowUtc - SelfieEvidenceRetention.WithoutPayrollLock - TimeSpan.FromDays(2);
@@ -202,7 +222,7 @@ public sealed class SelfieEvidencePurger
         foreach (var c in candidates.OrderBy(c => c.UsedAtUtc ?? c.CreatedAtUtc).ThenBy(c => c.Id))
         {
             var (workDate, locked) = facts.TryGetValue(c.Id, out var f) ? f : (null, null);
-            var dueAt = SelfieEvidenceRetention.DueAtUtc(c.CreatedAtUtc, c.UsedAtUtc, workDate, locked, c.PurgeState, consenting.Contains(c.EmployeeId));
+            var dueAt = SelfieEvidenceRetention.DueAtUtc(c.CreatedAtUtc, c.UsedAtUtc, workDate, locked, c.PurgeState, consenting.Contains(c.EmployeeId), c.PurgeDueAtUtc);
             if (dueAt <= nowUtc) due.Add(new DueSelfieEvidence(c.Id, c.UsedAtUtc, dueAt, workDate, locked));
         }
         return due;
@@ -285,7 +305,7 @@ public sealed class SelfieEvidencePurger
     }
 
     private static IQueryable<Candidate> Project(IQueryable<AttendanceEvidence> rows) =>
-        rows.Select(e => new Candidate(e.Id, e.EmployeeId, e.CreatedAtUtc, e.UsedAtUtc, e.PurgeState));
+        rows.Select(e => new Candidate(e.Id, e.EmployeeId, e.CreatedAtUtc, e.UsedAtUtc, e.PurgeState, e.PurgeDueAtUtc));
 
     /// <summary>The employees among <paramref name="candidates"/>' UNUSED rows that hold an open consent (any version).</summary>
     private async Task<HashSet<int>> ConsentingEmployeesAsync(Guid tenantId, IReadOnlyCollection<Candidate> candidates, CancellationToken ct)
@@ -311,13 +331,13 @@ public sealed class SelfieEvidencePurger
         var evidence = await _db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == evidenceId, ct);
         if (evidence is null) return SelfieEvidencePurgeOutcome.Missing;
         if (evidence.PurgeState == AttendanceEvidencePurgeStates.Purged) return SelfieEvidencePurgeOutcome.AlreadyPurged;
-        Candidate[] one = [new Candidate(evidence.Id, evidence.EmployeeId, evidence.CreatedAtUtc, evidence.UsedAtUtc, evidence.PurgeState)];
+        Candidate[] one = [new Candidate(evidence.Id, evidence.EmployeeId, evidence.CreatedAtUtc, evidence.UsedAtUtc, evidence.PurgeState, evidence.PurgeDueAtUtc)];
         var facts = await PunchFactsAsync(tenantId, one, ct);
         var consentOpen = evidence.UsedAtUtc is not null || (await ConsentingEmployeesAsync(tenantId, one, ct)).Contains(evidence.EmployeeId);
         var (workDate, locked) = facts.TryGetValue(evidence.Id, out var f) ? f : (null, null);
-        var dueAt = SelfieEvidenceRetention.DueAtUtc(evidence.CreatedAtUtc, evidence.UsedAtUtc, workDate, locked, evidence.PurgeState, consentOpen);
+        var dueAt = SelfieEvidenceRetention.DueAtUtc(evidence.CreatedAtUtc, evidence.UsedAtUtc, workDate, locked, evidence.PurgeState, consentOpen, evidence.PurgeDueAtUtc);
         if (dueAt > nowUtc) return SelfieEvidencePurgeOutcome.NotDue;
-        await PurgeAsync(evidence, nowUtc, jobId, dueAt, Reason(evidence, workDate, locked, consentOpen), workDate, locked, ct);
+        await PurgeAsync(evidence, nowUtc, jobId, dueAt, Reason(evidence, workDate, locked, consentOpen, dueAt), workDate, locked, ct);
         return SelfieEvidencePurgeOutcome.Purged;
     }
 
@@ -333,7 +353,7 @@ public sealed class SelfieEvidencePurger
         if (evidence.UsedAtUtc != due.UsedAtUtc) return SelfieEvidencePurgeOutcome.NotDue;
         // An unused row due before its 24 hours were up was due because its employee holds no open consent.
         var consentOpen = evidence.UsedAtUtc is not null || due.DueAtUtc >= evidence.CreatedAtUtc + SelfieEvidenceRetention.UnusedUpload;
-        await PurgeAsync(evidence, nowUtc, jobId, due.DueAtUtc, Reason(evidence, due.WorkDate, due.MonthLockedAtUtc, consentOpen), due.WorkDate, due.MonthLockedAtUtc, ct);
+        await PurgeAsync(evidence, nowUtc, jobId, due.DueAtUtc, Reason(evidence, due.WorkDate, due.MonthLockedAtUtc, consentOpen, due.DueAtUtc), due.WorkDate, due.MonthLockedAtUtc, ct);
         return SelfieEvidencePurgeOutcome.Purged;
     }
 
@@ -363,6 +383,8 @@ public sealed class SelfieEvidencePurger
             workDate = workDate?.ToString("yyyy-MM-dd"),
             payrollMonthLockedAtUtc = locked,
             usedByRawEventId = evidence.UsedByRawEventId,
+            // Stamped at upload when the selfie was taken under the demo exception; null otherwise.
+            demoExceptionPurgeDueAtUtc = evidence.PurgeDueAtUtc,
             blobDeletion = "confirmed, all versions",
         });
         _db.RetentionPurgeAudits.Add(new RetentionPurgeAudit
@@ -392,8 +414,10 @@ public sealed class SelfieEvidencePurger
         });
     }
 
-    private static string Reason(AttendanceEvidence evidence, DateOnly? workDate, DateTime? locked, bool consentOpen = true) =>
-        evidence.PurgeState == AttendanceEvidencePurgeStates.Pending
+    private static string Reason(AttendanceEvidence evidence, DateOnly? workDate, DateTime? locked, bool consentOpen = true, DateTime? dueAt = null) =>
+        evidence.PurgeDueAtUtc is { } stamped && dueAt == stamped
+            ? $"Selfie taken under the demo exception; deleted {Math.Round((stamped - evidence.CreatedAtUtc).TotalDays)} days after capture, used or not."
+        : evidence.PurgeState == AttendanceEvidencePurgeStates.Pending
             ? "Selfie upload never completed; any stored file deleted 1 hour after the attempt."
             : evidence.UsedAtUtc is null
                 ? consentOpen
@@ -403,7 +427,7 @@ public sealed class SelfieEvidencePurger
                     ? $"Payroll month {wd:yyyy-MM} locked on {l:yyyy-MM-dd}; selfie deleted 90 days after the lock."
                     : $"No payroll run locked {workDate:yyyy-MM} within 120 days of the work date {workDate:yyyy-MM-dd}; selfie deleted at work date + 120 days.";
 
-    private sealed record Candidate(Guid Id, int EmployeeId, DateTime CreatedAtUtc, DateTime? UsedAtUtc, string PurgeState);
+    private sealed record Candidate(Guid Id, int EmployeeId, DateTime CreatedAtUtc, DateTime? UsedAtUtc, string PurgeState, DateTime? PurgeDueAtUtc = null);
 
     /// <summary>
     /// For every USED candidate: the punch's tenant-local work date and the earliest lock of a regular run for that

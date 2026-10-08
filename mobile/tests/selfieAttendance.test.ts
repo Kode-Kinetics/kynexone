@@ -13,6 +13,7 @@ import {
   cacheIsFresh,
   choosePictureSize,
   clientPlatformHeaders,
+  demoNoticeText,
   isSelfieBusy,
   mapPunchRefusal,
   mockDetectionFields,
@@ -564,4 +565,41 @@ test('hardening: selfie_upload_timeout and selfie_upload_incomplete are a retake
     const explicit = mapPunchRefusal(refusal(status, { code, punchWithoutSelfie: false }), 'ar');
     assert.equal(explicit.punchWithoutSelfie, false);
   }
+});
+
+// ---- Selfie demo exception (owner decision 2026-10-08): the server's notice, with local EN/AR fallbacks ----
+
+const serverNotice = {
+  message: 'Demo: photos are stored outside Saudi Arabia and deleted automatically 7 days after they are taken.',
+  messageAr: 'عرض تجريبي: تُحفظ الصور خارج المملكة العربية السعودية وتُحذف تلقائيًا بعد 7 أيام من التقاطها.',
+};
+
+test('demo notice: parsed only while selfies are on, absent means none', () => {
+  assert.deepEqual(discovery({ step: 'consent_needed', consent: null, demoNotice: serverNotice }).selfie.demoNotice, serverNotice);
+  assert.equal(discovery({ step: 'consent_needed', consent: null }).selfie.demoNotice, null);
+  assert.equal(discovery({ step: 'consent_needed', consent: null, demoNotice: null }).selfie.demoNotice, null);
+  // The feature off (e.g. after the exception expired): no notice, whatever arrives.
+  assert.equal(discovery({ enabled: false, step: 'off', demoNotice: serverNotice }).selfie.demoNotice, null);
+  assert.equal(VERIFICATION_OFF.selfie.demoNotice, null);
+});
+
+test('demo notice text: the server text in the app language, else the local fallback, else nothing', () => {
+  const v = discovery({ step: 'optional', consent, demoNotice: serverNotice });
+  assert.equal(demoNoticeText(v, 'en', selfieEn.demo.notice), serverNotice.message);
+  assert.equal(demoNoticeText(v, 'ar', selfieAr.demo.notice), serverNotice.messageAr);
+  assert.equal(demoNoticeText(v, 'ar-SA', selfieAr.demo.notice), serverNotice.messageAr);
+  // The server signalled the demo but sent no text for this language: the local string is shown.
+  const blank = discovery({ step: 'optional', consent, demoNotice: { message: '  ', messageAr: '' } });
+  assert.equal(demoNoticeText(blank, 'en', selfieEn.demo.notice), selfieEn.demo.notice);
+  assert.equal(demoNoticeText(blank, 'ar', selfieAr.demo.notice), selfieAr.demo.notice);
+  // No demo exception, or no discovery yet: nothing.
+  assert.equal(demoNoticeText(discovery({ step: 'optional', consent }), 'en', selfieEn.demo.notice), null);
+  assert.equal(demoNoticeText(null, 'en', selfieEn.demo.notice), null);
+});
+
+test('demo notice fallbacks say where the photos are and when they are deleted, in both languages', () => {
+  assert.match(selfieEn.demo.notice, /outside Saudi Arabia/);
+  assert.match(selfieEn.demo.notice, /7 days/);
+  assert.match(selfieAr.demo.notice, /السعودية/);
+  assert.match(selfieAr.demo.notice, /7 أيام/);
 });

@@ -28,6 +28,15 @@ export interface GeofenceSiteView {
   radiusMeters: number;
 }
 
+/**
+ * The server's notice while selfie attendance is on only under the owner's time-boxed demo exception
+ * (photos stored outside Saudi Arabia, deleted automatically after a few days). Null otherwise.
+ */
+export interface DemoNotice {
+  message: string;
+  messageAr: string;
+}
+
 export interface AttendanceVerification {
   selfie: {
     enabled: boolean;
@@ -37,6 +46,7 @@ export interface AttendanceVerification {
     consent: BiometricConsentView | null;
     evidenceLifetimeSeconds: number;
     maxUploadsPerHour: number;
+    demoNotice: DemoNotice | null;
   };
   geofence: {
     enforced: boolean;
@@ -56,6 +66,7 @@ export const VERIFICATION_OFF: AttendanceVerification = {
     consent: null,
     evidenceLifetimeSeconds: 600,
     maxUploadsPerHour: 10,
+    demoNotice: null,
   },
   geofence: { enforced: false, maxAccuracyMeters: null, allowMockedLocation: null, sites: [] },
 };
@@ -105,6 +116,11 @@ export function parseAttendanceVerification(raw: unknown): AttendanceVerificatio
     })
     : [];
   const enforced = g.enforced === true;
+  // The demo notice counts only while selfies are on: an object is the signal, its texts may be blank (local fallback).
+  const notice = enabled && s.demoNotice && typeof s.demoNotice === 'object' ? (s.demoNotice as Record<string, any>) : null;
+  const demoNotice: DemoNotice | null = notice
+    ? { message: str(notice.message).trim(), messageAr: str(notice.messageAr).trim() }
+    : null;
 
   return {
     selfie: {
@@ -115,6 +131,7 @@ export function parseAttendanceVerification(raw: unknown): AttendanceVerificatio
       consent,
       evidenceLifetimeSeconds: num(s.evidenceLifetimeSeconds) ?? 600,
       maxUploadsPerHour: num(s.maxUploadsPerHour) ?? 10,
+      demoNotice,
     },
     geofence: {
       enforced,
@@ -123,6 +140,24 @@ export function parseAttendanceVerification(raw: unknown): AttendanceVerificatio
       sites,
     },
   };
+}
+
+// ---- Demo exception notice ----
+
+/**
+ * The demo notice to show, in the app's language, or null when the demo exception does not apply.
+ * The server's text wins; when it sent the notice without text for this language, the local
+ * fallback (selfie.demo.notice, EN/AR) is shown instead — never nothing.
+ */
+export function demoNoticeText(
+  verification: AttendanceVerification | null | undefined,
+  language: string | undefined,
+  fallback: string,
+): string | null {
+  const notice = verification?.selfie.enabled ? verification.selfie.demoNotice : null;
+  if (!notice) return null;
+  const server = language?.toLowerCase().startsWith('ar') ? notice.messageAr : notice.message;
+  return server.trim() || fallback;
 }
 
 // ---- Punch-flow decision ----

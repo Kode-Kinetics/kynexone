@@ -338,6 +338,11 @@ builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Attendance.AttendanceVerificationService>();
+// The owner's time-boxed selfie DEMO EXCEPTION (decision 2026-10-08): listed tenant slugs get selfie attendance without
+// the DPIA and KSA-residency gates until SelfieDemoException:ExpiresUtc, and every selfie taken under it is deleted
+// EvidenceRetentionDays after capture. Empty by default (nobody); no expiry means off.
+var selfieDemoException = Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions.From(builder.Configuration);
+builder.Services.AddSingleton(selfieDemoException);
 // One gate per process for selfie image work (decode/re-encode): Selfie:ImageConcurrency slots (default 1); an upload
 // waits up to 3 s for one and is then answered 429 selfie_busy.
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Attendance.SelfieImageGate(
@@ -775,6 +780,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+if (selfieDemoException.ConfigError is { } selfieDemoConfigError)
+    app.Logger.LogWarning("Selfie demo exception is OFF because its configuration is malformed: {Error}", selfieDemoConfigError);
 
 app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
 
