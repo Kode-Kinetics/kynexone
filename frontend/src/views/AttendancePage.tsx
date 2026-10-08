@@ -158,12 +158,15 @@ export function AttendancePage() {
   // Devices and CSV import are `attendance.bulk_import`; processing is `attendance.write`
   // (AttendanceController). Read-only attendance roles (HR Assistant, payroll, managers, auditors)
   // used to be offered these and only ever got a 403.
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canManageSources = hasPermission('attendance.bulk_import');
   const canProcess = hasPermission('attendance.write');
   // Recording attendance FOR an employee: attendance.write (or attendance.kiosk at the kiosk), as the server
-  // requires. Without it the forms are not offered; everyone records their own in Self-Service.
+  // requires. Without it the raw-event and correction forms are not offered. Punching for YOURSELF needs no
+  // permission, so the punch form stays for any linked employee, fixed to their own record.
   const canPunchForOthers = canProcess || hasPermission('attendance.kiosk');
+  const ownEmployeeId = typeof user?.employeeId === 'number' && user.employeeId > 0 ? user.employeeId : undefined;
+  const canPunch = canPunchForOthers || ownEmployeeId !== undefined;
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [summary, setSummary] = useState<AttendanceDashboardSummary | null>(null);
   const [daily, setDaily] = useState<AttendanceDailyRecord[]>([]);
@@ -187,6 +190,8 @@ export function AttendancePage() {
   const [filterDate, setFilterDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [punchEmployeeId, setPunchEmployeeId] = useState('');
+  // Without the on-behalf right the punch is always the caller's own.
+  useEffect(() => { if (!canPunchForOthers && ownEmployeeId !== undefined) setPunchEmployeeId(String(ownEmployeeId)); }, [canPunchForOthers, ownEmployeeId]);
   const [punchDirection, setPunchDirection] = useState('In');
   const [punchSource, setPunchSource] = useState<'web' | 'mobile' | 'kiosk'>('web');
   const [showAddDevice, setShowAddDevice] = useState(false);
@@ -495,12 +500,12 @@ export function AttendancePage() {
               </div>
             )}
 
-            <div className={canPunchForOthers ? "grid gap-5 lg:grid-cols-[360px_1fr]" : "grid gap-5"}>
-              {canPunchForOthers && (
+            <div className={canPunch ? "grid gap-5 lg:grid-cols-[360px_1fr]" : "grid gap-5"}>
+              {canPunch && (
 <form onSubmit={submitPunch} className="surface p-4">
                 <SectionTitle icon={CalendarClock} title="Web / Mobile / Kiosk Punch" subtitle={selectedEmployee ? `${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}` : 'Select an employee from live records'} />
                 <div className="mt-4 space-y-3">
-                  <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />
+                  {canPunchForOthers && <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />}
                   <div className="grid grid-cols-2 gap-3">
                     <select value={punchSource} onChange={(e) => setPunchSource(e.target.value as 'web' | 'mobile' | 'kiosk')} className="select w-full" aria-label="Punch source">
                       <option value="web">Web punch</option>
