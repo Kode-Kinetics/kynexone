@@ -36,7 +36,7 @@ public class EssBenefitsController : ControllerBase
 
         var (employeeId, error) = await ResolveCallerEmployeeIdAsync(tenantId, ct);
         if (employeeId is null)
-            return NotFound(new { message = error });
+            return NotFound(new { message = error, messageAr = EssLinkGuidance.ArabicFor(error) });
 
         var enrollments = await _db.BenefitEnrollments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId)
@@ -84,7 +84,7 @@ public class EssBenefitsController : ControllerBase
         // The same lookup as the data scope and the rest of self-service (CallerEmployeeResolver).
         return await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct) is int linked
             ? (linked, string.Empty)
-            : (null, "Your user account is not linked to an employee record. Ask HR to link your account via User Management → Invite Employee.");
+            : (null, EssLinkGuidance.En);
     }
 
     private bool HasPermission(string permission) =>

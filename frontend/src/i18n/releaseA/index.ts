@@ -1,5 +1,6 @@
 import { accessCeiling } from './accessCeiling';
 import { deductions } from './deductions';
+import { employeeLogin } from './employeeLogin';
 import { ess } from './ess';
 import { matrix } from './matrix';
 import { packageStrings } from './package';
@@ -13,7 +14,7 @@ import type { ReleaseADict } from './types';
  * once (R0); a slice adds keys to its own file only. Later files win on a duplicate key — keep keys unique.
  */
 export const releaseASlices: Record<string, ReleaseADict> = {
-  shared, matrix, package: packageStrings, deductions, renewals, renewalsOffer, ess, accessCeiling,
+  shared, matrix, package: packageStrings, deductions, renewals, renewalsOffer, ess, accessCeiling, employeeLogin,
 };
 
 const merge = (lang: 'en' | 'ar') =>

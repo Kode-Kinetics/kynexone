@@ -754,7 +754,9 @@ export const employeesApi = {
   list: (
     params: {
       search?: string;
-      status?: string;
+      // One status, or several: the API filters one status at a time, so several are fetched
+      // (one page each) and merged by id — enough for a picker, not for a paged list.
+      status?: string | readonly string[];
       department?: string;
       // Server-side readiness worklist filter (the "Needs info" deep-link). `readiness` ∈
       // Blocked | NeedsAttention | NotReady | Ready. `gapType`/`importBatchId` narrow to a
@@ -765,10 +767,21 @@ export const employeesApi = {
       page?: number;
       pageSize?: number;
     } = {},
-  ) =>
-    client.get<PagedResult<EmployeeListItem>>('/api/employees', {
-      params: { page: 1, pageSize: 25, ...params },
-    }).then((r) => requirePage<PagedResult<EmployeeListItem>>(r.data, 'employees')),
+  ): Promise<PagedResult<EmployeeListItem>> => {
+    const { status, ...rest } = params;
+    const fetchOne = (one: string | undefined) =>
+      client.get<PagedResult<EmployeeListItem>>('/api/employees', {
+        params: { page: 1, pageSize: 25, ...rest, status: one },
+      }).then((r) => requirePage<PagedResult<EmployeeListItem>>(r.data, 'employees'));
+    if (typeof status === 'string' || status === undefined || status.length < 2) {
+      return fetchOne(typeof status === 'string' ? status : status?.[0]);
+    }
+    return Promise.all(status.map(fetchOne)).then((pages) => {
+      const byId = new Map(pages.flatMap((p) => p.items ?? []).map((e) => [e.id, e] as const));
+      const items = [...byId.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)).slice(0, rest.pageSize ?? 25);
+      return { items, total: items.length, page: 1, pageSize: rest.pageSize ?? 25 };
+    });
+  },
 
   /** Every matching employee, page by page, for a list that must be complete (e.g. a select). */
   listAll: (params: { search?: string; status?: string; department?: string } = {}) =>

@@ -27,6 +27,7 @@ import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
 import { useLocale } from '../contexts/LocaleContext';
+import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ interface UsageData {
 }
 
 function UsersTab() {
+  const { t } = useLocale();
   const searchParams = useSearchParams();
   const [users, setUsers] = useState<UserListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -135,6 +137,8 @@ function UsersTab() {
   const [allPermissions, setAllPermissions] = useState<PermissionItem[]>([]);
   // What the server will let THIS caller assign (privilege ceiling); roles above it are greyed out.
   const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
+  // Link a login to its employee record (opened from a row), or invite an employee (opened from the toolbar).
+  const [employeeLink, setEmployeeLink] = useState<{ user: UserListItem | null } | null>(null);
 
   const pageSize = 20;
 
@@ -269,6 +273,13 @@ function UsersTab() {
             </div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => setEmployeeLink({ user: null })}
+          className="flex items-center gap-2 rounded-lg border border-violet-300 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/30"
+        >
+          <UserCheck className="h-4 w-4" aria-hidden="true" /> {t('Invite employee')}
+        </button>
       </div>
 
       {err && <p className="text-sm text-red-500">{err}</p>}
@@ -293,7 +304,15 @@ function UsersTab() {
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
                   <p className="text-xs text-slate-500">{u.email}</p>
-                  {u.employeeId && <p className="text-xs text-violet-500">Emp #{u.employeeId}</p>}
+                  {u.employeeId && (
+                    <p className="text-xs text-violet-500">
+                      {!u.employeeName
+                        ? `Emp #${u.employeeId}`
+                        : u.employeeCode
+                          ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode })
+                          : t('Employee: {name}', { name: u.employeeName })}
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-3"><StatusBadge value={u.status} /></td>
                 <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
@@ -334,6 +353,15 @@ function UsersTab() {
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
+                    {!u.employeeId && (
+                      <button
+                        type="button"
+                        onClick={() => setEmployeeLink({ user: u })}
+                        className="ms-1 whitespace-nowrap rounded-lg border border-violet-200 px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-900/30"
+                      >
+                        {t('Link to employee record')}
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -360,6 +388,11 @@ function UsersTab() {
 
       {/* User Access Detail Modal */}
       {selected && <UserAccessModal user={selected} roles={roles} allPermissions={allPermissions} ceiling={ceiling} onClose={() => { setSelected(null); load(); }} />}
+
+      {/* Link a login to its employee record / invite an employee to Self-Service */}
+      {employeeLink && (
+        <LinkEmployeeLoginDialog user={employeeLink.user} onClose={() => setEmployeeLink(null)} onChanged={load} />
+      )}
 
       {/* Create User Modal */}
       {showCreate && <CreateUserModal roles={roles} ceiling={ceiling} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
