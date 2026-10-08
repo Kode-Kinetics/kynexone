@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { ShieldAlert, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
@@ -18,25 +18,43 @@ import { useFormat } from '../hooks/useFormat';
  */
 const dismissKey = (issued: string) => `kynexone-reset-notice-dismissed:${issued}`;
 
+/**
+ * Dismissals live in module memory as well as sessionStorage, so a re-render, a remount of the
+ * shell or a refreshed /auth/me never brings back a notice the person already closed, and a
+ * browser with storage blocked still keeps it closed until reload.
+ */
+const dismissedThisSession = new Set<string>();
+
+function isDismissed(issued: string): boolean {
+  if (dismissedThisSession.has(issued)) return true;
+  try { return sessionStorage.getItem(dismissKey(issued)) === '1'; } catch { return false; }
+}
+
 /** Hide the notice for the rest of this browser session (the sign-in page already showed it). */
 export function markResetNoticeSeen(issued: string): void {
+  dismissedThisSession.add(issued);
   try { sessionStorage.setItem(dismissKey(issued), '1'); } catch { /* storage unavailable */ }
 }
 
+/**
+ * Memoised on its only input (the issued date, a string): a new user object from a refreshed
+ * /auth/me with the same notice re-renders nothing, and the element keeps its identity.
+ */
 export function ResetCodeNotice({ className = '' }: { className?: string }) {
   const { user } = useAuth();
+  return <ResetCodeNoticeView issued={user?.pendingResetNotice?.date ?? ''} className={className} />;
+}
+
+const ResetCodeNoticeView = memo(function ResetCodeNoticeView({ issued, className }: { issued: string; className: string }) {
   const { t } = useLocale();
   const format = useFormat();
-  const issued = user?.pendingResetNotice?.date ?? '';
-  const key = dismissKey(issued);
-  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [, setClosed] = useState(0);
 
-  if (!issued || dismissed === issued) return null;
-  try { if (sessionStorage.getItem(key) === '1') return null; } catch { /* storage unavailable: show it */ }
+  if (!issued || isDismissed(issued)) return null;
 
   const dismiss = () => {
-    try { sessionStorage.setItem(key, '1'); } catch { /* storage unavailable: hidden until reload */ }
-    setDismissed(issued);
+    markResetNoticeSeen(issued);
+    setClosed((n) => n + 1);
   };
 
   return (
@@ -52,4 +70,4 @@ export function ResetCodeNotice({ className = '' }: { className?: string }) {
       </button>
     </section>
   );
-}
+});

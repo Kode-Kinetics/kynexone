@@ -99,8 +99,9 @@ export async function tenantLoginLive(
   await page.locator('#li-pw, input[type="password"]').first().fill(password);
   await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(slug);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL(/\/(dashboard|app)/, { timeout: 15_000 });
-  // Wait for the dashboard's initial API calls to settle before each test navigates away.
+  // Self-service-only employees land on /ess (src/lib/homePath.ts); everyone else on /dashboard.
+  await page.waitForURL(/\/(dashboard|app|ess)/, { timeout: 15_000 });
+  // Wait for the landing page's initial API calls to settle before each test navigates away.
   // Without this, background fetches can fire 403s that trigger window.location redirects,
   // which abort subsequent page.goto() calls with ERR_ABORTED.
   await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {/* ignore timeout */});
