@@ -38,7 +38,7 @@ import {
   cacheIsFresh,
   isSelfieBusy,
   parseAttendanceVerification,
-  SELFIE_BUSY_RETRY_MS,
+  busyRetryDelayMs,
   type AttendanceVerification,
   type PunchDirection,
   type VerificationCacheEntry,
@@ -845,10 +845,10 @@ export const selfieAttendanceApi = {
     try {
       result = await send();
     } catch (error) {
-      // The server answers a fast 429 when its image processing is busy: retry once after ~2 s, then
-      // let the caller show "Selfie processing is busy". The hourly limit (selfie_rate_limited) is not retried.
+      // The server answers a fast 429 when its image processing is busy: retry once after its Retry-After
+      // (1–5 s), then let the caller show "Selfie processing is busy". The hourly limit is not retried.
       if (!isSelfieBusy(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, SELFIE_BUSY_RETRY_MS));
+      await new Promise((resolve) => setTimeout(resolve, busyRetryDelayMs(error)));
       result = await send();
     }
     const evidenceId = String(result?.evidenceId ?? '');

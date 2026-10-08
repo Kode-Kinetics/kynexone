@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   KNOWN_REFUSAL_CODES,
-  PENDING_API_CODES,
+  REVIEW_API_CODES,
+  busyRetryDelayMs,
   REFUSAL_KEYS,
   VERIFICATION_CACHE_MS,
   VERIFICATION_OFF,
@@ -230,7 +231,7 @@ test('a fast 429 is "selfie processing is busy"; the hourly limit is not', () =>
 });
 
 test('refusals added by the backend review are mapped', () => {
-  assert.equal(PENDING_API_CODES.app_update_required, 'appUpdateRequired');
+  assert.equal(REVIEW_API_CODES.app_update_required, 'appUpdateRequired');
   assert.equal(mapPunchRefusal(refusal(400, { code: 'app_update_required' }), 'en').action, 'none');
   assert.equal(mapPunchRefusal(refusal(429, { code: 'selfie_busy' }), 'en').key, 'selfieBusy');
   assert.equal(mapPunchRefusal(refusal(400, { code: 'mobile_app_required' }), 'en').key, 'mobileAppRequired');
@@ -297,4 +298,12 @@ test('discovery cache is short-lived and keyed to the sign-in', () => {
   assert.equal(cacheIsFresh(entry, 't1:6:u2', 1_500), false);
   assert.equal(cacheIsFresh(null, 't1:5:u1', 1_500), false);
   assert.equal(cacheIsFresh(entry, 't1:5:u1', 500), false); // clock went backwards
+});
+
+test('a busy 429 retries after Retry-After, kept between 1 s and 5 s, or 2 s without it', () => {
+  assert.equal(busyRetryDelayMs({ response: { headers: { 'retry-after': '5' } } }), 5000);
+  assert.equal(busyRetryDelayMs({ response: { headers: { 'retry-after': '60' } } }), 5000);
+  assert.equal(busyRetryDelayMs({ response: { headers: { 'retry-after': '0.2' } } }), 1000);
+  assert.equal(busyRetryDelayMs({ response: { headers: {} } }), 2000);
+  assert.equal(busyRetryDelayMs(new Error('no response')), 2000);
 });

@@ -270,13 +270,8 @@ export type RefusalKey =
  */
 export type RefusalAction = 'retry' | 'retake_selfie' | 'take_selfie' | 'without_selfie' | 'open_settings' | 'none';
 
-/**
- * Refusals added by the backend review on a parallel branch, before API.md names their codes. The
- * code strings here are the expected ones; until confirmed, the server's own message is still shown
- * for any code the app does not know, and a 429 that is not the hourly limit reads as selfieBusy.
- * Align these three lines with API.md when it is updated.
- */
-export const PENDING_API_CODES: Readonly<Record<string, RefusalKey>> = {
+/** Refusals added by the backend review (API.md, review 1): confirmed codes. */
+export const REVIEW_API_CODES: Readonly<Record<string, RefusalKey>> = {
   app_update_required: 'appUpdateRequired',
   mobile_app_required: 'mobileAppRequired',
   selfie_busy: 'selfieBusy',
@@ -302,7 +297,7 @@ const CODE_TO_KEY: Record<string, RefusalKey> = {
   selfie_invalid: 'selfieUnusable',
   access_mode_not_allowed: 'accessMode',
   employee_not_linked: 'notLinked',
-  ...PENDING_API_CODES,
+  ...REVIEW_API_CODES,
 };
 
 const KEY_TO_ACTION: Record<RefusalKey, RefusalAction> = {
@@ -392,6 +387,18 @@ export function mapPunchRefusal(error: unknown, language: string): PunchRefusal 
 /** The refusal keys the app knows; tests check each has EN and AR strings. */
 /** A busy refusal is retried once, after this delay, before it is shown. */
 export const SELFIE_BUSY_RETRY_MS = 2_000;
+
+/**
+ * How long to wait before the one retry after a "busy" 429: the server's Retry-After (seconds), kept
+ * between 1 s and 5 s so a tap never hangs, or 2 s when the header is absent or unreadable.
+ */
+export function busyRetryDelayMs(error: unknown): number {
+  const headers = (error as { response?: { headers?: Record<string, unknown> } })?.response?.headers;
+  const raw = headers?.['retry-after'] ?? headers?.['Retry-After'];
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return SELFIE_BUSY_RETRY_MS;
+  return Math.min(5_000, Math.max(1_000, seconds * 1_000));
+}
 
 export function isSelfieBusy(error: unknown): boolean {
   return mapPunchRefusal(error, 'en').key === 'selfieBusy';
