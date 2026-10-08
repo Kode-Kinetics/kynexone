@@ -1352,6 +1352,106 @@ public sealed class EmployeeLoginLinkTests
             new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
     }
 
+    /// <summary>
+    /// A coerced-domain work-email edit commits as ONE unit: the new address, its audit rows and its
+    /// employee.work_email_changed (setter) row. A failure later in the same edit (here: the staged login's new
+    /// username would collide with another login) leaves no trace — the address never commits without its setter.
+    /// </summary>
+    [Fact]
+    public async Task ACoercedWorkEmailEdit_CommitsTheAddressAndItsSetterTogether_OrNotAtAll()
+    {
+        var w = await SeedAsync();
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var company = await db.Companies.IgnoreQueryFilters().SingleAsync(x => x.Id == w.CompanyA);
+            company.EmailDomain = $"acme-{w.TenantId:N}.test";
+            await db.SaveChangesAsync();
+        }
+        var domain = $"acme-{w.TenantId:N}.test";
+        var oldEmail = $"old.name@{domain}";
+        var employeeId = await AddEmployeeAsync(w, w.CompanyA, oldEmail);
+        var staged = Guid.NewGuid();
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            db.Users.Add(new User
+            {
+                Id = staged, TenantId = w.TenantId, Email = oldEmail, NormalizedEmail = AuthService.Normalize(oldEmail), FullName = "Staged",
+                PasswordHash = "unreachable", Status = "Invited", AccessMode = AccessModes.NoLogin, IsActive = false, IsEmailConfirmed = false,
+            });
+            // Another login already owns the address the edit will be coerced to.
+            db.Users.Add(new User
+            {
+                TenantId = w.TenantId, Email = $"new.name@{domain}", NormalizedEmail = AuthService.Normalize($"new.name@{domain}"),
+                FullName = "Other", PasswordHash = "x", Status = "Active", IsActive = true,
+            });
+            db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+            {
+                TenantId = w.TenantId, EmployeeId = employeeId, UserId = staged, Status = "Invited", RequiresPasswordSetup = true,
+                AccessMode = AccessModes.EssOnly, InvitationTokenHash = "pending", InvitationExpiresAtUtc = DateTime.UtcNow.AddDays(3),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // new.name@elsewhere.test is coerced onto the company domain → new.name@acme…, which collides: refused.
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<UnprocessableEntityObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
+                new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
+        await using (var verify = _fixture.CreateRetryingDb())
+        {
+            (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be(oldEmail,
+                "a refused edit must not have committed the coerced address part-way");
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityName == "Employee" && x.EntityId == employeeId.ToString()
+                && (x.Action == AccessManagementService.WorkEmailChangedAction || x.Action == "employee.work_email_domain_coerced"))).Should().BeFalse();
+        }
+
+        // Without the collision the same coerced edit commits the address AND its setter row.
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var other = await db.Users.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.FullName == "Other");
+            other.Email = $"someone.else@{domain}";
+            other.NormalizedEmail = AuthService.Normalize(other.Email);
+            await db.SaveChangesAsync();
+        }
+        await using (var db = _fixture.CreateRetryingDb())
+            Assert.IsType<OkObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
+                new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
+        await using (var verify = _fixture.CreateRetryingDb())
+        {
+            (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be($"new.name@{domain}");
+            var setter = await WorkEmailSetterRule.GetAsync(verify, w.TenantId, employeeId, default);
+            setter!.ActorUserId.Should().Be(w.AdminId);
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityId == employeeId.ToString() && x.Action == "employee.work_email_domain_coerced"))
+                .Should().BeTrue();
+        }
+    }
+
+    private static EmployeesController Employees(ZayraDbContext db, World w)
+    {
+        var audit = new AuditService(db);
+        return new EmployeesController(db, new Pbkdf2PasswordHasher(), audit, new UnusedStorage(), TestNotifications.For(db),
+            new Zayra.Api.Infrastructure.Localization.HijriDateService(), new Zayra.Api.Infrastructure.Common.DataScopeService(db),
+            new StubLetters(), new ApprovalWorkflowService(db, audit))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", w.TenantId.ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, w.AdminId.ToString()),
+                        new Claim(ClaimTypes.Role, "HR Officer"),
+                        new Claim("permission", "employees.read"),
+                        new Claim("permission", "employees.write"),
+                        new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
+                    }, "test")),
+                },
+            },
+        };
+    }
+
     private static void AssertSetterRefused(IActionResult? result)
     {
         var refused = Assert.IsType<ObjectResult>(result);

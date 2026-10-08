@@ -76,8 +76,6 @@ const ALLOWED: Record<string, string> = {
   // is why the pin below drops from 9 to 6.
   'app/platform/login/page.tsx::-left-1/4': 'decorative radial glow; viewport composition, not reading order',
   'app/platform/login/page.tsx::right-[-15%]': 'decorative radial glow; viewport composition, not reading order',
-  'src/views/EmployeeSelfServicePage.tsx::right-0': 'decorative blurred disc on the ESS hero card (translate-x-16 + blur-3xl)',
-  'src/views/EmployeeSelfServicePage.tsx::left-1/3': 'decorative blurred disc on the ESS hero card (blur-2xl)',
 
   // ── Centering idiom ────────────────────────────────────────────────────────
   // `left-1/2` + `-translate-x-1/2` is horizontal CENTERING, not a leading edge. The
@@ -156,7 +154,7 @@ test.describe('RTL logical-property ratchet', () => {
     // blobs in src/views/LoginPage.tsx that held the only physical insets on
     // that page; the shader canvas and the CSS static field that replaced them
     // use none. Ratcheted down, never up.
-    const PINNED_PHYSICAL_EXCEPTIONS = 6;
+    const PINNED_PHYSICAL_EXCEPTIONS = 4;
 
     const { findings } = scan();
     const allowed = findings.filter((f) => f.key in ALLOWED);

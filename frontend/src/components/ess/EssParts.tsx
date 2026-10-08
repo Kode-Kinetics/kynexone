@@ -2,14 +2,13 @@
 
 import { useCallback, type ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
-import Link from 'next/link';
 import { essActionsApi } from '@/src/api/ess';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { formatCalendarDate } from '@/src/lib/calendarDate';
 import { requestFailureReason } from '@/src/lib/requestFailure';
 
-/** Shared pieces of the employee self-service pages (/ess/leave, /ess/overtime, /ess/requests). */
+/** Shared pieces of the employee self-service pages (/ess/leave, /ess/overtime, /ess/requests, /ess/documents). */
 
 /**
  * The caller's own employee id: from the login when it carries one, otherwise as the server's ESS
@@ -49,15 +48,12 @@ export const essInput =
 export const essPrimaryButton =
   'inline-flex items-center justify-center gap-1.5 rounded-xl bg-sapphire px-4 py-2 text-sm font-semibold text-white hover:bg-sapphire/90 disabled:opacity-60 dark:bg-cyanAccent dark:text-slate-900';
 
+/** A page's heading. The workspace's own tabs (EssWorkspaceNav) sit above it, so it needs no "back" link. */
 export function EssPageHeader({ title, subtitle }: { title: string; subtitle: string }) {
-  const { t } = useLocale();
   return (
-    <div className="flex flex-wrap items-end justify-between gap-2">
-      <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{title}</h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
-      </div>
-      <Link href="/ess" className="text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent">{t('Back to Self-Service')}</Link>
+    <div>
+      <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{title}</h1>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
     </div>
   );
 }

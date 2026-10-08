@@ -3681,6 +3681,32 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
+        // A WORK-EMAIL edit runs in ONE explicit transaction: the employee row lock WorkEmailLoginGuard takes holds to
+        // commit (serialising with invitations, links and reset links, which read the setter under the same lock), and
+        // the new address commits together with its employee.work_email_changed row — never one without the other.
+        if (!_db.Database.IsRelational()
+            || !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase)))
+            return await UpdateEmployeeCoreAsync(id, request, cancellationToken);
+
+        IActionResult? result = null;
+        await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            result = await UpdateEmployeeCoreAsync(id, request, cancellationToken);
+            if (result is ObjectResult { StatusCode: >= 200 and < 300 } or OkResult or AcceptedResult)
+                await transaction.CommitAsync(cancellationToken);
+            else
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                _db.ChangeTracker.Clear();
+            }
+        });
+        return result!;
+    }
+
+    private async Task<IActionResult> UpdateEmployeeCoreAsync(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
+    {
         var tenantId = RequireTenant();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
@@ -5893,13 +5919,20 @@ public class EmployeesController : ControllerBase
 
         // Login-identity guard (same rule as the service): staged → follows; activated → untouched, reported.
         var login = await WorkEmailLoginGuard.ApplyAsync(_db, employee, tenantId, priorWorkEmail, Context(), DateTime.UtcNow, ct);
-        if (login.RenamedJson is not null)
-            await _audit.WriteAsync("employee.work_email_renamed", "Employee", employee.Id.ToString(), Context(), login.RenamedJson, ct);
-        if (login.HeldJson is not null)
-            await _audit.WriteAsync("employee.work_email_login_held", "Employee", employee.Id.ToString(), Context(), login.HeldJson, ct);
+        if (login.RenamedJson is not null) AddWorkEmailAudit(employee, "employee.work_email_renamed", login.RenamedJson);
+        if (login.HeldJson is not null) AddWorkEmailAudit(employee, "employee.work_email_login_held", login.HeldJson);
         // A work email first set (or changed) on an employee with no login stages one, in this unit of work.
         await new EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, Context(), ct);
         return login.LoginUsernameDiffers;
+    }
+
+    /// <summary>A work-email audit row in the caller's unit of work: it commits with the change it describes.</summary>
+    private void AddWorkEmailAudit(Employee employee, string action, string metadata)
+    {
+        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, action, "Employee", employee.Id.ToString(),
+            Context() with { TenantId = employee.TenantId }, metadata);
+        row.CompanyId = employee.CompanyId;
+        _db.AuditLogs.Add(row);
     }
 
     /// <summary>Tenant work-email collision set keyed by the login normalization (AuthService.Normalize),
