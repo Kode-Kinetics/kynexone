@@ -50,6 +50,13 @@ export interface EmployeeLoginStatus {
   reasonCode?: string | null;
   /** The name a coded refusal cites: a company (login_other_company) or an employee (login_pointer_conflict). */
   reasonSubject?: string | null;
+  /** link_existing only: linking will reset the login's password (someone other than the person has handled it). */
+  willResetCredential?: boolean;
+  /** Who last set the employee's work email (every credential is sent there), and when (UTC ISO). */
+  workEmailSetBy?: string | null;
+  workEmailSetAtUtc?: string | null;
+  /** The work email was changed after the record was created and there is no activated login: confirm it first. */
+  workEmailChangedAfterCreation?: boolean;
 }
 
 export interface EmployeeLoginLinkResult {
@@ -60,6 +67,15 @@ export interface EmployeeLoginLinkResult {
   accessMode: string;
   isActive: boolean;
   alreadyLinked: boolean;
+  /** Someone other than the person had held a credential for the login: its password was made unusable and the
+   *  person sets their own from a fresh invitation to their work email. */
+  credentialReset?: boolean;
+  /** Returned only when the invitation could not be emailed — pass it on by hand. */
+  invitationUrl?: string | null;
+  emailSent?: boolean;
+  deliveryMessage?: string;
+  /** The caller entered this employee's work email: the invitation was never emailed — hand it over in person. */
+  handOverInPerson?: boolean;
 }
 
 /** POST /api/access/employee-logins/invite. `invitationUrl` must be shared by hand when `emailSent` is false. */
@@ -74,6 +90,8 @@ export interface EmployeeLoginInvitation {
   emailDeliveryConfigured: boolean;
   emailSent: boolean;
   deliveryMessage: string;
+  /** The caller entered this employee's work email: the link was never emailed — hand it over in person. */
+  handOverInPerson?: boolean;
 }
 
 export interface UserAccess {
@@ -312,7 +330,7 @@ export const usersApi = {
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),
 
-  inviteEmployee: (body: { employeeId: number; email?: string; accessMode: string; roles?: string[]; invitationHours?: number }) =>
+  inviteEmployee: (body: { employeeId: number; accessMode: string; confirmedWorkEmail?: boolean; roles?: string[]; invitationHours?: number }) =>
     client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
 
   /** Where one employee record stands on the way to Self-Service, and the one next step. */
@@ -320,7 +338,7 @@ export const usersApi = {
     client.get<EmployeeLoginStatus>(`/api/access/employee-logins/${employeeId}`).then(r => r.data),
 
   /** Links an existing, active login to the employee record whose work email it carries. */
-  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string }) =>
+  linkExistingLogin: (body: { employeeId: number; userId: string; reason: string; confirmedWorkEmail?: boolean }) =>
     client.post<EmployeeLoginLinkResult>('/api/access/employee-logins/link-existing', body).then(r => r.data),
 };
 

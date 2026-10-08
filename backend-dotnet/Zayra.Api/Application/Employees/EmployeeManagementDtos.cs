@@ -145,6 +145,13 @@ public record EmployeeDetailDto
     // ── Contact ───────────────────────────────────────────────────────────────────
     public string PersonalEmail { get; init; } = string.Empty;
     public string WorkEmail { get; init; } = string.Empty;
+    /// <summary>Set on an edit response only: the work email changed, but the employee's login has already been
+    /// activated, so its username was kept — the two now differ. A live login's username is changed through
+    /// security administration, never by an employee edit.</summary>
+    public bool LoginUsernameDiffers { get; init; }
+    /// <summary>Set on a create response only: the new work email is already an existing login's username. A warning,
+    /// not a refusal — check it is the same person before linking that login to this record.</summary>
+    public bool WorkEmailHasExistingLogin { get; init; }
     public string Phone { get; init; } = string.Empty;
     // ── Demographics ──────────────────────────────────────────────────────────────
     public string Gender { get; init; } = string.Empty;

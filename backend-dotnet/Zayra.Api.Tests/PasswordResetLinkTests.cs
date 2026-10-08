@@ -278,8 +278,43 @@ public sealed class PasswordResetLinkTests
         invite.EmailDeliveryConfigured.Should().BeFalse();
         invite.EmailSent.Should().BeFalse();
         invite.DeliveryMessage.Should().Contain("No email delivery is configured");
-        // The link is still returned, so the administrator has something to pass on.
+        // The link is still returned, so the administrator has something to pass on...
         invite.InvitationUrl.Should().Contain("/accept-invitation");
+        // ...but never the raw token, and the disclosure makes the inviter a credential handler of the login.
+        invite.InvitationToken.Should().BeEmpty();
+        var disclosed = await db.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction);
+        disclosed.EntityName.Should().Be("User");
+        disclosed.EntityId.Should().Be(invite.UserId.ToString());
+        disclosed.UserId.Should().NotBeNull().And.NotBe(Guid.Empty);
+        disclosed.UserId.Should().Be(db.Users.IgnoreQueryFilters().Single(u => u.TenantId == tenant.Id && u.Email == ActingAdminEmail).Id);
+    }
+
+    [Theory]
+    [InlineData("someone.else@attacker.test", false)]
+    [InlineData("INVITED.PERSON@example.test", true)]
+    public async Task InviteEmployeeLogin_IsPinnedToTheEmployeesWorkEmail(string requested, bool allowed)
+    {
+        await using var db = CreateDb();
+        var (tenant, _) = await SeedActiveUserAsync(db);
+        var employee = new Employee
+        {
+            TenantId = tenant.Id, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-PIN", FullName = "Invited Person",
+            EnglishName = "Invited Person", WorkEmail = "invited.person@example.test", Status = EmployeeStatuses.Active,
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false))
+            .InviteEmployeeLogin(new InviteEmployeeLoginRequest(employee.Id, requested, AccessModes.EssOnly, null), default);
+
+        if (allowed)
+            ((EmployeeLoginInvitationDto)result.Result.Should().BeOfType<CreatedResult>().Subject.Value!).Email
+                .Should().Be("invited.person@example.test");
+        else
+        {
+            result.Result.Should().BeOfType<BadRequestObjectResult>();
+            (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.NormalizedEmail == AuthService.Normalize(requested))).Should().BeFalse();
+        }
     }
 
     [Fact]
@@ -311,6 +346,86 @@ public sealed class PasswordResetLinkTests
         invite.DeliveryMessage.Should().Contain("Invitation accepted by the mail server for");
         email.Sent.Should().ContainSingle();
         email.Sent[0].Html.Should().Contain("/accept-invitation");
+        // Delivered to the invitee: the inviter is handed neither the token nor the link, and held no credential.
+        invite.InvitationToken.Should().BeEmpty();
+        invite.InvitationUrl.Should().BeEmpty();
+        (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// WorkEmailSetterRule withholds the EMAIL channel: the administrator who set the work email still invites, but
+    /// even with a working transport nothing is mailed to the address they typed — the link is handed back to them,
+    /// recorded as disclosed, with the hand-over sentence. Their reset link for the linked login is treated the same.
+    /// </summary>
+    [Fact]
+    public async Task TheWorkEmailSetter_IsNeverEmailedTheLink_EvenWithATransport()
+    {
+        await using var db = CreateDb();
+        var (tenant, _) = await SeedActiveUserAsync(db);
+        var actingAdmin = db.Users.IgnoreQueryFilters().Single(u => u.TenantId == tenant.Id && u.Email == ActingAdminEmail).Id;
+        var employee = new Employee
+        {
+            TenantId = tenant.Id, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-SETTER", FullName = "Set By Admin",
+            EnglishName = "Set By Admin", WorkEmail = "set.by.admin@example.test", Status = EmployeeStatuses.Active,
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = tenant.Id, UserId = actingAdmin, Action = AccessManagementService.WorkEmailChangedAction,
+            EntityName = "Employee", EntityId = employee.Id.ToString(), CreatedAtUtc = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        var email = new FakeEmailService(configured: true);
+
+        var invite = (EmployeeLoginInvitationDto)(await Controller(db, tenant.Id, email).InviteEmployeeLogin(
+            new InviteEmployeeLoginRequest(employee.Id, null, AccessModes.FullPortal, null), default)).Result
+            .Should().BeOfType<CreatedResult>().Subject.Value!;
+
+        email.Sent.Should().BeEmpty("the setter's invitation is never mailed to the address they typed");
+        invite.HandOverInPerson.Should().BeTrue();
+        invite.EmailSent.Should().BeFalse();
+        invite.InvitationUrl.Should().Contain("/accept-invitation");
+        invite.DeliveryMessage.Should().Be("You entered this work email, so hand the link over in person.");
+        (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+            && x.UserId == actingAdmin && x.EntityId == invite.UserId.ToString())).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A login linked to its employee ONLY by the legacy Employee.UserAccountId pointer (no live mapping row) is still
+    /// covered by the setter rule: the admin who set that employee's work email gets the reset link handed back, never
+    /// emailed (even with a working transport), and the disclosure is recorded.
+    /// </summary>
+    [Fact]
+    public async Task TheSetterOfAPointerOnlyEmployee_IsHandedTheResetLink_NeverEmailed()
+    {
+        await using var db = CreateDb();
+        var (tenant, user) = await SeedActiveUserAsync(db);
+        var actingAdmin = db.Users.IgnoreQueryFilters().Single(u => u.TenantId == tenant.Id && u.Email == ActingAdminEmail).Id;
+        var employee = new Employee
+        {
+            TenantId = tenant.Id, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-PTR", FullName = "Pointer Only",
+            EnglishName = "Pointer Only", WorkEmail = user.Email, Status = EmployeeStatuses.Active, UserAccountId = user.Id,
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        (await db.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.UserId == user.Id)).Should().BeFalse("pointer only");
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = tenant.Id, UserId = actingAdmin, Action = AccessManagementService.WorkEmailChangedAction,
+            EntityName = "Employee", EntityId = employee.Id.ToString(), CreatedAtUtc = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        var email = new FakeEmailService(configured: true);
+
+        var body = Body((await Controller(db, tenant.Id, email).IssuePasswordResetLink(user.Id, default)).Should().BeOfType<OkObjectResult>().Subject);
+
+        email.Sent.Should().BeEmpty("the setter's reset link is never mailed");
+        body.GetProperty("handOverInPerson").GetBoolean().Should().BeTrue();
+        body.GetProperty("emailSent").GetBoolean().Should().BeFalse();
+        body.GetProperty("resetUrl").GetString().Should().Contain("/reset-password");
+        (await db.AdminAuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityId == user.Id.ToString()
+            && x.Action == "PasswordResetLinkDisclosedToAdmin" && x.PerformedBy == actingAdmin)).Should().BeTrue();
     }
 
     // ── Harness ───────────────────────────────────────────────────────────────
