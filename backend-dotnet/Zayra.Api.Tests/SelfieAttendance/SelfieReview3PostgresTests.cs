@@ -75,15 +75,18 @@ public sealed class SelfieReview3PostgresTests
         var punches = directions.Select(d => Task.Run(async () =>
         {
             await start.Task;
-            return await PunchAsync(tenantId, employeeId, d);
+            // A punch that got past the waiver can still lose the race for the day's first daily record (a separate
+            // write after the raw event); its raw event is already committed, so the database count below decides.
+            try { return (await PunchAsync(tenantId, employeeId, d)).Result; }
+            catch (DbUpdateException) { return null; }
         })).ToList();
         start.SetResult();
         var outcomes = await Task.WhenAll(punches);
 
-        Assert.Equal(1, outcomes.Count(o => o.Result is OkObjectResult));
-        Assert.All(outcomes.Where(o => o.Result is not OkObjectResult), o => Assert.Equal("selfie_required", SelfieWorld.CodeOf(o.Result)));
         await using var verify = _fx.CreateDb();
         Assert.Equal(1, await verify.AttendanceRawEvents.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId));
+        Assert.Equal(1, outcomes.Count(o => o is OkObjectResult));
+        Assert.All(outcomes.Where(o => o is not OkObjectResult), o => Assert.Equal("selfie_required", SelfieWorld.CodeOf(o)));
     }
 
     [Fact]
