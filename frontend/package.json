@@ -11,7 +11,8 @@
     "test:e2e:ui": "playwright test --ui",
     "test:unit": "playwright test -c playwright.unit.config.ts",
     "test:unit:tz": "TZ=Asia/Karachi playwright test -c playwright.unit.config.ts",
-    "i18n:repin": "I18N_REPIN=1 playwright test -c e2e/playwright.browserless.config.ts e2e/i18n-coverage.spec.ts"
+    "i18n:repin": "I18N_REPIN=1 playwright test -c e2e/playwright.browserless.config.ts e2e/i18n-coverage.spec.ts",
+    "seed:demo-masar": "playwright test -c e2e/release-a/playwright.demo-seed.config.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
