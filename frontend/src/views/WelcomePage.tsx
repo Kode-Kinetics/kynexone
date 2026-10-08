@@ -15,6 +15,7 @@ import {
   normalizeWelcomeCode, passwordChecks,
 } from '../lib/welcomeCode';
 import { takeBootFragment, takeWelcomeHandoff } from '../lib/welcomeHandoff';
+import { homePathFor } from '../lib/homePath';
 
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
@@ -43,7 +44,7 @@ type Step = 'code' | 'password';
  */
 export function WelcomePage() {
   return (
-    <LocaleProvider>
+    <LocaleProvider preferDevice>
       <WelcomeCard />
     </LocaleProvider>
   );
@@ -51,9 +52,13 @@ export function WelcomePage() {
 
 function WelcomeCard() {
   const { t, dir } = useLocale();
-  const { login, logout } = useAuth();
+  const { user, login, logout } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
+  /* Signed in: land where a normal sign-in would (lib/homePath.ts) — Self-Service for an employee,
+     the usual home for HR or an admin redeeming a reset code. Waits for the user to be set. */
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => { if (signedIn && user) router.replace(homePathFor(user)); }, [signedIn, user, router]);
 
   const [step, setStep] = useState<Step>('code');
   const [email, setEmail] = useState('');
@@ -133,7 +138,8 @@ function WelcomeCard() {
       const outcome = await login(email, password, companyId ?? workspaceArg());
       // A privileged login may need its second factor; the sign-in page owns that step and reads
       // the pending challenge from the same AuthProvider.
-      router.replace(outcome === 'authenticated' ? '/ess' : '/login');
+      if (outcome === 'authenticated') setSignedIn(true);
+      else router.replace('/login');
       return true;
     } catch {
       return false;

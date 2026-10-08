@@ -47,6 +47,8 @@ export interface AuthResponse {
 
 export interface ForgotPasswordResponse {
   message: string;
+  /** false when this company cannot send email: only HR's welcome code can help then. */
+  emailDeliveryConfigured?: boolean;
 }
 
 // Returned by /api/auth/login when the user has TOTP enabled.

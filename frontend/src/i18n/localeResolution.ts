@@ -51,9 +51,25 @@ export function migrateLegacyChoice(store: LocaleStore): void {
   if (legacy && legacy !== 'en') store.set(LOCALE_CHOICE_KEY, legacy);
 }
 
-export function resolveLocale(store: LocaleStore, tenant: TenantLanguage): LocaleCode {
+/**
+ * The device's own language (navigator.languages), when it is one the switcher offers. Only the
+ * FIRST preference counts: an ar-SA phone is Arabic, an en-GB phone that also lists Arabic is not.
+ */
+export function deviceLocale(languages: readonly string[] | null | undefined): LocaleCode | null {
+  const code = asLocale(languages?.[0]);
+  return code && LOCALE_METADATA[code].selectable ? code : null;
+}
+
+/**
+ * `device` is passed only by the public sign-in surfaces (/login, /welcome): there nobody has
+ * signed in, so the tenant's language may be unknown on this phone, and someone scanning a slip on
+ * an Arabic phone should be greeted in Arabic. It ranks after the explicit choice, before tenant
+ * defaults.
+ */
+export function resolveLocale(store: LocaleStore, tenant: TenantLanguage, device?: readonly string[] | null): LocaleCode {
   migrateLegacyChoice(store);
   return asLocale(store.get(LOCALE_CHOICE_KEY))
+    ?? (device ? deviceLocale(device) : null)
     ?? tenantDefaultLocale(tenant)
     ?? asLocale(store.get(TENANT_LOCALE_KEY))
     ?? 'en';
