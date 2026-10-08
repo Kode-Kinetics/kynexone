@@ -35,6 +35,9 @@ public sealed class SelfieAttendancePostgresTests
         Guid dueId, freshId;
         await using (var db = _fx.CreateDb())
         {
+            // The uploader still consents, so an unused selfie keeps its 24 hours (without consent it is due at once).
+            db.BiometricConsents.Add(new BiometricConsent { TenantId = tenantId, EmployeeId = employeeId, PolicyVersion = "1", GivenAtUtc = now.AddDays(-2), Channel = "Mobile" });
+            await db.SaveChangesAsync();
             dueId = await AddEvidenceAsync(db, storage, tenantId, employeeId, now.AddHours(-30));
             freshId = await AddEvidenceAsync(db, storage, tenantId, employeeId, now.AddHours(-2));
         }
@@ -62,7 +65,8 @@ public sealed class SelfieAttendancePostgresTests
         Assert.Equal("Succeeded", await RunJobAsync(sp, tenantId, now.AddHours(1)));
         await using (var db = _fx.CreateDb())
             Assert.Equal(1, await db.RetentionPurgeAudits.IgnoreQueryFilters().CountAsync(a => a.TenantId == tenantId));
-        Assert.Single(storage.Deleted);
+        // Only this tenant's files: the runner also picks up purge jobs other tests in the collection left queued.
+        Assert.Single(storage.Deleted, k => k.Contains(tenantId.ToString("N"), StringComparison.Ordinal));
     }
 
     [Fact]
@@ -162,13 +166,21 @@ public sealed class SelfieAttendancePostgresTests
 
     /// <summary>An attempt whose body turns out to be junk still counts (it reserved a Pending row), and is swept within the hour.</summary>
     [Fact]
-    public async Task Upload_AFailedAttempt_Counts_AndItsPendingRowIsPurgedAfterAnHour()
+    public async Task Upload_AStorageFailedAttempt_Counts_AndItsPendingRowIsPurgedAfterAnHour_WhileBadInputLeavesNoRow()
     {
         var storage = new MemoryDocumentStorage();
         var (tenantId, employeeId) = await SeedEmployeeAsync();
         await using (var db = _fx.CreateDb()) await EnableAsync(db, tenantId, employeeId);
 
+        // Bad input never reached storage: its reserved row is deleted, so it does not count (review 2, item 7).
         Assert.Equal(400, await UploadAsync(storage, tenantId, employeeId, bytes: "not a photo"u8.ToArray()));
+        await using (var db = _fx.CreateDb())
+            Assert.Equal(0, await db.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
+
+        // A storage failure did reach storage: the row stays Pending (it counts) and is swept after an hour.
+        storage.FailPuts = true;
+        Assert.Equal(503, await UploadAsync(storage, tenantId, employeeId));
+        storage.FailPuts = false;
         Guid pendingId;
         await using (var db = _fx.CreateDb())
         {

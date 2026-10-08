@@ -165,7 +165,9 @@ public sealed class SelfieReviewFixesPostgresTests : PlatformTestBase
         var due = await new SelfieEvidencePurger(counted, storage).FindDueAsync(tenantId, new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), 1000, default);
 
         Assert.Equal(30, due.Count);
-        Assert.InRange(counter.Count, 1, 5); // candidates, timezone, companies, locks — never two per row
+        // A fixed number, never one per row: the three candidate queries (Pending, unused, used past the fallback),
+        // the timezone, the locked months, then the companies and the locks for the facts (review 2 split the scan).
+        Assert.InRange(counter.Count, 1, 8);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────────────────

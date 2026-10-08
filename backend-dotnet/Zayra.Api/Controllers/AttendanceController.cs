@@ -196,9 +196,12 @@ public class AttendanceController : ControllerBase
         return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
     }
 
+    /// <summary>
+    /// The raw punch log, scoped. Each row carries <c>hasSelfie</c>: whether a stored selfie (Active, not purged) backs
+    /// that punch, so HR's list can offer "View selfie". Never the storage key.
+    /// </summary>
     [HttpGet("events/raw")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<PagedResult<AttendanceRawEvent>> Raw([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] bool? processed, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
+    public async Task<PagedResult<AttendanceRawEventDto>> Raw([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] bool? processed, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -207,7 +210,16 @@ public class AttendanceController : ControllerBase
         // The scope's set when it has one (a team, a company's employees, or empty for a caller with no
         // record), exactly as daily() filters. It used to collapse a set to the caller's OWN id, which gave
         // a company-scoped HR user with no employee record nothing, or before that, everything.
-        return await _attendance.GetRawEventsAsync(RequireTenant(), from, to, singleId, processed, page, pageSize, ct, setFilter);
+        var tenantId = RequireTenant();
+        var result = await _attendance.GetRawEventsAsync(tenantId, from, to, singleId, processed, page, pageSize, ct, setFilter);
+        var ids = result.Items.Select(r => r.Id).ToList();
+        var withSelfie = ids.Count == 0 ? new HashSet<Guid>() : (await _db.AttendanceEvidence.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.UsedByRawEventId != null && ids.Contains(e.UsedByRawEventId.Value)
+                        && e.PurgeState == AttendanceEvidencePurgeStates.Active && e.PurgedAtUtc == null)
+            .Select(e => e.UsedByRawEventId!.Value)
+            .ToListAsync(ct)).ToHashSet();
+        return new PagedResult<AttendanceRawEventDto>(
+            result.Items.Select(r => AttendanceRawEventDto.From(r, withSelfie.Contains(r.Id))).ToList(), result.Total, result.Page, result.PageSize);
     }
 
     [HttpGet]
@@ -338,6 +350,83 @@ public class AttendanceController : ControllerBase
                          + "geofence falls back to every geofenced site of the company for their punches.",
             employees = rows.Select(r => new { r.EmployeeId, r.EmployeeCode, r.Name, r.WorkLocation, r.BranchId }),
         });
+    }
+
+    /// <summary>
+    /// Review 2, item 11: punches accepted under the geofence although the phone said it cannot detect a simulated
+    /// location (<c>mockDetection: "Unsupported"</c>), counted per employee (within the caller's data scope) over
+    /// <paramref name="from"/>..<paramref name="to"/> (default: the last 30 days). Android phones are refused that
+    /// answer, so these are iPhones, or old apps that send no platform header ("unknown"). Each count drills down to
+    /// the punches through the raw punch log.
+    /// </summary>
+    [HttpGet("geofence/mock-unsupported-report")]
+    [HasPermission("attendance.read")]
+    public async Task<IActionResult> GeofenceMockUnsupportedReport([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var end = (to ?? DateOnly.FromDateTime(DateTime.UtcNow)).AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var start = (from ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30))).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        if (end <= start || end - start > TimeSpan.FromDays(370))
+            return BadRequest(new { message = "Choose a date range of at most one year, with 'from' before 'to'." });
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+
+        var audits = await _db.AttendanceAuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EntityName == "AttendanceRawEvent"
+                        && a.Action == AttendanceService.MockDetectionUnavailableAction
+                        && a.CreatedAtUtc >= start && a.CreatedAtUtc < end)
+            .Select(a => new { a.EntityId, a.MetadataJson })
+            .ToListAsync(ct);
+        var platformByRaw = new Dictionary<Guid, string>();
+        foreach (var a in audits)
+            if (Guid.TryParse(a.EntityId, out var rawId))
+                platformByRaw[rawId] = PlatformOf(a.MetadataJson);
+        var rawIds = platformByRaw.Keys.ToList();
+        var punches = rawIds.Count == 0 ? [] : await _db.AttendanceRawEvents.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && rawIds.Contains(r.Id) && r.EmployeeId != null)
+            .Select(r => new { r.Id, EmployeeId = r.EmployeeId!.Value, r.PunchTimestampUtc })
+            .ToListAsync(ct);
+        punches = punches.Where(p => scope.CanAccessEmployee(p.EmployeeId)).ToList();
+        var employeeIds = punches.Select(p => p.EmployeeId).Distinct().ToList();
+        var names = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
+            .ToDictionaryAsync(e => e.Id, ct);
+        var rows = punches
+            .GroupBy(p => p.EmployeeId)
+            .Select(g => new
+            {
+                employeeId = g.Key,
+                employeeCode = names.TryGetValue(g.Key, out var n) ? n.EmployeeCode : string.Empty,
+                name = names.TryGetValue(g.Key, out var n2) ? n2.FullName : string.Empty,
+                punches = g.Count(),
+                iosPunches = g.Count(p => platformByRaw[p.Id] == ClientPlatform.Ios),
+                unknownPlatformPunches = g.Count(p => platformByRaw[p.Id] != ClientPlatform.Ios),
+                lastPunchAtUtc = g.Max(p => p.PunchTimestampUtc),
+            })
+            .OrderByDescending(r => r.punches).ThenBy(r => r.employeeCode)
+            .ToList();
+        return Ok(new
+        {
+            from = DateOnly.FromDateTime(start),
+            to = DateOnly.FromDateTime(end.AddDays(-1)),
+            count = rows.Count,
+            totalPunches = rows.Sum(r => r.punches),
+            definition = "Punches accepted under the geofence while the phone said it cannot detect a simulated location "
+                         + "(mockDetection \"Unsupported\"). Android phones are refused that answer, so these come from iPhones, "
+                         + "or from an old app that sends no platform header (counted as unknown platform).",
+            employees = rows,
+        });
+    }
+
+    private static string PlatformOf(string? metadataJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(metadataJson) ? "{}" : metadataJson);
+            return doc.RootElement.TryGetProperty("clientPlatform", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String
+                ? p.GetString() ?? "unknown" : "unknown";
+        }
+        catch (System.Text.Json.JsonException) { return "unknown"; }
     }
 
     [HttpPost("regularization")]
@@ -557,14 +646,21 @@ public class AttendanceController : ControllerBase
             if (!(await _scopeService.ResolveAsync(User, tenantId, ct)).CanAccessEmployee(employeeId)) return Forbid();
         }
 
-        // Selfie attendance v2: the server decides what was verified. The kiosk is its own channel (geofenced, never a
-        // selfie); a web/mobile punch for someone else is on-behalf (no selfie, no geofence: the location is the
-        // operator's); otherwise it is the employee's own punch, where the selfie requirement and the geofence apply.
-        var channel = routeChannel == PunchChannel.Kiosk ? PunchChannel.Kiosk
+        // Selfie attendance v2: the server decides what was verified.
+        //  - The kiosk channel (geofenced, never a selfie) is for a caller who HOLDS attendance.kiosk: a KioskOnly login
+        //    or an operator. Anyone else posting to punch/kiosk gets the route they would otherwise use (review 2,
+        //    item 1): their own punch is SelfMobile, with every mobile rule (mock detection, accuracy, the selfie
+        //    requirement). It is not refused: old app builds may still call the kiosk route for a self punch.
+        //  - A web/mobile punch for someone else is on-behalf (no selfie, no geofence: the location is the operator's).
+        //  - Otherwise it is the employee's own punch, where the selfie requirement and the geofence apply.
+        var channel = routeChannel == PunchChannel.Kiosk && User.HasPermission(KioskPunchPermission) ? PunchChannel.Kiosk
             : employeeId != self ? PunchChannel.OnBehalf
+            : routeChannel == PunchChannel.Kiosk ? PunchChannel.SelfMobile
             : routeChannel;
+        var platform = ClientPlatform.From(Request.Headers[ClientPlatform.HeaderName].ToString(), Request.Headers.UserAgent.ToString());
         var decision = await _verification.EvaluatePunchAsync(tenantId, employeeId, request.EvidenceId,
-            new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked, request.MockDetection), channel, ct);
+            new PunchLocation(request.Latitude, request.Longitude, request.AccuracyMeters, request.LocationMocked, request.MockDetection, platform),
+            channel, ct);
         if (decision.Refusal is { } refusal) return BadRequest(refusal.Body);
 
         try { return Ok(await _attendance.PunchAsync(tenantId, request with { EmployeeId = employeeId }, source, Context(), ct, decision.Verification)); }

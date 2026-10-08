@@ -27,6 +27,16 @@ internal interface IS3Primitives
     /// <summary>Whether the (current version of the) object exists. Used to verify a delete when versions cannot be listed.</summary>
     Task<bool> ExistsAsync(string bucket, string key, CancellationToken ct) =>
         throw new NotSupportedException("This S3 adapter cannot check whether an object exists.");
+
+    /// <summary>The region the bucket reports about itself (S3 GetBucketLocation). Throws when it cannot be read.</summary>
+    Task<string?> GetBucketRegionAsync(string bucket, CancellationToken ct) =>
+        throw new NotSupportedException("This S3 adapter cannot read a bucket's region.");
+
+    /// <summary>
+    /// The bucket's versioning status — <c>Off</c> (never enabled), <c>Enabled</c> or <c>Suspended</c> — or NULL when
+    /// the store does not answer GetBucketVersioning.
+    /// </summary>
+    Task<string?> GetBucketVersioningAsync(string bucket, CancellationToken ct) => Task.FromResult<string?>(null);
 }
 
 internal sealed class AwsS3Primitives(IAmazonS3 s3) : IS3Primitives
@@ -57,6 +67,29 @@ internal sealed class AwsS3Primitives(IAmazonS3 s3) : IS3Primitives
             return null;
         }
         return ids;
+    }
+
+    public async Task<string?> GetBucketRegionAsync(string bucket, CancellationToken ct)
+    {
+        var response = await s3.GetBucketLocationAsync(new GetBucketLocationRequest { BucketName = bucket }, ct);
+        var region = response.Location?.Value;
+        // S3 answers an empty LocationConstraint for us-east-1.
+        return string.IsNullOrWhiteSpace(region) ? "us-east-1" : region;
+    }
+
+    public async Task<string?> GetBucketVersioningAsync(string bucket, CancellationToken ct)
+    {
+        try
+        {
+            var response = await s3.GetBucketVersioningAsync(new GetBucketVersioningRequest { BucketName = bucket }, ct);
+            var status = response.VersioningConfig?.Status?.Value;
+            return string.IsNullOrWhiteSpace(status) ? "Off" : status;
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode is HttpStatusCode.NotImplemented or HttpStatusCode.MethodNotAllowed
+                                           || string.Equals(ex.ErrorCode, "NotImplemented", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
     }
 
     public Task DeleteVersionAsync(string bucket, string key, string versionId, CancellationToken ct) =>
@@ -177,8 +210,10 @@ public sealed class S3DocumentStorage : IDocumentStorage
 
     /// <summary>
     /// Deletes every version of the object and confirms it. On a store that can list versions: list, delete each
-    /// version by id, list again and fail if anything remains. On one that cannot: delete, then check that nothing is
-    /// there. A missing object is success; any other S3 error (a 403 included) propagates — never a false.
+    /// version by id, list again and fail if anything remains. On one that cannot, a plain delete only hides the object
+    /// behind a delete marker on a versioned bucket, so it is REFUSED unless the bucket confirms versioning is off
+    /// (GetBucketVersioning, review 2 item 4); then delete, and check that nothing is there. A missing object is
+    /// success; any other S3 error (a 403 included) propagates — never a false.
     /// </summary>
     public async Task DeleteStrictAsync(Guid tenantId, string storageUrl, CancellationToken ct = default)
     {
@@ -195,6 +230,11 @@ public sealed class S3DocumentStorage : IDocumentStorage
         }
         else
         {
+            var versioning = await _s3.GetBucketVersioningAsync(_opts.Bucket, ct);
+            if (!string.Equals(versioning, "Off", StringComparison.OrdinalIgnoreCase))
+                throw new DocumentDeletionNotConfirmedException(
+                    $"S3: cannot list the versions of {storageUrl}, and the bucket's versioning is "
+                    + $"{(versioning is null ? "not reported" : versioning)}; a plain delete would leave old versions behind.");
             await IgnoreNotFound(() => _s3.DeleteAsync(_opts.Bucket, storageUrl, ct));
             if (await _s3.ExistsAsync(_opts.Bucket, storageUrl, ct))
                 throw new DocumentDeletionNotConfirmedException($"S3: {storageUrl} is still present after delete.");

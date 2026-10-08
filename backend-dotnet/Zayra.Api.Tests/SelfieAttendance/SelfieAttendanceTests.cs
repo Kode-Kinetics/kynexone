@@ -100,7 +100,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         Assert.True(enabled.IsEnabled);
         // The server stamped the actor, the time and where storage really is.
         Assert.Contains($"\"confirmedBy\":\"{ownerId}\"", enabled.ConfigJson);
-        Assert.Contains("\"storageLocation\":\"s3.ksa-region.example.test\"", enabled.ConfigJson);
+        Assert.Contains($"\"storageLocation\":\"{SelfieWorld.ResidentKsaLocation}\"", enabled.ConfigJson);
         Assert.Empty(SelfieAttendanceConfig.MissingSignOffs(enabled.ConfigJson));
         var audit = await db.AdminAuditLogs.SingleAsync(a => a.EntityType == "FeatureFlag");
         Assert.Equal("FeatureEnabled", audit.Action);

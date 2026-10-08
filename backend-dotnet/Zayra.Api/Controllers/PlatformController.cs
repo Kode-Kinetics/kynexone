@@ -1132,11 +1132,13 @@ public class PlatformController : ControllerBase
             effectiveConfig ??= flag?.ConfigJson;
             if (req.IsEnabled)
             {
-                if (await SelfieEnableRefusalAsync(effectiveConfig, ct) is { } refusal) return refusal;
-                // The server stamps who enabled it, when, who confirmed residency and where storage really is; the
-                // request cannot supply any of those.
+                var (refusal, verdict) = await SelfieEnableRefusalAsync(effectiveConfig, ct);
+                if (refusal is not null) return refusal;
+                // The server stamps who enabled it, when, who confirmed residency and where storage really is (the
+                // configured endpoint, the bucket and the region the bucket reports); the request cannot supply any of
+                // those. Every policy read compares the stamp with storage now: if storage moves, the feature is off.
                 effectiveConfig = SelfieAttendanceConfig.StampServerFields(effectiveConfig, GetPlatformUserId()!.Value,
-                    PlatformActorEmail(), DateTime.UtcNow, SelfieResidency().ActualLocation);
+                    PlatformActorEmail(), DateTime.UtcNow, verdict!.Location);
             }
         }
         else if (featureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } problems)
@@ -1186,41 +1188,42 @@ public class PlatformController : ControllerBase
     /// <c>DPIA-YYYY-NNN</c> format, the sign-off date neither in the future nor before 2026-01-01, region KSA. Review
     /// item 2: this deploy's storage must be on the KSA residency allow-list.
     /// </summary>
-    private async Task<IActionResult?> SelfieEnableRefusalAsync(string? config, CancellationToken ct)
+    private async Task<(IActionResult? Refusal, StorageResidencyVerdict? Verdict)> SelfieEnableRefusalAsync(string? config, CancellationToken ct)
     {
         if (!string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
             || GetPlatformUserId() is null)
-            return StatusCode(StatusCodes.Status403Forbidden, new
+            return (StatusCode(StatusCodes.Status403Forbidden, new
             {
                 code = "selfie_owner_only",
                 message = "Only a platform Owner, signed in with a named account, can switch selfie attendance on. "
                           + "An Admin can switch it off.",
-            });
+            }), null);
 
         var missing = SelfieAttendanceConfig.RequestProblems(config, DateTime.UtcNow).ToList();
         if (!missing.Contains("dpia.signedOffBy") && SelfieAttendanceConfig.SignedOffBy(config) is Guid signer
             && !await _db.PlatformUsers.AsNoTracking().AnyAsync(u => u.Id == signer, ct))
             missing.Add("dpia.signedOffBy");
         if (missing.Count > 0)
-            return UnprocessableEntity(new
+            return (UnprocessableEntity(new
             {
                 code = "selfie_signoff_missing",
                 message = "Selfie attendance cannot be switched on until the DPIA sign-off is recorded: dpia.signedOffBy "
                           + "must be the id of an existing platform user, dpia.reference must look like DPIA-2026-007, "
                           + "dpia.signedOffAtUtc must be a date from 2026-01-01 up to now, and dataResidency.region must be KSA.",
                 missing,
-            });
+            }), null);
 
-        var residency = SelfieResidency().Check(SelfieAttendanceConfig.RequiredRegion);
+        var residency = await SelfieResidency().CheckAsync(SelfieAttendanceConfig.RequiredRegion, ct);
         if (!residency.Resident)
-            return UnprocessableEntity(new
+            return (UnprocessableEntity(new
             {
                 code = "selfie_residency_unverified",
                 message = "Selfie attendance cannot be switched on: " + residency.Reason
-                          + " An operator must point storage at an approved KSA bucket and list it in Storage:ResidencyAllowList:KSA.",
+                          + " An operator must point storage at an approved KSA bucket and list both its endpoint and the region the bucket reports in Storage:ResidencyAllowList:KSA.",
                 storageLocation = residency.ActualLocation,
-            });
-        return null;
+                bucketRegion = residency.BucketRegion,
+            }), null);
+        return (null, residency);
     }
 
     /// <summary>This deploy's storage residency (DI); unconfigured, so nothing is resident, when none is registered.</summary>

@@ -52,26 +52,27 @@ public class SelfieReviewFixesTests : PlatformTestBase
     }
 
     [Fact]
-    public void Item2_TheActualLocation_IsWhatStorageConnectsTo_AndOnlyAListedOneIsResident()
+    public async Task Item2_TheActualLocation_IsWhatStorageConnectsTo_AndOnlyAListedOneIsResident()
     {
-        static StorageResidency Of(string provider, string endpoint, string region, params string[] allowed) => new(new StorageOptions
+        const string ksa = SelfieWorld.KsaBucketRegion;
+        static StorageResidency Of(string provider, string endpoint, string region, string? bucketRegion, params string[] allowed) => new(new StorageOptions
         {
-            Provider = provider, Endpoint = endpoint, Region = region,
+            Provider = provider, Endpoint = endpoint, Region = region, Bucket = "b",
             ResidencyAllowList = new(StringComparer.OrdinalIgnoreCase) { ["KSA"] = allowed },
-        });
+        }, _ => Task.FromResult(bucketRegion));
 
-        Assert.True(Of("s3", "", "me-central-1", "me-central-1").Check("KSA").Resident);
+        Assert.True((await Of("s3", "", ksa, ksa, ksa).CheckAsync("KSA")).Resident);
         // The default region is us-east-1 (what the S3 client really uses for "auto" without an endpoint).
-        Assert.Equal("us-east-1", Of("s3", "", "auto", "me-central-1").ActualLocation);
-        Assert.False(Of("s3", "", "auto", "me-central-1").Check("KSA").Resident);
+        Assert.Equal("us-east-1", Of("s3", "", "auto", ksa, ksa).ActualLocation);
+        Assert.False((await Of("s3", "", "auto", ksa, ksa).CheckAsync("KSA")).Resident);
         // With an endpoint, the endpoint decides; a KSA-looking region name only signs requests.
-        var b2 = Of("s3", "https://s3.us-east-005.backblazeb2.com", "me-central-1", "me-central-1");
+        var b2 = Of("s3", "https://s3.us-east-005.backblazeb2.com", ksa, ksa, ksa);
         Assert.Equal("s3.us-east-005.backblazeb2.com", b2.ActualLocation);
-        Assert.False(b2.Check("KSA").Resident);
-        Assert.True(Of("s3", "https://S3.KSA.example.com/", "auto", "s3.ksa.example.com").Check("KSA").Resident);
+        Assert.False((await b2.CheckAsync("KSA")).Resident);
+        Assert.True((await Of("s3", "https://S3.KSA.example.com/", "auto", ksa, "s3.ksa.example.com", ksa).CheckAsync("KSA")).Resident);
         // Empty by default.
-        Assert.False(StorageResidency.Unconfigured.Check("KSA").Resident);
-        Assert.False(Of("local", "", "auto").Check("KSA").Resident);
+        Assert.False((await StorageResidency.Unconfigured.CheckAsync("KSA")).Resident);
+        Assert.False((await Of("local", "", "auto", null).CheckAsync("KSA")).Resident);
     }
 
     [Fact]
@@ -102,7 +103,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
         var forged = JsonSerializer.Serialize(new
         {
             dpia = new { signedOffBy = ownerId.ToString(), signedOffAtUtc = "2026-09-30T08:00:00Z", reference = "DPIA-2026-019" },
-            dataResidency = new { region = "KSA", confirmedBy = Guid.NewGuid().ToString(), confirmedAtUtc = "2026-02-01T00:00:00Z", storageLocation = "me-central-1" },
+            dataResidency = new { region = "KSA", confirmedBy = Guid.NewGuid().ToString(), confirmedAtUtc = "2026-02-01T00:00:00Z", storageLocation = "forged-location" },
             enabledBy = Guid.NewGuid().ToString(), enabledAtUtc = "2026-02-01T00:00:00Z",
         });
         var before = DateTime.UtcNow.AddSeconds(-1);
@@ -113,7 +114,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
         Assert.Equal(ownerId.ToString(), stored.GetProperty("dataResidency").GetProperty("confirmedBy").GetString());
         Assert.Equal(ownerId.ToString(), stored.GetProperty("enabledBy").GetString());
         Assert.True(stored.GetProperty("enabledAtUtc").GetDateTime().ToUniversalTime() >= before);
-        Assert.Equal("s3.ksa-region.example.test", stored.GetProperty("dataResidency").GetProperty("storageLocation").GetString());
+        Assert.Equal(SelfieWorld.ResidentKsaLocation, stored.GetProperty("dataResidency").GetProperty("storageLocation").GetString());
         Assert.Equal("DPIA-2026-019", stored.GetProperty("dpia").GetProperty("reference").GetString());
     }
 
@@ -164,7 +165,8 @@ public class SelfieReviewFixesTests : PlatformTestBase
     {
         var tenant = Guid.NewGuid();
         var key = $"{tenant:N}/attendance-evidence/b.jpg";
-        var s3 = new VersionedS3 { CanListVersions = false, DeleteDoesNothing = true };
+        // Review 2, item 4: this path is allowed only on a bucket that confirms versioning is off.
+        var s3 = new VersionedS3 { CanListVersions = false, DeleteDoesNothing = true, Versioning = "Off" };
         s3.Versions[key] = ["v1"];
 
         await Assert.ThrowsAsync<DocumentDeletionNotConfirmedException>(() => S3(s3).DeleteStrictAsync(tenant, key));
@@ -172,6 +174,24 @@ public class SelfieReviewFixesTests : PlatformTestBase
         s3.DeleteDoesNothing = false;
         await S3(s3).DeleteStrictAsync(tenant, key);
         Assert.Empty(s3.Versions[key]);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Enabled")]
+    [InlineData("Suspended")]
+    public async Task Review2Item4_StrictDelete_WithoutVersionListing_IsRefusedUnlessVersioningIsConfirmedOff(string? versioning)
+    {
+        var tenant = Guid.NewGuid();
+        var key = $"{tenant:N}/attendance-evidence/v.jpg";
+        var s3 = new VersionedS3 { CanListVersions = false, Versioning = versioning };
+        s3.Versions[key] = ["v1"];
+
+        await Assert.ThrowsAsync<DocumentDeletionNotConfirmedException>(() => S3(s3).DeleteStrictAsync(tenant, key));
+
+        // Refused BEFORE any plain delete: on a versioned bucket that would only hide the object behind a marker.
+        Assert.Equal(0, s3.PlainDeletes);
+        Assert.Single(s3.Versions[key]);
     }
 
     [Fact]
@@ -210,13 +230,17 @@ public class SelfieReviewFixesTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Item3_EveryAttemptCounts_EvenOnesThatFailed()
+    public async Task Item3_EveryAttemptThatReachedStorageCounts_EvenOnesThatFailed()
     {
+        // Review 2, item 7 narrowed review 1's rule: an attempt refused before storage (bad input) no longer counts,
+        // but one that reached storage does, even when storage failed it.
         var w = await SelfieWorld.CreateAsync();
         await SelfieAttendanceTests.EnableSelfieAsync(w);
         var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
+        w.Storage.FailPuts = true;
         for (var i = 0; i < 10; i++)
-            Assert.Equal("selfie_invalid", SelfieWorld.CodeOf(await w.UploadAsync(user, "junk"u8.ToArray())));
+            Assert.Equal("selfie_storage_unavailable", SelfieWorld.CodeOf(await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg())));
+        w.Storage.FailPuts = false;
 
         var eleventh = await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg());
 
@@ -250,20 +274,46 @@ public class SelfieReviewFixesTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Item3_AHugeCanvasPng_IsRefusedFromItsHeader_AndSoIsADecodable20MegapixelOne()
+    public async Task Item3_AHugeCanvasJpeg_IsRefusedFromItsHeader_AndSoIsADecodable20MegapixelOne()
     {
+        // Review 2 made selfies JPEG-only (a PNG is refused as selfie_invalid before any decode); the canvas cap still
+        // guards the JPEG path.
         var w = await SelfieWorld.CreateAsync();
         await SelfieAttendanceTests.EnableSelfieAsync(w);
         var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
 
-        // 30,000 × 30,000 declared in a 100-byte file: never decoded (3.6 GB of pixels if it were).
-        var bomb = await w.UploadAsync(user, HugeCanvasPng(30_000, 30_000), "image/png", "s.png");
+        // 30,000 × 30,000 declared in a tiny file: never decoded (3.6 GB of pixels if it were).
+        var bomb = await w.UploadAsync(user, HugeCanvasJpeg(30_000, 30_000));
         Assert.Equal("selfie_too_large", SelfieWorld.CodeOf(bomb));
         Assert.Contains("16 megapixels", SelfieWorld.MessageOf(bomb));
 
-        var twentyMp = await w.UploadAsync(user, SolidPng(5000, 4000), "image/png", "s.png");
+        var twentyMp = await w.UploadAsync(user, SolidJpeg(5000, 4000));
         Assert.Equal("selfie_too_large", SelfieWorld.CodeOf(twentyMp));
         Assert.Empty(w.Storage.Objects);
+    }
+
+    /// <summary>A real 16×16 JPEG whose SOF header is rewritten to declare <paramref name="width"/>×<paramref name="height"/>.</summary>
+    internal static byte[] HugeCanvasJpeg(int width, int height)
+    {
+        var bytes = SolidJpeg(16, 16);
+        for (var i = 2; i < bytes.Length - 9; i++)
+        {
+            // SOF0..SOF2 marker: FF C0/C1/C2, length (2), precision (1), height (2), width (2).
+            if (bytes[i] != 0xFF || bytes[i + 1] is not (0xC0 or 0xC1 or 0xC2)) continue;
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(i + 5), (ushort)height);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(i + 7), (ushort)width);
+            return bytes;
+        }
+        throw new InvalidOperationException("No SOF marker in the encoded JPEG.");
+    }
+
+    internal static byte[] SolidJpeg(int width, int height)
+    {
+        using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
+        bitmap.Erase(new SKColor(200, 160, 140));
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+        return data.ToArray();
     }
 
     [Fact]
@@ -290,7 +340,10 @@ public class SelfieReviewFixesTests : PlatformTestBase
         var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
         w.Storage.FailPuts = true;
 
-        await Assert.ThrowsAsync<IOException>(() => w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg()));
+        // Review 2, item 7: a storage failure is answered 503 (the server's fault: the app punches without a selfie).
+        var failed = await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg());
+        Assert.Equal(503, Assert.IsAssignableFrom<ObjectResult>(failed).StatusCode);
+        Assert.Equal("selfie_storage_unavailable", SelfieWorld.CodeOf(failed));
 
         var pending = await w.Db.AttendanceEvidence.AsNoTracking().SingleAsync();
         Assert.Equal(AttendanceEvidencePurgeStates.Pending, pending.PurgeState);
@@ -525,6 +578,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
 
         public Task DeleteAsync(string bucket, string key, CancellationToken ct)
         {
+            PlainDeletes++;
             if (DeleteError is { } status) throw new AmazonS3Exception("error") { StatusCode = status };
             // Without a version id: unversioned stores remove it; a versioned bucket only adds a delete marker.
             if (!CanListVersions && !DeleteDoesNothing && Versions.TryGetValue(key, out var v)) v.Clear();
@@ -547,6 +601,12 @@ public class SelfieReviewFixesTests : PlatformTestBase
 
         public Task<bool> ExistsAsync(string bucket, string key, CancellationToken ct) =>
             Task.FromResult(Versions.TryGetValue(key, out var v) && v.Count > 0);
+
+        /// <summary>What GetBucketVersioning answers; null = the store does not support it.</summary>
+        public string? Versioning { get; set; }
+        public int PlainDeletes { get; private set; }
+
+        public Task<string?> GetBucketVersioningAsync(string bucket, CancellationToken ct) => Task.FromResult(Versioning);
     }
 }
 
@@ -557,12 +617,12 @@ public sealed class SelfieCompositionTests : IClassFixture<SelfieHttpPipelineFix
     public SelfieCompositionTests(SelfieHttpPipelineFixture fx) => _fx = fx;
 
     [Fact]
-    public void Program_BindsTheResidencyAllowList_AndRegistersOneImageGatePerProcess()
+    public async Task Program_BindsTheResidencyAllowList_AndRegistersOneImageGatePerProcess()
     {
         var services = _fx.Host.Services;
         var residency = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<StorageResidency>(services);
-        Assert.True(residency.Check("KSA").Resident); // Storage:ResidencyAllowList:KSA:0 = local, from configuration
-        Assert.False(residency.Check("UAE").Resident);
+        Assert.True((await residency.CheckAsync("KSA")).Resident); // Storage:ResidencyAllowList:KSA:0 = local, from configuration
+        Assert.False((await residency.CheckAsync("UAE")).Resident);
 
         var gate = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<SelfieImageGate>(services);
         Assert.Same(gate, Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<SelfieImageGate>(services));

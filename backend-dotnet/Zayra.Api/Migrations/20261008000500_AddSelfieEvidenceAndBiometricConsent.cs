@@ -96,6 +96,12 @@ namespace Zayra.Api.Migrations
                 .Annotation("Npgsql:IndexInclude", new[] { "used_at_utc" });
 
             migrationBuilder.CreateIndex(
+                name: "ix_attendance_evidence__used_purge_due",
+                table: "attendance_evidence",
+                columns: new[] { "tenant_id", "used_at_utc" },
+                filter: "purge_state = 'Active' AND used_at_utc IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_attendance_evidence_employee_id",
                 table: "attendance_evidence",
                 column: "employee_id");
@@ -131,13 +137,15 @@ namespace Zayra.Api.Migrations
         /// <summary>Table and index comments (docs/schema: every table names its owner and retention, every index its query).</summary>
         public const string Comments = """
             COMMENT ON TABLE attendance_evidence IS
-                'One selfie an employee uploaded for an attendance punch: the envelope (owner, SHA-256, single-use evidence id, expiry, the punch that used it) of a re-encoded EXIF-free JPEG in document storage. Inserted Pending before the upload (every attempt counts toward the hourly limit), Active once the file is stored. No face matching. Blob purged 90 days after the punch''s payroll month locks, at work date + 120 days without a lock, 24 hours after an unused upload, 1 hour after an unfinished one, at once for unused selfies when consent is withdrawn, and before tenant erasure; the row and its sha256 are kept. @tier:E @owner:HR @retention:E';
+                'One selfie an employee uploaded for an attendance punch: the envelope (owner, SHA-256, single-use evidence id, expiry, the punch that used it) of a re-encoded EXIF-free JPEG in document storage. Inserted Pending before the upload, Active once the file is stored; an attempt refused before anything reached storage (bad input, busy) deletes its row, so only attempts that reached storage count toward the hourly limit. No face matching. Blob purged 90 days after the punch''s payroll month locks, at work date + 120 days without a lock, 24 hours after an unused upload (at once when the employee has no open consent), 1 hour after an unfinished one, at once for unused selfies when consent is withdrawn, and before tenant erasure; the purge runs every 15 minutes; the row and its sha256 are kept. @tier:E @owner:HR @retention:E';
             COMMENT ON TABLE biometric_consents IS
                 'An employee''s consent to selfie attendance per policy version, with the channel it was given on and when it was withdrawn. Without open consent the employee punches without a selfie. @tier:E @owner:HR @retention:employment+statutory';
             COMMENT ON INDEX ix_attendance_evidence__employee_created IS
-                'Upload rate limit: COUNT(*) of one employee''s attendance_evidence rows (every attempt, any purge_state) with created_at_utc in the last hour, under the per-employee advisory lock (AttendanceEvidenceController.ReserveAttemptAsync).';
+                'Upload rate limit: COUNT(*) of one employee''s attendance_evidence rows (every attempt that reached storage, any purge_state) with created_at_utc in the last hour, under the per-employee advisory lock (AttendanceEvidenceController.ReserveAttemptAsync).';
             COMMENT ON INDEX ix_attendance_evidence__purge_due IS
-                'Selfie purge: SELECT DISTINCT tenant_id over rows not yet purged that can be due (SelfieEvidencePurgeScheduler.EnqueueDueAsync), and one tenant''s due rows oldest first (SelfieEvidencePurger.FindDueAsync). Partial on purge_state IN (Pending, Active) so purged rows never bloat it; INCLUDE used_at_utc answers the due predicate from the index.';
+                'Selfie purge: SELECT DISTINCT tenant_id over rows not yet purged that can be due (SelfieEvidencePurgeScheduler.EnqueueDueAsync), and one tenant''s Pending rows past an hour and unused rows past 24 hours, oldest first (SelfieEvidencePurger.FindDueItemsAsync, queries a and b). Partial on purge_state IN (Pending, Active) so purged rows never bloat it; INCLUDE used_at_utc answers the due predicate from the index.';
+            COMMENT ON INDEX ix_attendance_evidence__used_purge_due IS
+                'Selfie purge, used selfies: one tenant''s Active rows a punch used, ordered by used_at_utc, past the 120-day fallback or inside one payroll month locked 90+ days ago (SelfieEvidencePurger.FindDueItemsAsync, queries c1 and c2), each with its own limit so they never starve the 1-hour and 24-hour deletions. Partial on Active and used.';
             COMMENT ON INDEX ux_attendance_evidence__used_by_raw_event IS
                 'One selfie per punch, and punch -> selfie lookup by attendance_raw_events.id. Partial: unused rows carry NULL.';
             COMMENT ON INDEX "IX_attendance_evidence_employee_id" IS

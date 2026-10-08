@@ -3474,6 +3474,10 @@ namespace Zayra.Api.Migrations
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("TenantId", "CreatedAtUtc"), new[] { "UsedAtUtc" });
 
+                    b.HasIndex("TenantId", "UsedAtUtc")
+                        .HasDatabaseName("ix_attendance_evidence__used_purge_due")
+                        .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
+
                     b.HasIndex("TenantId", "EmployeeId", "CreatedAtUtc")
                         .HasDatabaseName("ix_attendance_evidence__employee_created");
 

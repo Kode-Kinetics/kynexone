@@ -166,12 +166,19 @@ public static class SelfieAttendanceModelConfiguration
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__employee_created");
             // Serves the purge: the scheduler's SELECT DISTINCT tenant_id over not-yet-purged rows that can be due, and
-            // one tenant's due rows oldest first. Partial (purged rows never enter it), so no constant leading column;
-            // used_at_utc is included so the due predicate is answered from the index alone.
+            // one tenant's Pending rows past an hour and unused rows past 24 hours, oldest first. Partial (purged rows
+            // never enter it), so no constant leading column; used_at_utc is included so the due predicate is answered
+            // from the index alone.
             entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_attendance_evidence__purge_due")
                 .HasFilter("purge_state IN ('Pending','Active')")
                 .IncludeProperties(x => x.UsedAtUtc);
+            // Serves the purge's USED-selfie queries (review 2, item 2): one tenant's used, not-yet-purged rows ordered by
+            // used_at_utc, past the 120-day fallback or inside one locked payroll month. Its own index so those rows can
+            // be read in due order without sorting every unpurged row of the tenant.
+            entity.HasIndex(x => new { x.TenantId, x.UsedAtUtc })
+                .HasDatabaseName("ix_attendance_evidence__used_purge_due")
+                .HasFilter("purge_state = 'Active' AND used_at_utc IS NOT NULL");
             // One evidence row per punch; serves punch -> selfie lookups and backs the FK.
             entity.HasIndex(x => x.UsedByRawEventId)
                 .HasDatabaseName("ux_attendance_evidence__used_by_raw_event")

@@ -69,12 +69,29 @@ public sealed class SelfieHttpPipelineTests : IClassFixture<SelfieHttpPipelineFi
     }
 
     [Fact]
-    public async Task AHugeCanvasPng_IsRefusedAsTooLarge_NotDecoded()
+    public async Task AHugeCanvasJpeg_IsRefusedAsTooLarge_NotDecoded_AndAPngIsRefusedAsNotAJpeg()
     {
-        var response = await _fx.UploadAsync(_fx.UploaderToken, SelfieReviewFixesTestsPng.HugeCanvas(30_000, 30_000), "image/png", "s.png");
-
+        var response = await _fx.UploadAsync(_fx.UploaderToken, SelfieReviewFixesTests.HugeCanvasJpeg(30_000, 30_000));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("selfie_too_large", await response.Content.ReadAsStringAsync());
+
+        // Review 2, item 3: JPEG only, by magic bytes — a PNG (which decodes at full size) is refused whatever its label.
+        var png = await _fx.UploadAsync(_fx.UploaderToken, SelfieReviewFixesTestsPng.HugeCanvas(30_000, 30_000), "image/jpeg", "s.jpg");
+        Assert.Equal(HttpStatusCode.BadRequest, png.StatusCode);
+        Assert.Contains("selfie_invalid", await png.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Review2_TheSelfieView_IsRefusedWithoutTheEvidenceViewPermission_EvenWithTheFlagOn()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/attendance/evidence/{Guid.NewGuid()}/selfie");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _fx.UploaderToken);
+
+        var response = await _fx.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        // Nothing of the image path is reached: no audit row, no body beyond the refusal.
+        Assert.DoesNotContain("image/jpeg", response.Content.Headers.ContentType?.ToString() ?? string.Empty);
     }
 
     [Fact]
@@ -263,7 +280,7 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
         await new AuthSeeder(db).EnsureTenantRolesAsync(tenant.Id);
         if (selfieOn)
         {
-            db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenant.Id, FeatureKey = "selfie_attendance", IsEnabled = true, ConfigJson = SelfieWorld.SignedOffConfig() });
+            db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenant.Id, FeatureKey = "selfie_attendance", IsEnabled = true, ConfigJson = SelfieWorld.SignedOffConfig(storageLocation: SelfieWorld.LocalLocation) });
             await db.SaveChangesAsync();
         }
         return tenant.Id;
