@@ -649,12 +649,17 @@ public class AttendanceService : IAttendanceService
                 foreach (var date in affectedDates.Order())
                 {
                     if (await IsLocked(tenantId, date, ct)) continue;
+                    var done = false;
                     await AttendanceDailyRecordLock.RunAsync(_db, tenantId, emp.Id, date, async () =>
                     {
+                        done = false;
+                        if (await IsLocked(tenantId, date, ct)) return; // re-checked inside the day's lock
                         await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
                         await _db.SaveChangesAsync(ct);
+                        done = true;
                     }, ct);
                     _db.ChangeTracker.Clear();
+                    if (!done) continue;
                     employeeDays.Add(date);
                     processedDays++;
                 }
@@ -729,8 +734,9 @@ public class AttendanceService : IAttendanceService
         await ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct);
 
         // The change tracker is cleared after each committed employee-day — it would otherwise keep every day's rows and
-        // make a long run quadratic — unless the caller handed in unsaved changes of its own (then it is left alone).
-        var clearAfterEachDay = !_db.ChangeTracker.HasChanges();
+        // make a long run quadratic. So a run must start clean: unsaved changes would be saved by the first day, or lost.
+        if (_db.ChangeTracker.HasChanges())
+            throw new InvalidOperationException("Attendance processing must start with no unsaved changes; save or discard them first.");
         var employees = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted
             && x.Status == EmployeeStatuses.Active
             && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
@@ -751,17 +757,23 @@ public class AttendanceService : IAttendanceService
             for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
             {
                 var day = date;
+                var done = false;
                 await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
                 {
+                    done = false;
+                    // Re-checked inside the day's lock: a payroll period locked while the run was going is not rewritten.
+                    if (await IsLocked(tenantId, day, ct)) return;
                     await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
+                    done = true;
                 }, ct);
-                if (clearAfterEachDay) _db.ChangeTracker.Clear();
+                _db.ChangeTracker.Clear();
+                if (!done) continue;
                 processed++;
                 days++;
             }
             await AuditProcessedChunkAsync(tenantId, context, employee.Id, request.FromDate, request.ToDate, days, "process", ct);
-            if (clearAfterEachDay) _db.ChangeTracker.Clear();
+            _db.ChangeTracker.Clear();
         }
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}", ct);
         await _db.SaveChangesAsync(ct);
@@ -820,12 +832,17 @@ public class AttendanceService : IAttendanceService
         for (var date = fromDate; date <= toDate; date = date.AddDays(1))
         {
             var day = date;
+            var done = false;
             await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
             {
+                done = false;
+                // Re-checked inside the day's lock: a payroll period locked while the job was going is not rewritten.
+                if (await IsLocked(tenantId, day, ct)) return;
                 await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                 await _db.SaveChangesAsync(ct);
+                done = true;
             }, ct);
-            days++;
+            if (done) days++;
         }
         return days;
     }
@@ -908,6 +925,8 @@ public class AttendanceService : IAttendanceService
         if (employee is null)
             throw new InvalidOperationException("Employee not found.");
 
+        await EnsureCorrectionWithinWorkDayAsync(tenantId, request.EmployeeId, request.WorkDate, request.RequestedInUtc, request.RequestedOutUtc, ct);
+
         var hasPending = await _db.AttendanceRegularizationRequests
             .AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
                 && x.WorkDate == request.WorkDate && x.Status == "Submitted", ct);
@@ -963,21 +982,30 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Attendance period is payroll locked.");
         var beforeStatus = reg.Status;
         var activeLevel = reg.Status == "Submitted" ? "Manager" : "HR";
-        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == activeLevel, ct);
-        if (approval is not null)
-        {
-            approval.Decision = "Approved";
-            approval.Comments = Clean(request.Comments);
-            approval.DecidedAtUtc = DateTime.UtcNow;
-            approval.DecidedByUserId = context.UserId;
-        }
 
         if (activeLevel == "Manager")
         {
-            reg.Status = "PendingHRApproval";
-            await Audit(tenantId, context, "attendance.regularization.manager_approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
-                JsonSerializer.Serialize(new { before = beforeStatus, after = reg.Status }), ct);
-            await _db.SaveChangesAsync(ct);
+            // Under the employee-day lock, like every transition: a cancel or a reject racing it cannot be overwritten.
+            reg = await RunRegularizationTransitionAsync(tenantId, id, async () =>
+            {
+                var r = await ReloadForTransitionAsync(tenantId, id, beforeStatus, ct);
+                if (await IsLocked(tenantId, r.WorkDate, ct))
+                    throw new InvalidOperationException("Attendance period is payroll locked.");
+                var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == "Manager", ct);
+                if (approval is not null)
+                {
+                    approval.Decision = "Approved";
+                    approval.Comments = Clean(request.Comments);
+                    approval.DecidedAtUtc = DateTime.UtcNow;
+                    approval.DecidedByUserId = context.UserId;
+                }
+                r.Status = "PendingHRApproval";
+                r.DecisionVersion++;
+                await Audit(tenantId, context, "attendance.regularization.manager_approved", "AttendanceRegularizationRequest", r.Id.ToString(),
+                    JsonSerializer.Serialize(new { before = beforeStatus, after = r.Status }), ct);
+                await _db.SaveChangesAsync(ct);
+                return r;
+            }, ct);
             await _notifications.NotifyAsync(tenantId, null,
                 "Correction Request Pending HR",
                 $"Attendance correction for {reg.WorkDate:yyyy-MM-dd} is pending HR approval.",
@@ -985,9 +1013,7 @@ public class AttendanceService : IAttendanceService
             return reg;
         }
 
-        // HR's final approval moves pay: it is ONE transaction under the employee-day lock (ApplyRegularizationAsync). The
-        // reads above were checks only; everything is re-read and written inside, so a retried attempt starts clean.
-        _db.ChangeTracker.Clear();
+        // HR's final approval moves pay: it is ONE transaction under the employee-day lock (ApplyRegularizationAsync).
         reg = await ApplyRegularizationAsync(tenantId, id, request, beforeStatus, context, ct);
         await _notifications.NotifyAsync(tenantId, reg.RequestedByUserId,
             "Correction Request Approved",
@@ -1003,20 +1029,27 @@ public class AttendanceService : IAttendanceService
         if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be rejected.");
         var beforeStatus = reg.Status;
-        reg.Status = "Rejected";
-        reg.DecidedAtUtc = DateTime.UtcNow;
         var activeLevel = beforeStatus == "Submitted" ? "Manager" : "HR";
-        var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == activeLevel, ct);
-        if (approval is not null)
+        // Under the employee-day lock, like every transition: it can no longer overwrite an approval that won the race.
+        reg = await RunRegularizationTransitionAsync(tenantId, id, async () =>
         {
-            approval.Decision = "Rejected";
-            approval.Comments = Clean(request.Comments);
-            approval.DecidedAtUtc = DateTime.UtcNow;
-            approval.DecidedByUserId = context.UserId;
-        }
-        await Audit(tenantId, context, "attendance.regularization.rejected", "AttendanceRegularizationRequest", reg.Id.ToString(),
-            JsonSerializer.Serialize(new { before = beforeStatus, after = "Rejected", reason = Clean(request.Comments) }), ct);
-        await _db.SaveChangesAsync(ct);
+            var r = await ReloadForTransitionAsync(tenantId, id, beforeStatus, ct);
+            r.Status = "Rejected";
+            r.DecidedAtUtc = DateTime.UtcNow;
+            r.DecisionVersion++;
+            var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == activeLevel, ct);
+            if (approval is not null)
+            {
+                approval.Decision = "Rejected";
+                approval.Comments = Clean(request.Comments);
+                approval.DecidedAtUtc = DateTime.UtcNow;
+                approval.DecidedByUserId = context.UserId;
+            }
+            await Audit(tenantId, context, "attendance.regularization.rejected", "AttendanceRegularizationRequest", r.Id.ToString(),
+                JsonSerializer.Serialize(new { before = beforeStatus, after = "Rejected", reason = Clean(request.Comments) }), ct);
+            await _db.SaveChangesAsync(ct);
+            return r;
+        }, ct);
         await _notifications.NotifyAsync(tenantId, reg.RequestedByUserId,
             "Correction Request Rejected",
             $"Your attendance correction for {reg.WorkDate:yyyy-MM-dd} has been rejected.",
@@ -1031,11 +1064,18 @@ public class AttendanceService : IAttendanceService
         if (reg.Status != "Submitted")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be cancelled.");
         var beforeStatus = reg.Status;
-        reg.Status = "Cancelled";
-        reg.DecidedAtUtc = DateTime.UtcNow;
-        await Audit(tenantId, context, "attendance.regularization.cancelled", "AttendanceRegularizationRequest", reg.Id.ToString(),
-            JsonSerializer.Serialize(new { before = beforeStatus, after = "Cancelled", reason }), ct);
-        await _db.SaveChangesAsync(ct);
+        // Under the employee-day lock, like every transition: a manager's approval racing it cannot be overwritten.
+        reg = await RunRegularizationTransitionAsync(tenantId, id, async () =>
+        {
+            var r = await ReloadForTransitionAsync(tenantId, id, beforeStatus, ct);
+            r.Status = "Cancelled";
+            r.DecidedAtUtc = DateTime.UtcNow;
+            r.DecisionVersion++;
+            await Audit(tenantId, context, "attendance.regularization.cancelled", "AttendanceRegularizationRequest", r.Id.ToString(),
+                JsonSerializer.Serialize(new { before = beforeStatus, after = "Cancelled", reason }), ct);
+            await _db.SaveChangesAsync(ct);
+            return r;
+        }, ct);
         await _notifications.NotifyAsync(tenantId, reg.RequestedByUserId,
             "Correction Request Cancelled",
             $"Attendance correction request for {reg.WorkDate:yyyy-MM-dd} has been cancelled.",
@@ -1123,25 +1163,12 @@ public class AttendanceService : IAttendanceService
 
     private async Task ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)
     {
-        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        // Resolve the employee's scheduled shift for this date and convert its local
-        // wall-clock start/end to UTC. Previously this hardcoded 09:00 *UTC* and ignored
-        // the assigned shift entirely — for a GCC tenant (Asia/Riyadh) 09:00 UTC = noon
-        // local, so every employee showed bogus late/early minutes.
-        var shift = await _db.ShiftAssignments.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employee.Id && a.AssignedDate == date)
-            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
-            .FirstOrDefaultAsync(ct);
-        var isOvernightShift = shift is not null && shift.EndTime <= shift.StartTime;
-        var startLocalBoundary = isOvernightShift
-            ? DateTime.SpecifyKind(date.ToDateTime(shift!.StartTime), DateTimeKind.Unspecified)
-            : DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
-        var endLocalBoundary = isOvernightShift
-            ? DateTime.SpecifyKind(date.AddDays(1).ToDateTime(shift!.EndTime), DateTimeKind.Unspecified)
-            : DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
-        var start = TimeZoneInfo.ConvertTimeToUtc(startLocalBoundary, tz);
-        var end = TimeZoneInfo.ConvertTimeToUtc(endLocalBoundary, tz);
+        // The work day's punch window (shift-aware), from the ONE helper the correction validation uses too.
+        var window = await WorkDayWindowAsync(tenantId, employee.Id, date, ct);
+        var tz = window.TimeZone;
+        var shift = window.Shift;
+        var start = window.StartUtc;
+        var end = window.EndUtc;
         var events = await _db.AttendanceRawEvents.Where(x => x.TenantId == tenantId
             && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
             .OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
@@ -1244,6 +1271,106 @@ public class AttendanceService : IAttendanceService
         await UpsertExceptions(tenantId, daily, ct);
     }
 
+
+    /// <summary>An employee's scheduled shift on one date (local wall-clock times; End &lt;= Start means overnight).</summary>
+    public sealed record WorkShift(TimeOnly StartTime, TimeOnly EndTime);
+
+    /// <summary>The UTC window [StartUtc, EndUtc) whose punches belong to one work date, the tenant's time zone, and the shift.</summary>
+    public sealed record WorkDayWindow(DateTime StartUtc, DateTime EndUtc, TimeZoneInfo TimeZone, WorkShift? Shift);
+
+    /// <summary>
+    /// The punches that belong to <paramref name="date"/>: the local calendar day [00:00, next 00:00), or for an overnight
+    /// shift [shift start on the date, shift end the next day), converted to UTC in the tenant's time zone. The one
+    /// definition shared by the day's recompute (<c>ProcessEmployeeDay</c>) and the correction validation, so a corrected
+    /// punch can only ever be accepted for the day whose recompute will count it.
+    /// <para>Previously the recompute hardcoded 09:00 *UTC* and ignored the assigned shift entirely — for a GCC tenant
+    /// (Asia/Riyadh) 09:00 UTC = noon local, so every employee showed bogus late/early minutes.</para>
+    /// </summary>
+    public async Task<WorkDayWindow> WorkDayWindowAsync(Guid tenantId, int employeeId, DateOnly date, CancellationToken ct)
+    {
+        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
+        var row = await _db.ShiftAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.AssignedDate == date)
+            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
+                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
+            .FirstOrDefaultAsync(ct);
+        var shift = row is null ? null : new WorkShift(row.StartTime, row.EndTime);
+        var isOvernightShift = shift is not null && shift.EndTime <= shift.StartTime;
+        var startLocalBoundary = isOvernightShift
+            ? DateTime.SpecifyKind(date.ToDateTime(shift!.StartTime), DateTimeKind.Unspecified)
+            : DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
+        var endLocalBoundary = isOvernightShift
+            ? DateTime.SpecifyKind(date.AddDays(1).ToDateTime(shift!.EndTime), DateTimeKind.Unspecified)
+            : DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
+        return new WorkDayWindow(TimeZoneInfo.ConvertTimeToUtc(startLocalBoundary, tz), TimeZoneInfo.ConvertTimeToUtc(endLocalBoundary, tz), tz, shift);
+    }
+
+    /// <summary>
+    /// Refuses corrected punch times outside <paramref name="workDate"/>'s window (<see cref="WorkDayWindowAsync"/>), with
+    /// the allowed window in the employee's local time. One correction is one work day: a punch outside it would be
+    /// counted on another day — which neither this request nor its lock covers.
+    /// </summary>
+    private async Task EnsureCorrectionWithinWorkDayAsync(Guid tenantId, int employeeId, DateOnly workDate, DateTime? inUtc, DateTime? outUtc, CancellationToken ct)
+    {
+        if (inUtc is null && outUtc is null) return;
+        var window = await WorkDayWindowAsync(tenantId, employeeId, workDate, ct);
+        static DateTime Utc(DateTime v) => v.Kind switch
+        {
+            DateTimeKind.Utc => v,
+            DateTimeKind.Local => v.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(v, DateTimeKind.Utc),
+        };
+        bool Outside(DateTime? t) => t is DateTime v && (Utc(v) < window.StartUtc || Utc(v) >= window.EndUtc);
+        if (!Outside(inUtc) && !Outside(outUtc)) return;
+        string Local(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(utc, window.TimeZone).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        throw new InvalidOperationException(
+            $"The corrected times must fall within the work day of {workDate:yyyy-MM-dd}: from {Local(window.StartUtc)} up to (not including) "
+            + $"{Local(window.EndUtc)}, local time ({window.TimeZone.Id}). For a punch on another day, raise a separate correction for that day.");
+    }
+
+    /// <summary>The plain answer when a correction was decided by someone else first.</summary>
+    public const string RegularizationConflictMessage = "This request was just decided by someone else. Refresh to see its status.";
+
+    /// <summary>
+    /// Runs one status transition of a correction under the employee-day lock (<see cref="AttendanceDailyRecordLock"/>),
+    /// so manager approve, HR approve, reject and cancel are serialised with each other and with the day's recompute.
+    /// The work re-reads the request inside the lock; <see cref="AttendanceRegularizationRequest.DecisionVersion"/> is the
+    /// database backstop. A lost race is <see cref="RegularizationConflictException"/> (409); a persistent transient
+    /// failure writes nothing and answers <see cref="ApprovalTransientFailureMessage"/>.
+    /// </summary>
+    private async Task<AttendanceRegularizationRequest> RunRegularizationTransitionAsync(Guid tenantId, Guid id,
+        Func<Task<AttendanceRegularizationRequest>> work, CancellationToken ct)
+    {
+        var target = await _db.AttendanceRegularizationRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => new { x.EmployeeId, x.WorkDate }).FirstAsync(ct);
+        // The checks before this were reads only; everything is re-read inside, so a retried attempt starts clean.
+        _db.ChangeTracker.Clear();
+        AttendanceRegularizationRequest? decided = null;
+        try
+        {
+            await AttendanceDailyRecordLock.RunAsync(_db, tenantId, target.EmployeeId, target.WorkDate, async () => { decided = await work(); }, ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _db.ChangeTracker.Clear();
+            throw new RegularizationConflictException();
+        }
+        catch (Exception ex) when (IsTransientDatabaseFailure(ex))
+        {
+            _db.ChangeTracker.Clear();
+            throw new InvalidOperationException(ApprovalTransientFailureMessage, ex);
+        }
+        return decided!;
+    }
+
+    /// <summary>Inside the lock: the request, re-read; a status other than the one the caller decided on is a lost race.</summary>
+    private async Task<AttendanceRegularizationRequest> ReloadForTransitionAsync(Guid tenantId, Guid id, string observedStatus, CancellationToken ct)
+    {
+        var reg = await _db.AttendanceRegularizationRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        if (reg.Status != observedStatus) throw new RegularizationConflictException();
+        return reg;
+    }
+
     /// <summary>
     /// The audit entry for one committed chunk of a processing run (one employee's days, or one employee-month in the
     /// job): <c>attendance.processed_employee</c>, saved at once, so a run that stops part-way is recorded up to there.
@@ -1277,21 +1404,20 @@ public class AttendanceService : IAttendanceService
     private async Task<AttendanceRegularizationRequest> ApplyRegularizationAsync(Guid tenantId, Guid id, RegularizationDecisionRequest request,
         string beforeStatus, RequestContext context, CancellationToken ct)
     {
-        var target = await _db.AttendanceRegularizationRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => new { x.EmployeeId, x.WorkDate }).FirstAsync(ct);
-        AttendanceRegularizationRequest? approved = null;
-        try
-        {
-            await AttendanceDailyRecordLock.RunAsync(_db, tenantId, target.EmployeeId, target.WorkDate, async () =>
+        return await RunRegularizationTransitionAsync(tenantId, id, async () =>
             {
                 var reg = await _db.AttendanceRegularizationRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
-                if (reg.Status != "PendingHRApproval")
-                    throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
-                if (await IsLocked(tenantId, reg.WorkDate, ct))
-                    throw new InvalidOperationException("Attendance period is payroll locked.");
-                var now = DateTime.UtcNow;
                 var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId
                     && x.RegularizationRequestId == id && x.ApprovalLevel == "HR", ct);
+                // A retry after a lost commit acknowledgement: this caller's approval already committed. Success, not 400.
+                if (reg.Status == "Approved" && approval?.DecidedByUserId is Guid decider && decider == context.UserId)
+                    return reg;
+                if (reg.Status != beforeStatus) throw new RegularizationConflictException();
+                if (await IsLocked(tenantId, reg.WorkDate, ct))
+                    throw new InvalidOperationException("Attendance period is payroll locked.");
+                // One correction is one work day (the shift may have changed since it was filed).
+                await EnsureCorrectionWithinWorkDayAsync(tenantId, reg.EmployeeId, reg.WorkDate, reg.RequestedInUtc, reg.RequestedOutUtc, ct);
+                var now = DateTime.UtcNow;
                 if (approval is not null)
                 {
                     approval.Decision = "Approved";
@@ -1301,6 +1427,7 @@ public class AttendanceService : IAttendanceService
                 }
                 reg.Status = "Approved";
                 reg.DecidedAtUtc = now;
+                reg.DecisionVersion++;
                 if (reg.RequestedInUtc is not null)
                     _db.AttendanceRawEvents.Add(new AttendanceRawEvent { TenantId = tenantId, EmployeeId = reg.EmployeeId, Source = "Manual HR correction", PunchTimestampUtc = reg.RequestedInUtc.Value, PunchDirection = "In", VerificationMethod = "Manual", RawPayloadJson = JsonSerializer.Serialize(reg), CreatedBy = context.UserId });
                 if (reg.RequestedOutUtc is not null)
@@ -1308,7 +1435,8 @@ public class AttendanceService : IAttendanceService
                 // Saved INSIDE the transaction: the recompute below reads punches from the database.
                 await _db.SaveChangesAsync(ct);
 
-                var employee = await ResolveEmployee(tenantId, reg.EmployeeId, null, ct);
+                // Any status but deleted: a Suspended or Offboarded employee's (final-month) correction is recomputed too.
+                var employee = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == reg.EmployeeId && !e.IsDeleted, ct);
                 if (employee is not null)
                 {
                     var policies = await EnsureActivePoliciesAsync(tenantId, ct);
@@ -1322,15 +1450,8 @@ public class AttendanceService : IAttendanceService
                 await Audit(tenantId, context, "attendance.regularization.approved", "AttendanceRegularizationRequest", reg.Id.ToString(),
                     JsonSerializer.Serialize(new { before = beforeStatus, after = "Approved" }), ct);
                 await _db.SaveChangesAsync(ct);
-                approved = reg;
+                return reg;
             }, ct);
-        }
-        catch (Exception ex) when (IsTransientDatabaseFailure(ex))
-        {
-            _db.ChangeTracker.Clear();
-            throw new InvalidOperationException(ApprovalTransientFailureMessage, ex);
-        }
-        return approved!;
     }
 
     /// <summary>The execution strategy gave up on a transient failure, or a transient provider failure escaped it.</summary>
@@ -1611,3 +1732,6 @@ public class AttendanceService : IAttendanceService
     private static string Clean(string? value, string fallback = "") => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     private static string CleanJson(string? value) => string.IsNullOrWhiteSpace(value) ? "{}" : value.Trim();
 }
+
+/// <summary>A correction was decided by someone else first (answered 409 with <see cref="AttendanceService.RegularizationConflictMessage"/>).</summary>
+public sealed class RegularizationConflictException() : InvalidOperationException(AttendanceService.RegularizationConflictMessage);

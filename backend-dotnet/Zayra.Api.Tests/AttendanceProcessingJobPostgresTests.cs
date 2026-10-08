@@ -179,6 +179,44 @@ public sealed class AttendanceProcessingJobPostgresTests
         Assert.Equal(18, await verify.AttendanceDailyRecords.CountAsync(r => r.TenantId == tenant)); // 3 × 6 days, as before
     }
 
+    /// <summary>
+    /// Narrow verification of #213, item 7: a job resumed from the old per-employee checkpoints ("employee:{id}") still
+    /// reaches 100% — the total counts those completed items plus the monthly items — and the employee already done is
+    /// not processed again.
+    /// </summary>
+    [Fact]
+    public async Task AJobResumedFromOldPerEmployeeCheckpoints_ReachesFullProgress()
+    {
+        var (tenant, _, _) = await SeedAsync();
+        await using var sp = BuildInstance();
+        var from = new DateOnly(2026, 7, 30);
+        Guid jobId;
+        int doneEmployee;
+        await using (var scope = sp.CreateAsyncScope())
+        {
+            var payload = new AttendanceProcessingJobPayload(from, To, null, GroupScope: true, CompanyIds: [],
+                RequestedByUserId: null, IpAddress: null, UserAgent: null);
+            jobId = (await scope.ServiceProvider.GetRequiredService<BackgroundJobStore>().EnqueueAsync(tenant,
+                AttendanceProcessingJobHandler.JobType, AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload), payload, null, default)).Job.Id;
+        }
+        await using (var db = _fx.CreateDb())
+        {
+            // Checkpointed by a build that keyed items per employee: one employee finished, counted in the progress.
+            doneEmployee = await db.Employees.IgnoreQueryFilters().Where(e => e.TenantId == tenant).OrderBy(e => e.Id).Select(e => e.Id).FirstAsync();
+            db.BackgroundJobItems.Add(new BackgroundJobItem { TenantId = tenant, JobId = jobId, ItemKey = $"employee:{doneEmployee}" });
+            await db.SaveChangesAsync();
+            await db.BackgroundJobs.Where(j => j.Id == jobId).ExecuteUpdateAsync(x => x.SetProperty(j => j.ProgressCompleted, 1));
+        }
+        await RunUntilTerminalAsync(sp, jobId);
+
+        await using var verify = _fx.CreateDb();
+        var job = await verify.BackgroundJobs.SingleAsync(j => j.Id == jobId);
+        Assert.True(job.Status == BackgroundJobStatuses.Succeeded, $"{job.Status}: {job.LastError}");
+        Assert.Equal(job.ProgressTotal, job.ProgressCompleted);
+        Assert.Equal(5, job.ProgressTotal); // 1 old per-employee item + 2 employees × 2 months
+        Assert.False(await verify.AttendanceDailyRecords.AnyAsync(r => r.TenantId == tenant && r.EmployeeId == doneEmployee));
+    }
+
     // ───────────────────────────── helpers ─────────────────────────────
 
     /// <summary>

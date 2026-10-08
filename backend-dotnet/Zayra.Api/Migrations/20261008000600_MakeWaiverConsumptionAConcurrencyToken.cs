@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Zayra.Api.Migrations
 {
     /// <summary>
-    /// Selfie hardening (follow-up to 20261008000500, which has shipped and is not edited):
+    /// Selfie and attendance-correction hardening (follow-up to 20261008000500, which has shipped and is not edited):
     /// <list type="bullet">
     ///   <item><c>attendance_evidence.waiver_consumed_at_utc</c> becomes an EF concurrency token (model-only, no DDL): the
     ///     database backstop for "one waiver, one punch".</item>
@@ -13,6 +13,10 @@ namespace Zayra.Api.Migrations
     ///     <c>Aborted</c> and <c>DeniedFailure</c> (an attempt closed as failed that never waives anything), and
     ///     <c>ck_attendance_evidence__waiver_needs_failure</c> now lets only a WAIVABLE failure (<c>Busy</c>,
     ///     <c>Storage</c>) carry a waiver.</item>
+    ///   <item><c>attendance_regularization_requests.decision_version</c> (integer NOT NULL DEFAULT 0), an EF concurrency
+    ///     token every correction status transition advances: the backstop to the employee-day lock, so a racing reject,
+    ///     cancel or approval fails (409) instead of overwriting another decision. Adding a NOT NULL column with a constant
+    ///     default is metadata-only on PostgreSQL 11+ (no rewrite); the previous release never reads or writes it.</item>
     /// </list>
     /// Expand-safe: every existing row (failed_reason NULL, Busy or Storage; waivers only on Busy/Storage rows) satisfies
     /// both new CHECKs, and the previous release never writes the new values. The migration runs in one transaction, so a
@@ -31,6 +35,13 @@ namespace Zayra.Api.Migrations
             migrationBuilder.DropCheckConstraint(
                 name: "ck_attendance_evidence__waiver_needs_failure",
                 table: "attendance_evidence");
+
+            migrationBuilder.AddColumn<int>(
+                name: "decision_version",
+                table: "attendance_regularization_requests",
+                type: "integer",
+                nullable: false,
+                defaultValue: 0);
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_attendance_evidence__failed_reason",
@@ -53,6 +64,10 @@ namespace Zayra.Api.Migrations
             migrationBuilder.DropCheckConstraint(
                 name: "ck_attendance_evidence__waiver_needs_failure",
                 table: "attendance_evidence");
+
+            migrationBuilder.DropColumn(
+                name: "decision_version",
+                table: "attendance_regularization_requests");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_attendance_evidence__failed_reason",

@@ -87,16 +87,19 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
         // long a punch can wait and the lock-table use. Items are idempotent (re-processing a day recomputes it) and
         // resumable (each is checkpointed by its key).
         var months = MonthChunks(p.FromDate, p.ToDate);
-        await ctx.SetTotalAsync(employeeIds.Count * months.Count,
-            $"{employeeIds.Count} employee(s) × {months.Count} month(s) ({days} day(s)), {p.FromDate:yyyy-MM-dd}..{p.ToDate:yyyy-MM-dd}");
-
         var context = new RequestContext(p.IpAddress, p.UserAgent, p.RequestedByUserId, ctx.TenantId);
-        // A job checkpointed before items were monthly (key "employee:{id}") already processed that employee's whole range.
-        var remaining = employeeIds
+        // A job checkpointed before items were monthly (key "employee:{id}") already processed that employee's whole range:
+        // one completed (and counted) item each. Everyone else has one item per month, done or not.
+        var legacyDone = employeeIds.Count(id => ctx.IsItemCompleted(LegacyItemKey(id)));
+        var monthlyItems = employeeIds
             .Where(id => !ctx.IsItemCompleted(LegacyItemKey(id)))
             .SelectMany(id => months.Select(m => (EmployeeId: id, Month: m)))
-            .Where(x => !ctx.IsItemCompleted(ItemKey(x.EmployeeId, x.Month.From)))
             .ToList();
+        var remaining = monthlyItems.Where(x => !ctx.IsItemCompleted(ItemKey(x.EmployeeId, x.Month.From))).ToList();
+        // The total matches what the progress counter can reach: the old per-employee items already counted, plus every
+        // monthly item (done or remaining), so a resumed job still ends at 100%.
+        await ctx.SetTotalAsync(legacyDone + monthlyItems.Count,
+            $"{employeeIds.Count} employee(s) × {months.Count} month(s) ({days} day(s)), {p.FromDate:yyyy-MM-dd}..{p.ToDate:yyyy-MM-dd}");
         IReadOnlyList<AttendancePolicy> policies = remaining.Count > 0
             ? await _attendance.EnsureActivePoliciesAsync(ctx.TenantId, ct)
             : Array.Empty<AttendancePolicy>();
