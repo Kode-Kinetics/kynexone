@@ -11,6 +11,12 @@ namespace Zayra.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // Fail fast instead of queueing behind a long transaction: every statement below takes an ACCESS EXCLUSIVE
+            // lock (ADD COLUMN on employee_user_accounts, ADD CONSTRAINT on companies), and a DDL waiting on a lock
+            // blocks every later reader of that table. Transaction-scoped (EF runs each migration in one transaction),
+            // so it ends with this migration. A timeout fails the deploy cleanly with 55P03; re-run when quiet.
+            migrationBuilder.Sql(LockTimeoutSql);
+
             migrationBuilder.AddColumn<DateTime>(
                 name: "welcome_code_expires_at_utc",
                 table: "employee_user_accounts",
@@ -74,7 +80,47 @@ namespace Zayra.Api.Migrations
                 END
                 $$;
                 """);
+
+            migrationBuilder.Sql(GrantAccessKeysSql);
         }
+
+        /// <summary>Transaction-scoped lock wait ceiling for this migration's DDL.</summary>
+        public const string LockTimeoutSql = "SET LOCAL lock_timeout = '5s';";
+
+        /// <summary>
+        /// ONE-SHOT grant of the two new keys in EXISTING tenants (new tenants get them from AuthSeeder.EnsureTenantRolesAsync;
+        /// Admin roles from the boot backfill). Done here, not in the boot backfill, so it runs exactly once: an Admin who
+        /// later removes a key from a built-in role is not overruled on the next deploy (the "revocation became escalation"
+        /// class AuthSeeder documents). Add-only and re-runnable.
+        /// <list type="bullet">
+        ///   <item>built-in HR Manager: employees.access.issue + employees.access.reset; built-in HR Officer: issue only
+        ///   (the PR #210 contract, Amendment 3 F1);</item>
+        ///   <item>every tenant role that holds <c>security.manage</c> gets both keys too. PrivilegeCeiling lets a caller
+        ///   assign a role, or act on its holders, only when the caller holds every key the role carries; without this, a
+        ///   custom "Console Admin" role would silently lose its reach over HR Officer and HR Manager the moment those roles
+        ///   gained the new keys. Backfilling keeps the ceiling's subset rule exact (no exemption for "new" keys, which an
+        ///   override could then hand out unheld), and it widens nothing material: a security.manage holder can already
+        ///   send any non-senior user a password-reset link.</item>
+        /// </list>
+        /// </summary>
+        public const string GrantAccessKeysSql = """
+            INSERT INTO permissions (id, permission_key, module, description, created_at_utc) VALUES
+                (gen_random_uuid(), 'employees.access.issue', 'Employees', 'Give employees their KynexOne welcome code (sign-in slips)', now()),
+                (gen_random_uuid(), 'employees.access.reset', 'Employees', 'Reset the sign-in of an employee who already uses KynexOne', now())
+            ON CONFLICT (permission_key) DO NOTHING;
+
+            INSERT INTO role_permissions (role_id, permission_id)
+            SELECT r.id, p.id
+            FROM roles r
+            JOIN permissions p ON p.permission_key IN ('employees.access.issue', 'employees.access.reset')
+            WHERE r.tenant_id IS NOT NULL
+              AND (
+                    (r.is_system AND r.normalized_name = 'HR MANAGER')
+                 OR (r.is_system AND r.normalized_name = 'HR OFFICER' AND p.permission_key = 'employees.access.issue')
+                 OR EXISTS (SELECT 1 FROM role_permissions sp JOIN permissions sk ON sk.id = sp.permission_id
+                            WHERE sp.role_id = r.id AND sk.permission_key = 'security.manage'))
+            ON CONFLICT DO NOTHING;
+            """;
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)

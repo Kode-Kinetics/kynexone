@@ -68,7 +68,6 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
-        await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
         CompanyDto? result = null;
@@ -93,6 +92,10 @@ public class OrganizationSetupService : IOrganizationSetupService
             await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, ct);
             var priorEmailDomain = company.EmailDomain ?? string.Empty;
             await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, priorEmailDomain, request.EmailDomain, ct);
+            // Claimability (public mail, another tenant's domain) is judged only when the domain actually CHANGES: a company
+            // saved before these rules may hold a domain they now refuse, and editing its address or name must still work.
+            if (!string.Equals(CompanyEmailDomainRules.Normalize(priorEmailDomain), CompanyEmailDomainRules.Normalize(request.EmailDomain), StringComparison.Ordinal))
+                await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, ct);
             Apply(company, request, applyLifecycle: false);
             if (!string.Equals(priorEmailDomain, company.EmailDomain, StringComparison.Ordinal))
                 _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog

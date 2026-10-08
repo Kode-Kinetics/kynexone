@@ -1116,6 +1116,118 @@ public sealed class EmployeeAccessTests
         (await StateAsync(w, id)).Should().Be(EmployeeAccessStates.NotStarted);
     }
 
+    // ── The save hook's cost and tenant boundary (PR #210 review P2) ───────────────────────────────────
+
+    /// <summary>
+    /// ClearWelcomeCodesOnAccessChangeAsync runs on EVERY save. A large save that touches no login must cost it one
+    /// tracker walk and no query. Pinned as the whole save's DetectChanges count: the hook used to add 7 full scans
+    /// (6 typed Entries&lt;T&gt;() calls + DbSet.Local), which put this at 14.
+    /// </summary>
+    [Fact]
+    public async Task ALargeUnrelatedSave_WalksTheTrackerOnce_AndNeverQueriesLoginsOrLinks()
+    {
+        var w = await SeedAsync();
+        var linked = await AddStagedAsync(w, $"bystander@{w.Domain}");
+        var recorder = new CommandRecorder();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, recorder)
+            .Options);
+        // Tracked but UNCHANGED login rows must not wake the hook either.
+        var link = await db.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == linked);
+        _ = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == link.UserId);
+        for (var i = 0; i < 1500; i++)
+            db.Employees.Add(new Employee
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, EmployeeCode = $"BULK-{i:D5}-{Guid.NewGuid():N}"[..20],
+                FullName = $"Bulk Person {i}", WorkEmail = "", Status = "Active", JoiningDate = DateTime.UtcNow.Date.AddDays(-30),
+            });
+        var scans = 0;
+        db.ChangeTracker.DetectingAllChanges += (_, _) => scans++;
+        recorder.Commands.Clear();
+        await db.SaveChangesAsync();
+
+        scans.Should().BeLessThanOrEqualTo(8, "the welcome-code hook walks the tracker once (it used to add 7 walks)");
+        recorder.Commands.Should().NotContain(c => c.Contains("employee_user_accounts") || c.Contains("FROM users"),
+            "a save with no access change reads no login or link");
+        (await db.EmployeeUserAccounts.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.EmployeeId == linked))
+            .WelcomeCodeHash.Should().BeNull("nothing was issued, nothing was touched");
+    }
+
+    [Fact]
+    public async Task UnderATenantRequest_ARoleGivenByIdAlone_ClearsThatLoginsCode()
+    {
+        var w = await SeedAsync();
+        var id = await AddStagedAsync(w, $"by.id@{w.Domain}");
+        await IssueAsync(w, w.HrOfficerId, [id]);
+        Guid userId;
+        await using (var read = _fx.CreateDb())
+            userId = (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == id)).UserId!.Value;
+        await using (var db = _fx.CreateDbWithAccessor(Accessor(new Claim("tenant_id", w.TenantId.ToString()),
+                         new Claim(ClaimTypes.NameIdentifier, w.AdminId.ToString()))))
+        {
+            var role = await db.Roles.SingleAsync(r => r.NormalizedName == "MANAGER");
+            db.UserRoles.Add(new UserRole { UserId = userId, RoleId = role.Id }); // no User navigation: the hook looks it up
+            await db.SaveChangesAsync();
+        }
+        (await StateAsync(w, id)).Should().Be(EmployeeAccessStates.NotStarted);
+    }
+
+    [Fact]
+    public async Task UnderAPlatformPrincipal_TheHookReadsNoTenantsLinks()
+    {
+        // A tenantless authenticated principal (the platform super-admin) never makes the hook read another tenant's
+        // rows. Its own tracked links would still be cleared; untracked ones are left to the redeem, which re-checks
+        // the login's privilege and lifecycle under lock.
+        var w = await SeedAsync();
+        var id = await AddStagedAsync(w, $"platform.view@{w.Domain}");
+        await IssueAsync(w, w.HrOfficerId, [id]);
+        Guid userId, roleId;
+        await using (var read = _fx.CreateDb())
+        {
+            userId = (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == id)).UserId!.Value;
+            roleId = (await read.Roles.IgnoreQueryFilters().SingleAsync(r => r.TenantId == w.TenantId && r.NormalizedName == "MANAGER")).Id;
+        }
+        var recorder = new CommandRecorder();
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+                         .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
+                         .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, recorder)
+                         .Options,
+                         Accessor(new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim("is_platform_admin", "true"))))
+        {
+            db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
+            await db.SaveChangesAsync();
+        }
+        recorder.Commands.Should().NotContain(c => c.Contains("employee_user_accounts"));
+        recorder.Commands.Should().NotContain(c => c.Contains("FROM users"));
+    }
+
+    private static IHttpContextAccessor Accessor(params Claim[] claims) => new HttpContextAccessor
+    {
+        HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) },
+    };
+
+    private sealed class CommandRecorder : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        public List<string> Commands { get; } = new();
+        private void Record(System.Data.Common.DbCommand command) { lock (Commands) Commands.Add(command.CommandText); }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+        { Record(command); return base.ReaderExecutingAsync(command, eventData, result, cancellationToken); }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        { Record(command); return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken); }
+
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object>> ScalarExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object> result, CancellationToken cancellationToken = default)
+        { Record(command); return base.ScalarExecutingAsync(command, eventData, result, cancellationToken); }
+    }
+
     // ── Sign-in without a workspace ────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -1249,6 +1361,24 @@ public sealed class EmployeeAccessTests
         (await Assert.ThrowsAsync<EmailDomainRefusedException>(() => CompanyEmailDomainRules.EnsureClaimableAsync(db, w.TenantId, "Gmail.com", default)))
             .Code.Should().Be("email_domain_public");
         await CompanyEmailDomainRules.EnsureClaimableAsync(db, w.TenantId, w.Domain, default); // its own domain is fine
+    }
+
+    [Fact]
+    public async Task EmailDomain_IsJudgedOnlyWhenItChanges_ALegacyPublicDomainDoesNotBlockOtherEdits()
+    {
+        // A company saved before the claim rules may hold a domain they now refuse (here a public mail service).
+        // Editing its name must still work; only CHANGING the domain is judged.
+        var w = await SeedAsync(domain: "tuta.io");
+        await using var db = _fx.CreateDb();
+        var service = new OrganizationSetupService(db, new AuditService(db));
+        var edit = new Zayra.Api.Application.Organization.CompanyRequest("Legacy Co renamed", null, "Legacy", "SA", "SA", $"RC-{Guid.NewGuid():N}"[..20],
+            null, null, null, null, "SAR", EmailDomain: "tuta.io");
+        var saved = await service.UpdateCompanyAsync(w.TenantId, w.CompanyId, edit, Ctx(w.AdminId, w.TenantId), default);
+        saved!.LegalNameEn.Should().Be("Legacy Co renamed");
+        // Changing it to another public domain is still refused.
+        (await Assert.ThrowsAsync<EmailDomainRefusedException>(() =>
+                service.UpdateCompanyAsync(w.TenantId, w.CompanyId, edit with { EmailDomain = "gmail.com" }, Ctx(w.AdminId, w.TenantId), default)))
+            .Code.Should().Be("email_domain_public");
     }
 
     // ── Harness ────────────────────────────────────────────────────────────────────────────────────────

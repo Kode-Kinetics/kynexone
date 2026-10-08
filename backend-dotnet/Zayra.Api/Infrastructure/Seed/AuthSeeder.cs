@@ -60,6 +60,11 @@ public class AuthSeeder : IAuthSeeder
         }
         catch (Exception ex) { Console.WriteLine($"[Seed] Admin permission backfill skipped: {ex.Message}"); }
 
+        // employees.access.issue / .reset in EXISTING tenants (built-in HR Manager and HR Officer, and every role holding
+        // security.manage so PrivilegeCeiling keeps its reach) are granted ONCE by migration 20261008000700
+        // (AddEmployeeWelcomeCodes.GrantAccessKeysSql), deliberately not here: a boot backfill re-runs on every deploy and
+        // would silently re-grant a key an Admin had removed from a built-in role.
+
         // PRIVILEGE-ESCALATION-BY-RESTART (removed). This block used to run, tenant-wide on every
         // boot:
         //
