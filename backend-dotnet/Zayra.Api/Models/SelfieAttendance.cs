@@ -72,7 +72,9 @@ public class AttendanceEvidence : ITenantOwned
     public string? FailedReason { get; set; }
 
     /// <summary>When a punch used this attempt's waiver. Set with <see cref="WaiverRawEventId"/>, in the punch's own
-    /// transaction under the per-employee advisory lock (CHECK: the pair is set together; a waiver is used once).</summary>
+    /// transaction under the per-employee advisory lock (CHECK: the pair is set together; a waiver is used once). Also a
+    /// concurrency token, the database backstop should that lock ever be bypassed: the UPDATE carries
+    /// <c>WHERE waiver_consumed_at_utc IS NULL</c>, so a second consumer fails instead of using the waiver twice.</summary>
     public DateTime? WaiverConsumedAtUtc { get; set; }
 
     /// <summary>The raw punch the waiver let through (recorded <c>VerificationMethod = None</c>, <c>PhotoReference =
@@ -202,6 +204,10 @@ public static class SelfieAttendanceModelConfiguration
             entity.Property(x => x.ContentType).HasMaxLength(64).IsRequired();
             entity.Property(x => x.PurgeState).HasMaxLength(16).HasDefaultValue(AttendanceEvidencePurgeStates.Pending);
             entity.Property(x => x.UsedAtUtc).IsConcurrencyToken();
+            // The database backstop for "one waiver, one punch": the UPDATE that uses a waiver carries
+            // WHERE waiver_consumed_at_utc IS NULL, so if the per-employee advisory lock is ever bypassed, a second punch
+            // fails (DbUpdateConcurrencyException, refused as selfie_required) instead of consuming the same waiver again.
+            entity.Property(x => x.WaiverConsumedAtUtc).IsConcurrencyToken();
             entity.Property(x => x.FailedReason).HasMaxLength(16);
             entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<AttendanceRawEvent>().WithMany().HasForeignKey(x => x.UsedByRawEventId).OnDelete(DeleteBehavior.Restrict);

@@ -497,6 +497,14 @@ public class AttendanceService : IAttendanceService
             // WHERE used_at_utc IS NULL). Nothing of this punch was written: the raw row and the update share one save.
             throw new AttendanceRefusalException(AttendanceRefusals.EvidenceUsed);
         }
+        catch (DbUpdateConcurrencyException) when (verification?.SelfieRequirementWaivedReason is not null)
+        {
+            // The database backstop (waiver_consumed_at_utc is a concurrency token): another punch used this waiver
+            // between our read and this write, which the advisory lock should have made impossible. One waiver, one punch:
+            // nothing of this punch was written, and it is refused like any punch without the required selfie.
+            _db.ChangeTracker.Clear();
+            throw new AttendanceRefusalException(AttendanceRefusals.SelfieRequired);
+        }
         return raw;
     }
 
