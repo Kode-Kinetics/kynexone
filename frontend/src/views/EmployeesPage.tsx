@@ -20,8 +20,8 @@ import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
-import type { EmployeeAccessDto, EmployeeAccessState, SkippedWelcomeCode } from '../api/employeeAccess';
-import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
+import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
@@ -254,7 +254,10 @@ export function EmployeesPage() {
   const { t } = useLocale();
   const searchParams = useSearchParams();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
+  // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
+  // "Access Denied" toast) for a background read they never asked for. The server still enforces the limit.
+  const canReadUsage = hasPermission('security.manage');
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -273,6 +276,7 @@ export function EmployeesPage() {
   const [view, setView] = useState<'current' | 'ex'>('current');
   // Self-service (sign-in access) filter chip: one state, or everyone.
   const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
+  const [accessSummary, setAccessSummary] = useState<EmployeeAccessSummary | null>(null);
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
   // `selectedIds` = page-level picks (persist across pages while the filter is unchanged).
   // `selectAllMatching` = act on the ENTIRE server-resolved filtered set across all pages, not just
@@ -441,6 +445,8 @@ export function EmployeesPage() {
     }), {
       onResult: (res) => {
         setEmployees(res.items);
+        // The chip counts follow the list (an issue or a saved work email changes both).
+        void employeeAccessApi.summary().then(setAccessSummary).catch(() => setAccessSummary(null));
         setTotal(res.total);
         // Remembered so a selection that spans pages still knows each person's self-service state.
         for (const item of res.items) seenRowsRef.current.set(item.id, item);
@@ -474,6 +480,7 @@ export function EmployeesPage() {
   useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
   useEffect(() => {
+    if (!canReadUsage) return;
     client.get<EmployeeUsageData>('/api/tenant-admin/usage')
       .then(r => setUsage(r.data))
       .catch((e: unknown) => {
@@ -482,7 +489,7 @@ export function EmployeesPage() {
           setSubscriptionBanner('Your subscription is inactive or expired. Please contact support.');
         }
       });
-  }, []);
+  }, [canReadUsage]);
   useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter]);
   useEffect(() => {
     setSelectedId(null);
@@ -664,7 +671,9 @@ export function EmployeesPage() {
           ids.push(row.id);
           if (state && REPLACES_A_CODE.has(state)) replacesCode = true;
         } else {
-          preSkipped.push({ employeeId: row.id, reasonCode: state, reason: '' });
+          // Someone already using KynexOne: only a holder of employees.access.reset is pointed at Reset sign-in.
+          const reasonCode = state === 'active' && !canResetAccess ? 'reset_requires_permission' : state;
+          preSkipped.push({ employeeId: row.id, reasonCode, reason: '' });
         }
       }
       if (replacesCode) { setBulkPrintConfirm({ ids, names, preSkipped, delivery }); return; }
@@ -687,6 +696,8 @@ export function EmployeesPage() {
 
   const saveSingleWorkEmail = async () => {
     if (!workEmailFor || !singleWorkEmail.trim()) return;
+    const singleDomain = workEmailDomainProblem(singleWorkEmail, companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain);
+    if (singleDomain) { setSingleWorkEmailError(t('Work email must end in @{domain}.', { domain: singleDomain })); return; }
     const localProblem = workEmailProblemKey(workEmailLocalProblem(singleWorkEmail));
     if (localProblem) { setSingleWorkEmailError(t(localProblem)); return; }
     setSingleWorkEmailBusy(true);
@@ -969,6 +980,11 @@ export function EmployeesPage() {
       setFormError('English full name is required.');
       return;
     }
+    const formDomainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
+    if (formDomainProblem) {
+      setFormError(t('Work email must end in @{domain}.', { domain: formDomainProblem }));
+      return;
+    }
     const workEmailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
     if (workEmailProblem) {
       setFormError(t(workEmailProblem));
@@ -1222,8 +1238,12 @@ export function EmployeesPage() {
 
   const saveEdit = async () => {
     if (!selectedId || editChangedKeys.length === 0) return;
-    const editEmailProblem = editChangedKeys.includes('workEmail') ? workEmailProblemKey(workEmailLocalProblem(editForm.workEmail)) : null;
-    if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
+    if (editChangedKeys.includes('workEmail')) {
+      const editDomain = workEmailDomainProblem(editForm.workEmail, companies.find((c) => c.id === selectedEmployee?.companyId)?.emailDomain);
+      if (editDomain) { setEditNotice(t('Work email must end in @{domain}.', { domain: editDomain })); return; }
+      const editEmailProblem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
+      if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
+    }
     setEditSaving(true);
     setEditNotice('');
     setActionNotice('');
@@ -1574,6 +1594,11 @@ export function EmployeesPage() {
                 className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-sapphire bg-sapphire text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
               >
                 {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
+                {accessSummary && (
+                  <span className={`ms-1.5 rounded-full px-1.5 text-[11px] tabular-nums ${accessFilter === state ? 'bg-white/20' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`} data-testid="access-chip-count">
+                    {state ? accessSummary[state] ?? 0 : EMPLOYEE_ACCESS_STATES.reduce((sum, s) => sum + (accessSummary[s] ?? 0), 0)}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -1854,6 +1879,7 @@ export function EmployeesPage() {
                   refreshKey={accessRefresh}
                   canIssue={canIssueAccess}
                   canReset={canResetAccess}
+                  isSelf={user?.employeeId != null && user.employeeId === selectedEmployee.id}
                   issuing={welcome.busy}
                   onIssue={welcome.issue}
                   onAddWorkEmail={() => {
@@ -2173,7 +2199,7 @@ export function EmployeesPage() {
       <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'xl'} onClose={closeCreateModal} footer={createdEmployee ? (
         <>
           <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
-          {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue)) && (
+          {canIssueAccess && (!createdEmployee.access || (BULK_PRINTABLE_STATES.has(createdEmployee.access.state) && createdEmployee.access.canIssue && !skipReasonKey(createdEmployee.access.reasonCode))) && (
             createdEmployee.access?.emailDelivery ? (
               <>
                 <button type="button" onClick={() => void issueCreatedCode('print')} disabled={welcome.busy} className="btn-secondary disabled:opacity-60">
@@ -2219,6 +2245,9 @@ export function EmployeesPage() {
             </p>
             {createdEmployee.access?.state === 'waiting_for_work_email' && <p>{t('Add a work email so {name} can sign in.', { name: createdEmployee.name })}</p>}
             {createdEmployee.access?.state === 'blocked' && <p>{t('This needs a system admin first.')}</p>}
+            {createdEmployee.access?.reasonCode && skipReasonKey(createdEmployee.access.reasonCode) && (
+              <p data-testid="employee-added-reason">{t(skipReasonKey(createdEmployee.access.reasonCode)!, { name: createdEmployee.name })}</p>
+            )}
           </div>
         ) : (
         <div className="space-y-3">
@@ -2785,16 +2814,21 @@ function WorkEmailField({
 
   const handleLocalChange = (raw: string) => {
     setTouched(true);
-    // Local-part only: drop whitespace and any stray "@" the user might paste.
-    const next = raw.replace(/\s+/g, '').replace(/@.*$/, '');
+    const typed = raw.replace(/\s+/g, '');
+    const at = typed.indexOf('@');
+    // "@" + the company's own domain is just the full address: keep the part before it. Any OTHER domain
+    // is kept exactly as typed and refused below (never quietly turned into @company).
+    if (at >= 0 && typed.slice(at + 1).toLowerCase() !== cleanDomain) { onChange(typed); return; }
+    const next = at >= 0 ? typed.slice(0, at) : typed;
     onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
   };
+  const wrongDomain = !manualMode ? workEmailDomainProblem(value, cleanDomain) : null;
 
   const showGhost = suggest && !localPart && !!ghost;
   const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
 
   const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const typedProblem = workEmailProblemKey(workEmailLocalProblem(value));
+  const typedProblem = wrongDomain ? null : workEmailProblemKey(workEmailLocalProblem(value));
   const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
   const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
 
@@ -2829,7 +2863,7 @@ function WorkEmailField({
           <span dir="ltr" className={`mt-1.5 flex flex-wrap items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
             <input
               type="text"
-              value={localPart}
+              value={wrongDomain ? value : localPart}
               onChange={(e) => handleLocalChange(e.target.value)}
               onKeyDown={(e) => {
                 // Tab takes the ghost suggestion (and moves on, as Tab does).
@@ -2884,6 +2918,7 @@ function WorkEmailField({
         </>
       )}
 
+      {wrongDomain && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t('Work email must end in @{domain}.', { domain: wrongDomain })}</p>}
       {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
       {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
 

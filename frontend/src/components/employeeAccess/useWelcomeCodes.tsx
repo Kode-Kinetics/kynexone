@@ -21,8 +21,6 @@ interface Batch {
   names: Record<number, string>;
   /** The screen knows the company can email codes (the access status said so). */
   companyEmails: boolean;
-  /** HR pressed "Print sign-in slip" on purpose: no need to explain why it is printed. */
-  askedToPrint: boolean;
 }
 
 export interface IssueOptions {
@@ -58,7 +56,7 @@ export function useWelcomeCodes(onFinished?: () => void) {
     const names = options.names ?? {};
     setError('');
     if (employeeIds.length === 0) {
-      if (preSkipped.length) setBatch({ result: { issued: [], skipped: [], emailed: false }, skipped: preSkipped, names, companyEmails: !!options.companyEmails, askedToPrint: options.delivery === 'print' });
+      if (preSkipped.length) setBatch({ result: { issued: [], skipped: [], emailed: false }, skipped: preSkipped, names, companyEmails: !!options.companyEmails });
       return null;
     }
     setBusy(true);
@@ -74,7 +72,7 @@ export function useWelcomeCodes(onFinished?: () => void) {
       merged.emailed = merged.issued.length > 0 && merged.issued.every(wasEmailed);
       const onlySkips = merged.issued.length === 0 && preSkipped.length === 0;
       if (!(onlySkips && options.quietSkips)) {
-        setBatch({ result: merged, skipped: preSkipped, names, companyEmails: !!options.companyEmails, askedToPrint: options.delivery === 'print' });
+        setBatch({ result: merged, skipped: preSkipped, names, companyEmails: !!options.companyEmails });
       }
       return merged;
     } catch (e) {
@@ -99,9 +97,11 @@ export function useWelcomeCodes(onFinished?: () => void) {
     if (printable.length > 0) {
       // Why these are printed: the company cannot email at all, or (it can) this person typed their work emails.
       const companyEmails = batch.companyEmails || emailed.length > 0;
-      const note: PrintNote = !companyEmails ? 'noEmail'
-        : batch.askedToPrint ? 'none'
-          : batch.result.deliveryMessage ? 'enteredByYou' : 'none';
+      // The API's deliveryMessage marks codes it would only print (the person who typed the work email
+      // hands the slip over), even when HR pressed Print anyway; it is shown in our words, never raw.
+      const note: PrintNote = batch.result.deliveryMessage && companyEmails ? 'enteredByYou'
+        : !companyEmails ? 'noEmail'
+          : 'none';
       view = <SignInSlips issued={printable} skipped={skipped} names={batch.names} emailedCount={emailed.length} note={note} timeZone={defaultTimezone} onClose={close} />;
     } else {
       view = (

@@ -176,7 +176,8 @@ export const SKIP_REASON_KEYS: Record<string, string> = {
   // Reset sign-in is one person at a time, from their profile (never bulk).
   active: "Use Reset sign-in on the person's profile.",
   reset_is_single: "Use Reset sign-in on the person's profile.",
-  reset_requires_permission: "Only an HR manager or an admin can reset someone's sign-in.",
+  reset_requires_permission: "Ask an HR Manager to reset this person's sign-in.",
+  awaiting_approval: 'Waiting for approval. You can give access once {name} is approved.',
 };
 
 /** The reason codes the API defines (contract); unit/employeeAccess.spec.ts proves each has a sentence. */
@@ -232,4 +233,28 @@ export function workEmailLocalProblem(email: string | null | undefined): 'work_e
 /** The sentence for a work-email refusal (server 422 or the as-you-type check); null for anything else. */
 export function workEmailProblemKey(code: string | null): string | null {
   return code && code !== 'work_email_wrong_domain' ? WORK_EMAIL_ERROR_KEYS[code] ?? null : null;
+}
+
+/** Why access stopped, by code (copy deck). Unknown codes say nothing beyond the "Access stopped" pill. */
+export const STOPPED_REASON_KEYS: Record<string, string> = {
+  left_company: 'Access stopped because the employee has left the company.',
+  disabled_by_admin: 'Access stopped by a system admin.',
+};
+
+/** What needs an admin, by blocked code (copy deck). Unknown codes: "This needs a system admin first." */
+export const BLOCKED_REASON_KEYS: Record<string, string> = {
+  company_email_domain_missing: 'The company email ending (for example @evostel.com) is not set up. Ask your system admin to add it in company settings.',
+  email_belongs_to_existing_login: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
+  email_belongs_to_former_employee: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
+};
+
+/**
+ * The work email typed with a domain other than the company's: refused, never quietly re-domained.
+ * Returns the domain HR must use, or null when the address is fine (or has no domain yet).
+ */
+export function workEmailDomainProblem(email: string | null | undefined, domain: string | null | undefined): string | null {
+  const want = (domain ?? '').trim().toLowerCase();
+  const value = (email ?? '').trim();
+  if (!want || !value.includes('@')) return null;
+  return value.slice(value.indexOf('@') + 1).toLowerCase() === want ? null : want;
 }

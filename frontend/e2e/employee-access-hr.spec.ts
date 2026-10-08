@@ -15,7 +15,7 @@ type State = 'waiting_for_work_email' | 'not_started' | 'code_given' | 'active' 
 
 interface Person {
   id: number; code: string; name: string; arabicName: string; email: string; state: State;
-  department: string; branch: string; blockedCode?: string; stoppedReason?: string; issuer?: string;
+  department: string; branch: string; blockedCode?: string; stoppedReason?: string; issuer?: string; reasonCode?: string;
 }
 
 const PEOPLE: Person[] = [
@@ -26,10 +26,17 @@ const PEOPLE: Person[] = [
   { id: 46, code: 'EMP-0046', name: 'Hamad Qahtani', arabicName: 'حمد القحطاني', email: 'hamad.qahtani@evostel.com', state: 'stopped', department: 'Sales', branch: 'Jeddah', stoppedReason: 'left_company' },
   { id: 47, code: 'EMP-0047', name: 'Fatima Zahrani', arabicName: 'فاطمة الزهراني', email: 'fatima.zahrani@evostel.com', state: 'blocked', department: 'Legal', branch: 'Riyadh HQ', blockedCode: 'company_email_domain_missing' },
   { id: 48, code: 'EMP-0048', name: 'Khalid Noor', arabicName: 'خالد نور', email: 'khalid.noor@evostel.com', state: 'not_started', department: 'IT', branch: 'Riyadh HQ' },
+  { id: 49, code: 'EMP-0049', name: 'Rana Saeed', arabicName: 'رنا سعيد', email: 'rana.saeed@evostel.com', state: 'not_started', department: 'IT', branch: 'Riyadh HQ', reasonCode: 'awaiting_approval' },
 ];
 
-const CODES: Record<number, string> = { 42: '48217730', 43: '19004433', 44: '55102938', 45: '70013355', 48: '31415926', 50: '60606161' };
+const CODES: Record<number, string> = { 42: '48217730', 43: '19004433', 44: '55102938', 45: '70013355', 48: '31415926', 49: '27182818', 50: '60606161' };
 const EXPIRES = '2026-10-14T20:59:59Z';
+const DRAFT = {
+  id: 'd-1', currentStep: 'HR approval', name: 'Rana Saeed', arabicName: 'رنا سعيد', department: 'IT', designation: 'Officer', branch: 'Riyadh HQ',
+  joiningDate: '2026-10-20', source: 'Manual', applicationId: null, jobTitle: null, createdByUserId: 'hr-2', createdByName: 'Sara Ali', isMine: false,
+  canApprove: true, approveBlockedReason: null, profileCompletenessScore: 90, createdAtUtc: '2026-10-07T08:00:00Z', submittedAtUtc: '2026-10-07T08:05:00Z',
+  decidedAtUtc: null, decidedByName: null, decisionReason: null, activatedEmployeeCode: 'EMP-0049',
+};
 const COMPANY = {
   id: 'c1', legalNameEn: 'Evostel', legalNameAr: 'إيفوستل', tradeName: 'Evostel', countryCode: 'SA', jurisdiction: 'KSA',
   registrationNumber: '1', taxNumber: '', wpsEmployerId: '', gosiEmployerId: '', qiwaEstablishmentId: '', defaultCurrency: 'SAR',
@@ -40,12 +47,14 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; selfEmployeeId?: number; path?: string } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
   const errors: string[] = [];
   let created: { id: number; name: string; email: string } | null = null;
+  let draftApproved = false;
+  const requested: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
@@ -67,7 +76,8 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     employeeId: p.id, employeeName: p.name, employeeCode: p.code, workEmail: p.email || null, state: p.state,
     codeExpiresAtUtc: p.state === 'code_given' ? EXPIRES : null, codeIssuedByName: p.issuer ?? null,
     lastCodeExpiredAtUtc: null, lastSignInAtUtc: p.state === 'active' ? '2026-10-01T06:30:00Z' : null,
-    stoppedReason: p.stoppedReason ?? null, blockedCode: p.blockedCode ?? null, blockedReason: p.blockedCode ? 'Server English' : null, canIssue: true,
+    stoppedReason: p.stoppedReason ?? null, blockedCode: p.blockedCode ?? null, blockedReason: p.blockedCode ?? null, canIssue: !p.reasonCode,
+    reasonCode: p.reasonCode ?? null,
     emailDelivery: !!opts.emailDelivery,
   });
 
@@ -76,6 +86,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     const url = new URL(request.url());
     const pathname = url.pathname;
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    requested.push(pathname);
 
     if (request.method() !== 'GET') {
       const body = request.postDataJSON();
@@ -124,6 +135,12 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
         return json({ domain: 'evostel.com', pattern: 'first.last', localPart: lp, workEmail: `${lp}@evostel.com`, unique: true, suggestion: lp, status: 'derived', suggestedWorkEmail: `${lp}@evostel.com` });
       }
       if (pathname === '/api/employees/duplicate-check') return json({ matches: [] });
+      if (pathname === '/api/employees/drafts/d-1/approve') {
+        draftApproved = true;
+        const rana = people.find((p) => p.id === 49)!;
+        delete rana.reasonCode;
+        return json(detail(rana));
+      }
       if (pathname === '/api/employees') {
         const b = body as { englishName: string; workEmail?: string };
         if (opts.createReturns422) return json({ error: 'work_email_plus_address', message: 'English server text' }, 422);
@@ -135,7 +152,8 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
 
     if (pathname === '/api/auth/me') return json({
       id: 'hr-1', tenantId: 't1', email: 'hr@evostel.com', fullName: 'Hana HR', roles: ['HR Manager'], accountType: 'Group', isGroupScope: true, companies: [],
-      permissions: ['employees.read', 'employees.write', 'employees.access.issue', 'employees.access.reset'],
+      employeeId: opts.selfEmployeeId,
+      permissions: ['employees.read', 'employees.write', 'employees.approve', 'employees.access.issue', ...(opts.noReset ? [] : ['employees.access.reset'])],
     });
     if (pathname === '/api/employees') {
       listQueries.push(url.search);
@@ -146,6 +164,21 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
       const items = people.filter((p) => (!access || access.split(',').includes(p.state)) && p.name.toLowerCase().includes(search)).map(listItem);
       return json({ items, total: items.length, page: Number(url.searchParams.get('page') ?? 1), pageSize: 25 });
     }
+    if (pathname === '/api/employee-access/summary') {
+      const counts: Record<string, number> = {};
+      for (const p of people) counts[p.state] = (counts[p.state] ?? 0) + 1;
+      return json(counts);
+    }
+    if (pathname === '/api/tenant-admin/usage') return json({ message: 'Access Denied' }, 403);
+    if (pathname === '/api/employees/drafts') return json({
+      items: [{ ...DRAFT, status: draftApproved ? 'Activated' : 'PendingHrApproval', activatedEmployeeId: draftApproved ? 49 : null }],
+      total: 1, page: 1, pageSize: 25, counts: { awaitingApproval: draftApproved ? 0 : 1, draft: 0, activated: draftApproved ? 1 : 0, rejected: 0, cancelled: 0 },
+    });
+    if (pathname === '/api/employees/drafts/d-1') return json({
+      summary: { ...DRAFT, status: 'PendingHrApproval' },
+      draft: { id: 'd-1', status: 'PendingHrApproval', englishName: 'Rana Saeed', arabicName: 'رنا سعيد', personalEmail: '', workEmail: 'rana.saeed@evostel.com', phone: '', nationality: 'Saudi', countryCode: 'SA', department: 'IT', designation: 'Officer', branch: 'Riyadh HQ', workLocation: '', joiningDate: '2026-10-20', contractType: 'Unlimited', probationEndDate: null, salary: null },
+      documentCount: 0, activationCheck: { canActivate: true, resolvedCompanyName: 'Evostel', problems: [], advisories: [] },
+    });
     const accessMatch = /^\/api\/employee-access\/(\d+)$/.exec(pathname);
     if (accessMatch) {
       const id = Number(accessMatch[1]);
@@ -162,16 +195,17 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     }
     if (/\/readiness$/.test(pathname) || pathname === '/api/employees/field-catalog') return json({ message: 'not here' }, 404);
     if (pathname === '/api/companies') return json({ items: [COMPANY], total: 1, page: 1, pageSize: 100 });
-    if (pathname === '/api/tenant-admin/usage') return json({ activeEmployees: 7, maxEmployees: 0, activeUsers: 3, maxUsers: 20, storageUsedMb: 1 });
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', currencyCode: 'SAR', countryCode: 'SA' });
     if (pathname === '/api/features/disabled-keys' || pathname === '/api/features/modules' || pathname === '/api/notifications' || pathname.includes('help-text')) return json([]);
     return json({ items: [], total: 0, page: 1, pageSize: 100 });
   });
 
-  await page.goto('/people');
-  await expect(page.getByRole('heading', { name: 'Employee Management' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Open profile for Noah Williams' })).toBeVisible();
-  return { writes, listQueries, errors };
+  await page.goto(opts.path ?? '/people');
+  if (!opts.path) {
+    await expect(page.getByRole('heading', { name: 'Employee Management' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open profile for Noah Williams' })).toBeVisible();
+  }
+  return { writes, listQueries, errors, requested };
 }
 
 async function openProfile(page: Page, name: string): Promise<Locator> {
@@ -202,6 +236,7 @@ test('the Self-service card shows one status and one button per state', async ({
     ['Sara Ali', 'Waiting for work email', 'Add work email', /Add a work email so Sara Ali can sign in\./],
     ['Hamad Qahtani', 'Access stopped', null, /Access stopped because the employee has left the company\./],
     ['Fatima Zahrani', 'Needs admin help', null, /The company email ending .* is not set up\./],
+    ['Rana Saeed', 'No access yet', null, /No code has been given yet\./],
   ];
   for (const [name, label, button, detailText] of expectations) {
     const card = await openProfile(page, name);
@@ -215,6 +250,8 @@ test('the Self-service card shows one status and one button per state', async ({
       await expect(buttons).toHaveCount(0);
     }
     expect(await card.innerText()).not.toMatch(JARGON);
+    expect(await card.innerText()).not.toContain('Server English');
+    if (name === 'Rana Saeed') await expect(card.getByTestId('access-reason')).toHaveText('Waiting for approval. You can give access once Rana Saeed is approved.');
     if (name === 'Layla Haddad' && testInfo.project.name === 'desktop') await card.screenshot({ path: testInfo.outputPath('access-card.png') });
   }
   expect(errors).toEqual([]);
@@ -523,4 +560,63 @@ test('Add work emails flags rows the server would refuse before checking', async
   await expect(invalid.getByRole('listitem').nth(1)).toContainText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
   await expect(dialog.getByRole('button', { name: 'Check the list' })).toBeDisabled();
   expect(writes.filter((w) => w.path === '/api/employee-access/work-emails')).toHaveLength(0);
+});
+
+test('a different domain is refused, never quietly changed to the company one', async ({ page }) => {
+  const { writes } = await openPeople(page);
+  await page.getByRole('button', { name: 'Add Employee' }).first().click();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Noah Gmail');
+  const local = dialog.getByTestId('work-email-local-part');
+  await local.fill('noah@gmail.com');
+  await expect(local).toHaveValue('noah@gmail.com');
+  await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email must end in @evostel.com.');
+  await dialog.getByRole('button', { name: 'Create Employee' }).click();
+  expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
+  // Typing the company's own domain is just the full address.
+  await local.fill('noah@evostel.com');
+  await expect(local).toHaveValue('noah');
+  await expect(dialog.getByTestId('work-email-problem')).toHaveCount(0);
+});
+
+test('without the reset permission, a bulk skip never points at Reset sign-in', async ({ page }) => {
+  await openPeople(page, { noReset: true });
+  for (const name of ['Noah Williams', 'Omar Saleh']) await page.getByRole('checkbox', { name: `Select ${name}` }).check();
+  await page.getByRole('button', { name: 'Print sign-in slips (2)' }).click();
+  const skipped = page.getByTestId('sign-in-slips').getByTestId('skipped-list');
+  await expect(skipped.getByRole('listitem').filter({ hasText: 'Omar Saleh' })).toContainText("Ask an HR Manager to reset this person's sign-in.");
+  await expect(page.getByText("Use Reset sign-in on the person's profile.")).toHaveCount(0);
+});
+
+test('my own profile says I cannot give myself access', async ({ page }) => {
+  await openPeople(page, { selfEmployeeId: 42 });
+  const card = await openProfile(page, 'Noah Williams');
+  await expect(card.getByTestId('access-reason')).toHaveText("You can't give access to yourself.");
+  await expect(card.getByRole('button')).toHaveCount(0);
+});
+
+test('Print still explains a slip the system would only print', async ({ page }) => {
+  await openPeople(page, { emailDelivery: true });
+  await page.getByRole('checkbox', { name: 'Select Khalid Noor' }).check();
+  await page.getByRole('button', { name: 'Print sign-in slips (1)' }).click();
+  await expect(page.getByTestId('slips-delivery-note')).toHaveText('You entered these work emails, so print the slips and hand them over in person.');
+});
+
+test('the Self-service chips show counts, and no usage call is made without permission', async ({ page }) => {
+  const { requested } = await openPeople(page);
+  const chips = page.getByTestId('access-filter');
+  await expect(chips.getByRole('button', { name: /No access yet/ }).getByTestId('access-chip-count')).toHaveText('3');
+  await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('8');
+  expect(requested).not.toContain('/api/tenant-admin/usage');
+  await expect(page.getByText('Access Denied')).toHaveCount(0);
+});
+
+test('approving a new hire offers their sign-in slip', async ({ page }) => {
+  const { writes } = await openPeople(page, { path: '/people/new-hires' });
+  await page.getByRole('button', { name: 'Review and decide' }).click();
+  await page.getByRole('button', { name: 'Approve and activate' }).click();
+  const status = page.getByRole('status').filter({ hasText: 'Rana Saeed is now employee EMP-0049.' });
+  await status.getByRole('button', { name: 'Print sign-in slip' }).click();
+  await expect(page.getByTestId('sign-in-slip')).toHaveCount(1);
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49], delivery: 'print' }]);
 });

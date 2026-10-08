@@ -34,10 +34,14 @@ export interface EmployeeAccessDto {
   codeIssuedByName: string | null;
   lastCodeExpiredAtUtc: string | null;
   lastSignInAtUtc: string | null;
+  /** A code: left_company | disabled_by_admin. Never shown as text. */
   stoppedReason: string | null;
   blockedCode: string | null;
+  /** A code, like blockedCode. Never shown as text. */
   blockedReason: string | null;
   canIssue: boolean;
+  /** Why HR can't act right now, as a code (e.g. awaiting_approval, cannot_issue_for_self). */
+  reasonCode?: string | null;
   /** The tenant can email codes: "Email sign-in code" leads, "Print sign-in slip" is second. */
   emailDelivery?: boolean;
 }
@@ -97,6 +101,9 @@ export interface WorkEmailBackfillResult {
   saved: number;
 }
 
+/** GET api/employee-access/summary: how many employees are in each state (the filter chips' counts). */
+export type EmployeeAccessSummary = Partial<Record<EmployeeAccessState, number>>;
+
 /** The API's batch ceilings (section 4). */
 export const MAX_CODES_PER_REQUEST = 500;
 export const MAX_WORK_EMAIL_ROWS = 2000;
@@ -104,6 +111,9 @@ export const MAX_WORK_EMAIL_ROWS = 2000;
 export const employeeAccessApi = {
   get: (employeeId: number) =>
     client.get<EmployeeAccessDto>(`/api/employee-access/${employeeId}`).then((r) => r.data),
+
+  summary: () =>
+    client.get<EmployeeAccessSummary>('/api/employee-access/summary').then((r) => r.data),
 
   /**
    * Give access / Give new code for one employee or many (max 500), or Reset sign-in for exactly one

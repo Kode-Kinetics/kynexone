@@ -3,7 +3,7 @@ import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CANONICAL_CONFLICT_CODES, CANONICAL_SKIP_CODES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
   WORK_EMAIL_ERROR_KEYS, appAddress, dateLine, formatWelcomeCode, pairUp, parseWorkEmailRows, skipReasonKey, sortSlips,
-  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey,
+  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey, workEmailDomainProblem, STOPPED_REASON_KEYS, BLOCKED_REASON_KEYS,
 } from '../src/lib/employeeAccess';
 
 // HR side of employee sign-in access (lib/employeeAccess.ts): the slip's formatting, the paste parser,
@@ -106,4 +106,16 @@ test('the work-email local part is checked with the server rule as HR types', ()
   expect(workEmailProblemKey('work_email_wrong_domain')).toBeNull();
   expect(workEmailErrorCode({ response: { status: 422, data: { error: 'work_email_invalid_characters' } } })).toBe('work_email_invalid_characters');
   expect(skipReasonKey('privileged_login')).toBe('This person has admin permissions. A security admin must reset their sign-in.');
+});
+
+test('a different domain is reported, the company one is fine, and reason codes have sentences', () => {
+  expect(workEmailDomainProblem('noah@gmail.com', 'evostel.com')).toBe('evostel.com');
+  expect(workEmailDomainProblem('noah@Evostel.com', 'evostel.com')).toBeNull();
+  expect(workEmailDomainProblem('noah', 'evostel.com')).toBeNull();
+  expect(workEmailDomainProblem('noah@gmail.com', '')).toBeNull();
+  expect(skipReasonKey('awaiting_approval')).toBe('Waiting for approval. You can give access once {name} is approved.');
+  expect(skipReasonKey('reset_requires_permission')).toBe("Ask an HR Manager to reset this person's sign-in.");
+  for (const key of [...Object.values(STOPPED_REASON_KEYS), ...Object.values(BLOCKED_REASON_KEYS)]) {
+    expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
+  }
 });
