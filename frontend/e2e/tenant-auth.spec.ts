@@ -17,7 +17,7 @@ test.describe('Tenant authentication', () => {
     expect(body.toLowerCase()).not.toContain('something went wrong');
   });
 
-  // `tenantLoginLive` already awaits waitForURL(/\/(dashboard|app)/), so
+  // `tenantLoginLive` already awaits waitForURL(/\/(dashboard|app|ess)/), so
   // `expect(page).not.toHaveURL(/\/login/)` only restates a precondition the
   // helper enforced — it cannot fail unless the helper already threw. Assert
   // instead that a real, correctly-scoped session was established: the app

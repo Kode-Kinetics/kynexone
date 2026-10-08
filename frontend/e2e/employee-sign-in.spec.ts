@@ -440,9 +440,12 @@ test.describe('app shell: a reset code issued while already signed in', () => {
     await page.route('**/api/**', async (route: Route) => {
       const url = new URL(route.request().url());
       const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-      // A user the shell renders without Self-Service data (this mock answers every list with []),
-      // so the page under the banner is the shell's own access screen, not a half-mocked /ess.
-      if (url.pathname === '/api/auth/me') return json({ ...session().user, permissions: ['ess.self'], pendingResetNotice: notice });
+      // An ordinary employee who may open /ess, so the page settles there: a user without ess.read
+      // was bounced /ess → /dashboard → error boundary in a loop on the production build, which
+      // remounted the whole shell under the test.
+      if (url.pathname === '/api/auth/me') return json({ ...session().user, pendingResetNotice: notice });
+      // The Self-Service payload is not this spec's business: a failed load keeps /ess in the shell.
+      if (url.pathname === '/api/ess/dashboard') return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
       if (url.pathname === '/api/auth/mfa/status') return json({ enabled: false, required: false, promptToEnroll: false });
       return json(route.request().method() === 'GET' ? [] : {});
     });
@@ -451,12 +454,17 @@ test.describe('app shell: a reset code issued while already signed in', () => {
   test('shows the notice from /api/auth/me and hides it for this session when dismissed', async ({ page }) => {
     await signedIn(page, { date: '2026-10-05T09:00:00Z' });
     await page.goto('/ess');
+    await expect(page).toHaveURL(/\/ess$/);
     const notice = page.getByTestId('reset-code-notice');
-    await expect(notice).toContainText("HR gave you a new sign-in code on");
-    await expect(notice).toContainText("If you didn't ask for it, tell HR.");
-    await expect(notice).toContainText('2026');
+    await expect(notice).toContainText(/HR gave you a new sign-in code on .*2026\. If you didn't ask for it, tell HR\./);
+    // Background requests may still be settling; let them, then dismiss (click retries on its own).
+    await page.waitForLoadState('networkidle').catch(() => {});
     await notice.getByRole('button', { name: 'Hide this message' }).click();
     await expect(notice).toHaveCount(0);
+    // A refreshed /api/auth/me with the same notice does not bring it back.
+    await page.goto('/ess/leave');
+    await expect(page.locator('main')).toBeVisible();
+    await expect(page.getByTestId('reset-code-notice')).toHaveCount(0);
     await page.reload();
     await expect(page.locator('main')).toBeVisible();
     await expect(page.getByTestId('reset-code-notice')).toHaveCount(0);
