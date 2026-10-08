@@ -166,7 +166,7 @@ export const SKIP_REASON_KEYS: Record<string, string> = {
   above_caller: 'This person has more permissions than you.',
   ceiling: 'This person has more permissions than you.',
   above_ceiling: 'This person has more permissions than you.',
-  privileged_login: 'This person has admin permissions. A security admin must reset their sign-in.',
+  privileged_login: 'This person has HR or admin permissions. A security admin must reset their sign-in.',
   blocked: 'This needs a system admin first.',
   company_email_domain_missing: 'This needs a system admin first.',
   email_belongs_to_existing_login: 'This needs a system admin first.',

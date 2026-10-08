@@ -65,7 +65,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
 
   const listItem = (p: Person) => ({
     id: p.id, publicId: `p-${p.id}`, employeeCode: p.code, fullName: p.name, arabicName: p.arabicName, department: p.department,
-    designation: 'Officer', branch: p.branch, status: p.leaver ? 'Terminated' : p.state === 'stopped' ? 'Resigned' : 'Active', profileCompletenessScore: 90,
+    designation: 'Officer', branch: p.branch, status: p.leaver ? 'Terminated' : p.state === 'stopped' ? 'Resigned' : p.reasonCode ? 'Pre-boarding' : 'Active', profileCompletenessScore: 90,
     iqamaNumber: '', readinessState: 'Ready', activationBlockersCount: 0, workEmail: p.email || null, accessState: p.state,
   });
   const detail = (p: Person) => ({
@@ -150,6 +150,11 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
         return json({ domain: 'evostel.com', pattern: 'first.last', localPart: lp, workEmail: `${lp}@evostel.com`, unique: true, suggestion: lp, status: 'derived', suggestedWorkEmail: `${lp}@evostel.com` });
       }
       if (pathname === '/api/employees/duplicate-check') return json({ matches: [] });
+      if (pathname === '/api/employees/49/activate') {
+        const rana = people.find((p) => p.id === 49)!;
+        delete rana.reasonCode;
+        return json(detail(rana));
+      }
       if (pathname === '/api/employees/drafts/d-1/approve') {
         draftApproved = true;
         const rana = people.find((p) => p.id === 49)!;
@@ -654,7 +659,9 @@ test('the Self-service chips show counts, and no usage call is made without perm
   const { requested } = await openPeople(page);
   const chips = page.getByTestId('access-filter');
   await expect(chips.getByRole('button', { name: /No access yet/ }).getByTestId('access-chip-count')).toHaveText('3');
-  await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('9');
+  // Everyone = the default list (leavers excluded); Access stopped still counts the leaver.
+  await expect(chips.getByRole('button', { name: /Everyone/ }).getByTestId('access-chip-count')).toHaveText('8');
+  await expect(chips.getByRole('button', { name: /Access stopped/ }).getByTestId('access-chip-count')).toHaveText('2');
   expect(requested).not.toContain('/api/tenant-admin/usage');
   await expect(page.getByText('Access Denied')).toHaveCount(0);
 });
@@ -680,4 +687,16 @@ test('Add work emails falls back to each status when the save response has no st
   await expect(dialog.getByText('Give access to these employees now (1)?')).toBeVisible();
   await expect(dialog.getByTestId('work-emails-awaiting')).toHaveText('Waiting for approval, so not included: 1.');
   expect(requested).toContain('/api/employee-access/49');
+});
+
+test('Activate employee offers the sign-in slip: Add, Activate, Print', async ({ page }) => {
+  const { writes } = await openPeople(page);
+  await page.getByRole('button', { name: 'Open profile for Rana Saeed' }).click();
+  await page.getByRole('button', { name: 'Activate employee' }).click();
+  const prompt = page.getByRole('dialog').filter({ has: page.getByTestId('employee-activated') });
+  await expect(prompt.getByTestId('employee-activated')).toHaveText('Rana Saeed is now active.');
+  await expect(prompt.getByRole('button', { name: 'Later' })).toBeVisible();
+  await prompt.getByRole('button', { name: 'Print sign-in slip' }).click();
+  await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('2718 2818');
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49] }]);
 });

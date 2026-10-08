@@ -277,6 +277,7 @@ export function EmployeesPage() {
   // Self-service (sign-in access) filter chip: one state, or everyone.
   const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
   const [accessSummary, setAccessSummary] = useState<EmployeeAccessSummary | null>(null);
+  const [everyoneCount, setEveryoneCount] = useState<number | null>(null);
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
   // `selectedIds` = page-level picks (persist across pages while the filter is unchanged).
   // `selectAllMatching` = act on the ENTIRE server-resolved filtered set across all pages, not just
@@ -380,6 +381,8 @@ export function EmployeesPage() {
   const [singleWorkEmailBusy, setSingleWorkEmailBusy] = useState(false);
   const [singleWorkEmailError, setSingleWorkEmailError] = useState('');
   // Add Employee → "{name} has been added." with the one next step.
+  // Activate employee → "{name} is now active." with the same one next step.
+  const [activatedPrompt, setActivatedPrompt] = useState<{ id: number; name: string; access: EmployeeAccessDto } | null>(null);
   const [createdEmployee, setCreatedEmployee] = useState<{ id: number; name: string; access: EmployeeAccessDto | null } | null>(null);
 
   const surfaceAdvisoryWarning = (payload: unknown) => {
@@ -447,6 +450,8 @@ export function EmployeesPage() {
         setEmployees(res.items);
         // The chip counts follow the list (an issue or a saved work email changes both).
         void employeeAccessApi.summary().then(setAccessSummary).catch(() => setAccessSummary(null));
+        // "Everyone" is the default list's total (leavers excluded), not the sum of the chips.
+        void employeesApi.list({ page: 1, pageSize: 1 }).then((r) => setEveryoneCount(r.total)).catch(() => setEveryoneCount(null));
         setTotal(res.total);
         // Remembered so a selection that spans pages still knows each person's self-service state.
         for (const item of res.items) seenRowsRef.current.set(item.id, item);
@@ -1358,6 +1363,14 @@ export function EmployeesPage() {
       setActionNotice('Employee activated and is now live.');
       await load();
       loadReadiness(selectedId);
+      // Add → Activate → Print: offer the sign-in slip when the status says it can be given now.
+      if (canIssueAccess) {
+        const access = await employeeAccessApi.get(updated.id).catch(() => null);
+        if (access && access.canIssue && BULK_PRINTABLE_STATES.has(access.state)) {
+          setActivatedPrompt({ id: updated.id, name: updated.fullName, access });
+        }
+        setAccessRefresh((n) => n + 1);
+      }
     } catch (e: unknown) {
       // Readiness gate (422): render the returned blocking[] inline via the same checklist
       // component — single source of truth = server, never a red banner (§8.3).
@@ -1589,9 +1602,9 @@ export function EmployeesPage() {
                 className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${accessFilter === state ? 'border-sapphire bg-sapphire text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/[0.07]'}`}
               >
                 {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
-                {accessSummary && (
+                {accessSummary && (state || everyoneCount !== null) && (
                   <span className={`ms-1.5 rounded-full px-1.5 text-[11px] tabular-nums ${accessFilter === state ? 'bg-white/20' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`} data-testid="access-chip-count">
-                    {state ? accessSummary[state] ?? 0 : EMPLOYEE_ACCESS_STATES.reduce((sum, s) => sum + (accessSummary[s] ?? 0), 0)}
+                    {state ? accessSummary[state] ?? 0 : everyoneCount}
                   </span>
                 )}
               </button>
@@ -2597,6 +2610,41 @@ export function EmployeesPage() {
         <p className="text-sm text-slate-700 dark:text-slate-200" data-testid="bulk-print-confirm">
           {t('Some selected employees already have a code. Their old codes will stop working. Continue?')}
         </p>
+      </Modal>
+
+      <Modal
+        isOpen={activatedPrompt !== null}
+        title={t('Self-service')}
+        size="md"
+        onClose={() => setActivatedPrompt(null)}
+        footer={activatedPrompt && (
+          <>
+            <button type="button" onClick={() => setActivatedPrompt(null)} className="btn-secondary">{t('Later')}</button>
+            {(activatedPrompt.access.emailDelivery ? (['print', 'email'] as const) : (['print'] as const)).map((delivery) => (
+              <button
+                key={delivery}
+                type="button"
+                disabled={welcome.busy}
+                onClick={() => {
+                  const { id, name, access } = activatedPrompt;
+                  setActivatedPrompt(null);
+                  void welcome.issue([id], { names: { [id]: name }, delivery: access.emailDelivery ? delivery : undefined, companyEmails: !!access.emailDelivery });
+                }}
+                className={`${delivery === 'email' || !activatedPrompt.access.emailDelivery ? 'btn-primary' : 'btn-secondary'} disabled:opacity-60`}
+              >
+                {delivery === 'email' ? <Mail className="h-4 w-4" aria-hidden="true" /> : <Printer className="h-4 w-4" aria-hidden="true" />}
+                {delivery === 'email' ? t('Email sign-in code') : t('Print sign-in slip')}
+              </button>
+            ))}
+          </>
+        )}
+      >
+        {activatedPrompt && (
+          <p className="flex items-center gap-2 py-2 text-base font-bold text-slate-900 dark:text-white" data-testid="employee-activated">
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
+            {t('{name} is now active.', { name: activatedPrompt.name })}
+          </p>
+        )}
       </Modal>
 
       {welcome.view}
