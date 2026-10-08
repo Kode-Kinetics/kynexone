@@ -333,13 +333,13 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
                 && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null && e.CreatedAtUtc > inFlightSince, ct))
             return (null, AttendanceRefusals.SelfieUploadInProgress);
         var since = now.AddHours(-1);
-        // Busy (no file was written), Timeout and Aborted (the transfer never completed) do not count (review 2, item 7;
-        // hardening); a stored selfie and any storage failure, waived or denied, do.
+        // Busy (no file was written) and Timeout (the server gave up on the write) are the server's and do not count
+        // (review 2, item 7; hardening). An Aborted attempt does: the client went away, and a client must not be able to
+        // retry without limit by abandoning uploads. A stored selfie and any storage failure, waived or denied, count too.
         var attempts = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since
                                                                    && (e.FailedReason == null
                                                                        || (e.FailedReason != SelfieUploadFailureReasons.Busy
-                                                                           && e.FailedReason != SelfieUploadFailureReasons.Timeout
-                                                                           && e.FailedReason != SelfieUploadFailureReasons.Aborted)), ct);
+                                                                           && e.FailedReason != SelfieUploadFailureReasons.Timeout)), ct);
         if (attempts >= AttendanceVerificationService.MaxUploadsPerHour) return (null, AttendanceRefusals.RateLimited);
 
         var id = Guid.NewGuid();

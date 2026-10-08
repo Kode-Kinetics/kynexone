@@ -104,8 +104,8 @@ public static class SelfieUploadFailureReasons
     /// <summary>The server's 45 s upload deadline fired during the storage write. The write may still land late, so the
     /// row is never removed: it stays Pending for the sweeper. Does not count toward the hourly limit.</summary>
     public const string Timeout = "Timeout";
-    /// <summary>The client went away while the file was being written. Pending for the sweeper; does not count toward the
-    /// hourly limit.</summary>
+    /// <summary>The client went away while the file was being written. Pending for the sweeper; COUNTS toward the hourly
+    /// limit (the client caused it).</summary>
     public const string Aborted = "Aborted";
     /// <summary>A storage failure that was refused a waiver (another attempt of the employee was in flight). Pending for the
     /// sweeper; counts toward the hourly limit like any storage failure.</summary>

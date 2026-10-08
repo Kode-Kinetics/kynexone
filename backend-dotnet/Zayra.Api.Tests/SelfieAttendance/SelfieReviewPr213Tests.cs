@@ -71,6 +71,22 @@ public sealed class SelfieReviewPr213Tests
         Assert.Equal(201, (await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg()) as ObjectResult)?.StatusCode);
     }
 
+    /// <summary>Narrow verification of #213, item 4: an Aborted attempt (the client went away) DOES count toward the hourly limit.</summary>
+    [Fact]
+    public async Task Item4_AnAbortedRow_CountsTowardTheHourlyLimit()
+    {
+        var w = await RequiredAsync();
+        var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
+        for (var i = 0; i < 9; i++) w.Db.AttendanceEvidence.Add(Stored(w));
+        w.Db.AttendanceEvidence.Add(Pending(w, minutesAgo: 5, failedReason: "Aborted"));
+        await w.Db.SaveChangesAsync();
+
+        var result = await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg());
+
+        Assert.Equal(429, (result as ObjectResult)?.StatusCode);
+        Assert.Equal("selfie_rate_limited", SelfieWorld.CodeOf(result));
+    }
+
     // ── Item 7: closed-as-failed attempts stop counting as in flight ────────────────────────────────────────
 
     [Fact]
