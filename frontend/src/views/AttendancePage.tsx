@@ -43,6 +43,8 @@ import type {
   DeviceKeyResult,
 } from '../api/attendance';
 import { employeesApi } from '../api/employees';
+import { SelfieViewerModal } from '../components/attendance/SelfieViewerModal';
+import { useLocale } from '../contexts/LocaleContext';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
 import { useAuth } from '../contexts/AuthContext';
@@ -616,7 +618,7 @@ export function AttendancePage() {
             </form>}
           </div>
           <Panel title="Raw Punch Logs" action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
-            {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} />}
+            {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}
           </Panel>
         </div>
       )}
@@ -954,16 +956,28 @@ function DeviceTable({
   );
 }
 
-function RawTable({ rows }: { rows: AttendanceRawEvent[] }) {
+function RawTable({ rows, canViewSelfie }: { rows: AttendanceRawEvent[]; canViewSelfie: boolean }) {
+  const { t } = useLocale();
+  // The punch whose selfie HR is reviewing. The server says which punches have one (hasSelfie), never where it is stored.
+  const [viewing, setViewing] = useState<{ id: string; employee: string; time: string } | null>(null);
+  const closeViewer = useCallback(() => setViewing(null), []);
   if (rows.length === 0) return <Empty text="No raw attendance events found for this date." />;
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{['Timestamp', 'Employee', 'Source', 'Direction', 'Method', 'Processed'].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}{canViewSelfie && <th className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{t('Selfie')}</th>}</tr></thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-          {rows.map((r) => <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{dateTime(r.punchTimestampUtc)}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.employeeCode || r.employeeId}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td></tr>)}
+          {rows.map((r) => {
+            const employee = r.employeeCode || String(r.employeeId ?? '');
+            const time = dateTime(r.punchTimestampUtc);
+            return <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{time}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={r.punchDirection} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? 'Processed' : 'Raw'} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td>{canViewSelfie && <td className="px-4 py-3">{r.hasSelfie && (
+              <button type="button" className="btn-secondary px-3 py-1 text-xs" aria-label={t('View selfie for the punch by {employee} at {time}', { employee, time })}
+                onClick={() => setViewing({ id: r.id, employee, time })}>{t('View selfie')}</button>
+            )}</td>}</tr>;
+          })}
         </tbody>
       </table>
+      {viewing && <SelfieViewerModal rawEventId={viewing.id} employee={viewing.employee} time={viewing.time} onClose={closeViewer} />}
     </div>
   );
 }

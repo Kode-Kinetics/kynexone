@@ -84,6 +84,8 @@ export interface AttendanceRawEvent {
   confidenceScore?: number;
   isProcessed: boolean;
   createdAtUtc: string;
+  /** A stored selfie (not yet deleted under retention) backs this punch; HR opens it with evidence.selfie(id). */
+  hasSelfie?: boolean;
 }
 
 export interface AttendanceRawEventRequest {
@@ -251,6 +253,12 @@ export const attendanceApi = {
       client.post<AttendanceImportBatch>('/api/attendance/events/import', data).then((r) => r.data),
     raw: (params: { employeeId?: number; from?: string; to?: string; processed?: boolean; page?: number; pageSize?: number } = {}) =>
       client.get<PagedResult<AttendanceRawEvent>>('/api/attendance/events/raw', { params }).then((r) => r.data),
+  },
+
+  evidence: {
+    /** HR's review view: the JPEG behind one punch (attendance.evidence.view; audited; never the caller's own punch). */
+    selfie: (rawEventId: string) =>
+      client.get<Blob>(`/api/attendance/evidence/${encodeURIComponent(rawEventId)}/selfie`, { responseType: 'blob' }).then((r) => r.data),
   },
 
   punch: {
