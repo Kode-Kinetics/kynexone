@@ -358,7 +358,10 @@ public sealed record AttendanceVerificationPolicy(
     bool GeofenceEnforced,
     int MaxAccuracyMeters,
     bool AllowMockedLocation,
-    string? SelfieOffReason = null);
+    string? SelfieOffReason = null,
+    // Set when selfie attendance is on ONLY because of the time-boxed demo exception (SelfieDemoExceptionOptions): the
+    // DPIA and residency gates were skipped, and every selfie taken now is deleted EvidenceRetentionDays after capture.
+    SelfieDemoExceptionGrant? DemoException = null);
 
 /// <summary>A work site the geofence measures against (a Setup → Locations row with coordinates and a radius).</summary>
 public sealed record GeofenceSite(Guid Id, string Name, decimal Latitude, decimal Longitude, decimal RadiusMeters);
@@ -479,15 +482,25 @@ public sealed class AttendanceVerificationService
     private readonly ZayraDbContext _db;
     private readonly StorageResidency _residency;
     private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
+    private readonly SelfieDemoExceptionOptions _demoException;
+    private readonly ILogger<AttendanceVerificationService>? _log;
+
+    /// <summary>Tenants (with the expiry announced) whose demo-exception audit row this process has written.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Guid TenantId, DateTime ExpiresUtc), byte> DemoExceptionAnnounced = new();
 
     /// <param name="residency">Where this deploy stores documents. Without one nothing is resident, so selfie attendance is OFF.</param>
-    /// <param name="configuration">Read for <see cref="RequirePlatformHeaderForUnsupportedKey"/> (absent = false).</param>
+    /// <param name="configuration">Read for <see cref="RequirePlatformHeaderForUnsupportedKey"/> (absent = false), and for the
+    /// <see cref="SelfieDemoExceptionOptions.SectionName"/> section when <paramref name="demoException"/> is not given.</param>
+    /// <param name="demoException">The bound demo exception (Program.cs registers it); absent = none.</param>
     public AttendanceVerificationService(ZayraDbContext db, StorageResidency? residency = null,
-        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null,
+        SelfieDemoExceptionOptions? demoException = null, ILogger<AttendanceVerificationService>? log = null)
     {
         _db = db;
         _residency = residency ?? StorageResidency.Unconfigured;
         _configuration = configuration;
+        _demoException = demoException ?? SelfieDemoExceptionOptions.From(configuration);
+        _log = log;
     }
 
     /// <summary>Whether "Unsupported" without an X-Client-Platform header is refused under the geofence (default false).</summary>
@@ -522,15 +535,75 @@ public sealed class AttendanceVerificationService
                             + $"then {SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson) ?? "not recorded"}). A platform Owner must switch it on again.";
         }
         var selfieOn = selfie is not null && offReason is null;
+
+        // The owner's time-boxed demo exception (SelfieDemoExceptionOptions): for a listed tenant before the expiry, the
+        // feature is on WITHOUT the DPIA and residency gates — and only those. Consent stays required, the selfie is never
+        // required (requireSelfieForConsented false), the geofence is untouched. A tenant already fully signed off keeps
+        // its own policy and its normal retention: the exception never applies on top of it.
+        SelfieDemoExceptionGrant? demo = null;
+        if (!selfieOn && await DemoExceptionForAsync(tenantId, ct) is { } grant)
+        {
+            demo = grant;
+            selfieOn = true;
+            offReason = null;
+            await AnnounceDemoExceptionAsync(tenantId, grant, ct);
+        }
+
         var (enforced, maxAccuracy, allowMocked) = PunchGeofenceConfig.Parse(geofence?.ConfigJson);
         return new AttendanceVerificationPolicy(
             selfieOn,
-            selfieOn && SelfieAttendanceConfig.RequireSelfieForConsented(selfie!.ConfigJson),
+            selfieOn && demo is null && SelfieAttendanceConfig.RequireSelfieForConsented(selfie!.ConfigJson),
             SelfieAttendanceConfig.ConsentPolicyVersion(selfie?.ConfigJson),
             geofence is not null && enforced,
             maxAccuracy,
             allowMocked,
-            offReason);
+            offReason,
+            demo);
+    }
+
+    /// <summary>The demo exception's grant for this tenant now (by its slug), or null. No query unless it is active at all.</summary>
+    public async Task<SelfieDemoExceptionGrant?> DemoExceptionForAsync(Guid tenantId, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (!_demoException.IsActive(now)) return null;
+        var slug = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Slug).FirstOrDefaultAsync(ct);
+        return _demoException.GrantFor(slug, now);
+    }
+
+    /// <summary>
+    /// The first policy read per tenant per process (per expiry) under the demo exception writes one audit row saying it is
+    /// active, with the slug, the expiry and who approved it. Written only on a clean context outside a transaction, so it
+    /// never commits a caller's staged changes early; otherwise the next read writes it.
+    /// </summary>
+    private async Task AnnounceDemoExceptionAsync(Guid tenantId, SelfieDemoExceptionGrant grant, CancellationToken ct)
+    {
+        var key = (tenantId, grant.ExpiresUtc);
+        if (DemoExceptionAnnounced.ContainsKey(key)) return;
+        if (_db.ChangeTracker.HasChanges() || (_db.Database.IsRelational() && _db.Database.CurrentTransaction is not null)) return;
+        if (!DemoExceptionAnnounced.TryAdd(key, 0)) return;
+        var row = new AttendanceAuditLog
+        {
+            TenantId = tenantId,
+            UserId = null,
+            Action = SelfieDemoExceptionGrant.ActiveAction,
+            EntityName = "Tenant",
+            EntityId = tenantId.ToString(),
+            MetadataJson = JsonSerializer.Serialize(grant.AuditFields),
+        };
+        try
+        {
+            _db.AttendanceAuditLogs.Add(row);
+            await _db.SaveChangesAsync(ct);
+            _log?.LogWarning("Selfie demo exception ACTIVE for tenant {TenantSlug} ({TenantId}) until {ExpiresUtc:O}, approved by {ApprovedBy}: DPIA and residency gates skipped.",
+                grant.TenantSlug, tenantId, grant.ExpiresUtc, grant.ApprovedBy);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Not announced: the next policy read tries again. The policy itself never fails because of the audit.
+            DemoExceptionAnnounced.TryRemove(key, out _);
+            _db.Entry(row).State = EntityState.Detached;
+            _log?.LogWarning(ex, "Could not write the selfie demo-exception audit row for tenant {TenantId}; retrying on the next read.", tenantId);
+        }
     }
 
     /// <summary>The employee's open consent for the CURRENT policy version, or null.</summary>

@@ -146,7 +146,7 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             return StatusCode(StatusCodes.Status403Forbidden, AttendanceRefusals.ConsentRequired.Body);
         if (Request.ContentLength > MaxRequestBytes) return TooLarge();
 
-        var (attempt, refusal) = await ReserveAttemptAsync(tenantId, employeeId, policy.ConsentPolicyVersion, ct);
+        var (attempt, refusal) = await ReserveAttemptAsync(tenantId, employeeId, policy.ConsentPolicyVersion, policy.DemoException, ct);
         if (refusal is not null) return refusal;
 
         // The hard deadline (UploadDeadline) on the body read, the decode and the storage write together: a drip-fed body
@@ -214,7 +214,7 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             return StatusCode(StatusCodes.Status503ServiceUnavailable, AttendanceRefusals.SelfieStorageUnavailable.BodyWith(punchWithoutSelfie));
         }
 
-        return await ActivateAsync(tenantId, employeeId, policy.ConsentPolicyVersion, attempt, sha256, jpeg.Length, ct);
+        return await ActivateAsync(tenantId, employeeId, policy.ConsentPolicyVersion, attempt, sha256, jpeg.Length, policy.DemoException, ct);
     }
 
     /// <summary>
@@ -309,10 +309,10 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// derived from its id. Commits before the body is read.
     /// </summary>
     private async Task<(AttendanceEvidence? Attempt, IActionResult? Refusal)> ReserveAttemptAsync(
-        Guid tenantId, int employeeId, string policyVersion, CancellationToken ct)
+        Guid tenantId, int employeeId, string policyVersion, SelfieDemoExceptionGrant? demo, CancellationToken ct)
     {
         var (attempt, refusal) = await SelfieConsentLock.RunAsync(Db, tenantId, employeeId,
-            () => ReserveCoreAsync(tenantId, employeeId, policyVersion, ct), ct);
+            () => ReserveCoreAsync(tenantId, employeeId, policyVersion, demo, ct), ct);
         return refusal switch
         {
             null => (attempt, null),
@@ -323,7 +323,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         };
     }
 
-    private async Task<(AttendanceEvidence?, AttendanceRefusal?)> ReserveCoreAsync(Guid tenantId, int employeeId, string policyVersion, CancellationToken ct)
+    private async Task<(AttendanceEvidence?, AttendanceRefusal?)> ReserveCoreAsync(Guid tenantId, int employeeId, string policyVersion,
+        SelfieDemoExceptionGrant? demo, CancellationToken ct)
     {
         if (await Verification.ActiveConsentAsync(tenantId, employeeId, policyVersion, ct) is null)
             return (null, AttendanceRefusals.ConsentRequired);
@@ -353,6 +354,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             PurgeState = AttendanceEvidencePurgeStates.Pending,
             CreatedAtUtc = now,
             ExpiresAtUtc = now + AttendanceVerificationService.EvidenceLifetime,
+            // Taken under the demo exception: stamped NOW, so the purge deletes it on time even after the exception expires.
+            PurgeDueAtUtc = demo is null ? null : now + demo.EvidenceRetention,
         };
         Db.AttendanceEvidence.Add(evidence);
         await Db.SaveChangesAsync(ct);
@@ -429,7 +432,7 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// Purged, so the 1-hour sweeper retries it.
     /// </summary>
     private async Task<IActionResult> ActivateAsync(Guid tenantId, int employeeId, string policyVersion, AttendanceEvidence attempt,
-        string sha256, int byteSize, CancellationToken ct)
+        string sha256, int byteSize, SelfieDemoExceptionGrant? demo, CancellationToken ct)
     {
         var (activated, refusal) = await SelfieConsentLock.RunAsync(Db, tenantId, employeeId, async () =>
         {
@@ -453,7 +456,14 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
                 .ToListAsync(ct);
             foreach (var waiver in open) waiver.WaiverCancelledAtUtc = now;
             Audit(tenantId, "attendance.selfie.uploaded", "AttendanceEvidence", row.Id.ToString(),
-                new { employeeId, sha256, byteSize, expiresAtUtc = row.ExpiresAtUtc, waiversCancelled = open.Select(w => w.Id) });
+                new
+                {
+                    employeeId, sha256, byteSize, expiresAtUtc = row.ExpiresAtUtc, waiversCancelled = open.Select(w => w.Id),
+                    // Taken under the demo exception (no DPIA, storage outside KSA): when it is deleted, and on whose approval.
+                    underDemoException = row.PurgeDueAtUtc is not null,
+                    purgeDueAtUtc = row.PurgeDueAtUtc,
+                    demoException = row.PurgeDueAtUtc is null ? null : demo?.AuditFields,
+                });
             await Db.SaveChangesAsync(ct);
             return (row, (AttendanceRefusal?)null);
         }, ct);
@@ -817,6 +827,8 @@ public sealed class EssAttendanceVerificationController : SelfieAttendanceContro
                 consent = consent is null ? null : new { consent.PolicyVersion, consent.GivenAtUtc, consent.Channel },
                 evidenceLifetimeSeconds = (int)AttendanceVerificationService.EvidenceLifetime.TotalSeconds,
                 maxUploadsPerHour = AttendanceVerificationService.MaxUploadsPerHour,
+                // Only under the owner's time-boxed demo exception: shown before consent and when taking the selfie.
+                demoNotice = policy.DemoException is { } demo ? new { message = demo.NoticeEn, messageAr = demo.NoticeAr } : null,
             },
             ["geofence"] = new
             {

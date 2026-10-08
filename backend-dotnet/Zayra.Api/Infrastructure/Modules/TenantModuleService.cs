@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Zayra.Api.Data;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Modules;
 
@@ -68,11 +69,17 @@ public sealed class TenantModuleService : ITenantModuleService
 
     private readonly ZayraDbContext _db;
     private readonly IMemoryCache _cache;
+    private readonly Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions? _selfieDemoException;
 
-    public TenantModuleService(ZayraDbContext db, IMemoryCache cache)
+    /// <param name="selfieDemoException">The owner's time-boxed selfie demo exception (Program.cs registers it): a listed
+    /// tenant sees <c>selfie_attendance</c> on until the expiry, so the global guard lets its upload route through (the
+    /// upload still applies the full policy itself). Absent = none.</param>
+    public TenantModuleService(ZayraDbContext db, IMemoryCache cache,
+        Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions? selfieDemoException = null)
     {
         _db = db;
         _cache = cache;
+        _selfieDemoException = selfieDemoException;
     }
 
     private static long GenerationOf(Guid tenantId) => Generations.GetValueOrDefault(tenantId, 0);
@@ -112,6 +119,20 @@ public sealed class TenantModuleService : ITenantModuleService
             .Select(f => f.FeatureKey)
             .ToListAsync(ct);
 
+        // The selfie demo exception: a listed tenant before the expiry has selfie_attendance on without a flag row.
+        var ttl = CacheTtl;
+        var now = DateTime.UtcNow;
+        if (_selfieDemoException?.IsActive(now) == true && !enabledOptIn.Contains(FeatureKeys.SelfieAttendance))
+        {
+            var slug = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Slug).FirstOrDefaultAsync(ct);
+            if (_selfieDemoException.GrantFor(slug, now) is { } grant)
+            {
+                enabledOptIn.Add(FeatureKeys.SelfieAttendance);
+                // Never cache the "on" past the expiry.
+                if (grant.ExpiresUtc - now < ttl) ttl = grant.ExpiresUtc - now;
+            }
+        }
+
         var countryCode = await _db.TenantLocalizationSettings
             .AsNoTracking()
             .Where(l => l.TenantId == tenantId)
@@ -123,7 +144,7 @@ public sealed class TenantModuleService : ITenantModuleService
         // Only cache if the generation still holds. If a write landed while this read was in
         // flight, this result is already stale and must not be published.
         if (GenerationOf(tenantId) == generation)
-            _cache.Set(cacheKey, state, CacheTtl);
+            _cache.Set(cacheKey, state, ttl > TimeSpan.Zero ? ttl : TimeSpan.FromMilliseconds(1));
 
         return state;
     }
