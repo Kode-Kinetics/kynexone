@@ -21,7 +21,7 @@ import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, SkippedWelcomeCode } from '../api/employeeAccess';
-import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, WORK_EMAIL_ERROR_KEYS, workEmailErrorCode } from '../lib/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
@@ -687,6 +687,8 @@ export function EmployeesPage() {
 
   const saveSingleWorkEmail = async () => {
     if (!workEmailFor || !singleWorkEmail.trim()) return;
+    const localProblem = workEmailProblemKey(workEmailLocalProblem(singleWorkEmail));
+    if (localProblem) { setSingleWorkEmailError(t(localProblem)); return; }
     setSingleWorkEmailBusy(true);
     setSingleWorkEmailError('');
     try {
@@ -698,7 +700,8 @@ export function EmployeesPage() {
     } catch (e: unknown) {
       const code = workEmailErrorCode(e);
       const domain = companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain ?? '';
-      setSingleWorkEmailError(code === 'work_email_plus_address' ? t(WORK_EMAIL_ERROR_KEYS[code])
+      const problem = workEmailProblemKey(code);
+      setSingleWorkEmailError(problem ? t(problem)
         : code === 'work_email_wrong_domain' && domain ? t('Work email must end in @{domain}.', { domain })
           : describeApiError(e, t));
     } finally {
@@ -966,6 +969,11 @@ export function EmployeesPage() {
       setFormError('English full name is required.');
       return;
     }
+    const workEmailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
+    if (workEmailProblem) {
+      setFormError(t(workEmailProblem));
+      return;
+    }
     if (selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
       setFormError('Selected designation is restricted to a different grade.');
       return;
@@ -1024,8 +1032,8 @@ export function EmployeesPage() {
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
       if (status === 402) {
         setFormError('Your subscription is inactive or expired. Please contact support.');
-      } else if (workEmailErrorCode(e) === 'work_email_plus_address') {
-        setFormError(t(WORK_EMAIL_ERROR_KEYS.work_email_plus_address));
+      } else if (workEmailProblemKey(workEmailErrorCode(e))) {
+        setFormError(t(workEmailProblemKey(workEmailErrorCode(e))!));
       } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {
         setFormError(t('Work email must end in @{domain}.', { domain: selectedFormCompany.emailDomain }));
       } else if (status === 422 && data?.error === 'employee_limit_reached') {
@@ -1214,6 +1222,8 @@ export function EmployeesPage() {
 
   const saveEdit = async () => {
     if (!selectedId || editChangedKeys.length === 0) return;
+    const editEmailProblem = editChangedKeys.includes('workEmail') ? workEmailProblemKey(workEmailLocalProblem(editForm.workEmail)) : null;
+    if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
     setEditSaving(true);
     setEditNotice('');
     setActionNotice('');
@@ -1253,6 +1263,8 @@ export function EmployeesPage() {
         setEditSaving(false);
         return;
       }
+      const emailProblem = workEmailProblemKey(workEmailErrorCode(e));
+      if (emailProblem) { setEditNotice(t(emailProblem)); return; }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
       const detailMsg = data?.message ?? (data?.errors ? Object.entries(data.errors).map(([f, m]) => `${f}: ${m.join(' ')}`).join(' · ') : '');
       setEditNotice(detailMsg ? `Could not save — ${detailMsg}` : 'Could not save the changes. Please review the values and try again.');
@@ -2782,6 +2794,7 @@ function WorkEmailField({
   const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
 
   const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
+  const typedProblem = workEmailProblemKey(workEmailLocalProblem(value));
   const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
   const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
 
@@ -2871,6 +2884,7 @@ function WorkEmailField({
         </>
       )}
 
+      {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
       {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
 
       {changedFromOriginal && originalValue && (

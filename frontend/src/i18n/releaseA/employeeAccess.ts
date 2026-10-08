@@ -77,6 +77,8 @@ const en: Record<string, string> = {
   'Use': 'Use',
   'Work email must end in @{domain}.': 'Work email must end in @{domain}.',
   "Work email can't contain '+'.": "Work email can't contain '+'.",
+  'Work email can only use English letters, numbers, dots, dashes and underscores before the @.':
+    'Work email can only use English letters, numbers, dots, dashes and underscores before the @.',
   '{name} has been added.': '{name} has been added.',
   'Print sign-in slip': 'Print sign-in slip',
   'Later': 'Later',
@@ -188,6 +190,8 @@ const ar: Record<string, string> = {
   'Use': 'استخدام',
   'Work email must end in @{domain}.': 'يجب أن ينتهي البريد الإلكتروني الوظيفي بـ ‎@{domain}.',
   "Work email can't contain '+'.": "لا يمكن أن يحتوي البريد الوظيفي على علامة '+'.",
+  'Work email can only use English letters, numbers, dots, dashes and underscores before the @.':
+    'يمكن أن يحتوي البريد الإلكتروني الوظيفي قبل علامة @ على أحرف إنجليزية وأرقام ونقاط وشرطات فقط.',
   '{name} has been added.': 'تمت إضافة {name}.',
   'Print sign-in slip': 'طباعة ورقة تسجيل الدخول',
   'Later': 'لاحقاً',

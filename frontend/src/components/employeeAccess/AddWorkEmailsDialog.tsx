@@ -5,7 +5,7 @@ import { FileUp } from 'lucide-react';
 import { employeeAccessApi, MAX_WORK_EMAIL_ROWS, type WorkEmailBackfillResult } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
-import { CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, WORK_EMAIL_ERROR_KEYS, parseWorkEmailRows, workEmailErrorCode } from '../../lib/employeeAccess';
+import { CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, parseWorkEmailRows, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
 import { Modal } from '../Modal';
 import { fill, Ltr } from './fill';
 
@@ -40,15 +40,18 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
   const fileRef = useRef<HTMLInputElement>(null);
   const parsed = parseWorkEmailRows(text);
   const tooMany = parsed.rows.length > MAX_WORK_EMAIL_ROWS;
+  // Checked as HR pastes, with the server's rule: these rows would be refused, so fix them first.
+  const badRows = parsed.rows
+    .map((row) => ({ row, key: workEmailProblemKey(workEmailLocalProblem(row.workEmail)) }))
+    .filter((x): x is { row: typeof x.row; key: string } => !!x.key);
 
   const reset = () => { setText(''); setStep('input'); setPreview(null); setSaved(null); setError(''); setBusy(false); setCanEmail(false); };
   const close = () => { reset(); onClose(); };
 
   const explain = (e: unknown) => {
-    const code = workEmailErrorCode(e);
-    // The domain sentence needs the domain, which a 422 does not always name; fall back to the API's words in English.
-    if (code === 'work_email_plus_address') return t(WORK_EMAIL_ERROR_KEYS[code]);
-    return describeApiError(e, t);
+    // The domain sentence needs the domain, which a 422 does not always name; that one falls back to describeApiError.
+    const key = workEmailProblemKey(workEmailErrorCode(e));
+    return key ? t(key) : describeApiError(e, t);
   };
 
   const check = async () => {
@@ -96,7 +99,7 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
     footer = (
       <>
         <button type="button" onClick={close} className="btn-secondary">{t('Cancel')}</button>
-        <button type="button" onClick={() => void check()} disabled={busy || parsed.rows.length === 0 || tooMany} className="btn-primary disabled:opacity-60">
+        <button type="button" onClick={() => void check()} disabled={busy || parsed.rows.length === 0 || tooMany || badRows.length > 0} className="btn-primary disabled:opacity-60">
           {busy ? t('Checking…') : t('Check the list')}
         </button>
       </>
@@ -168,6 +171,19 @@ export function AddWorkEmailsDialog({ isOpen, onClose, onSaved, onGiveAccess, ch
               </p>
             </div>
             {tooMany && <p role="alert" className="text-xs text-rose-700">{t('Send at most {max} rows at a time.', { max: MAX_WORK_EMAIL_ROWS })}</p>}
+            {badRows.length > 0 && (
+              <ul role="alert" className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800" data-testid="work-emails-invalid">
+                {badRows.slice(0, 50).map(({ row, key }) => (
+                  <li key={`${row.employeeCode}-${row.workEmail}`}>
+                    <Ltr className="font-semibold">{row.employeeCode}</Ltr>
+                    <span aria-hidden="true"> · </span>
+                    <Ltr>{row.workEmail}</Ltr>
+                    <span aria-hidden="true"> · </span>
+                    {t(key)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </>
         )}
 

@@ -3,7 +3,7 @@ import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CANONICAL_CONFLICT_CODES, CANONICAL_SKIP_CODES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
   WORK_EMAIL_ERROR_KEYS, appAddress, dateLine, formatWelcomeCode, pairUp, parseWorkEmailRows, skipReasonKey, sortSlips,
-  welcomeQrUrl, workEmailErrorCode,
+  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey,
 } from '../src/lib/employeeAccess';
 
 // HR side of employee sign-in access (lib/employeeAccess.ts): the slip's formatting, the paste parser,
@@ -93,4 +93,17 @@ test('every canonical skip and conflict code has its own sentence', () => {
     expect(key, code).not.toBe(GENERIC_SKIP_KEY);
   }
   for (const code of CANONICAL_CONFLICT_CODES) expect(CONFLICT_REASON_KEYS[code], code).toBeTruthy();
+});
+
+test('the work-email local part is checked with the server rule as HR types', () => {
+  expect(workEmailLocalProblem('')).toBeNull();
+  expect(workEmailLocalProblem('noah.williams-2_x@evostel.com')).toBeNull();
+  expect(workEmailLocalProblem('noah')).toBeNull();
+  expect(workEmailLocalProblem('noah+hr@evostel.com')).toBe('work_email_plus_address');
+  expect(workEmailLocalProblem('nöah@evostel.com')).toBe('work_email_invalid_characters');
+  expect(workEmailLocalProblem('نوح@evostel.com')).toBe('work_email_invalid_characters');
+  expect(workEmailProblemKey('work_email_invalid_characters')).toBe('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
+  expect(workEmailProblemKey('work_email_wrong_domain')).toBeNull();
+  expect(workEmailErrorCode({ response: { status: 422, data: { error: 'work_email_invalid_characters' } } })).toBe('work_email_invalid_characters');
+  expect(skipReasonKey('privileged_login')).toBe('This person has admin permissions. A security admin must reset their sign-in.');
 });
