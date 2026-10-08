@@ -166,6 +166,22 @@ public sealed class SelfieDemoExceptionPostgresTests
     }
 
     [Fact]
+    public async Task ADeliberatePlatformOff_WinsOverTheException_SoConsentIsNeverCollectedForUploadsThatWouldBeRefused()
+    {
+        var (tenantId, slug, employeeId) = await SeedAsync();
+        await using (var db = _fx.CreateDb())
+        {
+            db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.SelfieAttendance, IsEnabled = false });
+            await db.SaveChangesAsync();
+        }
+        var config = Demo(slug, DateTime.UtcNow.AddDays(14));
+
+        var selfie = (await ViewAsync(config, tenantId, employeeId)).GetProperty("selfie");
+        Assert.False(selfie.GetProperty("enabled").GetBoolean());
+        Assert.False(selfie.TryGetProperty("demoNotice", out var notice) && notice.ValueKind != System.Text.Json.JsonValueKind.Null);
+    }
+
+    [Fact]
     public async Task NoOtherTenantChanges_ASignedOffTenant_KeepsItsOwnPolicyAndNormalRetention_EvenIfListed()
     {
         // A fully signed-off tenant on KSA storage that requires the selfie from consenting employees. The exception is

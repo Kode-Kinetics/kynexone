@@ -32,8 +32,44 @@ public sealed class SelfieDemoExceptionOptions
     /// <summary>Required free text naming who approved the exception and when; recorded in every audit row.</summary>
     public string? ApprovedBy { get; set; }
 
-    public static SelfieDemoExceptionOptions From(Microsoft.Extensions.Configuration.IConfiguration? configuration) =>
-        configuration?.GetSection(SectionName).Get<SelfieDemoExceptionOptions>() ?? new SelfieDemoExceptionOptions();
+    /// <summary>Why the configuration could not be read (a malformed value), or null. The exception is then OFF.</summary>
+    public string? ConfigError { get; private set; }
+
+    /// <summary>
+    /// Reads the section by hand, never with the binder: <c>Get&lt;T&gt;()</c> THROWS on a malformed date or number, and this
+    /// runs at startup, so a typo in a manual "end it early" edit would take the whole API down. A value that does not
+    /// parse switches the exception OFF and is reported through <see cref="ConfigError"/> instead.
+    /// </summary>
+    public static SelfieDemoExceptionOptions From(Microsoft.Extensions.Configuration.IConfiguration? configuration)
+    {
+        var options = new SelfieDemoExceptionOptions();
+        var section = configuration?.GetSection(SectionName);
+        if (section is null || !section.Exists()) return options;
+        options.TenantSlugs = section.GetSection(nameof(TenantSlugs)).GetChildren()
+            .Select(c => c.Value).Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!.Trim()).ToArray();
+        options.ApprovedBy = section[nameof(ApprovedBy)];
+        var errors = new List<string>();
+        var rawExpiry = section[nameof(ExpiresUtc)];
+        if (!string.IsNullOrWhiteSpace(rawExpiry))
+        {
+            if (DateTime.TryParse(rawExpiry, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var expiry))
+                options.ExpiresUtc = DateTime.SpecifyKind(expiry, DateTimeKind.Utc);
+            else errors.Add($"ExpiresUtc '{rawExpiry}' is not a date (use e.g. 2026-10-22T23:59:59Z)");
+        }
+        var rawDays = section[nameof(EvidenceRetentionDays)];
+        if (!string.IsNullOrWhiteSpace(rawDays))
+        {
+            if (int.TryParse(rawDays, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days)) options.EvidenceRetentionDays = days;
+            else { options.EvidenceRetentionDays = 0; errors.Add($"EvidenceRetentionDays '{rawDays}' is not a whole number of days"); }
+        }
+        if (errors.Count > 0)
+        {
+            options.ExpiresUtc = null; // fail closed
+            options.ConfigError = string.Join("; ", errors);
+        }
+        return options;
+    }
 
     /// <summary>The expiry as UTC (a value bound from configuration may arrive as Local or Unspecified).</summary>
     public DateTime? ExpiresAtUtc => ExpiresUtc is not { } e ? null
@@ -70,7 +106,16 @@ public sealed record SelfieDemoExceptionGrant(string TenantSlug, DateTime Expire
         $"Demo: photos are stored outside Saudi Arabia and deleted automatically {EvidenceRetentionDays} days after they are taken.";
 
     public string NoticeAr =>
-        $"عرض تجريبي: تُحفظ الصور خارج المملكة العربية السعودية وتُحذف تلقائيًا بعد {EvidenceRetentionDays.ToString(CultureInfo.InvariantCulture)} أيام من التقاطها.";
+        $"عرض تجريبي: تُحفظ الصور خارج المملكة العربية السعودية وتُحذف تلقائيًا بعد {DaysAr(EvidenceRetentionDays)} من التقاطها.";
+
+    /// <summary>The day count in grammatical Arabic: يوم واحد، يومين، 3–10 أيام، 11+ يومًا.</summary>
+    public static string DaysAr(int days) => days switch
+    {
+        1 => "يوم واحد",
+        2 => "يومين",
+        >= 3 and <= 10 => $"{days.ToString(CultureInfo.InvariantCulture)} أيام",
+        _ => $"{days.ToString(CultureInfo.InvariantCulture)} يومًا",
+    };
 
     public object AuditFields => new
     {

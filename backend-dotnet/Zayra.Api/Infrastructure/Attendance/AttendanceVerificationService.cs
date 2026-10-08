@@ -566,6 +566,11 @@ public sealed class AttendanceVerificationService
     {
         var now = DateTime.UtcNow;
         if (!_demoException.IsActive(now)) return null;
+        // A deliberate platform "off" (a stored selfie_attendance row with IsEnabled = false) wins over the exception, as it
+        // does in the module guard (TenantModuleService): otherwise consent would be collected while every upload is refused.
+        if (await _db.TenantFeatureFlags.AsNoTracking().AnyAsync(f => f.TenantId == tenantId
+                && f.FeatureKey == FeatureKeys.SelfieAttendance && !f.IsEnabled, ct))
+            return null;
         var slug = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Slug).FirstOrDefaultAsync(ct);
         return _demoException.GrantFor(slug, now);
     }

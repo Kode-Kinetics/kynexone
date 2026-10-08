@@ -227,8 +227,10 @@ services:
       # For the Evostel client demo ONLY (test data), the `evostel` tenant gets it WITHOUT those two
       # gates until ExpiresUtc; consent, limits, audit and the purge are unchanged, and every photo
       # taken under it is deleted 7 days after capture (used or not), even after the expiry.
-      # After ExpiresUtc it does nothing. No other tenant is affected. To end it early, set
-      # ExpiresUtc to a past instant (or remove these keys). Photos are stored outside KSA meanwhile.
+      # After ExpiresUtc it does nothing. No other tenant is affected. To END IT EARLY, set ExpiresUtc
+      # to a past instant in the same format (removing keys here does NOT delete them from Render).
+      # A malformed value switches the exception OFF with a startup warning; it never stops the API.
+      # Photos are stored outside KSA meanwhile.
       - key: SelfieDemoException__TenantSlugs__0
         value: evostel
       - key: SelfieDemoException__ExpiresUtc

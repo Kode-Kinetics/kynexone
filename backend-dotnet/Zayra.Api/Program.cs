@@ -780,6 +780,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+if (selfieDemoException.ConfigError is { } selfieDemoConfigError)
+    app.Logger.LogWarning("Selfie demo exception is OFF because its configuration is malformed: {Error}", selfieDemoConfigError);
 
 app.Services.GetRequiredService<ShutdownDrain>().Attach(app.Lifetime);
 

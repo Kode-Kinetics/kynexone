@@ -55,4 +55,29 @@ public sealed class SelfieDemoExceptionTests
         Assert.Equal(created.AddHours(24), SelfieEvidenceRetention.DueAtUtc(created, null, null, null, purgeDueOverrideUtc: stamp));
         Assert.Equal(created.AddHours(1), SelfieEvidenceRetention.DueAtUtc(created, null, null, null, AttendanceEvidencePurgeStates.Pending, purgeDueOverrideUtc: stamp));
     }
+
+    // A typo in a manual "end it early" edit must never stop the API: the binder threw at startup on a malformed date
+    // or number; From() now reads by hand, switches the exception OFF and reports why.
+    [Theory]
+    [InlineData("22/10/2026", "7")]
+    [InlineData("next friday", "7")]
+    [InlineData("2026-10-22T23:59:59Z", "7 days")]
+    public void AMalformedValue_SwitchesItOff_AndNeverThrows(string expires, string days)
+    {
+        var options = Bind(("TenantSlugs:0", "evostel"), ("ExpiresUtc", expires), ("EvidenceRetentionDays", days), ("ApprovedBy", "owner"));
+        Assert.False(options.IsActive(Now));
+        Assert.Null(options.GrantFor("evostel", Now));
+        Assert.False(string.IsNullOrWhiteSpace(options.ConfigError));
+    }
+
+    [Fact]
+    public void ANoticeInArabic_CountsTheDaysGrammatically()
+    {
+        Assert.Equal("يوم واحد", SelfieDemoExceptionGrant.DaysAr(1));
+        Assert.Equal("يومين", SelfieDemoExceptionGrant.DaysAr(2));
+        Assert.Equal("7 أيام", SelfieDemoExceptionGrant.DaysAr(7));
+        Assert.Equal("14 يومًا", SelfieDemoExceptionGrant.DaysAr(14));
+        var grant = new SelfieDemoExceptionGrant("evostel", Now.AddDays(1), 7, "owner");
+        Assert.Contains("7 أيام", grant.NoticeAr);
+    }
 }
