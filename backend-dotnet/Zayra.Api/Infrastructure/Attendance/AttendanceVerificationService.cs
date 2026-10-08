@@ -813,7 +813,8 @@ public static class SelfieWaivers
         var rows = tracked ? db.AttendanceEvidence : db.AttendanceEvidence.AsNoTracking();
         return rows
             .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since
-                        && e.FailedReason != null && e.WaiverConsumedAtUtc == null && e.WaiverCancelledAtUtc == null)
+                        && (e.FailedReason == SelfieUploadFailureReasons.Busy || e.FailedReason == SelfieUploadFailureReasons.Storage)
+                        && e.WaiverConsumedAtUtc == null && e.WaiverCancelledAtUtc == null)
             .OrderByDescending(e => e.CreatedAtUtc).ThenBy(e => e.Id)
             .FirstOrDefaultAsync(ct);
     }

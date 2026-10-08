@@ -63,11 +63,14 @@ public class AttendanceEvidence : ITenantOwned
     public DateTime? PurgedAtUtc { get; set; }
 
     /// <summary>
-    /// Set when this upload attempt failed on the SERVER's side (<see cref="SelfieUploadFailureReasons"/>: the image
+    /// Why this attempt failed, when it did. <c>Busy</c>/<c>Storage</c> (waivable, below); <c>Timeout</c>, <c>Aborted</c> and
+    /// <c>DeniedFailure</c> close an attempt as failed without ever waiving anything (<see cref="SelfieUploadFailureReasons"/>).
+    /// Set to a waivable reason when this upload attempt failed on the SERVER's side (<see cref="SelfieUploadFailureReasons"/>: the image
     /// slot stayed busy, or storage failed the write) while the employee had no other attempt in flight. Such an attempt
     /// is a server-failure WAIVER (review 3): where the tenant requires a selfie, it lets exactly one of the employee's own
-    /// punches through without one, within 10 minutes, at most twice per employee per tenant-local day. Null for every
-    /// other attempt — including a server failure that happened while another attempt was in flight, which waives nothing.
+    /// punches through without one, within 10 minutes, at most twice per employee per tenant-local day. A server failure
+    /// that happened while another attempt was in flight waives nothing (<c>DeniedFailure</c>). Null while an attempt is
+    /// in flight or after it succeeded.
     /// </summary>
     public string? FailedReason { get; set; }
 
@@ -94,7 +97,23 @@ public static class SelfieUploadFailureReasons
     /// <summary>Storage refused or failed the write; a partial file may exist, so the row stays Pending for the sweeper.</summary>
     public const string Storage = "Storage";
 
-    public static readonly IReadOnlyList<string> All = [Busy, Storage];
+    // ── Non-waivable: the attempt is closed as failed (so it no longer counts as "in flight" and blocks no waiver), but
+    // it never lets a punch through without a required selfie. The row stays Pending, so the 1-hour sweeper strictly
+    // deletes any file — including one a late write lands after the attempt was given up.
+
+    /// <summary>The server's 45 s upload deadline fired during the storage write. The write may still land late, so the
+    /// row is never removed: it stays Pending for the sweeper. Does not count toward the hourly limit.</summary>
+    public const string Timeout = "Timeout";
+    /// <summary>The client went away while the file was being written. Pending for the sweeper; does not count toward the
+    /// hourly limit.</summary>
+    public const string Aborted = "Aborted";
+    /// <summary>A storage failure that was refused a waiver (another attempt of the employee was in flight). Pending for the
+    /// sweeper; counts toward the hourly limit like any storage failure.</summary>
+    public const string DeniedFailure = "DeniedFailure";
+
+    public static readonly IReadOnlyList<string> All = [Busy, Storage, Timeout, Aborted, DeniedFailure];
+    /// <summary>The reasons that are a server-failure waiver (review 3).</summary>
+    public static readonly IReadOnlyList<string> Waivable = [Busy, Storage];
 }
 
 /// <summary>Values of <c>attendance_evidence.purge_state</c> (CHECK <c>ck_attendance_evidence__purge_state</c>).</summary>
@@ -170,7 +189,8 @@ public static class AttendanceVerificationMethods
 public static class SelfieAttendanceModelConfiguration
 {
     public const string PurgeStatesIn = "('Pending','Active','Purged')";
-    public const string FailureReasonsIn = "('Busy','Storage')";
+    public const string FailureReasonsIn = "('Busy','Storage','Timeout','Aborted','DeniedFailure')";
+    public const string WaivableReasonsIn = "('Busy','Storage')";
     public const string ChannelsIn = "('Mobile','Web')";
 
     public static void Configure(ModelBuilder modelBuilder)
@@ -194,8 +214,9 @@ public static class SelfieAttendanceModelConfiguration
                 t.HasCheckConstraint("ck_attendance_evidence__failed_never_active", "failed_reason IS NULL OR (purge_state <> 'Active' AND used_at_utc IS NULL)");
                 // Used by one punch: the time and the punch are set together.
                 t.HasCheckConstraint("ck_attendance_evidence__waiver_pair", "(waiver_consumed_at_utc IS NULL) = (waiver_raw_event_id IS NULL)");
-                // Only a failed attempt carries a waiver, and a waiver is either used or cancelled, never both.
-                t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "failed_reason IS NOT NULL OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
+                // Only a WAIVABLE failed attempt (Busy, Storage) carries a waiver, and a waiver is either used or cancelled, never both.
+                // (The IS NOT NULL matters: NULL IN (...) is NULL, which a CHECK would let through.)
+                t.HasCheckConstraint("ck_attendance_evidence__waiver_needs_failure", "(failed_reason IS NOT NULL AND failed_reason IN " + WaivableReasonsIn + ") OR (waiver_consumed_at_utc IS NULL AND waiver_cancelled_at_utc IS NULL)");
                 t.HasCheckConstraint("ck_attendance_evidence__waiver_once", "waiver_consumed_at_utc IS NULL OR waiver_cancelled_at_utc IS NULL");
             });
             entity.HasKey(x => x.Id);

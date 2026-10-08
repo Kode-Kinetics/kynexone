@@ -49,24 +49,6 @@ public sealed class SelfieHardeningRefusalTests
         Assert.Equal(201, (await w.UploadAsync(user, SelfieAttendanceTests.SelfieJpeg()) as ObjectResult)?.StatusCode);
     }
 
-    [Fact]
-    public async Task Item1_AStorageWriteThatHangs_IsCutOffAtTheDeadline_408_TheFileDeleted_AndTheAttemptReleased()
-    {
-        var w = await RequiredAsync();
-        var user = await w.EmployeeAsync(w.Caller, w.CallerUserId);
-        var storage = new HangingPutStorage(w.Storage);
-        var controller = Shortened(w.With(new AttendanceEvidenceController(w.Db, storage, w.Verification, w.Gate), user));
-        SetForm(controller, SelfieAttendanceTests.SelfieJpeg());
-
-        var result = await controller.UploadSelfie().WaitAsync(Watchdog);
-
-        Assert.Equal(408, (result as ObjectResult)?.StatusCode);
-        Assert.Equal("selfie_upload_timeout", SelfieWorld.CodeOf(result));
-        Assert.False(PunchWithoutSelfie(result));
-        Assert.Single(w.Storage.Deleted);                          // the partial file is deleted strictly first
-        Assert.Empty(await w.Db.AttendanceEvidence.ToListAsync()); // then the attempt is released
-    }
-
     [Theory]
     [InlineData(SelfieUploadFailureReasons.Busy)]
     [InlineData(SelfieUploadFailureReasons.Storage)]
@@ -101,7 +83,7 @@ public sealed class SelfieHardeningRefusalTests
         }
 
         Assert.False(PunchWithoutSelfie(failed));
-        Assert.All(await w.Db.AttendanceEvidence.ToListAsync(), e => Assert.Null(e.FailedReason));
+        Assert.All(await w.Db.AttendanceEvidence.ToListAsync(), e => Assert.DoesNotContain(e.FailedReason, SelfieUploadFailureReasons.Waivable));
         var punch = await w.Attendance(user).MobilePunch(new WebPunchRequest(0, "In", null, null, null), default);
         Assert.Equal("selfie_required", SelfieWorld.CodeOf(punch.Result));
     }
@@ -296,22 +278,6 @@ public sealed class SelfieHardeningRefusalTests
             if (!stallAtEnd) return 0;
             await Task.Delay(Timeout.Infinite, ct);
             return 0;
-        }
-    }
-
-    /// <summary>Storage whose write hangs until its token is cancelled; everything else is the world's memory storage.</summary>
-    private sealed class HangingPutStorage(MemoryDocumentStorage inner) : IDocumentStorage
-    {
-        public Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken) => inner.SaveAsync(tenantId, file, cancellationToken);
-        public Task<byte[]> GetBytesAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => inner.GetBytesAsync(tenantId, storageUrl, ct);
-        public string ResolvePath(string storageUrl) => storageUrl;
-        public Task<bool> TryDeleteAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => inner.TryDeleteAsync(tenantId, storageUrl, ct);
-        public string TenantKey(Guid tenantId, string relativeName) => inner.TenantKey(tenantId, relativeName);
-        public Task DeleteStrictAsync(Guid tenantId, string storageUrl, CancellationToken ct = default) => inner.DeleteStrictAsync(tenantId, storageUrl, ct);
-
-        public async Task PutAtAsync(Guid tenantId, string storageKey, byte[] content, string contentType, CancellationToken ct = default)
-        {
-            await Task.Delay(Timeout.Infinite, ct);
         }
     }
 

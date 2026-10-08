@@ -390,6 +390,12 @@ public sealed class SelfieAttendanceMigrationPostgresTests
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db,                                              // a failed attempt is never Active
             $"INSERT INTO attendance_evidence (id,tenant_id,employee_id,storage_key,sha256,content_type,byte_size,created_at_utc,expires_at_utc,purge_state,failed_reason) " +
             $"VALUES (gen_random_uuid(),'{tenant}',{e},'k',{hash},'image/jpeg',10,now(),now() + interval '10 minutes','Active','Busy')"));
+        // 20261008000600 (PR #213 review): non-waivable reasons close an attempt as failed but can never carry a waiver.
+        foreach (var closed in new[] { "'Timeout'", "'Aborted'", "'DeniedFailure'" })
+        {
+            await Sql(db, Failed(reason: closed, state: "Pending"));
+            await Assert.ThrowsAsync<PostgresException>(() => Sql(db, Failed(reason: closed, state: "Pending", cancelled: "now()")));
+        }
         await Sql(db, "DELETE FROM attendance_evidence WHERE failed_reason IS NOT NULL");
         await Sql(db, $"INSERT INTO biometric_consents (id,tenant_id,employee_id,policy_version,given_at_utc,channel) VALUES (gen_random_uuid(),'{tenant}',{e},'1',now(),'Mobile')");
         await Assert.ThrowsAsync<PostgresException>(() => Sql(db,                                             // a second open consent

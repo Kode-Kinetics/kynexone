@@ -89,9 +89,6 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// </summary>
     public static readonly TimeSpan UploadDeadline = TimeSpan.FromSeconds(45);
 
-    /// <summary>How long a storage delete after a timed-out write may take before the row is left to the sweeper.</summary>
-    private static readonly TimeSpan TimeoutCleanupLimit = TimeSpan.FromSeconds(10);
-
     /// <summary>This controller's deadline: <see cref="UploadDeadline"/>, shortened only by tests.</summary>
     internal TimeSpan Deadline { get; init; } = UploadDeadline;
 
@@ -195,8 +192,18 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
         try { await _storage.PutAtAsync(tenantId, attempt!.StorageKey, jpeg, EssUploadPolicy.Jpeg, work); }
         catch (OperationCanceledException) when (TimedOut())
         {
-            await ReleaseTimedOutWriteAsync(tenantId, attempt!);
+            // The write was given up, but it may still land LATE — after any delete tried now. So the row is never
+            // removed: it is closed as Timeout (non-waivable; out of the in-flight and hourly counts) and stays Pending, so
+            // the 1-hour sweeper strictly deletes the file once any late write has landed.
+            await CloseFailedAttemptAsync(attempt!, SelfieUploadFailureReasons.Timeout);
             return UploadTimeout();
+        }
+        catch (OperationCanceledException)
+        {
+            // The client went away mid-write: the same — closed as Aborted, Pending for the sweeper — so the abandoned
+            // attempt stops counting as "in flight" and blocks no later waiver.
+            await CloseFailedAttemptAsync(attempt!, SelfieUploadFailureReasons.Aborted);
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -273,23 +280,25 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     private ObjectResult UploadTimeout() => StatusCode(StatusCodes.Status408RequestTimeout, AttendanceRefusals.SelfieUploadTimeout.Body);
 
     /// <summary>
-    /// The deadline fired during the storage write, so a partial file may exist at the attempt's key. The file is deleted
-    /// strictly (bounded by <see cref="TimeoutCleanupLimit"/>); once that is confirmed, the attempt is released and does
-    /// not count. If storage cannot confirm the delete, the row is left Pending — never released while a file may remain —
-    /// and the 1-hour sweeper deletes the file. Either way it is not a server failure and waives nothing.
+    /// Closes an attempt whose storage write was given up (<see cref="SelfieUploadFailureReasons.Timeout"/>,
+    /// <see cref="SelfieUploadFailureReasons.Aborted"/>): the row keeps its Pending state and storage key, so the 1-hour
+    /// sweeper strictly deletes whatever file a late write leaves; the non-waivable reason takes it out of the in-flight
+    /// checks and the hourly count. Never removes the row (a file could land after it), never waives anything.
     /// </summary>
-    private async Task ReleaseTimedOutWriteAsync(Guid tenantId, AttendanceEvidence attempt)
+    /// <summary>Audit action of an upload whose storage write was given up (timeout, or the client went away). Never a waiver.</summary>
+    public const string UploadAbandonedAction = "attendance.selfie.upload_abandoned";
+
+    private async Task CloseFailedAttemptAsync(AttendanceEvidence attempt, string reason)
     {
-        try
-        {
-            using var cleanup = new CancellationTokenSource(TimeoutCleanupLimit);
-            await _storage.DeleteStrictAsync(tenantId, attempt.StorageKey, cleanup.Token).WaitAsync(TimeoutCleanupLimit);
-        }
-        catch (Exception)
-        {
-            return; // the sweeper's
-        }
-        await ReleaseAttemptAsync(attempt);
+        var none = CancellationToken.None;
+        Db.ChangeTracker.Clear();
+        var row = await Db.AttendanceEvidence.FirstOrDefaultAsync(e => e.TenantId == attempt.TenantId && e.Id == attempt.Id
+            && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null, none);
+        if (row is null) return;
+        row.FailedReason = reason;
+        Audit(attempt.TenantId, UploadAbandonedAction, AttendanceVerificationService.EmployeeEntity,
+            attempt.EmployeeId.ToString(), new { employeeId = attempt.EmployeeId, reason, evidenceId = attempt.Id, waiverGranted = false });
+        await Db.SaveChangesAsync(none);
     }
 
     /// <summary>
@@ -324,9 +333,13 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
                 && e.PurgeState == AttendanceEvidencePurgeStates.Pending && e.FailedReason == null && e.CreatedAtUtc > inFlightSince, ct))
             return (null, AttendanceRefusals.SelfieUploadInProgress);
         var since = now.AddHours(-1);
-        // A busy attempt is kept (as a possible waiver) but never reached storage, so it does not count (review 2, item 7).
+        // Busy (no file was written), Timeout and Aborted (the transfer never completed) do not count (review 2, item 7;
+        // hardening); a stored selfie and any storage failure, waived or denied, do.
         var attempts = await Db.AttendanceEvidence.CountAsync(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.CreatedAtUtc > since
-                                                                   && (e.FailedReason == null || e.FailedReason != SelfieUploadFailureReasons.Busy), ct);
+                                                                   && (e.FailedReason == null
+                                                                       || (e.FailedReason != SelfieUploadFailureReasons.Busy
+                                                                           && e.FailedReason != SelfieUploadFailureReasons.Timeout
+                                                                           && e.FailedReason != SelfieUploadFailureReasons.Aborted)), ct);
         if (attempts >= AttendanceVerificationService.MaxUploadsPerHour) return (null, AttendanceRefusals.RateLimited);
 
         var id = Guid.NewGuid();
@@ -363,7 +376,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
     /// (<see cref="AttendanceEvidence.FailedReason"/>): one later punch of theirs may go through without the required
     /// selfie, within 10 minutes, at most twice a day (<see cref="SelfieWaivers"/>). A busy attempt wrote no file, so it is
     /// closed Purged at once; a storage failure stays Pending for the sweeper (a partial file may exist). A failure while
-    /// another attempt was in flight waives nothing: a busy one is deleted (it never counted), a storage one stays Pending.
+    /// another attempt was in flight waives nothing: a busy one is deleted (it never counted), a storage one stays Pending
+    /// closed as <c>DeniedFailure</c> (non-waivable, no longer "in flight").
     /// Returns whether the app may offer to punch without a selfie (<c>punchWithoutSelfie</c>): always where the selfie is
     /// optional; where it is required, only when this failure is a waiver and today's cap is not used up.
     /// </summary>
@@ -384,7 +398,9 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             var granted = row is not null && !otherInFlight;
             if (row is not null)
             {
-                if (granted) row.FailedReason = reason;
+                // A storage failure refused a waiver is still closed as failed (DeniedFailure, non-waivable), so it stops
+                // counting as "in flight" and cannot block a later attempt's waiver for the rest of the hour.
+                row.FailedReason = granted ? reason : SelfieUploadFailureReasons.DeniedFailure;
                 if (reason == SelfieUploadFailureReasons.Busy)
                 {
                     if (granted)
@@ -431,7 +447,8 @@ public sealed class AttendanceEvidenceController : SelfieAttendanceControllerBas
             row.ExpiresAtUtc = now + AttendanceVerificationService.EvidenceLifetime;
             // Review 3: the employee could take a selfie after all, so any open server-failure waiver is cancelled.
             var open = await Db.AttendanceEvidence
-                .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId && e.FailedReason != null
+                .Where(e => e.TenantId == tenantId && e.EmployeeId == employeeId
+                            && (e.FailedReason == SelfieUploadFailureReasons.Busy || e.FailedReason == SelfieUploadFailureReasons.Storage)
                             && e.WaiverConsumedAtUtc == null && e.WaiverCancelledAtUtc == null)
                 .ToListAsync(ct);
             foreach (var waiver in open) waiver.WaiverCancelledAtUtc = now;
