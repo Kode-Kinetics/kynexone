@@ -44,14 +44,14 @@ type Step = 'code' | 'password';
  */
 export function WelcomePage() {
   return (
-    <LocaleProvider preferDevice>
+    <LocaleProvider>
       <WelcomeCard />
     </LocaleProvider>
   );
 }
 
 function WelcomeCard() {
-  const { t, dir } = useLocale();
+  const { t, dir, locale, setLocale } = useLocale();
   const { user, login, logout } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -162,6 +162,9 @@ function WelcomeCard() {
         // The code is spent: drop it from memory now, whatever happens next.
         setCode('');
         setPasswordSet(true);
+        // The language they set their password in is their choice from now on, so the first
+        // app page (and every later visit) matches it.
+        setLocale(locale);
         // The server says which company the code belonged to; sign in to exactly that one.
         if (redeemed.tenantSlug) { companyId = redeemed.tenantSlug; setWorkspace(redeemed.tenantSlug); }
       }

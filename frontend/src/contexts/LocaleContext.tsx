@@ -44,11 +44,7 @@ const Ctx = createContext<LocaleCtx>({
   t: (k, p) => translate('en', k, p),
 });
 
-/**
- * `preferDevice`: the public sign-in surfaces only. With no explicit choice, start in the device's
- * language (navigator.languages) rather than a tenant default nobody has loaded yet.
- */
-export function LocaleProvider({ children, preferDevice = false }: { children: React.ReactNode; preferDevice?: boolean }) {
+export function LocaleProvider({ children }: { children: React.ReactNode }) {
   const { settings, loaded } = useTenantSettingsContext();
   const defaultLanguage = settings.defaultLanguage;
   const [locale, setLocaleState] = useState<LocaleCode>('en');
@@ -62,13 +58,14 @@ export function LocaleProvider({ children, preferDevice = false }: { children: R
     const tenant = { loaded, defaultLanguage };
     const fromTenant = tenantDefaultLocale(tenant);
     if (fromTenant) storage.set(TENANT_LOCALE_KEY, fromTenant);
-    const device = preferDevice && typeof navigator !== 'undefined'
+    // With no explicit choice, an Arabic device starts in Arabic (i18n/localeResolution.ts).
+    const device = typeof navigator !== 'undefined'
       ? (navigator.languages?.length ? navigator.languages : [navigator.language])
       : null;
     const next = resolveLocale(storage, tenant, device);
     setLocaleState(next);
     applyDocument(next);
-  }, [loaded, defaultLanguage, preferDevice]);
+  }, [loaded, defaultLanguage]);
 
   /** The language switcher: the only writer of the user's explicit choice. */
   const setLocale = useCallback((code: LocaleCode) => {

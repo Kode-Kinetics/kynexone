@@ -2,7 +2,9 @@
  * Which language the UI starts in. Pure: no React, no DOM — LocaleContext supplies storage and
  * the tenant's settings, and unit/localeResolution.spec.ts proves the order.
  *
- *   1. the user's explicit choice (LOCALE_CHOICE_KEY), written only by the language switcher;
+ *   1. the user's explicit choice (LOCALE_CHOICE_KEY), written by the language switcher and by
+ *      finishing /welcome in a language;
+ *   1b. the device's language when it is Arabic (navigator.languages[0] = ar-*): see deviceLocale;
  *   2. the tenant's default language, but only once the tenant's settings have LOADED — before
  *      that, the settings are placeholders ('en'), and acting on them flipped an Arabic tenant
  *      RTL → LTR → RTL and overwrote the cached tenant language with 'en';
@@ -52,19 +54,19 @@ export function migrateLegacyChoice(store: LocaleStore): void {
 }
 
 /**
- * The device's own language (navigator.languages), when it is one the switcher offers. Only the
- * FIRST preference counts: an ar-SA phone is Arabic, an en-GB phone that also lists Arabic is not.
+ * The device's own language, when it is a deliberate signal: the FIRST preference, offered in the
+ * switcher, and not English. An ar-SA phone is Arabic. English is NOT taken from the device,
+ * because en-US is simply what most office PCs and browsers ship with; it says nothing about the
+ * person, and letting it outrank an Arabic tenant default would turn every such desktop English.
  */
 export function deviceLocale(languages: readonly string[] | null | undefined): LocaleCode | null {
   const code = asLocale(languages?.[0]);
-  return code && LOCALE_METADATA[code].selectable ? code : null;
+  return code && code !== 'en' && LOCALE_METADATA[code].selectable ? code : null;
 }
 
 /**
- * `device` is passed only by the public sign-in surfaces (/login, /welcome): there nobody has
- * signed in, so the tenant's language may be unknown on this phone, and someone scanning a slip on
- * an Arabic phone should be greeted in Arabic. It ranks after the explicit choice, before tenant
- * defaults.
+ * `device`: navigator.languages, passed by LocaleProvider everywhere (and mirrored by LOCALE_BOOT
+ * before first paint). It ranks after the explicit choice and before tenant defaults.
  */
 export function resolveLocale(store: LocaleStore, tenant: TenantLanguage, device?: readonly string[] | null): LocaleCode {
   migrateLegacyChoice(store);

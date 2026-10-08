@@ -23,14 +23,16 @@ export const LEGACY_LOCALE_KEY = 'kynexone-locale';
 export const TENANT_LOCALE_KEY = 'kynexone-tenant-locale';
 
 /**
- * Apply the stored language's direction BEFORE first paint: the user's choice, else the cached
- * tenant default, else English. Keep the code list and the rtl map in step with LOCALE_METADATA in
+ * Apply the stored language's direction BEFORE first paint: the user's choice, else an Arabic
+ * device language (localeResolution.deviceLocale), else the cached tenant default, else English. Keep the code list and the rtl map in step with LOCALE_METADATA in
  * src/i18n/translations.ts — today `ar` is the only right-to-left locale there.
  */
 export const LOCALE_BOOT = `(function(){try{
 var s=localStorage,c=s.getItem('${LOCALE_CHOICE_KEY}'),o=s.getItem('${LEGACY_LOCALE_KEY}');
 if(c==null&&o&&/^(ar|fr|es)$/.test(o)){c=o;s.setItem('${LOCALE_CHOICE_KEY}',o);}
-var l=c||s.getItem('${TENANT_LOCALE_KEY}')||'en';
+var n=typeof navigator!=='undefined'?((navigator.languages&&navigator.languages[0])||navigator.language||''):'';
+var v=/^ar(-|$)/i.test(n)?'ar':null;
+var l=c||v||s.getItem('${TENANT_LOCALE_KEY}')||'en';
 if(!/^(en|ar|fr|es)$/.test(l))l='en';
 var d={ar:'rtl'}[l]||'ltr';
 document.documentElement.lang=l;document.documentElement.dir=d;

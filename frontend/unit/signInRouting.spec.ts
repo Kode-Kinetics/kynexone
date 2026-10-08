@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { homePathFor, isEmployeeOnly } from '../src/lib/homePath';
 import { deviceLocale, resolveLocale, type LocaleStore } from '../src/i18n/localeResolution';
-import { LOCALE_CHOICE_KEY, TENANT_LOCALE_KEY } from '../src/i18n/localeBoot';
+import { LOCALE_BOOT, LOCALE_CHOICE_KEY, TENANT_LOCALE_KEY } from '../src/i18n/localeBoot';
 
 const EMPLOYEE = ['dashboard.read', 'profile.read', 'ess.read', 'ess.write', 'performance.read', 'loans.self'];
 
@@ -21,15 +21,34 @@ function store(values: Record<string, string>): LocaleStore {
   return { get: (k) => values[k] ?? null, set: (k, v) => { values[k] = v; } };
 }
 
-test('on the sign-in surfaces the device language follows an explicit choice and precedes tenant defaults', () => {
+test('an Arabic device language follows an explicit choice and precedes tenant defaults', () => {
   expect(deviceLocale(['ar-SA', 'en-US'])).toBe('ar');
-  expect(deviceLocale(['en-GB', 'ar'])).toBe('en');
+  // English is never taken from the device: it is every office PC's default and says nothing.
+  expect(deviceLocale(['en-GB', 'ar'])).toBeNull();
   expect(deviceLocale(['ur-PK'])).toBeNull();
   const notLoaded = { loaded: false };
   expect(resolveLocale(store({}), notLoaded, ['ar-SA'])).toBe('ar');
   expect(resolveLocale(store({ [LOCALE_CHOICE_KEY]: 'en' }), notLoaded, ['ar-SA'])).toBe('en');
   expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'en' }), notLoaded, ['ar-SA'])).toBe('ar');
-  // Inside the app (no device list passed) nothing changes.
+  // An English device leaves the tenant default in charge.
+  expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'ar' }), notLoaded, ['en-US'])).toBe('ar');
+  expect(resolveLocale(store({}), { loaded: true, defaultLanguage: 'ar' }, ['en-US'])).toBe('ar');
   expect(resolveLocale(store({}), notLoaded)).toBe('en');
   expect(resolveLocale(store({ [TENANT_LOCALE_KEY]: 'ar' }), notLoaded)).toBe('ar');
+});
+
+test('before first paint, the boot script applies the same order', () => {
+  const boot = (entries: Record<string, string>, languages: string[]) => {
+    const html = { lang: 'en', dir: 'ltr' };
+    new Function('localStorage', 'document', 'navigator', LOCALE_BOOT)(
+      { getItem: (k: string) => entries[k] ?? null, setItem: (k: string, v: string) => { entries[k] = v; } },
+      { documentElement: html },
+      { languages, language: languages[0] },
+    );
+    return html;
+  };
+  expect(boot({}, ['ar-SA'])).toEqual({ lang: 'ar', dir: 'rtl' });
+  expect(boot({ [LOCALE_CHOICE_KEY]: 'en' }, ['ar-SA'])).toEqual({ lang: 'en', dir: 'ltr' });
+  expect(boot({ [TENANT_LOCALE_KEY]: 'ar' }, ['en-US'])).toEqual({ lang: 'ar', dir: 'rtl' });
+  expect(boot({}, ['en-US'])).toEqual({ lang: 'en', dir: 'ltr' });
 });
