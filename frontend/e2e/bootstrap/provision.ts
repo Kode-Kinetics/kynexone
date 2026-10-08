@@ -666,7 +666,7 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
  * created the way a real employee login is created: HR invites the employee, and the employee
  * accepts the invitation and sets a password. `POST /api/access/users/{id}/admin-reset-password` is
  * deliberately disabled in this product ("temporary_password_flow_disabled"), so accepting the
- * invitation with the token the invite returns is the only path — and it is the honest one.
+ * invitation with the link the invite hands back is the only path — and it is the honest one.
  */
 async function ensureEmployeePortalLogins(
   adminToken: string, fixture: FixtureTenant,
@@ -703,9 +703,20 @@ async function ensureEmployeePortalLogins(
     });
     expectOk(invite, `invite an employee login for '${email}'`, [200, 201]);
 
+    // The API never returns the raw token. The link comes back when it was not emailed: always here, because
+    // the bootstrap admin entered these work emails (WorkEmailSetterRule: hand the link over in person).
+    const invitationUrl = String(invite.body.invitationUrl ?? '');
+    const invitationToken = decodeURIComponent(invitationUrl.split('#token=')[1] ?? '');
+    if (!invitationToken) {
+      throw new Error(
+        `[bootstrap] The invitation for '${email}' came back without a link (emailSent=${invite.body.emailSent}), `
+        + 'so it cannot be accepted here. Run the bootstrap against a workspace whose admin entered the work email, or with no mail transport.',
+      );
+    }
+
     const accepted = await call('POST', '/api/auth/accept-invitation', {
       body: {
-        invitationToken: invite.body.invitationToken,
+        invitationToken,
         newPassword: declared.password,
         tenantSlug: fixture.slug,
       },

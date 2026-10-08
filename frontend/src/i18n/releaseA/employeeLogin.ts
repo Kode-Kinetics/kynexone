@@ -79,6 +79,8 @@ export const employeeLogin: ReleaseADict = {
       "Linking will reset this login's password. {name} will set a new one from an invitation.",
     "I confirmed this email address with {name}.":
       "I confirmed this email address with {name}.",
+    "You entered this work email, so hand the link over in person.":
+      "You entered this work email, so hand the link over in person.",
   },
   ar: {
     'Link to employee record': 'ربط بسجل موظف',
@@ -154,5 +156,7 @@ export const employeeLogin: ReleaseADict = {
       "سيؤدي الربط إلى إعادة تعيين كلمة مرور حساب الدخول هذا. سيعيّن {name} كلمة مرور جديدة من خلال دعوة.",
     "I confirmed this email address with {name}.":
       "تأكدتُ من هذا البريد الإلكتروني مع {name}.",
+    "You entered this work email, so hand the link over in person.":
+      "أنت من أدخل هذا البريد، لذا سلّم الرابط للموظف شخصياً.",
   },
 };

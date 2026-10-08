@@ -1104,7 +1104,16 @@ public sealed class EmployeeLoginLinkTests
             await db.SaveChangesAsync();
         }
 
-        var expectedCode = changedBy == "caller" ? WorkEmailSetterRule.SetByCallerCode : EmployeeLinkRefusals.WorkEmailParty;
+        if (changedBy == "caller")
+        {
+            // The caller set the work email, but this login has no credential handler: linking issues no credential,
+            // so the setter rule (which only ever withholds the EMAIL channel) has nothing to withhold.
+            await using var db = _fixture.CreateRetryingDb();
+            Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
+                .NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
+            return;
+        }
+        var expectedCode = EmployeeLinkRefusals.WorkEmailParty;
         await using (var db = _fixture.CreateRetryingDb())
         {
             var status = Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result);
@@ -1133,27 +1142,35 @@ public sealed class EmployeeLoginLinkTests
     // ── WorkEmailSetterRule: whoever set the work email never issues or binds a credential for it ─────────
 
     [Fact]
-    public async Task TheWorkEmailSetter_CannotInviteOrResendAnInvitation_ButAnotherAdministratorCan()
+    public async Task TheWorkEmailSetter_InvitesAndResends_ByHandOnly_AndBecomesACredentialHandler()
     {
         var w = await SeedAsync();
         var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, Email("invitee"));
         await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
 
+        EmployeeLoginInvitationDto first;
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+            first = AssertHandedOver((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+        await using (var verify = _fixture.CreateRetryingDb())
+            (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.Action == AccessManagementService.InvitationLinkDisclosedAction
+                && x.EntityId == first.UserId.ToString() && x.UserId == w.AdminId)).Should().BeTrue("the setter held the link");
+        // Anyone else's invitation is delivered normally (here: no transport, so disclosed — but not a hand-over).
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<CreatedResult>((await Controller(db, w, peer).InviteEmployeeLogin(
+        {
+            var created = Assert.IsType<CreatedResult>((await Controller(db, w, peer).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+            Assert.IsType<EmployeeLoginInvitationDto>(created.Value).HandOverInPerson.Should().BeFalse();
+        }
         // A resend is an invitation too.
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+            AssertHandedOver((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
     }
 
     [Fact]
-    public async Task TheWorkEmailSetter_CannotIssueAResetLinkForTheLinkedLogin()
+    public async Task TheWorkEmailSetter_GetsTheResetLinkForTheLinkedLogin_ByHandOnly()
     {
         var w = await SeedAsync();
         var peer = await AddUserAsync(w, Email("peer"), ["Admin"], groupScope: true);
@@ -1164,9 +1181,17 @@ public sealed class EmployeeLoginLinkTests
         await AddWorkEmailSetterAsync(w, employeeId, w.AdminId);
 
         await using (var db = _fixture.CreateRetryingDb())
-            AssertSetterRefused(await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default));
+        {
+            var body = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(
+                await Controller(db, w, w.AdminId).IssuePasswordResetLink(login, default)).Value);
+            body.GetProperty("handOverInPerson").GetBoolean().Should().BeTrue();
+            body.GetProperty("emailSent").GetBoolean().Should().BeFalse();
+            body.GetProperty("resetUrl").GetString().Should().Contain("/reset-password");
+            body.GetProperty("message").GetString().Should().Be(WorkEmailSetterRule.HandOverMessage);
+        }
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<OkObjectResult>(await Controller(db, w, peer).IssuePasswordResetLink(login, default));
+            JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(await Controller(db, w, peer).IssuePasswordResetLink(login, default)).Value)
+                .GetProperty("handOverInPerson").GetBoolean().Should().BeFalse();
     }
 
     /// <summary>For a hire made from a draft, the drafter who typed the address is a setter as well as the approver.</summary>
@@ -1182,12 +1207,13 @@ public sealed class EmployeeLoginLinkTests
         foreach (var setter in new[] { drafter, approver })
         {
             await using var db = _fixture.CreateRetryingDb();
-            AssertSetterRefused((await Controller(db, w, setter).InviteEmployeeLogin(
+            AssertHandedOver((await Controller(db, w, setter).InviteEmployeeLogin(
                 new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
         }
         await using (var db = _fixture.CreateRetryingDb())
-            Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
-                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result);
+            Assert.IsType<EmployeeLoginInvitationDto>(Assert.IsType<CreatedResult>((await Controller(db, w, w.AdminId).InviteEmployeeLogin(
+                new InviteEmployeeLoginRequest(employeeId, null, AccessModes.EssOnly, null), default)).Result).Value)
+                .HandOverInPerson.Should().BeFalse();
     }
 
     [Fact]
@@ -1234,7 +1260,7 @@ public sealed class EmployeeLoginLinkTests
 
     /// <summary>
     /// The setter check is read UNDER the employee row lock that work-email edits take: while the row is held, the
-    /// setter's work-email change commits; the invitation, released, must see it and refuse.
+    /// setter's work-email change commits; the invitation, released, must see it and hand the link over (not email it).
     /// </summary>
     [Fact]
     public async Task TheInvitationReadsTheWorkEmailSetter_UnderTheEmployeeRowLock()
@@ -1288,7 +1314,7 @@ public sealed class EmployeeLoginLinkTests
         await lockTransaction.CommitAsync();
 
         // ...and the invitation, once it holds the row, sees it.
-        AssertSetterRefused((await invite).Result);
+        AssertHandedOver((await invite).Result);
     }
 
     [Fact]
@@ -1452,13 +1478,15 @@ public sealed class EmployeeLoginLinkTests
         };
     }
 
-    private static void AssertSetterRefused(IActionResult? result)
+    /// <summary>The setter's invitation: issued, never emailed, the link handed back with the hand-over sentence.</summary>
+    private static EmployeeLoginInvitationDto AssertHandedOver(IActionResult? result)
     {
-        var refused = Assert.IsType<ObjectResult>(result);
-        refused.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-        var body = JsonSerializer.SerializeToElement(refused.Value);
-        body.GetProperty("code").GetString().Should().Be(WorkEmailSetterRule.SetByCallerCode);
-        body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+        var invite = Assert.IsType<EmployeeLoginInvitationDto>(Assert.IsType<CreatedResult>(result).Value);
+        invite.HandOverInPerson.Should().BeTrue();
+        invite.EmailSent.Should().BeFalse();
+        invite.InvitationUrl.Should().Contain("/accept-invitation");
+        invite.DeliveryMessage.Should().Be(WorkEmailSetterRule.HandOverMessage);
+        return invite;
     }
 
     private async Task<DateTime> AddWorkEmailSetterAsync(World w, int employeeId, Guid actor, Guid? draftedBy = null, string? oldWorkEmail = null)

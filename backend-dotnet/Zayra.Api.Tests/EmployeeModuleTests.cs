@@ -90,7 +90,7 @@ public class EmployeeModuleTests
     /// <summary>D1 drafts the hire, D2 edits the draft's work email, a third person approves: all three set the address,
     /// so none of them may send its invitation (WorkEmailSetterRule).</summary>
     [Fact]
-    public async Task ADraftEditorWhoChangedTheWorkEmail_IsASetter_AndCannotInvite()
+    public async Task ADraftEditorWhoChangedTheWorkEmail_IsASetter()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
@@ -112,17 +112,9 @@ public class EmployeeModuleTests
         Assert.NotNull(setter);
         Assert.Equal(new[] { approver, d1, d2 }.OrderBy(x => x), setter!.UserIds.OrderBy(x => x));
 
-        var access = new Zayra.Api.Infrastructure.Auth.AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db),
-            new Zayra.Api.Infrastructure.Auth.JwtTokenService(Microsoft.Extensions.Options.Options.Create(new Zayra.Api.Application.Auth.JwtOptions
-            {
-                Issuer = "t", TenantAudience = "t", PlatformAudience = "p",
-                SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_DRAFT_SETTER_TESTS_0123456789", AccessTokenMinutes = 5, RefreshTokenDays = 1,
-            })));
-        var refused = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Auth.WorkEmailSetterRefusedException>(() => access.InviteEmployeeLoginAsync(
-            tenantId, new Zayra.Api.Application.Auth.InviteEmployeeLoginRequest(profile.Id, null, Zayra.Api.Models.AccessModes.EssOnly, null),
-            Zayra.Api.Application.Common.EntityScopeContext.GroupLevel,
-            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", d2, tenantId), CancellationToken.None));
-        Assert.Equal(Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.SetByCallerCode, refused.Code);
+        // So D2's invitation (the same rule every credential path reads) is handed over, never emailed.
+        Assert.True(await Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsCallerSetterAsync(db, tenantId, profile.Id, d2, CancellationToken.None));
+        Assert.False(await Zayra.Api.Infrastructure.Auth.WorkEmailSetterRule.IsCallerSetterAsync(db, tenantId, profile.Id, Guid.NewGuid(), CancellationToken.None));
     }
 
     [Fact]

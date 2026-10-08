@@ -23,6 +23,14 @@ namespace Zayra.Api.Infrastructure.Auth;
 public static class WorkEmailSetterRule
 {
     public const string SetByCallerCode = "work_email_set_by_caller";
+
+    /// <summary>
+    /// THE RULE BLOCKS THE EMAIL CHANNEL, NOT THE CREDENTIAL. A setter can still issue an invitation, a resend, a
+    /// credential-rotating link or a reset link (a single-admin tenant, an HR officer inviting the people they added),
+    /// but it is NEVER emailed to the address they typed: the link is handed back to them, recorded as a disclosure
+    /// (so they become a credential handler of the login), and this is what they are told.
+    /// </summary>
+    public const string HandOverMessage = "You entered this work email, so hand the link over in person.";
     public const string SetByHandlerCode = "work_email_set_by_handler";
 
     public const string SetByCallerMessage =
@@ -124,6 +132,20 @@ public static class WorkEmailSetterRule
     {
         if (await IsCallerSetterAsync(db, tenantId, employeeId, callerUserId, ct))
             throw new WorkEmailSetterRefusedException(SetByCallerCode, SetByCallerMessage, SetByCallerMessageAr);
+    }
+
+    /// <summary>True when the caller set the work email of any employee the login is live-linked to.</summary>
+    public static async Task<bool> IsCallerSetterForLoginAsync(ZayraDbContext db, Guid tenantId, Guid userId, Guid? callerUserId, CancellationToken ct)
+    {
+        if (callerUserId is null) return false;
+        var employeeIds = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, Why).AsNoTracking()
+            .Where(x => x.UserId == userId && !x.IsDeleted)
+            .Select(x => x.EmployeeId)
+            .Distinct()
+            .ToListAsync(ct);
+        foreach (var employeeId in employeeIds)
+            if (await IsCallerSetterAsync(db, tenantId, employeeId, callerUserId, ct)) return true;
+        return false;
     }
 
     /// <summary>The same refusal for a credential issued against a LOGIN: checked for every employee the login is live-linked to.</summary>
