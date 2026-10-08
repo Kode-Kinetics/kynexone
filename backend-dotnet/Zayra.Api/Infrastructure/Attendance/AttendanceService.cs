@@ -638,14 +638,19 @@ public class AttendanceService : IAttendanceService
         {
             var policy = await _db.AttendancePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct) ?? DefaultPolicy(tenantId);
             var ctx = new RequestContext(ip, "device-ingest", null, tenantId);
-            foreach (var emp in matchedEmployees.Values)
-                foreach (var date in affectedDates)
+            // One employee-day per transaction, under the same per-(tenant, employee, work date) lock as a punch, in the
+            // global order (employee, then date): a punch racing this ingest can neither 23505 nor lose its update.
+            foreach (var emp in matchedEmployees.Values.OrderBy(e => e.Id))
+                foreach (var date in affectedDates.Order())
                 {
                     if (await IsLocked(tenantId, date, ct)) continue;
-                    await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
+                    await AttendanceDailyRecordLock.RunAsync(_db, tenantId, emp.Id, date, async () =>
+                    {
+                        await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
+                        await _db.SaveChangesAsync(ct);
+                    }, ct);
                     processedDays++;
                 }
-            await _db.SaveChangesAsync(ct);
         }
 
         return new DeviceIngestResult(punches.Count, accepted, duplicates, unmatched, processedDays, syncLog.Id);
@@ -718,12 +723,20 @@ public class AttendanceService : IAttendanceService
             && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
         var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         var processed = 0;
-        for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
+        // One employee-day per transaction under the punch's per-(tenant, employee, work date) lock, in the global order
+        // (employee, then date), so a punch racing this run can neither 23505 nor lose its update, and no run ever holds
+        // more than one of these locks at a time (no deadlock; no lock-table pressure on a 367-day run).
+        foreach (var employee in employees.OrderBy(e => e.Id))
         {
-            foreach (var employee in employees)
+            var policy = ResolveAttendancePolicy(employee, policies);
+            for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
             {
-                var policy = ResolveAttendancePolicy(employee, policies);
-                await ProcessEmployeeDay(tenantId, employee, date, policy, context, ct);
+                var day = date;
+                await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
+                {
+                    await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                    await _db.SaveChangesAsync(ct);
+                }, ct);
                 processed++;
             }
         }
@@ -748,14 +761,25 @@ public class AttendanceService : IAttendanceService
         var policies = await _db.AttendancePolicies
             .Where(x => x.TenantId == tenantId && x.IsActive)
             .ToListAsync(ct);
-        if (policies.Count == 0)
+        if (policies.Count > 0) return policies;
+        // Race-safe: two callers (two employees' first punches, a punch and the processing job) used to both insert the
+        // tenant's DEFAULT policy, and the loser hit the unique (tenant_id, code) index — a 23505. Under the per-tenant
+        // lock the second one re-reads and finds the first one's row.
+        return await AttendanceDailyRecordLock.RunForDefaultPolicyAsync<IReadOnlyList<AttendancePolicy>>(_db, tenantId, async () =>
         {
+            var again = await _db.AttendancePolicies
+                .Where(x => x.TenantId == tenantId && x.IsActive)
+                .ToListAsync(ct);
+            if (again.Count > 0) return again;
+            // A DEFAULT policy someone deactivated is not revived (and inserting another would break the unique index):
+            // the default rules are used in memory, without a row.
+            if (await _db.AttendancePolicies.AnyAsync(x => x.TenantId == tenantId && x.Code == DefaultPolicyCode, ct))
+                return [DefaultPolicy(tenantId)];
             var policy = DefaultPolicy(tenantId);
             _db.AttendancePolicies.Add(policy);
             await _db.SaveChangesAsync(ct);
-            policies.Add(policy);
-        }
-        return policies;
+            return [policy];
+        }, ct);
     }
 
     public async Task<int> ProcessEmployeeRangeAsync(Guid tenantId, Employee employee, IReadOnlyCollection<AttendancePolicy> policies,
@@ -765,9 +789,16 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Employee does not belong to the tenant being processed.");
         var policy = ResolveAttendancePolicy(employee, policies);
         var days = 0;
+        // Dates ascending under the punch's per-(tenant, employee, work date) lock: inside the job item's transaction the
+        // locks are held until it commits, always in the global order, so neither a punch nor another run can deadlock it.
         for (var date = fromDate; date <= toDate; date = date.AddDays(1))
         {
-            await ProcessEmployeeDay(tenantId, employee, date, policy, context, ct);
+            var day = date;
+            await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
+            {
+                await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                await _db.SaveChangesAsync(ct);
+            }, ct);
             days++;
         }
         return days;
@@ -829,18 +860,13 @@ public class AttendanceService : IAttendanceService
         // Race-safe: two first-of-day punches of the same employee used to both create the daily record, and the loser
         // got an unhandled 23505 (a 500 after its raw event had committed). The daily record and what is derived from it
         // are written under a per-(tenant, employee, work date) advisory lock, so the second punch updates the first's row.
+        if (await IsLocked(tenantId, workDate, ct)) return raw;
+        // The tenant's first DEFAULT policy is created race-safely in its own short transaction, BEFORE the daily-record
+        // lock is taken (the policy lock is never held together with a daily-record lock).
+        var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, workDate, async () =>
         {
             if (await IsLocked(tenantId, workDate, ct)) return;
-            var policies = await _db.AttendancePolicies
-                .Where(x => x.TenantId == tenantId && x.IsActive)
-                .ToListAsync(ct);
-            if (policies.Count == 0)
-            {
-                var defaultPolicy = DefaultPolicy(tenantId);
-                _db.AttendancePolicies.Add(defaultPolicy);
-                policies.Add(defaultPolicy);
-            }
             await ProcessEmployeeDay(tenantId, employee, workDate,
                 ResolveAttendancePolicy(employee, policies), context, ct);
             await _db.SaveChangesAsync(ct);
@@ -1335,7 +1361,8 @@ public class AttendanceService : IAttendanceService
     private async Task<bool> IsLocked(Guid tenantId, DateOnly date, CancellationToken ct) =>
         await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
 
-    private static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = "DEFAULT", Name = "Default attendance policy" };
+    private const string DefaultPolicyCode = "DEFAULT";
+    private static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = DefaultPolicyCode, Name = "Default attendance policy" };
 
     /// <summary>
     /// Picks the attendance policy that governs one employee's day.

@@ -90,8 +90,10 @@ public class RawSqlExecutionRatchetTests
         ["Controllers/SelfieAttendanceControllers.cs"] = 1,
         // pg_advisory_xact_lock(hashtextextended('attendance-daily:{tenant}:{employee}:{workDate}', 0)) serialises the
         // write of one employee's daily attendance record for one date (punch/* and the legacy mobile punch), so two
-        // first-of-day punches no longer race to a 23505. Writes no row; the key is the caller's own tenant and employee.
-        // Proven by AttendanceDailyRecordRacePostgresTests.
+        // first-of-day punches no longer race to a 23505 — also taken by ProcessAsync, the processing job and device
+        // ingest; the same single call site takes 'attendance-default-policy:{tenant}' around the tenant's first DEFAULT
+        // policy. Writes no row; the key is the caller's own tenant (and employee).
+        // Proven by AttendanceDailyRecordRacePostgresTests and AttendanceProcessingRacePostgresTests.
         ["Infrastructure/Attendance/AttendanceDailyRecordLock.cs"] = 1,
         // 1 -> 2: + the per-employee leave advisory lock (see the note under advisory locks above).
         ["Infrastructure/Leave/LeaveService.cs"] = 2,
