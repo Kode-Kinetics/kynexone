@@ -2109,6 +2109,9 @@ export function LeavePage() {
   const isManager  = !isAdmin && (user?.roles.some(r => ['Manager', 'Supervisor'].includes(r)) ?? false);
   const isEmployee = !isAdmin && !isManager;
   const selfEmployeeId = user?.employeeId;
+  // Filing leave for someone else needs leave.write (the server refuses it otherwise); a job title is not
+  // that authority. Without it, Apply files the caller's own leave, whatever their role.
+  const canFileForOthers = hasPermission('leave.write');
 
   useEffect(() => {
     if (isAdmin) {
@@ -2188,7 +2191,7 @@ export function LeavePage() {
       <TabPanel idPrefix="leave" tabId={tab}>
       {tab === 'dashboard'  && <DashboardTab onNavigate={setTab} groupFilter={groupFilter} />}
       {tab === 'balance'    && <BalanceTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} groupFilter={groupFilter} />}
-      {tab === 'apply'      && <ApplyLeaveTab selfEmployeeId={isEmployee ? selfEmployeeId : undefined} isEmployee={isEmployee} />}
+      {tab === 'apply'      && <ApplyLeaveTab selfEmployeeId={canFileForOthers ? undefined : selfEmployeeId} isEmployee={!canFileForOthers} />}
       {tab === 'requests'   && <MyRequestsTab />}
       {tab === 'approvals'  && <ApprovalsTab groupFilter={groupFilter} />}
       {tab === 'calendar'   && <CalendarTab groupFilter={groupFilter} />}

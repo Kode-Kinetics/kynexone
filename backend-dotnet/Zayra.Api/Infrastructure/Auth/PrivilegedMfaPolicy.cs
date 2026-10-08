@@ -121,11 +121,12 @@ public static class PrivilegedMfaPolicy
 
     /// <summary>
     /// Access-mode bundle keys that are privileged in general but scoped to the person's own record
-    /// inside that bundle. Mobile's <c>attendance.write</c> is the employee's own clock-in; counting it
-    /// would put every mobile user behind MFA. Any OTHER privileged key that appears in a bundle counts.
+    /// inside that bundle. Empty: Mobile used to carry <c>attendance.write</c> for the employee's own
+    /// clock-in, which now needs no permission, so the bundle no longer holds it. Any privileged key
+    /// that appears in a bundle counts.
     /// </summary>
     public static readonly IReadOnlySet<(string AccessMode, string Permission)> SelfScopedBundleKeys =
-        new HashSet<(string, string)> { (AccessModes.Mobile, "attendance.write") };
+        new HashSet<(string, string)>();
 
     /// <summary>The privileged keys an access-mode bundle contributes (after the self-scoped exemptions).</summary>
     public static IEnumerable<string> PrivilegedBundleKeys(string? accessMode, IEnumerable<string> bundle)

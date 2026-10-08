@@ -2044,7 +2044,10 @@ public class AuthService : IAuthService
     {
         AccessModes.EssOnly => new[] { "ess.read", "ess.write", "profile.read" },
         AccessModes.ManagerPortal => new[] { "ess.read", "ess.write", "manager.read", "approvals.read", "approvals.decide", "profile.read" },
-        AccessModes.Mobile => new[] { "ess.read", "ess.write", "attendance.write", "profile.read" },
+        // No attendance.write: an employee's own clock-in needs no permission (AttendanceController.Punch resolves
+        // the caller's own employee). The key here also let a Mobile-mode manager punch for their team and let any
+        // Mobile user push backdated raw events for themselves.
+        AccessModes.Mobile => new[] { "ess.read", "ess.write", "profile.read" },
         AccessModes.KioskOnly => new[] { "attendance.kiosk" },
         AccessModes.NoLogin => Array.Empty<string>(),
         _ => Array.Empty<string>()

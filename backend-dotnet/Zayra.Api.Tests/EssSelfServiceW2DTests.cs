@@ -668,6 +668,9 @@ public class EssSelfServiceW2DTests
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
                         new Claim("tenant_id", tenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        // A linked employee's login carries employee_id (issued from the login-to-employee link);
+                        // "filing for yourself" is decided from it, never from the data scope.
+                        new Claim("employee_id", me.Id.ToString()),
                     }, "Test")),
                 },
             },

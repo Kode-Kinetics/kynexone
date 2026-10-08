@@ -115,9 +115,10 @@ public class PermissionCatalogCoverageTests
         // 2b. A const key passed to the helper is inlined by the compiler and still seen.
         referenced.Should().ContainKey(Zayra.Api.Controllers.FinanceGlController.PredicateAuthorPermission);
 
-        // 3. Raw claim comparison in a controller lambda.
-        referenced.Should().ContainKey("approvals.decide");
-        referenced["approvals.decide"].Should().Contain(s => s.StartsWith("AttendanceController", StringComparison.Ordinal));
+        // 3. Raw claim comparison in a controller lambda. (The former sample, AttendanceController's
+        // approvals.decide filing check, was retired: filing for someone else now takes attendance.write.)
+        referenced.Should().ContainKey("organization.establishment.write");
+        referenced["organization.establishment.write"].Should().Contain(s => s.StartsWith("TenantHrConfigController", StringComparison.Ordinal));
 
         // The retired key is gone from the GOSI controller.
         referenced.Should().NotContainKey("payroll.manage");

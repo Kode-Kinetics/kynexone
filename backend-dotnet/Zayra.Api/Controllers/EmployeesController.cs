@@ -5058,6 +5058,11 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(id)) return Forbid();
+        // A registered letter (appointment, experience) is HR's statement about an employee: never issued by
+        // that employee about themselves. They ask for it through Self-Service, and a colleague issues it.
+        if (await Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), id, cancellationToken))
+            return BadRequest(Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.Refusal(
+                "You cannot issue a letter about yourself. Request it in Self-Service, and a colleague in HR will issue it."));
 
         var issuerName = User.FindFirstValue("name") ?? User.FindFirstValue(ClaimTypes.Name) ?? "HR Department";
         if (GetUserId() is Guid uid)
