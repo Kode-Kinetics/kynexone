@@ -30,6 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Testcontainers can request Docker Hub directly, bypassing daemon mirrors. Fetch the
+      # same image tags through Google's cache and retain their canonical local names; the
+      # default missing-image pull policy then uses these images without weakening any test.
+      - name: Cache test fixture images
+        run: |
+          set -euo pipefail
+          for fixture_image in postgres:16 postgres:16-alpine edoburu/pgbouncer:v1.26.0-p0 localstack/localstack:3.8 testcontainers/ryuk:0.6.0; do
+            cached_path="$fixture_image"
+            if [[ "$cached_path" != */* ]]; then cached_path="library/$cached_path"; fi
+            docker pull "mirror.gcr.io/$cached_path"
+            docker tag "mirror.gcr.io/$cached_path" "$fixture_image"
+            docker image inspect "$fixture_image" --format '{{.Id}}'
+          done
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -265,7 +279,8 @@ jobs:
       BUILD_COMMIT: ${{ github.sha }}
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_USER: postgres
@@ -465,7 +480,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: postgres
@@ -676,7 +692,8 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: postgres
@@ -825,6 +842,32 @@ jobs:
       BUILD_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
+
+      # Compose services and BuildKit resolve image metadata separately. Route this disposable
+      # CI stack through the cache explicitly, preserving the Node digest from its Dockerfile.
+      - name: Configure cached images for the browser stack
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_CACHE'
+          import json, os, re
+          from pathlib import Path
+
+          source = Path("frontend/Dockerfile").read_text()
+          node = re.search(r"^ARG NODE_IMAGE=(node:[^\s]+@sha256:[a-f0-9]{64})$", source, re.MULTILINE)
+          if node is None:
+              raise ValueError("Expected the existing digest-pinned Node image")
+          override = Path(os.environ["RUNNER_TEMP"]) / "browser-image-cache.json"
+          override.write_text(json.dumps({"services": {
+              "postgres": {"image": "mirror.gcr.io/library/postgres:16-alpine"},
+              "redis": {"image": "mirror.gcr.io/library/redis:7-alpine"},
+              "frontend": {"build": {"args": {
+                  "NODE_IMAGE": "mirror.gcr.io/library/" + node.group(1),
+                  "BUILDKIT_SYNTAX": "mirror.gcr.io/docker/dockerfile:1"
+              }}}
+          }}))
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"COMPOSE_FILE={Path.cwd() / 'docker-compose.yml'}:{override}\n")
+          PY_CACHE
 
       - uses: actions/setup-node@v4
         with:

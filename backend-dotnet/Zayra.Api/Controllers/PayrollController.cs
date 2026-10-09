@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Benefits;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -913,7 +914,7 @@ public class PayrollController : ControllerBase
             || c.CalcMethod == PayComponentCalcMethods.Statutory
             || c.ProviderKey == PayComponentProviders.Statutory)
             return true;
-        return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment;
+        return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
 
     // ── POD-B2: run population selector (include / exclude with an audited reason) ────────────────
@@ -2159,6 +2160,27 @@ public class PayrollController : ControllerBase
             // /validate, which is a read-model refresh of the same facts.
             _db.PayrollValidationOverrides.RemoveRange(_db.PayrollValidationOverrides.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
 
+        // Benefit execution is part of the payroll transaction and uses only frozen employee terms.
+        // The employee locks also serialize receipt approvals and dated HR benefit changes.
+        var benefitAdjustments = await BenefitPayroll.StageAsync(_db, run, company.Id, company.DefaultCurrency,
+            employees, includesRecurringPay, periodStart, periodEnd, cancellationToken);
+        approvedAdjustments.RemoveAll(BenefitPayroll.IsBenefit);
+        approvedAdjustments.AddRange(benefitAdjustments);
+        var benefitGl = benefitAdjustments.Count > 0
+            ? await LoadGlResolutionContextAsync(tenantId, company.Id, cancellationToken) : null;
+        PayComponentLine AdjustmentLine(PayrollAdjustment adjustment)
+        {
+            var witness = BenefitPayroll.Read(adjustment);
+            if (witness is null) return new PayComponentLine($"ADJ_{NormalizeCode(adjustment.AdjustmentType)}",
+                AdjustmentLabel(adjustment), Math.Abs(adjustment.Amount), "Adjustment", false);
+            var code = $"BENEFIT_{NormalizeCode(witness.Component.Code)}";
+            var driver = adjustment.Amount > 0
+                ? EarningDriverKeyFor(benefitGl!.Drivers, code, "Adjustment")
+                : ResolveDeductionDriverRow(benefitGl!.Drivers, code, "Adjustment")?.Key ?? DeductionDriverKey(code, "Adjustment", out _);
+            return new PayComponentLine(code, $"{witness.PlanName} — {witness.Component.Name}",
+                Math.Abs(adjustment.Amount), "Adjustment", false) { GlDriverKey = driver };
+        }
+
         var slips = new List<PayrollSlip>();
         // POD-B2 — per-attempt accumulators. Declared INSIDE the execution-strategy delegate so a
         // transient retry starts clean (the delegate re-runs from here).
@@ -2370,6 +2392,8 @@ public class PayrollController : ControllerBase
                     configuredComponents.Where(c => c.IsTaxable && c.ComponentType == PayComponentTypes.Earning).ToList(),
                     configuredCtx).Earnings.Sum(l => l.Amount);
 
+            var benefitTaxableEarnings = approvedAdjustments.Where(a => a.EmployeeId == e.Id && a.Amount > 0
+                && BenefitPayroll.Read(a)?.Component.IsTaxable == true).Sum(a => a.Amount);
             // Tax deduction: apply income tax rate to taxable components only
             decimal taxDeduction = 0m;
             if (incomeTaxRate > 0 && salary is not null)
@@ -2385,7 +2409,7 @@ public class PayrollController : ControllerBase
                         factor)
                     : basic;
                 // F2 — a configured earning flagged IsTaxable is taxable income. 0 for every tenant without one.
-                taxableBase += configuredTaxableEarnings;
+                taxableBase += configuredTaxableEarnings + benefitTaxableEarnings;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
@@ -2411,6 +2435,10 @@ public class PayrollController : ControllerBase
                 fullBasic = 0m; fullHousing = 0m; fullTransport = 0m; fullOther = 0m;
                 prorationNote = string.Empty;
             }
+
+            // Supplemental and salary-less runs still tax configured taxable benefit payments.
+            if ((!includesRecurringPay || salary is null) && incomeTaxRate > 0)
+                taxDeduction = Math.Round(benefitTaxableEarnings * incomeTaxRate / 100m, 2);
 
             // BONUS: collect this employee's approved bonuses for the period.
             var empBonuses = bonusesByEmployee.TryGetValue(e.Id, out var eb) ? eb : new List<EmployeeBonus>();
@@ -2756,7 +2784,10 @@ public class PayrollController : ControllerBase
             foreach (var bonus in empBonuses)
                 AddEarning(tenantId, id, e.Id, BonusGlLedger.EarningComponentCode(bonus.BonusTypeName), bonus.BonusTypeName, bonus.GrossBonusAmount, "Bonus");
             foreach (var adjustment in empAdjustments.Where(a => a.Amount > 0m))
-                AddEarning(tenantId, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), adjustment.Amount, "Adjustment");
+            {
+                var line = AdjustmentLine(adjustment);
+                AddEarning(tenantId, id, e.Id, line.Code, line.Name, line.Amount, line.Source, glDriverKey: line.GlDriverKey);
+            }
             // POD-B2: BASIC is the ONLY line emitted unconditionally (every other recurring line already
             // carries an `if (x > 0)` guard, and the scalars above are zeroed on a supplemental basis).
             // Skipping it — rather than emitting 0.00 — keeps a supplemental run's journal free of an
@@ -2787,7 +2818,10 @@ public class PayrollController : ControllerBase
             if (loanEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "LOAN_EMI", "Loan instalment", loanEmi, "Loan");
             if (advEmi > 0) AddDeduction(tenantId, company.Id, id, e.Id, "ADVANCE_EMI", "Salary advance repayment", advEmi, "Loan");
             foreach (var adjustment in empAdjustments.Where(a => a.Amount < 0m))
-                AddDeduction(tenantId, company.Id, id, e.Id, $"ADJ_{NormalizeCode(adjustment.AdjustmentType)}", AdjustmentLabel(adjustment), Math.Abs(adjustment.Amount), "Adjustment");
+            {
+                var line = AdjustmentLine(adjustment);
+                AddDeduction(tenantId, company.Id, id, e.Id, line.Code, line.Name, line.Amount, line.Source, glDriverKey: line.GlDriverKey);
+            }
             // Statutory deduction lines from pack — employee contributions reduce net pay.
             // Code/Label come from the pack: "GOSI-ANN-EE" / "GOSI Annuities (Employee)" for KSA,
             // "GPSSA-EE" / "GPSSA (Employee)" for UAE, "GRSIA-EE" / "GRSIA (Employee)" for Qatar.
@@ -2819,10 +2853,10 @@ public class PayrollController : ControllerBase
                         .Select(b => new PayComponentLine(BonusGlLedger.EarningComponentCode(b.BonusTypeName), b.BonusTypeName, b.GrossBonusAmount, "Bonus", false))
                         .ToList(),
                     AdjustmentEarningLines = empAdjustments.Where(a => a.Amount > 0m)
-                        .Select(a => new PayComponentLine($"ADJ_{NormalizeCode(a.AdjustmentType)}", AdjustmentLabel(a), a.Amount, "Adjustment", false))
+                        .Select(AdjustmentLine)
                         .ToList(),
                     AdjustmentDeductionLines = empAdjustments.Where(a => a.Amount < 0m)
-                        .Select(a => new PayComponentLine($"ADJ_{NormalizeCode(a.AdjustmentType)}", AdjustmentLabel(a), Math.Abs(a.Amount), "Adjustment", false))
+                        .Select(AdjustmentLine)
                         .ToList(),
                     StatutoryLines = statutoryResult.Lines,
                 };
@@ -3531,6 +3565,10 @@ public class PayrollController : ControllerBase
 
             await tx.CommitAsync(cancellationToken); // commit the whole run atomically
             });
+        }
+        catch (BenefitPaymentException error)
+        {
+            return Conflict(new { error = "benefit_payroll_reconciliation_required", message = error.Message });
         }
         catch (PayrollProcessAbortException abort)
         {

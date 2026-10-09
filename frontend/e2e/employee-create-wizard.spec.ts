@@ -54,12 +54,14 @@ async function boot(page: Page, options: MockOptions = {}) {
       isGroupScope: !!options.multipleCompanies, accountType: options.multipleCompanies ? 'Group' : 'SingleCompany',
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: 'TEST', countryCode: item.countryCode, isActive: true })),
     });
+    if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/companies') return reply(paged(companies));
     if (path === '/api/branches') return reply(paged([{ id: 'branch-wizard', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
     if (path === '/api/departments') return reply(paged([{ id: 'department-wizard', branchId: 'branch-wizard', code: 'OPS', nameEn: 'Operations', managerEmployeeId: manager.id, isActive: true }]));
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
     if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }]));
+    if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (path.endsWith('/pay-scale')) return reply([]);
     if (path === '/api/organization/cost-centers') return reply(paged([{ id: 'cost-wizard', companyId: company.id, code: 'OPS', nameEn: 'Operations cost center', isActive: true }]));
     if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
@@ -611,3 +613,41 @@ for (const changedDraft of ['English name changed and restored', 'Arabic name ma
     expect(errors).toEqual([]);
   });
 }
+
+
+test('grade benefits preview follows grade and joining date and appears in review', async ({ page }, info) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  const previewRequests: string[] = [];
+  await page.route('**/api/compensation/benefits/grade-defaults?**', async route => {
+    const url = new URL(route.request().url());
+    previewRequests.push(url.search);
+    const senior = url.searchParams.get('gradeId') === 'grade-other';
+    await route.fulfill({ json: [{ benefitPlanId: 'medical', code: 'MED', name: senior ? 'Medical Platinum' : 'Medical Gold', planType: 'Medical', currency: 'SAR', eligible: true, blockingReason: null, eligibilityRuleId: 'medical-rule', entitlementTier: senior ? 'Platinum' : 'Gold', maximumBenefitAmount: 25000, limitPeriod: 'Annual', effectiveFrom: url.searchParams.get('effectiveFrom'), effectiveTo: null },
+      { benefitPlanId: 'education', code: 'EDU', name: 'Child education', planType: 'Education', currency: 'SAR', eligible: false, blockingReason: 'Requires 12 months service.', eligibilityRuleId: 'education-rule', entitlementTier: 'Family', maximumBenefitAmount: 15000, limitPeriod: 'Annual', effectiveFrom: url.searchParams.get('effectiveFrom'), effectiveTo: null }] });
+  });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await expect(dialog.getByRole('combobox', { name: 'Grade', exact: true })).toBeVisible();
+  await dialog.getByRole('combobox', { name: 'Grade', exact: true }).selectOption('grade-wizard');
+  await dialog.getByLabel('Joining date', { exact: false }).fill('2026-10-15');
+  const preview = dialog.locator('[data-employee-step="1"]').getByTestId('employee-grade-benefits');
+  await expect(preview).toContainText('Medical Gold');
+  await expect(preview).toContainText('Assigned by default');
+  await expect(preview).toContainText('Requires 12 months service.');
+  await dialog.getByRole('combobox', { name: 'Grade', exact: true }).selectOption('grade-other');
+  await expect(preview).toContainText('Medical Platinum');
+  await expect(preview).not.toContainText('Medical Gold');
+  await dialog.getByLabel('Joining date', { exact: false }).fill('2026-11-01');
+  await expect.poll(() => previewRequests.at(-1)).toContain('effectiveFrom=2026-11-01');
+  await evidence(page, info, 'grade-benefits');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
+  await expect(dialog.getByText('Default benefits', { exact: true })).toBeVisible();
+  const reviewedBenefits = dialog.locator('[data-employee-step="5"]').getByTestId('employee-grade-benefits');
+  await expect(reviewedBenefits.getByText('Medical Platinum', { exact: true })).toBeVisible();
+  await expect(reviewedBenefits).toContainText('25,000');
+  await expect(reviewedBenefits).toContainText('Starts on 2026-11-01');
+  await expect(dialog.getByText('Child education: Requires 12 months service.', { exact: true })).toBeVisible();
+  expect(previewRequests.some(search => search.includes('companyId=company-wizard'))).toBe(true);
+  expect(errors).toEqual([]);
+});

@@ -11,6 +11,17 @@ namespace Zayra.Api.Tests;
 public class BenefitsCompensationFoundationTests
 {
     [Fact]
+    public void GradeBenefitDefaultsMigration_IsVisibleToEf()
+    {
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql("Host=localhost;Database=unused;Username=unused;Password=unused")
+            .Options;
+        using var db = new ZayraDbContext(options);
+
+        Assert.Contains(db.Database.GetMigrations(), x => x.EndsWith("_AddGradeBenefitDefaultsAndExceptions"));
+    }
+
+    [Fact]
     public async Task Enrollment_RequiresMatchingCompanyAndGradeEligibility()
     {
         await using var db = CreateDb();
@@ -20,6 +31,14 @@ public class BenefitsCompensationFoundationTests
         var gradeA = Guid.NewGuid();
         var gradeB = Guid.NewGuid();
         var ctrl = CreateController(db, tenantId);
+
+        db.Companies.AddRange(
+            new Company { Id = companyA, TenantId = tenantId, LegalNameEn = "Company A", CountryCode = "SA", IsActive = true },
+            new Company { Id = companyB, TenantId = tenantId, LegalNameEn = "Company B", CountryCode = "SA", IsActive = true });
+        db.Grades.AddRange(
+            new Grade { Id = gradeA, TenantId = tenantId, Code = "A", Name = "Grade A", IsActive = true },
+            new Grade { Id = gradeB, TenantId = tenantId, Code = "B", Name = "Grade B", IsActive = true });
+        await db.SaveChangesAsync();
 
         var planResult = await ctrl.CreatePlan(new BenefitPlanRequest(companyA, "MED-A", "Medical A", "Medical", "AED", new DateOnly(2026, 1, 1), null), CancellationToken.None);
         var plan = Assert.IsType<BenefitPlanDto>(Assert.IsType<CreatedAtActionResult>(planResult).Value);
@@ -48,6 +67,8 @@ public class BenefitsCompensationFoundationTests
         var gradeId = Guid.NewGuid();
         var ctrl = CreateController(db, tenantId);
 
+        db.Companies.Add(new Company { Id = companyId, TenantId = tenantId, LegalNameEn = "Company", CountryCode = "SA", IsActive = true });
+        db.Grades.Add(new Grade { Id = gradeId, TenantId = tenantId, Code = "G1", Name = "Grade 1", IsActive = true });
         db.Employees.Add(new Employee { TenantId = tenantId, CompanyId = companyId, GradeId = gradeId, EmployeeCode = "E1", FullName = "Benefit Employee", Status = "Active", JoiningDate = DateTime.UtcNow });
         await db.SaveChangesAsync();
 
@@ -60,6 +81,11 @@ public class BenefitsCompensationFoundationTests
             await ctrl.AddContribution(enrollment.Id, new BenefitContributionRequest(250m, 500m, "Monthly", "MED-EE", new DateOnly(2026, 1, 1), null), CancellationToken.None)).Value);
 
         var runId = Guid.NewGuid();
+        db.PayrollRuns.Add(new PayrollRun
+        {
+            Id = runId, TenantId = tenantId, CompanyId = companyId,
+            Year = 2026, Month = 1, Status = "Locked",
+        });
         var deduction = new PayrollDeduction
         {
             TenantId = tenantId,

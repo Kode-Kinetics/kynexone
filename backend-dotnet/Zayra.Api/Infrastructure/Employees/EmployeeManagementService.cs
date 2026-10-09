@@ -10,8 +10,10 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -188,6 +190,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
                 await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+                // Grade defaults are part of the hire transaction, before any individual HR exceptions.
+                await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
+                    _db, employee, context.UserId, cancellationToken);
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
@@ -202,9 +207,28 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             // ONE transaction for the whole create: the generated code under the ID-rule lock (held until the code is
             // committed), the employee, and its work-email setter marker (the establishment guard joins it).
+            // SaveChanges accepts tracked state before COMMIT. A rolled-back attempt must therefore be rebuilt,
+            // including its generated employee key/code, rather than reusing cached benefits/history as persisted.
+            // The server-generated PublicId is stable across attempts and verifies an ambiguous successful COMMIT.
+            var preparedEmployee = _db.Entry(employee).CurrentValues.Clone();
+            var publicId = employee.PublicId;
+            var attempt = 0;
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
+                if (attempt++ > 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    var committedEmployee = await _db.Employees.AsTracking()
+                        .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PublicId == publicId, cancellationToken);
+                    if (committedEmployee is not null)
+                    {
+                        // The employee and every dependent row committed in the same transaction. Do not replay it.
+                        employee = committedEmployee;
+                        return;
+                    }
+                    employee = (Employee)preparedEmployee.ToObject();
+                }
                 await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
                 await PersistAsync();
                 await tx.CommitAsync(cancellationToken);
@@ -246,8 +270,24 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        var publicId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted)
+            .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
+        if (!publicId.HasValue) return null;
+        var updateAuditId = Guid.NewGuid();
+        return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, publicId.Value, UpdateOnceAsync, cancellationToken);
+
+        async Task<EmployeeDetailDto?> UpdateOnceAsync()
+        {
+        // Stable audit marker makes a lost COMMIT acknowledgement an idempotent retry.
+        if (await _db.AuditLogs.AsNoTracking().AnyAsync(x => x.Id == updateAuditId && x.TenantId == tenantId
+            && x.Action == "employee.updated" && x.EntityId == id.ToString(), cancellationToken))
+            return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+        // Same lifecycle lock order as activation: tenant anchor, then the employee. Re-read after locks.
+        await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag).FirstOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+        var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorPositionId = employee.PositionId;
         // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
         var priorWorkEmail = employee.WorkEmail;
@@ -269,6 +309,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
@@ -297,11 +338,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
+        var updateAudit = AuthAuditEntry.Create(updateAuditId, DateTime.UtcNow, "employee.updated", "Employee", id.ToString(), context with { TenantId = tenantId });
+        updateAudit.CompanyId = employee.CompanyId;
+        _db.AuditLogs.Add(updateAudit);
+        await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
         return updated is null ? null : updated with { LoginUsernameDiffers = workEmailAudit.LoginUsernameDiffers };
+        }
     }
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -1255,6 +1300,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(request.DocumentType) && request.DocumentType != doc.DocumentType
+            && (request.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType || doc.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType))
+            throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
         if (request.DocumentCategory is not null) doc.DocumentCategory = request.DocumentCategory.Trim();
@@ -1320,6 +1369,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return false;
+        await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
 
         doc.IsDeleted = true;
         doc.DeletedAtUtc = DateTime.UtcNow;

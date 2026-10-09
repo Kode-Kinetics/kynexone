@@ -35,11 +35,14 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
   useEffect(() => {
     if (!isOpen) return;
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const mountedDialog = dialogRef.current;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    requestAnimationFrame(() => closeButtonRef.current?.focus());
+    const focusFrame = requestAnimationFrame(() => closeButtonRef.current?.focus());
 
     const onKey = (e: KeyboardEvent) => {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs.item(dialogs.length - 1) !== dialogRef.current) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         onCloseRef.current();
@@ -64,9 +67,17 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
     };
     document.addEventListener('keydown', onKey);
     return () => {
+      cancelAnimationFrame(focusFrame);
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
-      previouslyFocused?.focus();
+      // Strict Mode replays effects while the closing dialog is still in the DOM.
+      const remainingDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).filter(dialog => dialog !== mountedDialog);
+      const parentDialog = remainingDialogs[remainingDialogs.length - 1];
+      if (parentDialog && !parentDialog.contains(previouslyFocused)) {
+        parentDialog.querySelector<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), [tabindex="0"]')?.focus();
+      } else {
+        previouslyFocused?.focus();
+      }
     };
   }, [isOpen]);
 

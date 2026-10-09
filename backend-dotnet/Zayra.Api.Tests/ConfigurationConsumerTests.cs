@@ -384,9 +384,24 @@ public class ConfigurationConsumerTests
     [Fact]
     public void TheProducerRegistryIsNeitherEmptyNorEverything()
     {
-        ApprovalEntities.Producers.Should().HaveCount(5);
-        ApprovalEntities.HasProducer("JawazatRequest").Should().BeTrue("JawazatWorkflowService atomically produces a linked HR-only shared approval");
-        ApprovalEntities.HasProducer("PayrollRun").Should().BeFalse();
+        // Keep this independent of the registry: adding a name requires verifying its runtime producer.
+        var expectedProducers = new[]
+        {
+            "BenefitAdditionalGrant", // AdditionalBenefitGrants.SubmitAsync -> CreateApprovalAsync
+            "BenefitClaim",           // BenefitClaims.SubmitAsync
+            "EmployeeChangeRequest",  // EmployeesController governed-change submission
+            "JawazatRequest",         // JawazatWorkflowService.CreateAsync
+            "LeaveRequest",           // LeaveService.BuildApprovalProjection
+            "ManpowerRequisition",    // RequisitionsController submission -> CreateRequestAsync
+            "Timesheet",              // TimesheetService submission -> CreateRequestAsync
+        };
+        ApprovalEntities.Producers.Should().BeEquivalentTo(expectedProducers,
+            "only entities with verified runtime approval producers belong in the registry");
+        foreach (var entityName in expectedProducers)
+            ApprovalEntities.HasProducer(entityName).Should().BeTrue("{0} has a runtime approval producer", entityName);
+
+        foreach (var entityName in new[] { "OvertimeRequest", "PayrollRun", "EmployeeDraft", "EmployeeTransferRequest", "InventedEntity" })
+            ApprovalEntities.HasProducer(entityName).Should().BeFalse("{0} has no runtime approval producer", entityName);
         ApprovalEntities.HasProducer(null).Should().BeFalse();
         ApprovalEntities.HasProducer("  ").Should().BeFalse();
         ApprovalEntities.HasProducer(" leaverequest ").Should().BeTrue("EntityName is compared case-insensitively and trimmed");

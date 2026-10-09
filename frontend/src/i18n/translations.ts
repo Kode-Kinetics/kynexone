@@ -4,6 +4,7 @@ import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
+import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -19,6 +20,23 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  ...gradeBenefitDefaults.en,
+  "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
+  "Starts on {date}": "Starts on {date}",
+  "Ends on {date}": "Ends on {date}",
+  "Grade benefits": "Grade benefits",
+  "Choose a grade and company to see the default benefits.": "Choose a grade and company to see the default benefits.",
+  "Loading grade benefits…": "Loading grade benefits…",
+  "Eligible benefits are assigned when the employee is created. Authorized HR can record an exception later.": "Eligible benefits are assigned when the employee is created. Authorized HR can record an exception later.",
+  "No benefit plans are configured for this grade and joining date.": "No benefit plans are configured for this grade and joining date.",
+  "Standard tier": "Standard tier",
+  "Assigned by default": "Assigned by default",
+  "Not yet eligible": "Not yet eligible",
+  "Could not load grade benefits. Try again before creating the employee.": "Could not load grade benefits. Try again before creating the employee.",
+  "Default benefits": "Default benefits",
+  "Grade benefits preview unavailable": "Grade benefits preview unavailable",
+  "No eligible grade benefits": "No eligible grade benefits",
+
   "Save future salary changes separately from other approval-required details.": "Save future salary changes separately from other approval-required details.",
   "Salary changes take effect on {date}, after approval.": "Salary changes take effect on {date}, after approval.",
   "View draft": "View draft",
@@ -291,6 +309,8 @@ const en: Dict = {
   'Processed': 'Processed',
   'Submitted': 'Submitted',
   'Cancelled': 'Cancelled',
+  'Superseded': 'Replaced',
+  'Replaced before activation after the employee’s draft details changed.': 'Replaced before activation after the employee’s draft details changed.',
   'Expired': 'Expired',
   'Archived': 'Archived',
   'Confirmed': 'Confirmed',
@@ -1368,6 +1388,23 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...gradeBenefitDefaults.ar,
+  "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
+  "Starts on {date}": "تبدأ في {date}",
+  "Ends on {date}": "تنتهي في {date}",
+  "Grade benefits": "مزايا الدرجة الوظيفية",
+  "Choose a grade and company to see the default benefits.": "اختر الدرجة الوظيفية والشركة لعرض المزايا الافتراضية.",
+  "Loading grade benefits…": "جارٍ تحميل مزايا الدرجة الوظيفية…",
+  "Eligible benefits are assigned when the employee is created. Authorized HR can record an exception later.": "تُسند المزايا المستحقة عند إنشاء الموظف. ويمكن لمسؤول الموارد البشرية المخوّل تسجيل استثناء لاحقاً.",
+  "No benefit plans are configured for this grade and joining date.": "لا توجد خطط مزايا معدّة لهذه الدرجة الوظيفية وتاريخ الانضمام.",
+  "Standard tier": "الفئة القياسية",
+  "Assigned by default": "مُسندة افتراضياً",
+  "Not yet eligible": "غير مستحق بعد",
+  "Could not load grade benefits. Try again before creating the employee.": "تعذر تحميل مزايا الدرجة الوظيفية. أعد المحاولة قبل إنشاء الموظف.",
+  "Default benefits": "المزايا الافتراضية",
+  "Grade benefits preview unavailable": "معاينة مزايا الدرجة الوظيفية غير متاحة",
+  "No eligible grade benefits": "لا توجد مزايا مستحقة لهذه الدرجة",
+
   "Save future salary changes separately from other approval-required details.": "احفظ تغييرات الراتب المستقبلية بشكل منفصل عن التفاصيل الأخرى التي تتطلب الموافقة.",
   "Salary changes take effect on {date}, after approval.": "تسري تغييرات الراتب في {date} بعد الموافقة.",
   "View draft": "عرض المسودة",
@@ -1640,6 +1677,8 @@ const ar: Dict = {
   'Processed': 'تمت المعالجة',
   'Submitted': 'مُقدَّم',
   'Cancelled': 'ملغى',
+  'Superseded': 'تم الاستبدال',
+  'Replaced before activation after the employee’s draft details changed.': 'تم استبدال هذه الميزة قبل التفعيل بعد تغيير بيانات الموظف في المسودة.',
   'Expired': 'منتهي الصلاحية',
   'Archived': 'مؤرشف',
   'Confirmed': 'مؤكد',
@@ -2865,6 +2904,8 @@ const fr: Dict = {
   'Processed': 'Traité',
   'Submitted': 'Soumis',
   'Cancelled': 'Annulé',
+  'Superseded': 'Remplacé',
+  'Replaced before activation after the employee’s draft details changed.': 'Remplacé avant l’activation après modification des informations provisoires de l’employé.',
   'Expired': 'Expiré',
   'Archived': 'Archivé',
   'Confirmed': 'Confirmé',
@@ -3104,6 +3145,8 @@ const es: Dict = {
   'Processed': 'Procesado',
   'Submitted': 'Enviado',
   'Cancelled': 'Cancelado',
+  'Superseded': 'Reemplazado',
+  'Replaced before activation after the employee’s draft details changed.': 'Reemplazado antes de la activación tras cambiar los datos del borrador del empleado.',
   'Expired': 'Vencido',
   'Archived': 'Archivado',
   'Confirmed': 'Confirmado',
