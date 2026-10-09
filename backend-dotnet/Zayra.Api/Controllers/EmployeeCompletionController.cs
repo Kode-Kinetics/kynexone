@@ -155,8 +155,21 @@ public sealed class EmployeeCompletionController(ZayraDbContext db, IDataScopeSe
         var latest = requested ? await db.EmployeeProfileChangeRequests.AsNoTracking()
             .Where(x => x.TenantId == employee.TenantId!.Value && x.EmployeeId == employee.Id && x.Reason == RequestReason)
             .OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct) : null;
-        var changes = latest is null ? null : JsonSerializer.Deserialize<Dictionary<string, string>>(latest.RequestedChangesJson)?
-            .Where(x => Fields.ContainsKey(x.Key)).ToDictionary(x => x.Key, x => x.Value);
+        Dictionary<string, string>? changes = null;
+        if (latest is not null)
+        {
+            changes = new Dictionary<string, string>(StringComparer.Ordinal);
+            // The older ESS route also creates these requests. Match the approval loop exactly:
+            // case-insensitive field names, null clears, and the last casing variant wins.
+            var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(latest.RequestedChangesJson) ?? new();
+            foreach (var (field, value) in values)
+            {
+                var normalized = field.ToLowerInvariant(); // Same normalization as the approval switch.
+                var canonical = Fields.Keys.FirstOrDefault(key => key.ToLowerInvariant() == normalized);
+                if (canonical is not null)
+                    changes[canonical] = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ToString().Trim();
+            }
+        }
         var profile = includeProfile ? new Dictionary<string, string>
         {
             ["preferredName"] = employee.PreferredName, ["personalEmail"] = employee.PersonalEmail,

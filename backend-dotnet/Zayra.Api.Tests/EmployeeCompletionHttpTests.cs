@@ -83,6 +83,52 @@ public class EmployeeCompletionHttpTests(EmployeeDraftCreateHttpFixture fx) : IC
         ((await resubmit.Content.ReadFromJsonAsync<EmployeeCompletionDto>())!.RequestId == state.RequestId).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task GenericEssRequestShowsExactlyTheEffectiveValuesThatApprovalWillApply()
+    {
+        var (id, token) = await CreateLinkedEmployee();
+        using var requested = await fx.SendAsync(HttpMethod.Post, $"/api/employee-completion/{id}");
+        requested.EnsureSuccessStatusCode();
+        // The generic route predates completion and accepts JsonElement values plus case variants.
+        // Both casing variants remain distinct in its stored dictionary; approval applies them in order.
+        var changes = new Dictionary<string, object?>
+        {
+            ["preferredName"] = "First value", ["PREFERREDNAME"] = null,
+            ["PersonalEmail"] = " first@example.test ", ["personalEmail"] = " final@example.test ",
+            ["phone"] = 12345, ["MaritalStatus"] = true,
+            ["EmergencyContactName"] = new { first = "Relative" },
+            ["EMERGENCYCONTACTPHONE"] = new object[] { " 050 ", 987 },
+        };
+        using var submitted = await fx.SendAsync(HttpMethod.Put, "/api/ess/profile-change-request",
+            new { reason = EmployeeCompletionController.RequestReason, changes }, token, false);
+        submitted.StatusCode.Should().Be(HttpStatusCode.Created, await submitted.Content.ReadAsStringAsync());
+        var changeId = (await submitted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        using var review = await fx.SendAsync(HttpMethod.Get, $"/api/employee-completion/{id}");
+        review.StatusCode.Should().Be(HttpStatusCode.OK, await review.Content.ReadAsStringAsync());
+        var state = (await review.Content.ReadFromJsonAsync<EmployeeCompletionDto>())!;
+        state.Status.Should().Be("PendingHR");
+        state.RequestId.Should().Be(changeId);
+        var expected = new Dictionary<string, string>
+        {
+            ["preferredName"] = "", ["personalEmail"] = "final@example.test", ["phone"] = "12345",
+            ["maritalStatus"] = "True", ["emergencyContactName"] = "{\"first\":\"Relative\"}",
+            ["emergencyContactPhone"] = "[\" 050 \",987]",
+        };
+        state.Changes.Should().BeEquivalentTo(expected);
+        using var approve = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{changeId}/approve", new { notes = "Reviewed the exact proposed values." });
+        approve.StatusCode.Should().Be(HttpStatusCode.OK, await approve.Content.ReadAsStringAsync());
+        using var scope = fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var employee = await db.Employees.SingleAsync(x => x.Id == id);
+        new Dictionary<string, string>
+        {
+            ["preferredName"] = employee.PreferredName, ["personalEmail"] = employee.PersonalEmail, ["phone"] = employee.Phone,
+            ["maritalStatus"] = employee.MaritalStatus, ["emergencyContactName"] = employee.EmergencyContactName,
+            ["emergencyContactPhone"] = employee.EmergencyContactPhone,
+        }.Should().BeEquivalentTo(state.Changes);
+        (await db.EmployeeActionItems.SingleAsync(x => x.EmployeeId == id)).Status.Should().Be("Completed");
+    }
+
     [Theory]
     [InlineData("bankIban", "SA0000000000000000000000")]
     [InlineData("salary", "999999")]
