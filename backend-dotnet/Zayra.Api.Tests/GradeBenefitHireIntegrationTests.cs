@@ -202,7 +202,7 @@ public class GradeBenefitHireIntegrationTests
         {
             "grade" => request with { GradeId = secondGrade.Id },
             "company" => request with { CompanyId = secondCompany.Id },
-            "joining" => request with { JoiningDate = request.JoiningDate.AddDays(10) },
+            "joining" => request with { JoiningDate = request.JoiningDate!.Value.AddDays(10) },
             "confirmation" => request with { ConfirmationDate = request.ConfirmationDate!.Value.AddDays(10) },
             _ => request with { ProbationEndDate = request.ProbationEndDate!.Value.AddDays(10) },
         };
@@ -302,7 +302,7 @@ public class GradeBenefitHireIntegrationTests
         await db.SaveChangesAsync();
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.UpdateAsync(tenant, employee.Id,
-            request with { JoiningDate = request.JoiningDate.AddDays(7) }, context, default));
+            request with { JoiningDate = request.JoiningDate!.Value.AddDays(7) }, context, default));
 
         Assert.Contains("governed review", error.Message);
         db.ChangeTracker.Clear();
@@ -331,10 +331,10 @@ public class GradeBenefitHireIntegrationTests
             OldStatus = state == "prior-lowercase-history" ? "active" : "Active", NewStatus = "Draft", EffectiveDate = new DateOnly(2026, 10, 8) });
         await db.SaveChangesAsync();
         var enrollmentId = (await db.BenefitEnrollments.SingleAsync()).Id;
-        await service.UpdateAsync(tenant, dto.Id, request with { JoiningDate = request.JoiningDate.AddDays(7) }, context, default);
+        await service.UpdateAsync(tenant, dto.Id, request with { JoiningDate = request.JoiningDate!.Value.AddDays(7) }, context, default);
         var unchanged = await db.BenefitEnrollments.SingleAsync();
         Assert.Equal(enrollmentId, unchanged.Id); Assert.Equal("Active", unchanged.Status);
-        Assert.Equal(DateOnly.FromDateTime(request.JoiningDate), unchanged.EffectiveFrom);
+        Assert.Equal(DateOnly.FromDateTime(request.JoiningDate!.Value), unchanged.EffectiveFrom);
     }
 
     [Fact]
@@ -351,7 +351,7 @@ public class GradeBenefitHireIntegrationTests
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, new RefuseBenefitSave()).Options);
         var service = new EmployeeManagementService(failing, new AuditService(failing), new BenefitHireDocuments(), TestNotifications.For(failing));
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UpdateAsync(tenant, employee.Id,
-            request with { JoiningDate = request.JoiningDate.AddDays(7) }, context, default));
+            request with { JoiningDate = request.JoiningDate!.Value.AddDays(7) }, context, default));
         await using var verify = _fixture.CreateDb();
         Assert.Equal(request.JoiningDate, (await verify.Employees.SingleAsync(x => x.TenantId == tenant)).JoiningDate);
         Assert.Equal("Active", (await verify.BenefitEnrollments.SingleAsync(x => x.TenantId == tenant)).Status);
@@ -374,7 +374,7 @@ public class GradeBenefitHireIntegrationTests
             .UseNpgsql(_fixture.ConnectionString, options => options.EnableRetryOnFailure())
             .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, fault).Options);
         var service = new EmployeeManagementService(db, new AuditService(db), new BenefitHireDocuments(), TestNotifications.For(db));
-        await service.UpdateAsync(tenant, employee.Id, request with { JoiningDate = request.JoiningDate.AddDays(7) }, context, default);
+        await service.UpdateAsync(tenant, employee.Id, request with { JoiningDate = request.JoiningDate!.Value.AddDays(7) }, context, default);
         Assert.Equal(1, fault.InjectedFaults);
         await using var verify = _fixture.CreateDb();
         Assert.Equal(2, await verify.BenefitEnrollments.CountAsync(x => x.TenantId == tenant));
