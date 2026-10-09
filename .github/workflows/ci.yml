@@ -288,7 +288,8 @@ jobs:
       BUILD_COMMIT: ${{ github.sha }}
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_USER: postgres
@@ -488,7 +489,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: postgres
@@ -699,7 +701,8 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16-alpine
+        # Services start before steps can configure Docker; use the same official image via its cache.
+        image: mirror.gcr.io/library/postgres:16-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: postgres
