@@ -56,9 +56,10 @@ test.describe('Add Employee — company country gate', () => {
 
     // One predicate, read by both the warning and the button: they cannot disagree.
     expect(source).toContain('const formCompanyMissingCountry = isEmployeeCreateBlockedByCountry(');
-    expect(source).toContain('disabled={saving || formCompanyMissingCountry}');
-    // The duplicate warning's "Create anyway" is the same submit, so it carries the same block.
-    expect(source.match(/disabled=\{saving \|\| formCompanyMissingCountry\}/g) ?? []).toHaveLength(2);
+    // The wizard's shared busy state includes its advisory duplicate check as well as saving.
+    expect(source).toContain('const createBusy = saving || checkingDuplicate;');
+    // Final create, Save draft and exit, and duplicate override all preserve the same country gate.
+    expect(source.match(/disabled=\{(?:saving|createBusy) \|\| formCompanyMissingCountry\}/g) ?? []).toHaveLength(3);
     // ...and the request is never fired from the keyboard/programmatic path either.
     expect(source).toContain('if (formCompanyMissingCountry) {\n      setFormError(formCompanyMissingCountryMessage);');
   });

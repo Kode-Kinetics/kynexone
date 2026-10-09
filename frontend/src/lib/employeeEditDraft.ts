@@ -1,11 +1,11 @@
-import type { EmployeeDetail } from '../api/employees';
+import type { EmployeeDetail, EmployeeSalaryBreakdownRequest } from '../api/employees';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 export type EmployeeEditDraft = Record<string, string>;
-export type EmployeeEditChanges = Record<string, string | number | null>;
+export type EmployeeEditChanges = Record<string, string | number | null | EmployeeSalaryBreakdownRequest>;
 
 /** Only these flat update keys are stored exclusively on the payroll profile. */
-const PAYROLL_PROFILE_KEYS = new Set(['socialInsuranceReference', 'bankRoutingCode', 'accountNumber']);
+const PAYROLL_PROFILE_KEYS = new Set(['socialInsuranceReference', 'bankRoutingCode', 'accountNumber', 'molId', 'salaryCurrency', 'payrollGroup', 'salaryStructureReference', 'paymentMethod']);
 
 /**
  * Build the draft from the record returned by GET. A scalar, including an explicit
@@ -25,6 +25,15 @@ export function buildEmployeeEditSnapshot(
 
   for (const field of fields) {
     let raw = source[field.key];
+    if (field.key.startsWith('salaryBreakdown.')) {
+      const key = field.key.slice('salaryBreakdown.'.length) as keyof EmployeeSalaryBreakdownRequest;
+      raw = employee.salaryBreakdown?.[key];
+      if (raw == null) {
+        if (field.type === 'number' && key !== 'basicSalary') raw = 0;
+        if (key === 'currency') raw = employee.payrollProfile?.salaryCurrency;
+        if (key === 'effectiveDate') raw = employee.joiningDate;
+      }
+    }
     if (raw === undefined && PAYROLL_PROFILE_KEYS.has(field.key)) {
       raw = (employee.payrollProfile as Record<string, unknown> | undefined)?.[field.key];
     }
@@ -53,6 +62,7 @@ export function buildEmployeeEditChanges(
     if (!field || !Object.prototype.hasOwnProperty.call(form, key)) {
       throw new Error(`The employee field "${key}" is no longer available. Reopen the employee and try again.`);
     }
+    if (key.startsWith('salaryBreakdown.')) continue;
     const value = form[key].trim();
     if (field.type === 'number') {
       if (!value) {
@@ -73,5 +83,29 @@ export function buildEmployeeEditChanges(
       changes[key] = value;
     }
   }
+  if (changedKeys.some(key => key.startsWith('salaryBreakdown.'))) {
+    if (changedKeys.includes('salary')) throw new Error('Save the salary package without a separate salary total.');
+    changes.salaryBreakdown = buildSalaryBreakdownChange(form);
+  }
   return changes;
+}
+
+export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSalaryBreakdownRequest {
+  const value = (key: string) => (form[`salaryBreakdown.${key}`] ?? '').trim();
+  const amounts = ['basicSalary', 'housingAllowance', 'transportAllowance', 'foodAllowance', 'mobileAllowance', 'otherAllowance', 'fixedDeduction'] as const;
+  const salary: EmployeeSalaryBreakdownRequest = {};
+  for (const key of amounts) {
+    const raw = value(key);
+    const number = Number(raw);
+    if (!raw || !Number.isFinite(number) || number < 0) throw new Error('Enter a non-negative amount for every salary component. Use zero when it does not apply.');
+    salary[key] = number;
+  }
+  if (!salary.basicSalary || salary.basicSalary <= 0) throw new Error('Basic salary must be greater than zero.');
+  const gross = amounts.filter(key => key !== 'fixedDeduction').reduce((total, key) => total + (salary[key] ?? 0), 0);
+  if ((salary.fixedDeduction ?? 0) > gross) throw new Error('Fixed deduction cannot exceed the gross salary.');
+  const date = value('effectiveDate');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) throw new Error('Choose a valid salary effective date.');
+  if (!/^[A-Z]{3}$/.test(value('currency'))) throw new Error('Choose a salary currency.');
+  if (value('salaryStructureCode').length > 80) throw new Error('Salary structure code must be 80 characters or fewer.');
+  return { ...salary, currency: value('currency'), effectiveDate: date, salaryStructureCode: value('salaryStructureCode') };
 }

@@ -421,6 +421,8 @@ export interface EmployeeTransferRequest {
 }
 
 export interface EmployeeDetail extends EmployeeEntity {
+  /** Null means no package yet; omission means the API does not support package editing. */
+  salaryBreakdown?: EmployeeSalaryBreakdownRequest | null;
   payrollProfile?: EmployeePayrollProfileRequest;
   complianceRecords: EmployeeComplianceRecordRequest[];
   documents: EmployeeDocument[];

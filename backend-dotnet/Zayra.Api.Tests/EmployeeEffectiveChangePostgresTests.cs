@@ -51,6 +51,47 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
 
     private static DateOnly UtcToday => DateOnly.FromDateTime(DateTime.UtcNow);
 
+    [Fact]
+    public async Task FutureSalaryPackage_TakesEffectThroughTheJobExactlyOnce()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        await using (var db = fx.CreateDb())
+        {
+            var structure = new SalaryStructure { TenantId = tenant, Code = "FUTURE-PACKAGE", Name = "Future package", Currency = "SAR", EffectiveDate = UtcToday.AddDays(-30) };
+            db.SalaryStructures.Add(structure);
+            db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = tenant, EmployeeId = employeeId,
+                SalaryStructureId = structure.Id, BasicSalary = 4000, HousingAllowance = 1000, EffectiveDate = UtcToday.AddDays(-30), Currency = "SAR" });
+            (await db.Employees.SingleAsync(x => x.Id == employeeId)).Salary = 5000;
+            await db.SaveChangesAsync();
+        }
+        var effective = UtcToday.AddDays(1);
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, effective, "salaryBreakdown", new
+        {
+            basicSalary = 5000m, housingAllowance = 1200m, transportAllowance = 300m, foodAllowance = 100m,
+            mobileAllowance = 50m, otherAllowance = 200m, fixedDeduction = 25m,
+            salaryStructureCode = "FUTURE-PACKAGE", currency = "SAR", effectiveDate = effective.ToString("yyyy-MM-dd"),
+        });
+        await using (var db = fx.CreateDb())
+        {
+            (await db.Employees.SingleAsync(x => x.Id == employeeId)).Salary.Should().Be(5000);
+            (await db.EmployeeSalaryStructures.CountAsync(x => x.EmployeeId == employeeId)).Should().Be(1);
+        }
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+        await EnqueueAsync(sp, tenant, "salary-package-replay", clock.GetUtcNow().UtcDateTime);
+        await DrainAsync(sp, tenant);
+        await using var verify = fx.CreateDb();
+        (await verify.Employees.SingleAsync(x => x.Id == employeeId)).Salary.Should().Be(6850);
+        var saved = await verify.EmployeeSalaryStructures.SingleAsync(x => x.EmployeeId == employeeId && x.EffectiveDate == effective);
+        saved.BasicSalary.Should().Be(5000); saved.HousingAllowance.Should().Be(1200); saved.FixedDeduction.Should().Be(25);
+        (await verify.EmployeeSalaryStructures.CountAsync(x => x.EmployeeId == employeeId)).Should().Be(2, "the original effective-dated row remains available");
+        (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).Status.Should().Be(EmployeeChangeStatuses.ApprovedApplied);
+        (await AuditCountAsync(tenant, changeId, EffectiveChangeJobHandler.AppliedAction)).Should().Be(1);
+    }
+
     // ─────────────────────── the defect ───────────────────────
 
     [Fact]
@@ -763,7 +804,7 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
 
     /// <summary>Submits through PUT /employees/{id} (sensitive ⇒ change request + approval) and approves it
     /// in the Approval Center as a different user — the production path end to end.</summary>
-    private async Task<Guid> RequestAndApproveAsync(Guid tenant, int employeeId, DateOnly effective, string field, string value,
+    private async Task<Guid> RequestAndApproveAsync(Guid tenant, int employeeId, DateOnly effective, string field, object value,
         Guid? approver = null)
     {
         Guid changeId, approvalId;

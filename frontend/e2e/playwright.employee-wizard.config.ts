@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Start the frontend separately so the suite can also run against an existing preview.
 export default defineConfig({
   testDir: '.',
-  testMatch: /employee-(?:create|edit)-wizard\.spec\.ts/,
+  testMatch: /employee-(?:(?:create|edit)-wizard|onboarding-completion)\.spec\.ts/,
   workers: 1,
   retries: 0,
   timeout: 60_000,

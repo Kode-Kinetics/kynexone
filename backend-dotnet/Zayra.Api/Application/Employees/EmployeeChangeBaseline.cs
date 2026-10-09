@@ -44,6 +44,24 @@ public static class EmployeeChangeBaseline
 
     private const string EmployeePrefix = "employee:";
     private const string ProfilePrefix = "profile:";
+    private const string SalaryPrefix = "salary:";
+
+    /// <summary>Reads row-backed salary data as well as the scalar/profile fields in the same baseline.</summary>
+    public static async Task<IReadOnlyDictionary<string, string>?> CaptureAsync(
+        ZayraDbContext db, Employee employee, EmployeePayrollProfile? profile, IEnumerable<string> keys, CancellationToken ct)
+    {
+        var keyList = keys.ToList();
+        var ordinary = Capture(employee, profile, keyList.Where(k => k != EmployeeSalaryBreakdownChanges.Key));
+        if (ordinary is null) return null;
+        var values = new SortedDictionary<string, string>(ordinary.ToDictionary(p => p.Key, p => p.Value), StringComparer.Ordinal);
+        if (keyList.Contains(EmployeeSalaryBreakdownChanges.Key))
+        {
+            values[EmployeePrefix + EmployeeSalaryBreakdownChanges.Key] = Canonical(employee.Salary);
+            values[SalaryPrefix + EmployeeSalaryBreakdownChanges.Key] = EmployeeSalaryBreakdownChanges.CanonicalSchedule(
+                await EmployeeSalaryBreakdownChanges.ReadScheduleAsync(db, employee, ct));
+        }
+        return values;
+    }
 
     public static IDataProtector CreateProtector(IDataProtectionProvider provider) =>
         provider.CreateProtector(ProtectorPurpose);
@@ -60,6 +78,8 @@ public static class EmployeeChangeBaseline
         var values = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var key in keys)
         {
+            // Payment method is mirrored onto the legacy employee column by the shared applier.
+            if (key == "paymentMethod") values[EmployeePrefix + key] = Canonical(employee.WpsBankDetails);
             if (!EmployeeChangeApplier.PayrollProfileKeys.Contains(key))
             {
                 if (!TryReadEmployee(employee, key, out var value)) return null;
@@ -119,10 +139,14 @@ public static class EmployeeChangeBaseline
     /// </summary>
     public static IReadOnlyDictionary<string, string>? Projected(IReadOnlyDictionary<string, JsonElement> changes)
     {
+        // A full salary schedule cannot be reconstructed from one package alone. Do not guess an
+        // expected predecessor schedule: a later salary decision is reviewed if the schedule moved.
+        if (changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)) return null;
         var employee = new Employee();
         try
         {
             if (EmployeeChangeApplier.Apply(employee, changes).Count > 0) return null;
+            if (changes.ContainsKey("paymentMethod")) employee.WpsBankDetails = ProfileText(changes, "paymentMethod", trim: true);
             var profile = new EmployeePayrollProfile
             {
                 BankName = employee.BankName,
@@ -131,6 +155,11 @@ public static class EmployeeChangeBaseline
                 SocialInsuranceReference = ProfileText(changes, "socialInsuranceReference", trim: false),
                 BankRoutingCode = ProfileText(changes, "bankRoutingCode", trim: true),
                 AccountNumber = ProfileText(changes, "accountNumber", trim: true),
+                MolId = ProfileText(changes, "molId", trim: true),
+                SalaryCurrency = ProfileText(changes, "salaryCurrency", trim: true),
+                PayrollGroup = ProfileText(changes, "payrollGroup", trim: true),
+                SalaryStructureReference = ProfileText(changes, "salaryStructureReference", trim: true),
+                PaymentMethod = ProfileText(changes, "paymentMethod", trim: true),
             };
             return Capture(employee, profile, changes.Keys);
         }
@@ -153,7 +182,8 @@ public static class EmployeeChangeBaseline
         values is null ? null
         : values.TryGetValue(ProfilePrefix + key, out var onProfile) && (EmployeeChangeApplier.PayrollProfileKeys.Contains(key) || onProfile.Length > 0)
             ? onProfile
-            : values.TryGetValue(EmployeePrefix + key, out var onEmployee) ? onEmployee : null;
+            : values.TryGetValue(EmployeePrefix + key, out var onEmployee) ? onEmployee
+            : values.TryGetValue(SalaryPrefix + key, out var onSalary) ? onSalary : null;
 
     /// <summary>What <see cref="CheckUnchangedSinceReviewAsync"/> found.</summary>
     /// <param name="Verified">False when the change was returned for review but what the reviewer was shown
@@ -193,7 +223,7 @@ public static class EmployeeChangeBaseline
             if (reviewed is null) return new ReviewCheck(false, keys.ToList());
             var profile = await db.EmployeePayrollProfiles
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, ct);
-            return new ReviewCheck(true, Drifted(reviewed, Capture(employee, profile, keys)));
+            return new ReviewCheck(true, Drifted(reviewed, await CaptureAsync(db, employee, profile, keys, ct)));
         }
         return new ReviewCheck(true, Array.Empty<string>());
     }
@@ -221,7 +251,7 @@ public static class EmployeeChangeBaseline
 
     /// <summary>True when <paramref name="key"/> names a readable column (used by the wiring test).</summary>
     public static bool CanRead(string key) =>
-        EmployeeChangeApplier.PayrollProfileKeys.Contains(key) ? ProfileColumn(key) is not null : EmployeeProperty(key) is not null;
+        key == EmployeeSalaryBreakdownChanges.Key || (EmployeeChangeApplier.PayrollProfileKeys.Contains(key) ? ProfileColumn(key) is not null : EmployeeProperty(key) is not null);
 
     private static bool TryReadEmployee(Employee employee, string key, out string value)
     {
@@ -253,6 +283,11 @@ public static class EmployeeChangeBaseline
         // Read live by the WPS/SIF line; approval-gated with the IBAN (EmployeeChangeApplier.PayrollProfileKeys).
         "bankRoutingCode" => p => p.BankRoutingCode,
         "accountNumber" => p => p.AccountNumber,
+        "molId" => p => p.MolId,
+        "salaryCurrency" => p => p.SalaryCurrency,
+        "payrollGroup" => p => p.PayrollGroup,
+        "salaryStructureReference" => p => p.SalaryStructureReference,
+        "paymentMethod" => p => p.PaymentMethod,
         _ => null,
     };
 

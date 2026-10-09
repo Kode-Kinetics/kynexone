@@ -360,6 +360,12 @@ public class EmployeeSelfServiceController : ControllerBase
         change.Status = "Approved";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();
+        if (change.Reason == EmployeeCompletionController.RequestReason)
+        {
+            var actionId = EmployeeCompletionController.ActionId(tenantId, employee.Id);
+            var action = await _db.EmployeeActionItems.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == actionId, cancellationToken);
+            if (action is not null) action.Status = "Completed";
+        }
         // The decision, the applied profile values and the audit row are saved in one SaveChanges, so a
         // decision never lands without its audit record.
         await EssAudit(tenantId, employee.Id, "ess.profile_change.approved", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
@@ -376,9 +382,24 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change is null) return NotFound();
         if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
         if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "reject", cancellationToken) is { } refusal) return refusal;
+        if (change.Reason == EmployeeCompletionController.RequestReason &&
+            (string.IsNullOrWhiteSpace(request.Notes) || request.Notes.Trim().Length > 500))
+            return BadRequest(new { message = "Give a correction note of up to 500 characters." });
         change.Status = "Rejected";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();
+        if (change.Reason == EmployeeCompletionController.RequestReason)
+        {
+            var actionId = EmployeeCompletionController.ActionId(tenantId, change.EmployeeId);
+            var action = await _db.EmployeeActionItems.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == actionId, cancellationToken);
+            if (action is not null) action.Status = "Open";
+            _db.EmployeeNotifications.Add(new EmployeeNotification
+            {
+                Id = change.Id, TenantId = tenantId, EmployeeId = change.EmployeeId,
+                NotificationType = EmployeeCompletionController.Category,
+                Title = "Employee details need correction", Body = request.Notes!.Trim(),
+            });
+        }
         // A rejection is a decision too: it is audited exactly as an approval is (who, when, which request),
         // saved in the same SaveChanges as the status change.
         await EssAudit(tenantId, change.EmployeeId, "ess.profile_change.rejected", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
@@ -394,6 +415,10 @@ public class EmployeeSelfServiceController : ControllerBase
     private async Task<IActionResult?> ProfileChangeDecisionRefusalAsync(
         Guid tenantId, EmployeeProfileChangeRequest change, string verb, CancellationToken cancellationToken)
     {
+        // Both decisions must resolve the employee through the normal tenant/company filters.
+        // In particular, rejection must not operate on an out-of-scope request by guessed GUID.
+        if (!await _db.Employees.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken))
+            return NotFound();
         var callerUserId = GetUserId();
         var callerIsSubject =
             (int.TryParse(User.FindFirstValue("employee_id"), out var callerEmployeeId) && callerEmployeeId == change.EmployeeId)
@@ -404,6 +429,9 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change.CreatedBy is Guid requester && requester == callerUserId)
             return BadRequest(SubjectDecisionBar.Refusal(
                 $"You cannot {verb} a profile change you submitted. Another HR user must decide it."));
+        if (change.Reason == EmployeeCompletionController.RequestReason && callerUserId is Guid reviewerId
+            && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, change.EmployeeId, reviewerId, DateTime.UtcNow, cancellationToken))
+            return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
         return null;
     }
 

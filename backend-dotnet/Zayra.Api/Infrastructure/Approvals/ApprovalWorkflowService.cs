@@ -1038,7 +1038,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             {
                 var profile = await _db.EmployeePayrollProfiles
                     .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, cancellationToken);
-                if (EmployeeChangeBaseline.Capture(employee, profile, changes.Keys) is { } baseline)
+                if (await EmployeeChangeBaseline.CaptureAsync(_db, employee, profile, changes.Keys, cancellationToken) is { } baseline)
                     sealedBaseline = EmployeeChangeBaseline.Protect(_changeBaselineProtector, change.Id, baseline);
             }
         }

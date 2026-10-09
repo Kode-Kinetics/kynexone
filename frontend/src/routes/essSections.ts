@@ -48,6 +48,7 @@ export const ESS_SECTIONS: EssSection[] = [
     icon: LayoutDashboard,
     pages: [
       { label: 'Self-Service', tab: 'Overview', path: ESS_HOME_PATH, hint: 'Your day at a glance: what needs you, your balances and what is coming up.' },
+      { label: 'My employee details', tab: 'My details', path: '/ess/onboarding', hint: 'Complete your contact details and share documents securely with HR.' },
     ],
   },
   {

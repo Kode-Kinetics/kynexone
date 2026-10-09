@@ -3,6 +3,7 @@ import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
+import { employeeCompletion } from './employeeCompletion';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -18,6 +19,35 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  "Save future salary changes separately from other approval-required details.": "Save future salary changes separately from other approval-required details.",
+  "Salary changes take effect on {date}, after approval.": "Salary changes take effect on {date}, after approval.",
+  "View draft": "View draft",
+  "Person": "Person",
+  "Start with the English full name. Choose the employing company before saving; other details can follow.": "Start with the English full name. Choose the employing company before saving; other details can follow.",
+  "Optional for a draft. Payment and bank details are checked before payroll or activation, according to company policy.": "Optional for a draft. Payment and bank details are checked before payroll or activation, according to company policy.",
+  "Optional for a draft. Add the basic salary now, then include any allowances you have confirmed.": "Optional for a draft. Add the basic salary now, then include any allowances you have confirmed.",
+  "Optional for a draft. Add the records you have; the profile will show what is needed for activation and payroll.": "Optional for a draft. Add the records you have; the profile will show what is needed for activation and payroll.",
+  "Set up payroll and documents now": "Set up payroll and documents now",
+  "Optional. You can save a draft first and finish these sections from the employee record.": "Optional. You can save a draft first and finish these sections from the employee record.",
+  "Choose an employing company before saving.": "Choose an employing company before saving.",
+  "{name} was saved as a draft.": "{name} was saved as a draft.",
+  "Resume draft": "Resume draft",
+  "Save draft and exit": "Save draft and exit",
+  "Return to review": "Return to review",
+  "Continue with this draft": "Continue with this draft",
+  "Additional personal details": "Additional personal details",
+  "More employment details": "More employment details",
+  "Additional payroll details": "Additional payroll details",
+  "Add allowances and deductions": "Add allowances and deductions",
+  "Complete more details now, or save them for later": "Complete more details now, or save them for later",
+  "Add {section} details": "Add {section} details",
+  "Enter a non-negative amount for every salary component. Use zero when it does not apply.": "Enter a non-negative amount for every salary component. Use zero when it does not apply.",
+  "Basic salary must be greater than zero.": "Basic salary must be greater than zero.",
+  "Fixed deduction cannot exceed the gross salary.": "Fixed deduction cannot exceed the gross salary.",
+  "Choose a valid salary effective date.": "Choose a valid salary effective date.",
+  "Choose a salary currency.": "Choose a salary currency.",
+  "Salary structure code must be 80 characters or fewer.": "Salary structure code must be 80 characters or fewer.",
+  "Save the salary package without a separate salary total.": "Save the salary package without a separate salary total.",
   "Not available": "Not available",
   "Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.": "Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.",
   "Could not save the changes. Please review the values and try again.": "Could not save the changes. Please review the values and try again.",
@@ -1330,6 +1360,7 @@ const en: Dict = {
   ...essWorkspace.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
+  ...employeeCompletion.en,
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
@@ -1337,6 +1368,35 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  "Save future salary changes separately from other approval-required details.": "احفظ تغييرات الراتب المستقبلية بشكل منفصل عن التفاصيل الأخرى التي تتطلب الموافقة.",
+  "Salary changes take effect on {date}, after approval.": "تسري تغييرات الراتب في {date} بعد الموافقة.",
+  "View draft": "عرض المسودة",
+  "Person": "الشخص",
+  "Start with the English full name. Choose the employing company before saving; other details can follow.": "ابدأ بالاسم الكامل بالإنجليزية. اختر الشركة الموظِّفة قبل الحفظ، ويمكن إضافة التفاصيل الأخرى لاحقاً.",
+  "Optional for a draft. Payment and bank details are checked before payroll or activation, according to company policy.": "اختياري للمسودة. تُراجع بيانات الدفع والبنك قبل الرواتب أو التفعيل وفق سياسة الشركة.",
+  "Optional for a draft. Add the basic salary now, then include any allowances you have confirmed.": "اختياري للمسودة. أضف الراتب الأساسي ثم البدلات المؤكدة لديك.",
+  "Optional for a draft. Add the records you have; the profile will show what is needed for activation and payroll.": "اختياري للمسودة. أضف السجلات المتوفرة، وسيعرض الملف ما يلزم للتفعيل والرواتب.",
+  "Set up payroll and documents now": "إعداد الرواتب والمستندات الآن",
+  "Optional. You can save a draft first and finish these sections from the employee record.": "اختياري. يمكنك حفظ مسودة أولاً وإكمال هذه الأقسام من سجل الموظف.",
+  "Choose an employing company before saving.": "اختر الشركة الموظِّفة قبل الحفظ.",
+  "{name} was saved as a draft.": "تم حفظ {name} كمسودة.",
+  "Resume draft": "متابعة المسودة",
+  "Save draft and exit": "حفظ المسودة والخروج",
+  "Return to review": "العودة إلى المراجعة",
+  "Continue with this draft": "متابعة هذه المسودة",
+  "Additional personal details": "تفاصيل شخصية إضافية",
+  "More employment details": "تفاصيل وظيفية إضافية",
+  "Additional payroll details": "تفاصيل رواتب إضافية",
+  "Add allowances and deductions": "إضافة البدلات والاستقطاعات",
+  "Complete more details now, or save them for later": "أكمل المزيد من التفاصيل الآن أو أضفها لاحقاً",
+  "Add {section} details": "إضافة تفاصيل {section}",
+  "Enter a non-negative amount for every salary component. Use zero when it does not apply.": "أدخل مبلغاً غير سالب لكل مكوّن من الراتب. استخدم صفراً عند عدم انطباقه.",
+  "Basic salary must be greater than zero.": "يجب أن يكون الراتب الأساسي أكبر من صفر.",
+  "Fixed deduction cannot exceed the gross salary.": "لا يمكن أن يتجاوز الاستقطاع الثابت إجمالي الراتب.",
+  "Choose a valid salary effective date.": "اختر تاريخ سريان صالحاً للراتب.",
+  "Choose a salary currency.": "اختر عملة الراتب.",
+  "Salary structure code must be 80 characters or fewer.": "يجب ألا يتجاوز رمز هيكل الراتب 80 حرفاً.",
+  "Save the salary package without a separate salary total.": "احفظ حزمة الراتب دون إجمالي راتب منفصل.",
   "Not available": "غير متاح",
   "Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.": "بعض الحقول المعدلة لم تعد متاحة. تراجع عن التغييرات أو أغلق هذه النافذة لإلغاء المسودة، ثم أعد فتح السجل.",
   "Could not save the changes. Please review the values and try again.": "تعذر حفظ التغييرات. يرجى مراجعة القيم والمحاولة مرة أخرى.",
@@ -2650,6 +2710,7 @@ const ar: Dict = {
   ...essWorkspace.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
+  ...employeeCompletion.ar,
 
   ...releaseA.ar,
 };

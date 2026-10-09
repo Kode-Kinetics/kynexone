@@ -10,9 +10,11 @@ const grade = { id: 'grade-wizard', code: 'G5', name: 'Professional', band: 'P',
 const manager = { id: 17, employeeCode: 'TEST-017', fullName: 'Morgan Reviewer', englishName: 'Morgan Reviewer', status: 'Active', companyId: company.id };
 const duplicate = { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: 'Draft', matchType: 'probable', signals: ['Name and date of birth match'], canView: true };
 const headings = ['Start with the person', 'Place them in the organization', 'Set up payroll', 'Build the salary package', 'Add identity documents', 'Review employee details'];
-const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
+const stepNames = ['Person', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 
 interface MockOptions {
+  quick?: boolean;
+  multipleCompanies?: boolean;
   missingCountry?: boolean;
   failFirstCreate?: boolean;
   duplicate?: boolean;
@@ -27,8 +29,10 @@ async function boot(page: Page, options: MockOptions = {}) {
   const creates: EmployeeCreateRequest[] = [];
   const probes: unknown[] = [];
   const transliterations: unknown[] = [];
+  const updates: Array<{ effectiveDate: string; changes: Record<string, unknown> }> = [];
   const errors: string[] = [];
   const testCompany = { ...company, countryCode: options.missingCountry ? '' : company.countryCode };
+  const companies = options.multipleCompanies ? [testCompany, { ...testCompany, id: 'company-other', legalNameEn: 'Other Test Company' }] : [testCompany];
   let saved: Record<string, unknown> | undefined;
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
@@ -47,10 +51,11 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/auth/me') return reply({
       id: 'wizard-reviewer', tenantId: 'wizard-tenant', tenantSlug: 'wizard-fixture', fullName: 'HR Reviewer',
       roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve'],
-      companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: testCompany.countryCode, isActive: true }],
+      isGroupScope: !!options.multipleCompanies, accountType: options.multipleCompanies ? 'Group' : 'SingleCompany',
+      companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: 'TEST', countryCode: item.countryCode, isActive: true })),
     });
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
-    if (path === '/api/companies') return reply(paged([testCompany]));
+    if (path === '/api/companies') return reply(paged(companies));
     if (path === '/api/branches') return reply(paged([{ id: 'branch-wizard', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
     if (path === '/api/departments') return reply(paged([{ id: 'department-wizard', branchId: 'branch-wizard', code: 'OPS', nameEn: 'Operations', managerEmployeeId: manager.id, isActive: true }]));
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
@@ -74,11 +79,17 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/employees' && request.method() === 'POST') {
       creates.push(body);
       if (options.failFirstCreate && creates.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
-      saved = { ...body, id: 901, employeeCode: body.employeeCode || 'TEST-901', fullName: body.englishName, status: 'Draft', accessState: body.workEmail ? 'not_started' : 'waiting_for_work_email', profileCompletenessScore: 25, readinessState: 'NeedsAttention', activationBlockersCount: 1, documents: [], history: [], complianceRecords: body.complianceRecords ?? [] };
+      saved = { ...body, id: 901, employeeCode: body.employeeCode || 'TEST-901', fullName: body.englishName, status: 'Draft', accessState: body.workEmail ? 'not_started' : 'waiting_for_work_email', profileCompletenessScore: 25, readinessState: 'NeedsAttention', activationBlockersCount: 1, salaryBreakdown: body.salaryBreakdown?.basicSalary ? body.salaryBreakdown : null, documents: [], history: [], complianceRecords: body.complianceRecords ?? [] };
       return reply(saved, 201);
     }
     if (path === '/api/employees') return reply(paged(url.searchParams.get('status') === 'Active' ? [manager] : saved ? [saved] : []));
+    if (path === '/api/employees/901' && request.method() === 'PUT') {
+      updates.push(body);
+      saved = { ...saved, ...body.changes };
+      return reply(saved);
+    }
     if (path === '/api/employees/901') return reply(saved);
+    if (path === '/api/employee-completion/901') return reply({ requested: false, status: 'NotRequested', selfServiceAvailable: false });
     if (path === '/api/employee-access/summary') return reply(saved ? { [saved.workEmail ? 'not_started' : 'waiting_for_work_email']: 1 } : {});
     if (path === '/api/employee-access/901') return reply({
       employeeId: 901, employeeName: saved?.fullName, employeeCode: 'TEST-901', workEmail: saved?.workEmail ?? null,
@@ -92,16 +103,33 @@ async function boot(page: Page, options: MockOptions = {}) {
     return reply(paged([]));
   });
   await page.goto('/people');
+  await expect(page).toHaveURL(/\/people(?:\?|$)/);
+  await expect(page).not.toHaveTitle('');
   await expect(page.getByRole('button', { name: 'Add Employee', exact: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Add Employee', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Add Employee', exact: true });
   await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
-  return { dialog, creates, probes, transliterations, errors };
+  if (!options.quick) {
+    await expandOptional(dialog, 'Additional personal details');
+  }
+  return { dialog, creates, probes, transliterations, updates, errors };
+}
+
+async function expandOptional(dialog: Locator, label: string) {
+  const details = dialog.locator('details').filter({ has: dialog.page().getByText(label, { exact: true }) });
+  await expect(details).toHaveCount(1);
+  if (await details.getAttribute('open') === null) await details.locator('summary').click();
 }
 
 async function next(dialog: Locator, index: number) {
   await dialog.getByRole('button', { name: `Next: ${stepNames[index]}`, exact: true }).click();
   await expect(dialog.getByRole('heading', { name: headings[index], exact: true })).toBeVisible();
+  if (index === 1) {
+    await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
+    await expandOptional(dialog, 'More employment details');
+  }
+  if (index === 2) await expandOptional(dialog, 'Additional payroll details');
+  if (index === 3) await expandOptional(dialog, 'Add allowances and deductions');
 }
 
 async function toReview(dialog: Locator, start = 1) {
@@ -133,6 +161,156 @@ async function expectContained(dialog: Locator, page: Page) {
   expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
 }
 
+test('quick creation starts with three steps and saves only after review', async ({ page }, info) => {
+  const { dialog, creates, probes, errors } = await boot(page, { quick: true });
+  const progress = dialog.getByRole('navigation', { name: 'Employee setup progress' });
+  await expect(progress.getByRole('button')).toHaveCount(3);
+  await expect(dialog.getByLabel('Preferred name', { exact: true })).not.toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Create Employee', exact: true })).toHaveCount(0);
+  await expectContained(dialog, page);
+  await evidence(page, info, 'quick-person');
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ })).not.toBeChecked();
+  await expect(dialog.getByRole('button', { name: 'Next: Review', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Next: Payroll', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[5], exact: true })).toBeVisible();
+  expect(creates).toHaveLength(0);
+  expect(probes).toHaveLength(0);
+  await expectContained(dialog, page);
+  await evidence(page, info, 'quick-review');
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', companyId: company.id });
+  expect(creates[0].gender ?? '').toBe('');
+  expect(creates[0]).not.toHaveProperty('workEmail');
+  expect(errors).toEqual([]);
+});
+
+test('saving a draft from Person persists it across reload and resumes the same employee', async ({ page }, info) => {
+  const { dialog, creates, updates, errors } = await boot(page, { quick: true });
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog.getByText('Enter the employee’s English full name to continue.', { exact: true })).toBeVisible();
+  expect(creates).toHaveLength(0);
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByLabel('Arabic full name', { exact: true }).fill('الاسم المعتمد');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Resume draft', exact: true })).toBeVisible();
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', arabicName: 'الاسم المعتمد', companyId: company.id });
+  expect(creates[0].gender ?? '').toBe('');
+  await page.reload();
+  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
+  const resumed = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  await expect(resumed.getByRole('textbox', { name: /^English full name/ })).toHaveValue('Alex Morgan');
+  await expect(resumed.getByRole('textbox', { name: 'Arabic name', exact: true })).toHaveValue('الاسم المعتمد');
+  await resumed.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex resumed');
+  await expectContained(resumed, page);
+  await evidence(page, info, 'resumed-draft');
+  await resumed.getByRole('button', { name: /^Step 6: Review/ }).click();
+  expect(updates).toHaveLength(0);
+  await resumed.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(resumed).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(updates).toHaveLength(1);
+  expect(updates[0].changes).toEqual({ preferredName: 'Alex resumed' });
+  await page.reload();
+  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex resumed');
+  expect(errors).toEqual([]);
+});
+
+test('optional bank and salary data survive returning to quick setup and saving a draft', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page);
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await next(dialog, 1);
+  await next(dialog, 2);
+  await dialog.getByLabel('Bank name', { exact: true }).fill('Test Bank');
+  await next(dialog, 3);
+  await dialog.getByLabel('Basic salary', { exact: true }).fill('7000');
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).uncheck();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('Test Bank');
+  await dialog.getByRole('button', { name: 'Edit Salary', exact: true }).click();
+  await expect(dialog.getByLabel('Basic salary', { exact: true })).toHaveValue('7000');
+  await expect(dialog.getByRole('button', { name: 'Create Employee', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', payrollProfile: { bankName: 'Test Bank' }, salaryBreakdown: { basicSalary: 7000 } });
+  expect(errors).toEqual([]);
+});
+
+test('a failed draft save retains the entered data and retries the same payload', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, failFirstCreate: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog.getByText(/Temporary save failure/)).toBeVisible();
+  await expect(dialog.getByLabel('English full name', { exact: false })).toHaveValue('Alex Morgan');
+  expect(creates).toHaveLength(1);
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(2);
+  expect(creates[1]).toEqual(creates[0]);
+  expect(errors).toEqual([]);
+});
+
+test('an invalid entered work email cannot be persisted by Save draft and exit', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex+alias');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await expect(dialog.getByTestId('work-email-problem')).toContainText(/work email/i);
+  expect(creates).toHaveLength(0);
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].workEmail).toBe('alex.it-issued@example.test');
+  expect(errors).toEqual([]);
+});
+
+test('the duplicate override preserves Save draft and exit intent', async ({ page }) => {
+  const { dialog, creates, probes, errors } = await boot(page, { quick: true, duplicate: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog.getByRole('alert').filter({ hasText: 'Possible existing employee' })).toBeVisible();
+  expect(probes).toHaveLength(1);
+  expect(creates).toHaveLength(0);
+  await dialog.getByRole('button', { name: 'Create anyway', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('employee-added')).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].acknowledgeDuplicate).toBe(true);
+  expect(probes).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('a multi-company draft requires an explicit employing company before saving', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, multipleCompanies: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await expect(dialog.getByText('Choose an employing company before saving.', { exact: true })).toBeVisible();
+  expect(creates).toHaveLength(0);
+  await dialog.getByRole('combobox', { name: 'Company', exact: true }).selectOption('company-other');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].companyId).toBe('company-other');
+  expect(errors).toEqual([]);
+});
+
 test('guides keyboard navigation, requires a name, and keeps creation until review', async ({ page }, info) => {
   const { dialog, creates, probes, errors } = await boot(page);
   await expectContained(dialog, page);
@@ -148,6 +326,7 @@ test('guides keyboard navigation, requires a name, and keeps creation until revi
   await advance.focus();
   await page.keyboard.press('Enter');
   await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeFocused();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
   await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('');
   await expectContained(dialog, page);
   await evidence(page, info, 'employment');
@@ -207,9 +386,9 @@ test('retains entered values across Back and review edits and submits the existi
   await next(dialog, 5);
   await dialog.getByRole('button', { name: 'Edit Profile', exact: true }).click();
   await dialog.getByLabel('Preferred name', { exact: true }).fill('Alex M');
-  await next(dialog, 1);
-  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued');
-  await toReview(dialog, 2);
+  await dialog.getByRole('button', { name: 'Return to review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[5], exact: true })).toBeVisible();
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('alex.it-issued@example.test');
   expect(creates).toHaveLength(0);
   await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
   await finishCreated(dialog);
@@ -248,11 +427,19 @@ test('preserves the reviewed draft after a server failure and retries once', asy
 test('requires an explicit duplicate decision before sending the create request', async ({ page }, info) => {
   const { dialog, creates, probes, errors } = await boot(page, { duplicate: true });
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
-  await toReview(dialog);
-  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await dialog.getByLabel('Date of birth', { exact: false }).fill('1990-04-18');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
   await expect(dialog.getByRole('alert').filter({ hasText: 'Possible existing employee' })).toBeVisible();
   expect(creates).toHaveLength(0);
   expect(probes).toHaveLength(1);
+  await dialog.getByRole('button', { name: 'Continue with this draft', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
+  await toReview(dialog, 2);
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await expect(dialog.getByRole('alert').filter({ hasText: 'Possible existing employee' })).toBeVisible();
+  expect(creates).toHaveLength(0);
+  expect(probes).toHaveLength(2);
   await evidence(page, info, 'duplicate');
   await dialog.getByRole('button', { name: 'Create anyway', exact: true }).click();
   await expect(dialog.getByTestId('employee-added')).toContainText('Add a work email so Alex Morgan can sign in.');
@@ -260,7 +447,7 @@ test('requires an explicit duplicate decision before sending the create request'
   expect(creates).toHaveLength(1);
   expect(creates[0].acknowledgeDuplicate).toBe(true);
   expect(creates[0]).not.toHaveProperty('workEmail');
-  expect(probes).toHaveLength(1);
+  expect(probes).toHaveLength(2);
   expect(errors).toEqual([]);
 });
 
