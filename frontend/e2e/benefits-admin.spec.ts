@@ -23,8 +23,31 @@ async function employeeByName(request: APIRequestContext, token: string, name: s
   return hit.id as number;
 }
 
+async function createGradedEmployee(request: APIRequestContext, token: string) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const code = uid();
+  const companies = await request.get('/api/companies', { headers, params: { pageSize: 100 } });
+  expect(companies.status(), await companies.text()).toBe(200);
+  const company = (await companies.json()).items.find((item: { isActive: boolean; countryCode: string }) => item.isActive && item.countryCode);
+  expect(company, 'an active employing company with a configured country').toBeTruthy();
+  const gradeResponse = await request.post('/api/grades', { headers, data: { code: `GB${code}`, name: `Benefits grade ${code}`, level: 4, isActive: true } });
+  expect(gradeResponse.status(), await gradeResponse.text()).toBe(201);
+  const grade = await gradeResponse.json();
+  // Create before this test's plan/rule so hire-time defaults cannot pre-enrol the test subject.
+  // Shared seeded employees are never regraded or otherwise changed by these scenarios.
+  const employeeResponse = await request.post('/api/employees', { headers, data: {
+    employeeCode: `BE${code}`, manualEmployeeCode: true, englishName: `Benefits Employee ${code}`,
+    companyId: company.id, gradeId: grade.id, joiningDate: '2026-01-01T00:00:00Z',
+  } });
+  expect(employeeResponse.status(), await employeeResponse.text()).toBe(201);
+  const employee = await employeeResponse.json();
+  expect(employee.gradeId).toBe(grade.id);
+  return { grade, employee };
+}
+
 test.describe('Benefits administration — UI', () => {
-  test('HR creates a plan, restricts it by grade, and enrols an eligible employee with the check shown first', async ({ page }) => {
+  test('HR creates a plan, restricts it by grade, and enrols an eligible employee with the check shown first', async ({ page, request }) => {
+    const { grade, employee } = await createGradedEmployee(request, await adminToken(request));
     const code = `E2E-${uid()}`;
     const name = `Medical ${code}`;
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
@@ -46,39 +69,43 @@ test.describe('Benefits administration — UI', () => {
 
     const detail = page.getByTestId('benefit-plan-detail');
     await expect(detail.getByRole('heading', { name })).toBeVisible();
-    await expect(detail.getByTestId('rules-empty')).toContainText('can be enrolled');
+    await expect(detail.getByTestId('rules-empty')).toContainText('Add at least one grade before employees can be enrolled');
 
-    // Eligibility rule: IntelliFlow's employees are on grade "IFL Standard".
+    // Use this scenario's real grade id; display labels also include the grade level.
     await detail.getByRole('button', { name: 'Add rule' }).click();
     const ruleForm = detail.getByRole('form', { name: 'Add eligibility rule' });
-    await ruleForm.getByLabel('Rule grade').selectOption({ label: 'IFL Standard (IFL-STD)' });
+    await ruleForm.getByLabel('Rule grade').selectOption(grade.id);
+    await ruleForm.getByLabel('Tier name', { exact: true }).fill('Medical Gold');
     await ruleForm.getByRole('button', { name: 'Save rule' }).click();
-    await expect(detail.getByTestId('rules-list')).toContainText('IFL Standard');
+    await expect(detail.getByTestId('rules-list')).toContainText(grade.name);
 
     // Enrol: the eligibility result must be visible BEFORE the submit is possible.
     await detail.getByRole('button', { name: 'Enrol in this plan' }).click();
     const enrol = page.getByRole('dialog', { name: 'Enrol employee' });
-    await enrol.getByLabel('Search employee').fill('Liu Wei');
-    await enrol.getByRole('option', { name: /Liu Wei/ }).click();
+    await enrol.getByLabel('Search employee').fill(employee.employeeCode);
+    await enrol.getByRole('option', { name: new RegExp(employee.fullName) }).click();
     await enrol.getByLabel('Start date').fill('2026-09-01');
     const result = enrol.getByTestId('eligibility-result');
     await expect(result).toHaveAttribute('data-eligible', 'true');
     await expect(result).toContainText('Eligible for this plan');
-    await expect(result).toContainText('Matches a company/grade eligibility rule');
+    await expect(result).toContainText('Matches an effective grade eligibility rule');
+    await expect(result).toContainText(grade.name);
+    await expect(result).toContainText('Resolved entitlement: Medical Gold');
     await enrol.getByRole('button', { name: 'Enrol', exact: true }).click();
     await expect(enrol).toBeHidden();
 
     await expect(page.getByRole('tab', { name: /Enrolments/ })).toHaveAttribute('aria-selected', 'true');
     const table = page.getByTestId('enrollments-table');
-    await expect(table.getByRole('row', { name: new RegExp(`Liu Wei.*${name}`) })).toBeVisible();
+    await expect(table.getByRole('row', { name: new RegExp(`${employee.fullName}.*${name}`) })).toBeVisible();
 
     // Record a contribution from the enrolment drawer.
-    await table.getByRole('row', { name: new RegExp(`Liu Wei.*${name}`) }).click();
+    await table.getByRole('row', { name: new RegExp(`${employee.fullName}.*${name}`) }).click();
     const drawer = page.getByRole('dialog', { name: 'Enrolment detail' });
     const contribForm = drawer.getByRole('form', { name: 'Record contribution' });
     await contribForm.getByLabel('Employee share').fill('250');
     await contribForm.getByLabel('Employer share').fill('750');
     await contribForm.getByRole('button', { name: 'Record contribution' }).click();
+    await expect(drawer.getByTestId('contributions-table')).toContainText('250.00 SAR');
     await expect(drawer.getByTestId('contributions-table')).toContainText('750.00 SAR');
 
     expect(crashIndicators(await mainText(page))).toEqual([]);
@@ -87,8 +114,9 @@ test.describe('Benefits administration — UI', () => {
   test('an ineligible employee is shown as not eligible and cannot be submitted; the API agrees', async ({ page, request }) => {
     const token = await adminToken(request);
     const h = { Authorization: `Bearer ${token}` };
+    const { employee } = await createGradedEmployee(request, token);
     const code = `E2E-${uid()}`;
-    // A grade no seeded employee holds, so a rule on it excludes everyone on "IFL Standard".
+    // The dedicated employee has a grade, but not the different grade allowed by this plan.
     const grade = await request.post('/api/grades', { headers: h, data: { code: `G${code}`.slice(0, 20), name: `Exec ${code}`, level: 9, isActive: true } });
     expect(grade.status(), await grade.text()).toBeLessThan(300);
     const gradeId = (await grade.json()).id;
@@ -102,20 +130,20 @@ test.describe('Benefits administration — UI', () => {
     await page.getByTestId('benefit-plan-list').getByRole('button', { name: new RegExp(`Executive ${code}`) }).click();
     await page.getByTestId('benefit-plan-detail').getByRole('button', { name: 'Enrol in this plan' }).click();
     const enrol = page.getByRole('dialog', { name: 'Enrol employee' });
-    await enrol.getByLabel('Search employee').fill('Carlos');
-    await enrol.getByRole('option', { name: /Carlos Mendez/ }).click();
+    await enrol.getByLabel('Search employee').fill(employee.employeeCode);
+    await enrol.getByRole('option', { name: new RegExp(employee.fullName) }).click();
     await enrol.getByLabel('Start date').fill('2026-09-01');
     const result = enrol.getByTestId('eligibility-result');
     await expect(result).toHaveAttribute('data-eligible', 'false');
     await expect(result).toContainText('Not eligible for this plan');
-    await expect(result).toContainText('None of the 1 rule(s) in effect');
+    await expect(result).toContainText('Employee has a grade for benefit eligibility.');
+    await expect(result).toContainText("None of the 1 grade rule(s) in effect match the employee's company and grade.");
     await expect(enrol.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
 
     // The gate the preview mirrors returns the same reason as a 400.
-    const carlos = await employeeByName(request, token, 'Carlos Mendez');
-    const blocked = await request.post(`${BASE}/enrollments`, { headers: h, data: { benefitPlanId: planId, employeeId: carlos, effectiveFrom: '2026-09-01' } });
+    const blocked = await request.post(`${BASE}/enrollments`, { headers: h, data: { benefitPlanId: planId, employeeId: employee.id, effectiveFrom: '2026-09-01' } });
     expect(blocked.status()).toBe(400);
-    expect(await blocked.text()).toContain('not eligible for this benefit plan based on company/grade');
+    expect(await blocked.text()).toContain('not eligible for this benefit plan based on grade eligibility rules');
   });
 });
 
@@ -131,10 +159,21 @@ test.describe('Benefits — API contract', () => {
     expect(early.status()).toBe(200);
     const body = await early.json();
     expect(body.eligible).toBe(false);
-    expect(body.checks.map((c: { key: string }) => c.key)).toEqual(['plan_active', 'company_scope', 'plan_window', 'eligibility_rules']);
+    expect(body.checks.map((c: { key: string }) => c.key)).toEqual(['plan_active', 'company_scope', 'plan_window', 'employee_grade', 'grade_rules_configured', 'eligibility_rules']);
     expect(body.checks.find((c: { key: string }) => c.key === 'plan_window').passed).toBe(false);
+    expect(body.checks.find((c: { key: string }) => c.key === 'grade_rules_configured').passed).toBe(false);
+    expect(body.checks.find((c: { key: string }) => c.key === 'eligibility_rules').passed).toBe(false);
+
+    // Moving inside the plan dates still fails closed until an explicit grade rule exists.
+    const withoutRule = await request.get(`${BASE}/eligibility-check`, { headers: h, params: { planId, employeeId: liu, effectiveFrom: '2026-09-01' } });
+    expect(withoutRule.status()).toBe(200);
+    const noRule = await withoutRule.json();
+    expect(noRule.eligible).toBe(false);
+    expect(noRule.checks.find((c: { key: string }) => c.key === 'plan_window').passed).toBe(true);
+    expect(noRule.checks.find((c: { key: string }) => c.key === 'grade_rules_configured').passed).toBe(false);
 
     const list = await request.get(`${BASE}/enrollments`, { headers: h, params: { planId } });
+    expect(list.status()).toBe(200);
     expect(await list.json()).toEqual([]);
   });
 
@@ -146,24 +185,39 @@ test.describe('Benefits — API contract', () => {
 });
 
 test.describe('My benefits — employee self-service', () => {
-  test('an enrolled employee sees their own plan and cost share', async ({ page, request }) => {
+  test('an employee sees their own mandatory coverage and employer-paid cost without an employee charge', async ({ page, request }) => {
     const token = await adminToken(request);
     const h = { Authorization: `Bearer ${token}` };
     const code = `E2E-${uid()}`;
     const planName = `Life ${code}`;
-    const planId = (await (await request.post(`${BASE}/plans`, { headers: h, data: { companyId: null, code, name: planName, planType: 'Life', currency: 'SAR', effectiveFrom: '2026-01-01', effectiveTo: null } })).json()).id;
+    // A mandatory minimum does not depend on grade configuration. This ESS scenario leaves
+    // the shared employee's placement untouched; discretionary grade coverage is tested above.
+    const plan = await request.post(`${BASE}/plans`, { headers: h, data: { companyId: null, code, name: planName, planType: 'Life', classification: 'Mandatory', currency: 'SAR', effectiveFrom: '2026-01-01', effectiveTo: null } });
+    expect(plan.status(), await plan.text()).toBe(201);
+    const planId = (await plan.json()).id;
     const liu = await employeeByName(request, token, 'Liu Wei');
+    const eligibility = await request.get(`${BASE}/eligibility-check`, { headers: h, params: { planId, employeeId: liu, effectiveFrom: '2026-01-01' } });
+    expect(eligibility.status()).toBe(200);
+    const check = await eligibility.json();
+    expect(check.eligible).toBe(true);
+    expect(check.checks.every((item: { passed: boolean }) => item.passed)).toBe(true);
+    expect(check.checks.find((item: { key: string }) => item.key === 'eligibility_rules').detail).toContain('Mandatory minimum coverage applies');
     const enr = await request.post(`${BASE}/enrollments`, { headers: h, data: { benefitPlanId: planId, employeeId: liu, coverageTier: 'Employee', effectiveFrom: '2026-01-01' } });
-    expect(enr.status()).toBe(200);
-    const contribution = await request.post(`${BASE}/enrollments/${(await enr.json()).id}/contributions`, { headers: h, data: { employeeAmount: 40, employerAmount: 160, frequency: 'Monthly', effectiveFrom: '2026-01-01' } });
-    expect(contribution.status()).toBe(200);
+    expect(enr.status(), await enr.text()).toBe(200);
+    const enrollmentId = (await enr.json()).id;
+    const charged = await request.post(`${BASE}/enrollments/${enrollmentId}/contributions`, { headers: h, data: { employeeAmount: 40, employerAmount: 160, frequency: 'Monthly', effectiveFrom: '2026-01-01' } });
+    expect(charged.status()).toBe(400);
+    expect(await charged.text()).toContain('Employees cannot be charged for the mandatory benefit floor');
+    const contribution = await request.post(`${BASE}/enrollments/${enrollmentId}/contributions`, { headers: h, data: { employeeAmount: 0, employerAmount: 160, frequency: 'Monthly', effectiveFrom: '2026-01-01' } });
+    expect(contribution.status(), await contribution.text()).toBe(200);
 
     await tenantLogin(page, INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP1.password, INTELLIFLOW_SLUG);
     await page.goto('/ess/benefits');
     await expect(page.getByRole('heading', { name: 'My Benefits' })).toBeVisible({ timeout: 15_000 });
     const card = page.getByTestId('my-benefits-list').getByRole('article').filter({ hasText: planName });
-    await expect(card).toContainText('40.00 SAR');
-    await expect(card).toContainText('160.00 SAR');
+    await expect(card.getByText('You pay (Monthly)', { exact: true }).locator('..')).toContainText('0.00 SAR');
+    await expect(card.getByText('Employer pays', { exact: true }).locator('..')).toContainText('160.00 SAR');
+    await expect(card).not.toContainText('40.00 SAR');
     expect(crashIndicators(await mainText(page))).toEqual([]);
   });
 });
