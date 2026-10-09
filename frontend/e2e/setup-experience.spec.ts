@@ -260,6 +260,38 @@ test('offers import separately from guided setup and preserves its organization 
   await expect(page.getByRole('region', { name: 'Manage settings', exact: true })).toBeVisible();
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   await expect(page).toHaveURL(/tab=companies/);
+  const desktop = (page.viewportSize()?.width ?? 0) >= 1024;
+  const areas = page.getByRole('navigation', { name: 'Settings area', exact: true });
+  if (desktop) {
+    await expect(areas.getByRole('button', { name: /Organization/ })).toBeVisible();
+    await expect(areas.getByRole('button', { name: /People & pay/ })).toBeVisible();
+    await expect(areas.getByRole('button', { name: /System/ })).toBeVisible();
+  } else {
+    await expect(page.getByRole('combobox', { name: 'Settings area', exact: true })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Setting', exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
+  await expect(page.getByText('Legal entities, registration details and operating currencies.', { exact: true })).toBeVisible();
+  const chooseArea = async (name: string, value: string) => {
+    if (desktop) await areas.getByRole('button', { name: new RegExp(name) }).click();
+    else await page.getByRole('combobox', { name: 'Settings area', exact: true }).selectOption(value);
+  };
+  await chooseArea('People & pay', 'peoplePay');
+  if (desktop) await page.getByRole('navigation', { name: 'People & pay settings', exact: true }).getByRole('button', { name: 'Grades & salary bands', exact: true }).click();
+  else await page.getByRole('combobox', { name: 'Setting', exact: true }).selectOption('grades');
+  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=grades/);
+  await chooseArea('System', 'system');
+  await expect(page.getByRole('heading', { name: 'Master data', exact: true })).toBeVisible();
+  await chooseArea('People & pay', 'peoplePay');
+  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=grades/);
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Master data', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=masterData/);
+  await page.goForward();
+  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=grades/);
   expect(state.previews).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
@@ -684,7 +716,18 @@ test('checks import and every settings entry screen for contained navigation', a
   for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
     await page.goto(`/setup?tab=${tab}`);
     await expect(page.locator('#setup-settings')).toBeVisible();
-    await expect(page.getByLabel('Settings area', { exact: true })).toBeInViewport({ ratio: 1 });
+    if (info.project.name === 'desktop') await expect(page.getByRole('navigation', { name: 'Settings area', exact: true })).toBeInViewport({ ratio: 1 });
+    else await expect(page.getByRole('combobox', { name: 'Settings area', exact: true })).toBeInViewport({ ratio: 1 });
+    if (info.project.name === 'mobile' && tab === 'companies') {
+      const add = page.getByRole('button', { name: 'Add Company', exact: true });
+      await add.scrollIntoViewIfNeeded();
+      await expect(add).toBeInViewport({ ratio: 1 });
+    }
+    if (info.project.name === 'mobile' && tab === 'masterData') {
+      const values = page.getByText('Select a type to manage values', { exact: true }).locator('..');
+      const bounds = await values.boundingBox();
+      expect(bounds?.width).toBeGreaterThan(250);
+    }
     await contained(page);
     await evidence(page, info, `settings-${tab}`);
   }
