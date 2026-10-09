@@ -20,10 +20,11 @@ import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
-import { buildEmployeeEditChanges, buildEmployeeEditSnapshot } from '../lib/employeeEditDraft';
+import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
 import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
+import { EmployeeCompletionHandoff } from '../components/EmployeeCompletionHandoff';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
@@ -50,7 +51,7 @@ import { Avatar } from '../components/Avatar';
 import { ArabicNameField } from '../components/ArabicNameField';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
-import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview } from '../components/EmployeeCreateWizard';
+import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview, EmployeeAdditionalDetails, EmployeeSetupChoice } from '../components/EmployeeCreateWizard';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import {
@@ -76,6 +77,7 @@ import {
   CONTRACT_TYPE_OPTIONS,
   PAYMENT_METHOD_OPTIONS,
   SALARY_CURRENCY_OPTIONS,
+  SALARY_BREAKDOWN_EDIT_FIELDS,
 } from '../api/employeeFieldCatalog';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
@@ -84,7 +86,7 @@ type DetailTab = 'personal' | 'employment' | 'payroll' | 'package' | 'deductions
 type EditField = EmployeeEditField;
 
 function employeeEditStep(field: EditField): number {
-  if (field.key === 'salary') return 3;
+  if (field.key === 'salary' || field.key.startsWith('salaryBreakdown.')) return 3;
   if (field.key === 'workEmail' || field.section === 'Employment') return 1;
   if (field.section === 'Payroll & Banking') return 2;
   if (field.section === 'Compliance Documents') return 4;
@@ -100,8 +102,9 @@ const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
   'gosiFirstRegisteredOn', 'gosiCohort', 'qiwaContractNumber', 'emiratesId', 'laborCardNumber',
   'qid', 'workPermitNumber', 'civilId', 'residencyNumber', 'idNumber',
   'iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate',
-  'accountNumber', 'bankRoutingCode', 'socialInsuranceReference',
+  'accountNumber', 'bankRoutingCode', 'socialInsuranceReference', 'molId', 'salaryCurrency', 'payrollGroup', 'salaryStructureReference', 'paymentMethod',
 ]);
+const EXTENDED_PAYROLL_EDIT_KEYS = new Set(['molId', 'salaryCurrency', 'payrollGroup', 'salaryStructureReference', 'paymentMethod']);
 const OPTIONAL_EXPIRY_EDIT_KEYS = new Set(['iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate']);
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
@@ -324,12 +327,28 @@ export function EmployeesPage() {
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [formStep, setFormStep] = useState(0);
+  const [fullSetup, setFullSetup] = useState(false);
+  const [visitedCreateSteps, setVisitedCreateSteps] = useState<number[]>([0]);
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false);
+  const [duplicatePhase, setDuplicatePhase] = useState<'person' | 'save'>('save');
+  const [pendingCreateExit, setPendingCreateExit] = useState(false);
+  const [lastSavedDraft, setLastSavedDraft] = useState<{ id: number; name: string } | null>(null);
+  const createGeneration = useRef(0);
+  const createSaveLock = useRef(false);
+  const lastPersonProbe = useRef('');
   const createFormRef = useRef<HTMLFormElement>(null);
   const createErrorRef = useRef<HTMLParagraphElement>(null);
   const [form, setForm] = useState<EmployeeCreateRequest>(emptyEmployee());
+  const formSnapshot = useRef(form);
+  formSnapshot.current = form;
   const [formOriginal, setFormOriginal] = useState<EmployeeCreateRequest>(emptyEmployee());
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const createBusy = saving || checkingDuplicate;
+  const createStepOrder = fullSetup ? [0, 1, 2, 3, 4, 5] : [0, 1, 5];
+  const createStepPosition = createStepOrder.indexOf(formStep);
+  const previousCreateStep = createStepOrder[Math.max(0, createStepPosition - 1)];
+  const followingCreateStep = createStepOrder[createStepPosition + 1] ?? 5;
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -798,8 +817,14 @@ export function EmployeesPage() {
     [selectedEmployeeCompanyCountry, selectedEmployee?.countryCode],
   );
   const editFields = useMemo(
-    () => editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode),
-    [fieldCatalog, selectedEmployeeCountryCode],
+    () => {
+      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode);
+      return selectedEmployee && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown')
+        && (selectedEmployee.salaryBreakdown != null || Number(selectedEmployee.salary ?? 0) <= 0)
+        ? [...fields.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
+        : fields;
+    },
+    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee],
   );
 
   // Two-axis catalog fetch. The catalog is resolved by the backend on (company country × employee
@@ -930,6 +955,12 @@ export function EmployeesPage() {
   };
 
   const openCreateEmployee = () => {
+    createGeneration.current++;
+    lastPersonProbe.current = '';
+    setCheckingDuplicate(false);
+    setPendingCreateExit(false);
+    setFullSetup(false);
+    setVisitedCreateSteps([0]);
     complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
     setDuplicateWarning([]);
     const next = emptyEmployee();
@@ -1020,6 +1051,7 @@ export function EmployeesPage() {
       else if (emailProblem) message = t(emailProblem);
     }
     if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
+    if (step === 1 && !selectedFormCompany) message = t('Choose an employing company before saving.');
     if (step === 1 && selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
       message = 'Selected designation is restricted to a different grade.';
     }
@@ -1029,26 +1061,60 @@ export function EmployeesPage() {
     const invalid = createFormRef.current?.querySelector<HTMLInputElement>(`[data-employee-step="${step}"] input:invalid`);
     if (!message && invalid) message = `${invalid.closest('label')?.querySelector('span')?.textContent?.trim() || 'This field'}: ${invalid.validationMessage}`;
     if (!message) return true;
+    if (step > 1 && step < 5) setFullSetup(true);
+    setVisitedCreateSteps(current => current.includes(step) ? current : [...current, step]);
     setFormStep(step);
     setFormError(message);
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (step === 0 && !form.englishName.trim()) document.getElementById('employee-create-name')?.focus();
-      else if (invalid) invalid.focus();
+      else if (invalid) {
+        let disclosure = invalid.closest('details');
+        while (disclosure) { disclosure.open = true; disclosure = disclosure.parentElement?.closest('details') ?? null; }
+        invalid.focus();
+      }
       else createErrorRef.current?.focus();
     }));
     return false;
   };
 
   const changeCreateStep = (step: number) => {
-    if (saving) return;
+    if (createBusy) return;
+    if (step > formStep && !validateCreateStep(formStep)) return;
+    if (step > 1 && step < 5) setFullSetup(true);
     setFormError('');
     setDuplicateWarning([]);
+    setVisitedCreateSteps(current => current.includes(step) ? current : [...current, step]);
     setFormStep(step);
   };
 
-  const nextCreateStep = () => {
-    if (saving || !validateCreateStep(formStep)) return;
-    changeCreateStep(Math.min(formStep + 1, EMPLOYEE_CREATE_STEPS.length - 1));
+  const nextCreateStep = async () => {
+    if (createBusy || !validateCreateStep(formStep)) return;
+    const probe = buildDuplicateProbe(form);
+    const probeKey = JSON.stringify(probe);
+    // Name + DOB or an entered identity makes the advisory check useful; the commit always checks again.
+    if (formStep === 0 && (probe.dateOfBirth || probe.identityValues?.length) && lastPersonProbe.current !== probeKey) {
+      const generation = createGeneration.current;
+      setCheckingDuplicate(true);
+      try {
+        const result = await employeesApi.duplicateCheck(probe);
+        if (generation !== createGeneration.current || JSON.stringify(buildDuplicateProbe(formSnapshot.current)) !== probeKey) return;
+        lastPersonProbe.current = probeKey;
+        if (result.matches.length) {
+          setDuplicatePhase('person');
+          setDuplicateWarning(result.matches);
+          return;
+        }
+      } catch {
+        // An unavailable advisory never blocks the draft; final creation remains authoritative.
+      } finally {
+        if (generation === createGeneration.current) setCheckingDuplicate(false);
+      }
+      if (generation !== createGeneration.current || JSON.stringify(buildDuplicateProbe(formSnapshot.current)) !== probeKey) return;
+    }
+    setFormError('');
+    setDuplicateWarning([]);
+    setVisitedCreateSteps(current => current.includes(followingCreateStep) ? current : [...current, followingCreateStep]);
+    setFormStep(followingCreateStep);
   };
 
   useEffect(() => {
@@ -1058,7 +1124,7 @@ export function EmployeesPage() {
     }
   }, [formError, duplicateWarning]);
 
-  const createReviewSections: Array<{ title: string; rows: Array<[string, string | number | undefined | null]> }> = [
+  const allCreateReviewSections: Array<{ title: string; rows: Array<[string, string | number | undefined | null]> }> = [
     { title: 'Profile', rows: [
       ['English full name', form.englishName], ['Arabic full name', form.arabicName],
       ['Preferred name', form.preferredName], ['Employee code', form.employeeCode || t('Assigned automatically')],
@@ -1091,18 +1157,27 @@ export function EmployeesPage() {
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
     ] },
     { title: 'Identity', rows: (form.complianceRecords ?? []).flatMap((record): Array<[string, string | undefined | null]> => [
-      [record.fieldLabel, record.fieldValue || (record.isRequired ? t('Missing · check readiness after creation') : undefined)],
-      [`${record.fieldLabel} · expiry`, record.expiryDate],
+      [record.fieldLabel, record.fieldValue],
+      ...(formComplianceFields.find(field => field.fieldKey === record.fieldKey)?.expiryEntityKey || record.expiryDate
+        ? [[`${record.fieldLabel} · expiry`, record.expiryDate] as [string, string | undefined]] : []),
     ]) },
   ];
+  const createReviewSections = allCreateReviewSections.map((section, step) => ({ ...section, step, rows: section.rows.filter(([, value]) => value !== undefined && value !== null && value !== '' && value !== '-') }))
+    .filter(section => section.step < 2 || fullSetup
+      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup || form.payrollProfile?.salaryStructureReference))
+      || (section.step === 3 && (salaryTotal > 0 || Object.entries(form.salaryBreakdown ?? {}).some(([key, value]) => !['currency', 'effectiveDate'].includes(key) && value !== undefined && value !== '')))
+      || (section.step === 4 && section.rows.length > 0));
 
   // `acknowledgeDuplicate` = the operator clicked "Create anyway" on the duplicate warning; it skips
   // the advisory pre-check and sends the audited override so the server proceeds past its 409 backstop.
-  const saveEmployee = async (acknowledgeDuplicate = false) => {
-    if (saving || formStep !== EMPLOYEE_CREATE_STEPS.length - 1) return;
-    for (let step = 0; step < formStep; step++) {
+  const saveEmployee = async (acknowledgeDuplicate = false, exitAfterSave = false) => {
+    if (createBusy || createSaveLock.current || (!exitAfterSave && !acknowledgeDuplicate && formStep !== 5)) return;
+    const shouldExit = acknowledgeDuplicate ? pendingCreateExit : exitAfterSave;
+    for (let step = 0; step < 5; step++) {
       if (!validateCreateStep(step)) return;
     }
+    setPendingCreateExit(shouldExit);
+    setDuplicatePhase('save');
     setError('');
     setFormError('');
     // Create floor is name-only (server floor). Gender, IDs, and statutory fields are readiness
@@ -1137,6 +1212,7 @@ export function EmployeesPage() {
       setFormError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
       return;
     }
+    createSaveLock.current = true;
     setSaving(true);
     try {
       // Advisory pre-submit duplicate check (never-silent-dup). The server commit is authoritative
@@ -1162,6 +1238,15 @@ export function EmployeesPage() {
       setDuplicateWarning([]);
       setForm(emptyEmployee());
       setFormOriginal(emptyEmployee());
+      if (shouldExit) {
+        const name = created.fullName || created.englishName || payload.englishName;
+        setLastSavedDraft({ id: created.id, name });
+        setActionNotice(t('{name} was saved as a draft.', { name }));
+        createGeneration.current++;
+        setFormOpen(false);
+        await load();
+        return;
+      }
       // The form becomes "{name} has been added." with the one next step (print their sign-in slip).
       const access = await employeeAccessApi.get(created.id).catch(() => null);
       setCreatedEmployee({ id: created.id, name: created.fullName || created.englishName || payload.englishName, access });
@@ -1201,6 +1286,7 @@ export function EmployeesPage() {
         setFormError(detail ? `Employee could not be saved — ${detail}` : 'Employee could not be saved. Check validation errors and try again.');
       }
     } finally {
+      createSaveLock.current = false;
       setSaving(false);
     }
   };
@@ -1338,9 +1424,11 @@ export function EmployeesPage() {
   // offer a blank editor that could overwrite a saved value while the API rollout catches up.
   const hasCurrentEditValue = (field: EditField) => !OPTIONAL_EXPIRY_EDIT_KEYS.has(field.key)
     || (selectedEmployee as unknown as Record<string, unknown> | null)?.[field.key] !== undefined;
-  const canEditField = (field: EditField) => canEditEmployees && hasCurrentEditValue(field) && (canReadSensitiveEmployees || (!field.sensitive && !MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)));
+  const canEditField = (field: EditField) => canEditEmployees && hasCurrentEditValue(field) && (!EXTENDED_PAYROLL_EDIT_KEYS.has(field.key) || (selectedEmployee != null && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown'))) && (canReadSensitiveEmployees || (!field.sensitive && !MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)));
   const dirtyEditKeys = Object.keys(editForm).filter((key) => editForm[key] !== editOriginal[key]);
   const editChangedKeys = editFields.filter((field) => canEditField(field) && dirtyEditKeys.includes(field.key)).map((field) => field.key);
+  const salaryPackageChanged = editChangedKeys.some(key => key.startsWith('salaryBreakdown.'));
+  const editSalaryEffectiveDate = editForm['salaryBreakdown.effectiveDate'] ?? '';
   const unavailableEditKeys = dirtyEditKeys.filter((key) => !editChangedKeys.includes(key));
   const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
@@ -1371,12 +1459,22 @@ export function EmployeesPage() {
           return false;
         }
       }
-      const input = editFormRef.current?.querySelector<HTMLInputElement | HTMLSelectElement>(`#edit-field-${field.key}`);
+      const input = editFormRef.current?.querySelector<HTMLInputElement | HTMLSelectElement>(`[id="edit-field-${field.key}"]`);
       if (input && !input.checkValidity()) {
         setEditNotice(input.validationMessage);
         input.reportValidity();
         return false;
       }
+    }
+    if (step === 3 && editChangedKeys.some(key => key.startsWith('salaryBreakdown.'))) {
+      try {
+        buildSalaryBreakdownChange(editForm);
+        if (editSalaryEffectiveDate > new Date().toISOString().slice(0, 10) && editFields.some(field => field.sensitive && !field.key.startsWith('salaryBreakdown.') && editChangedKeys.includes(field.key))) {
+          setEditNotice(t('Save future salary changes separately from other approval-required details.'));
+          return false;
+        }
+      }
+      catch (error) { setEditNotice(t(error instanceof Error ? error.message : 'Could not save the changes. Please review the values and try again.')); return false; }
     }
     return true;
   };
@@ -1389,7 +1487,7 @@ export function EmployeesPage() {
   };
 
   const editDisplayValue = (field: EditField, original = false) => {
-    if (!canReadSensitiveEmployees && MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)) return t('Restricted');
+    if (!canReadSensitiveEmployees && (MASKED_EMPLOYEE_EDIT_KEYS.has(field.key) || field.key.startsWith('salaryBreakdown.'))) return t('Restricted');
     if (!hasCurrentEditValue(field)) return t('Not available');
     const value = (original ? editOriginal : editForm)[field.key];
     return value || t('Not provided');
@@ -1425,6 +1523,8 @@ export function EmployeesPage() {
     if (saving) return;
     if (createdEmployee) { finishCreated(); return; }
     if (formChanged && !confirm('Discard this employee draft?')) return;
+    createGeneration.current++;
+    setCheckingDuplicate(false);
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
@@ -1463,14 +1563,15 @@ export function EmployeesPage() {
     try {
       changes = buildEmployeeEditChanges(editForm, editFields, editChangedKeys);
     } catch (error) {
-      setEditNotice(error instanceof Error ? error.message : t('Could not save the changes. Please review the values and try again.'));
+      setEditNotice(t(error instanceof Error ? error.message : 'Could not save the changes. Please review the values and try again.'));
       return;
     }
     setEditSaving(true);
     setEditNotice('');
     setActionNotice('');
     try {
-      const res = await employeesApi.update(editEmployeeId, new Date().toISOString().slice(0, 10), changes);
+      const effectiveDate = salaryPackageChanged ? editSalaryEffectiveDate : new Date().toISOString().slice(0, 10);
+      const res = await employeesApi.update(editEmployeeId, effectiveDate, changes);
       surfaceAdvisoryWarning(res.data);
       if (res.status === 202) {
         const data = res.data as { sensitiveFields?: string[]; approvalRequestId?: string; appliedFields?: string[]; alreadyPending?: boolean };
@@ -1770,7 +1871,9 @@ export function EmployeesPage() {
       </div>
 
       {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
-      {actionNotice && <p role="status" aria-live="polite" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">{actionNotice}</p>}
+      {actionNotice && <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"><span>{actionNotice}</span>
+        {lastSavedDraft && actionNotice === t('{name} was saved as a draft.', { name: lastSavedDraft.name }) && canWriteEmployees && <button type="button" onClick={() => openEmployeeWindow(lastSavedDraft.id)} className="font-semibold underline underline-offset-2">{t(canEditEmployees ? 'Resume draft' : 'View draft')}</button>}
+      </div>}
       {advisoryWarning && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
           <span>{advisoryWarning}</span>
@@ -2095,6 +2198,8 @@ export function EmployeesPage() {
                   </div>
                 ) : null}
 
+                {canEditEmployees && <EmployeeCompletionHandoff employeeId={selectedEmployee.id} onChanged={() => { void openDetail(selectedEmployee.id, true); void load(); }} />}
+
                 <EmployeeAccessCard
                   key={selectedEmployee.id}
                   employeeId={selectedEmployee.id}
@@ -2343,7 +2448,7 @@ export function EmployeesPage() {
 
       <Modal isOpen={editOpen} title={canEditEmployees ? t('Edit Employee — {name}', { name: selectedEmployee?.fullName ?? '' }) : t('Employee record — {name}', { name: selectedEmployee?.fullName ?? '' })}
         size="wizard" onClose={closeEditModal}
-        headerContent={<EmployeeCreateProgress steps={employeeWindowSteps} step={editStep} onStepChange={changeEditStep} busy={editSaving} />}
+        headerContent={<EmployeeCreateProgress steps={employeeWindowSteps} step={editStep} onStepChange={changeEditStep} busy={editSaving} allowAll />}
         footer={
           <div className="flex w-full items-center justify-between gap-3">
             <button type="button" onClick={closeEditModal} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
@@ -2420,28 +2525,18 @@ export function EmployeesPage() {
                   </label>;
                 })}
               </fieldset>
-              {index === 2 && canReadSensitiveEmployees && selectedEmployee?.payrollProfile && (
-                <div className="mt-5 border-t border-slate-100 pt-4 dark:border-white/10">
-                  <EmployeeCreateReview readOnly sections={[{ title: t('Payroll profile'), rows: [
-                    [t('Account number'), selectedEmployee.payrollProfile.accountNumber],
-                    [t('Payment method'), selectedEmployee.payrollProfile.paymentMethod],
-                    [t('Salary currency'), selectedEmployee.payrollProfile.salaryCurrency],
-                    [t('Payroll group'), selectedEmployee.payrollProfile.payrollGroup],
-                    [t('Salary structure reference'), selectedEmployee.payrollProfile.salaryStructureReference],
-                  ] }]} />
-                </div>
-              )}
             </EmployeeCreatePanel>
           ))}
           <EmployeeCreatePanel steps={employeeWindowSteps} step={5} activeStep={editStep}>
             {canEditEmployees && <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{editChangedKeys.length > 0 ? t('{count} fields changed. Review the before and after values before saving.', { count: editChangedKeys.length }) : t('No changes yet. You can return to any section to update it.')}</p>}
+            {salaryPackageChanged && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Salary changes take effect on {date}, after approval.', { date: editSalaryEffectiveDate })}</p>}
             <EmployeeCreateReview sections={editReviewSections} onEdit={changeEditStep} readOnly={!canEditEmployees} busy={editSaving} />
           </EmployeeCreatePanel>
         </form>
       </Modal>
 
       <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
-        headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={saving} />}
+        headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={createBusy} visibleSteps={createStepOrder} visitedSteps={visitedCreateSteps} />}
         footer={createdEmployee ? (
         <>
           <button type="button" onClick={() => finishCreated()} className="btn-secondary">{t('Later')}</button>
@@ -2466,19 +2561,22 @@ export function EmployeesPage() {
           )}
         </>
       ) : (
-          <div className="flex w-full items-center justify-between gap-3">
-            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary disabled:opacity-60">Cancel</button>
-            <div className="flex items-center gap-2">
-              {formStep > 0 && <button type="button" onClick={() => changeCreateStep(formStep - 1)} disabled={saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
-              {formStep < EMPLOYEE_CREATE_STEPS.length - 1 ? (
-                <button type="button" onClick={nextCreateStep} className="btn-primary">
-                  {t('Next: {step}', { step: t(EMPLOYEE_CREATE_STEPS[formStep + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+          <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:justify-between">
+            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary justify-self-start disabled:opacity-60">Cancel</button>
+            <button type="button" onClick={() => void saveEmployee(false, true)} disabled={createBusy || formCompanyMissingCountry} className="justify-self-end px-1 py-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-60 dark:text-slate-300 sm:me-auto sm:ms-2">{saving && pendingCreateExit ? t('Saving...') : t('Save draft and exit')}</button>
+            <div className="col-span-2 flex items-center justify-end gap-2">
+              {formStep > 0 && <button type="button" onClick={() => changeCreateStep(previousCreateStep)} disabled={createBusy} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
+              {formStep !== 5 && visitedCreateSteps.includes(5) ? (
+                <button type="button" onClick={() => changeCreateStep(5)} disabled={createBusy} className="btn-primary">{t('Return to review')}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></button>
+              ) : formStep < 5 ? (
+                <button type="button" onClick={() => void nextCreateStep()} disabled={createBusy} className="btn-primary disabled:opacity-60">
+                  {checkingDuplicate ? t('Checking…') : t('Next: {step}', { step: t(EMPLOYEE_CREATE_STEPS[followingCreateStep].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={() => saveEmployee()}
-                  disabled={saving || formCompanyMissingCountry}
+                  disabled={createBusy || formCompanyMissingCountry}
                   title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
                   aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
                   className="btn-primary disabled:opacity-60"
@@ -2502,11 +2600,13 @@ export function EmployeesPage() {
             {createdEmployee.access?.reasonCode && skipReasonKey(createdEmployee.access.reasonCode) && (
               <p data-testid="employee-added-reason">{t(skipReasonKey(createdEmployee.access.reasonCode)!, { name: createdEmployee.name })}</p>
             )}
+            {canEditEmployees && <EmployeeCompletionHandoff employeeId={createdEmployee.id} />}
           </div>
         ) : (
-        <form ref={createFormRef} noValidate aria-busy={saving} className="space-y-4" onSubmit={(event) => {
+        <form ref={createFormRef} noValidate aria-busy={createBusy} inert={saving || undefined} className="space-y-4" onSubmit={(event) => {
           event.preventDefault();
-          if (formStep < EMPLOYEE_CREATE_STEPS.length - 1) nextCreateStep();
+          if (formStep < 5 && visitedCreateSteps.includes(5)) changeCreateStep(5);
+          else if (formStep < 5) void nextCreateStep();
           else void saveEmployee();
         }}>
           {formError && (
@@ -2584,19 +2684,33 @@ export function EmployeesPage() {
                     duplicate warning, never the missing-country refusal the server would return. */}
                 <button
                   type="button"
-                  onClick={() => saveEmployee(true)}
+                  onClick={() => {
+                    if (duplicatePhase === 'person') {
+                      if (validateCreateStep(0)) changeCreateStep(1);
+                    } else void saveEmployee(true);
+                  }}
                   disabled={saving || formCompanyMissingCountry}
                   title={formCompanyMissingCountry ? formCompanyMissingCountryMessage : undefined}
                   aria-describedby={formCompanyMissingCountry ? MISSING_COUNTRY_NOTICE_ID : undefined}
                   className="btn-primary h-8 px-3 text-xs disabled:opacity-60"
                 >
-                  {saving ? 'Creating…' : 'Create anyway'}
+                  {duplicatePhase === 'person' ? t('Continue with this draft') : saving ? 'Creating…' : 'Create anyway'}
                 </button>
               </div>
             </div>
           )}
           <EmployeeCreatePanel step={0} activeStep={formStep}>
           <Section title="Personal details">
+            <Input label="English full name" inputId="employee-create-name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
+            <ArabicNameField source={form.englishName} value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} />
+            <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
+            <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
+            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
+            <EmployeeAdditionalDetails title="Additional personal details">
+            <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
+            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
+            <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
+            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2604,18 +2718,8 @@ export function EmployeesPage() {
               Manual override
             </label>
             </div>
-            <Input label="English full name" inputId="employee-create-name" required value={form.englishName} onChange={(v) => setField('englishName', v)} info="Employee's full legal name in English, exactly as on their passport or ID. Required." infoKey="employees.english_name" />
-            <ArabicNameField source={form.englishName} value={form.arabicName ?? ''} onChange={(v) => setField('arabicName', v)} />
-            <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
-            <Input label="Nationality" value={form.nationality ?? ''} onChange={(v) => setField('nationality', v)} />
-            <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
-            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
-            <Input label="Personal email" value={form.personalEmail ?? ''} onChange={(v) => setField('personalEmail', v)} type="email" />
-            <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
-
+            </EmployeeAdditionalDetails>
           </Section>
-
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={1} activeStep={formStep}>
           <Section title="Employment details">
@@ -2666,19 +2770,13 @@ export function EmployeesPage() {
               )}
             </label>
             <Lookup label="Designation" value={form.designationId ?? ''} onChange={setDesignation} items={designations} textKey="titleEn" />
-            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
             {selectedGrade && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
                 <p className="font-semibold text-slate-800 dark:text-white">{selectedGrade.code} salary band</p>
                 <p className="mt-1">{selectedGrade.currency} {selectedGrade.minSalary.toLocaleString()} - {selectedGrade.maxSalary.toLocaleString()}</p>
               </div>
             )}
-            <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
-            <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
-            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
-            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
             <Input label="Joining date" value={form.joiningDate ?? ''} onChange={(v) => setField('joiningDate', v)} type="date" info="First working day. Used for probation tracking, leave accrual and end-of-service (EOSB) calculations." infoKey="employees.joining_date" />
-            <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
             <WorkEmailField
               label={t('Work email')}
               value={form.workEmail ?? ''}
@@ -2690,33 +2788,37 @@ export function EmployeesPage() {
               pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
               suggest
             />
+            <EmployeeAdditionalDetails title="More employment details">
+            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
+            <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
+            <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
+            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
+            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
+            <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
+            </EmployeeAdditionalDetails>
           </Section>
+          <EmployeeSetupChoice checked={fullSetup} onChange={setFullSetup} disabled={createBusy} />
 
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={2} activeStep={formStep}>
           <Section title="Bank & payment details">
             <Input label="Bank name" value={form.payrollProfile?.bankName ?? ''} onChange={(v) => setPayrollField('bankName', v)} />
             <Input label="IBAN" ltr value={form.payrollProfile?.iban ?? ''} onChange={(v) => setPayrollField('iban', v)} info="International bank account number for salary transfers, e.g. AE07 0331 2345 6789 0123 456. No spaces needed." infoKey="employees.iban" />
+            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={SALARY_CURRENCY_OPTIONS} />
+            <Select label="Payment method" value={form.payrollProfile?.paymentMethod ?? ''} onChange={(v) => setPayrollField('paymentMethod', v)} options={PAYMENT_METHOD_OPTIONS} info="How salary is disbursed. WPS/BankTransfer require valid bank details before payroll can run." infoKey="employees.payment_method" />
+            <EmployeeAdditionalDetails title="Additional payroll details">
             <Input label="Account number" ltr value={form.payrollProfile?.accountNumber ?? ''} onChange={(v) => setPayrollField('accountNumber', v)} />
             <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code used in the UAE WPS SIF (6-digit code). Saudi bank files take the bank from the IBAN and the approved BIC." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number used in the UAE WPS SIF. Saudi wage files use the employee's own national ID or Iqama number instead." infoKey="employees.molId" />
-            <Select label="Salary currency" value={form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setPayrollField('salaryCurrency', v)} options={SALARY_CURRENCY_OPTIONS} />
-            <Select label="Payment method" value={form.payrollProfile?.paymentMethod ?? ''} onChange={(v) => setPayrollField('paymentMethod', v)} options={PAYMENT_METHOD_OPTIONS} info="How salary is disbursed. WPS/BankTransfer require valid bank details before payroll can run." infoKey="employees.payment_method" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
             <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
+            </EmployeeAdditionalDetails>
           </Section>
 
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={3} activeStep={formStep}>
           <Section title="Salary & allowances">
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
-            <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
-            <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
-            <Input label="Food allowance" type="number" value={String(form.salaryBreakdown?.foodAllowance ?? '')} onChange={(v) => setSalaryField('foodAllowance', v)} />
-            <Input label="Mobile allowance" type="number" value={String(form.salaryBreakdown?.mobileAllowance ?? '')} onChange={(v) => setSalaryField('mobileAllowance', v)} />
-            <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
-            <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
-            <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
             <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
@@ -2724,6 +2826,15 @@ export function EmployeesPage() {
               {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
               {gradePayScale.length > 0 && <p className="mt-1">Grade defaults: {gradePayScale.map((line) => `${line.componentName} ${line.amount || `${line.percentage}%`}`).join(' · ')}</p>}
             </div>
+            <EmployeeAdditionalDetails title="Add allowances and deductions">
+            <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
+            <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
+            <Input label="Food allowance" type="number" value={String(form.salaryBreakdown?.foodAllowance ?? '')} onChange={(v) => setSalaryField('foodAllowance', v)} />
+            <Input label="Mobile allowance" type="number" value={String(form.salaryBreakdown?.mobileAllowance ?? '')} onChange={(v) => setSalaryField('mobileAllowance', v)} />
+            <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
+            <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
+            <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
+            </EmployeeAdditionalDetails>
           </Section>
 
           </EmployeeCreatePanel>
@@ -2755,7 +2866,7 @@ export function EmployeesPage() {
                     value={record.fieldValue ?? ''}
                     onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
                   />
-                  <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />
+                  {(field?.expiryEntityKey || record.expiryDate) && <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />}
                 </div>
               );
             })}
@@ -2763,6 +2874,13 @@ export function EmployeesPage() {
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={5} activeStep={formStep}>
             <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
+            {!fullSetup && <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm font-semibold">{t('Complete more details now, or save them for later')}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {([2, 3, 4] as const).map(step => <button key={step} type="button" onClick={() => changeCreateStep(step)} disabled={createBusy} className="btn-secondary text-xs">{t('Add {section} details', { section: t(EMPLOYEE_CREATE_STEPS[step].label) })}</button>)}
+              </div>
+            </div>}
+            <EmployeeSetupChoice checked={fullSetup} onChange={setFullSetup} disabled={createBusy} />
             <p className="mt-5 text-sm text-slate-600 dark:text-slate-300">{t('Create Employee saves this record. You can then arrange sign-in access and check any remaining requirements on the profile.')}</p>
           </EmployeeCreatePanel>
           {/* A native submit target lets Enter advance the active screen. */}

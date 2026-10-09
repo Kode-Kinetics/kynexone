@@ -56,7 +56,8 @@ public class EmployeesController : ControllerBase
         // without this entry that write would have skipped the approval gosiReference always required.
         "socialInsuranceReference",
         // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
-        "bankRoutingCode", "accountNumber"
+        "bankRoutingCode", "accountNumber",
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown"
     };
 
     private readonly ZayraDbContext _db;
@@ -3736,6 +3737,30 @@ public class EmployeesController : ControllerBase
             return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " No change was applied." });
         }
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
+        if (sensitive.Count > 0 && !CanEditSensitive()) return Forbid();
+        // Rich payroll edits use the same approval route, but malformed values must never become
+        // unapplyable approvals. Validate the complete package before any immediate field is written.
+        try
+        {
+            foreach (var key in new[] { "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod" })
+            {
+                if (!request.Changes.TryGetValue(key, out var value)) continue;
+                if (value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null) || value.GetString()?.Length > 180)
+                    throw new InvalidOperationException($"{key} must be text of 180 characters or fewer.");
+                if (key == "salaryCurrency" && (value.GetString() is not { Length: 3 } currency || !currency.All(c => c is >= 'A' and <= 'Z')))
+                    throw new InvalidOperationException("Salary currency must be a three-letter uppercase currency code.");
+            }
+            await EmployeeSalaryBreakdownChanges.ValidateAsync(_db, employee, request.Changes, cancellationToken);
+            if (request.Changes.TryGetValue(EmployeeSalaryBreakdownChanges.Key, out var package))
+            {
+                var salaryDate = EmployeeSalaryBreakdownChanges.Read(package).EffectiveDate!.Value;
+                if (request.EffectiveDate != salaryDate)
+                    throw new InvalidOperationException("The change effective date must match the salary package effective date.");
+                if (salaryDate > DateOnly.FromDateTime(DateTime.UtcNow) && sensitive.Any(key => key != EmployeeSalaryBreakdownChanges.Key))
+                    throw new InvalidOperationException("Save a future salary package separately from other approval-required changes.");
+            }
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
         if (request.Changes.TryGetValue("gosiFirstRegisteredOn", out var gosiFirstRegisteredOn)
@@ -3756,7 +3781,6 @@ public class EmployeesController : ControllerBase
         {
             if (sensitive.Count > 0)
             {
-                if (!CanEditSensitive()) return Forbid();
                 var sensitiveChanges = request.Changes
                     .Where(x => SensitiveFields.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
@@ -5988,6 +6012,7 @@ public class EmployeesController : ControllerBase
         // Payroll-profile bank columns the WPS/SIF export reads; approval-gated (SensitiveFields) and applied by
         // EmployeeChangeApplier.ApplyPayrollProfileAsync.
         "bankRoutingCode", "accountNumber",
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
     };
 
     /// <summary>

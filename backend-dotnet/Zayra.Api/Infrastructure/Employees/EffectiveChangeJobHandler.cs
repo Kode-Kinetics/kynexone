@@ -291,7 +291,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                 ct);
         }
         var scheduled = await ScheduledPredecessorValuesAsync(db, tenantId, employee.Id, change, changes.Keys, ct);
-        var drifted = EmployeeChangeBaseline.Drifted(baseline.Values, EmployeeChangeBaseline.Capture(employee, profile, changes.Keys), scheduled);
+        var drifted = EmployeeChangeBaseline.Drifted(baseline.Values, await EmployeeChangeBaseline.CaptureAsync(db, employee, profile, changes.Keys, ct), scheduled);
         if (drifted.Count > 0)
         {
             var labels = FieldLabels(string.Join(',', drifted));
@@ -402,7 +402,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         var values = string.Empty;
         if (d.Changes is not null)
         {
-            onFile = EmployeeChangeBaseline.Capture(employee, d.Profile, d.Changes.Keys);
+            onFile = await EmployeeChangeBaseline.CaptureAsync(d.Db, employee, d.Profile, d.Changes.Keys, ct);
             var proposed = EmployeeChangeBaseline.Projected(d.Changes);
             values = string.Join("; ", d.Changes.Keys.Select(k =>
                 $"{FieldLabels(k)} now {Mask(EmployeeChangeBaseline.ValueOf(onFile, k))}, approved {Mask(EmployeeChangeBaseline.ValueOf(proposed, k))}"));

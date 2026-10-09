@@ -9,7 +9,8 @@ public record EmployeeCreateRequest(
     [Required, MaxLength(180)] string EnglishName,
     [MaxLength(180)] string? ArabicName,
     [MaxLength(120)] string? PreferredName,
-    [Required, MaxLength(40)] string Gender,
+    // Creation stores an incomplete Draft; configured readiness still requires gender before activation.
+    [MaxLength(40)] string? Gender,
     DateOnly? DateOfBirth,
     [MaxLength(80)] string? Nationality,
     [MaxLength(60)] string? MaritalStatus,
@@ -256,6 +257,9 @@ public record EmployeeDetailDto
     public DateTime? ActivatedAtUtc { get; init; }
     // ── Subordinate collections (projected to DTOs — no raw EF entities) ─────────
     public EmployeePayrollProfileDto? PayrollProfile { get; init; }
+    /// <summary>Most recent active salary assignment, exposed only with employees.sensitive.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public EmployeeSalaryBreakdownRequest? SalaryBreakdown { get; init; }
     public IReadOnlyCollection<EmployeeComplianceRecord> ComplianceRecords { get; init; } = [];
     public IReadOnlyCollection<EmployeeDocumentDto> Documents { get; init; } = [];
     public IReadOnlyCollection<EmployeeHistoryDto> History { get; init; } = [];

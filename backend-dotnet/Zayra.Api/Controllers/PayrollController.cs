@@ -391,7 +391,7 @@ public class PayrollController : ControllerBase
         return null;
     }
 
-    private static string? ValidateEmployeeSalaryAssignment(SalaryStructure structure, Employee employee, EmployeeSalaryStructureRequest req)
+    internal static string? ValidateEmployeeSalaryAssignment(SalaryStructure structure, Employee employee, EmployeeSalaryStructureRequest req)
     {
         if (!structure.IsActive) return "Salary structure is inactive.";
         if (structure.CompanyId.HasValue && employee.CompanyId.HasValue && structure.CompanyId != employee.CompanyId)

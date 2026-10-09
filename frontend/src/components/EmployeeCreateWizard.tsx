@@ -13,11 +13,11 @@ export type EmployeeWizardStep = {
 };
 
 export const EMPLOYEE_CREATE_STEPS = [
-  { label: msg('Profile'), title: msg('Start with the person'), description: msg('Add their name and contact details. Fields marked with an asterisk are required.') },
+  { label: msg('Person'), title: msg('Start with the person'), description: msg('Start with the English full name. Choose the employing company before saving; other details can follow.') },
   { label: msg('Employment'), title: msg('Place them in the organization'), description: msg('Choose their company, role and reporting line, then confirm their joining details.') },
-  { label: msg('Payroll'), title: msg('Set up payroll'), description: msg('Add payment and bank details so their payroll profile is ready.') },
-  { label: msg('Salary'), title: msg('Build the salary package'), description: msg('Enter the salary and allowances. The package total updates as you go.') },
-  { label: msg('Identity'), title: msg('Add identity documents'), description: msg('Add identity records and expiry dates for the employing company.') },
+  { label: msg('Payroll'), title: msg('Set up payroll'), description: msg('Optional for a draft. Payment and bank details are checked before payroll or activation, according to company policy.') },
+  { label: msg('Salary'), title: msg('Build the salary package'), description: msg('Optional for a draft. Add the basic salary now, then include any allowances you have confirmed.') },
+  { label: msg('Identity'), title: msg('Add identity documents'), description: msg('Optional for a draft. Add the records you have; the profile will show what is needed for activation and payroll.') },
   { label: msg('Review'), title: msg('Review employee details'), description: msg('Check the information below. You can edit any section before creating the employee.') },
 ] as const;
 
@@ -36,39 +36,43 @@ export const EMPLOYEE_VIEW_STEPS: readonly EmployeeWizardStep[] = EMPLOYEE_EDIT_
   description: msg('Browse the saved information for this section.'),
 }));
 
-export function EmployeeCreateProgress({ step, onStepChange, busy = false, steps = EMPLOYEE_CREATE_STEPS }: {
+export function EmployeeCreateProgress({ step, onStepChange, busy = false, steps = EMPLOYEE_CREATE_STEPS, visibleSteps, visitedSteps, allowAll = false }: {
   step: number;
   onStepChange: (step: number) => void;
   busy?: boolean;
   steps?: readonly EmployeeWizardStep[];
+  visibleSteps?: readonly number[];
+  visitedSteps?: readonly number[];
+  allowAll?: boolean;
 }) {
   const { t } = useLocale();
+  const indexes = visibleSteps ?? steps.map((_, index) => index);
   return (
     <nav className={styles.progress} aria-label={t('Employee setup progress')}>
       <p className={styles.mobileProgress} aria-live="polite" aria-atomic="true">
-        <span>{t('Step {step} of {total}', { step: step + 1, total: steps.length })}</span>
+        <span>{t('Step {step} of {total}', { step: indexes.indexOf(step) + 1, total: indexes.length })}</span>
         <strong>{t(steps[step].label)}</strong>
       </p>
-      <ol className={styles.steps}>
-        {steps.map((item, index) => (
-          <li key={item.label} className={styles.stepItem} data-state={index < step ? 'complete' : index === step ? 'current' : 'upcoming'}>
+      <ol className={styles.steps} style={{ gridTemplateColumns: `repeat(${indexes.length}, minmax(0, 1fr))` }}>
+        {indexes.map((index, position) => {
+          const item = steps[index];
+          const visited = visitedSteps ? visitedSteps.includes(index) : index < step;
+          return <li key={item.label} className={styles.stepItem} data-state={index === step ? 'current' : visited ? 'complete' : 'upcoming'}>
             <button
               type="button"
               className={styles.stepButton}
               aria-current={index === step ? 'step' : undefined}
-              aria-label={index < step
-                ? t('Step {step}: {label}, completed', { step: index + 1, label: t(item.label) })
-                : t('Step {step}: {label}', { step: index + 1, label: t(item.label) })}
-              disabled={busy || index > step}
+              aria-label={t('Step {step}: {label}', { step: position + 1, label: t(item.label) })}
+              disabled={busy || (!allowAll && index !== step && !visited)}
               onClick={() => onStepChange(index)}
             >
               <span className={styles.stepNumber} aria-hidden="true">
-                {index < step ? <Check size={15} strokeWidth={2.5} /> : index + 1}
+                {visited && index !== step ? <Check size={15} strokeWidth={2.5} /> : position + 1}
               </span>
               <span className={styles.stepLabel}>{t(item.label)}</span>
             </button>
-          </li>
-        ))}
+          </li>;
+        })}
       </ol>
     </nav>
   );
@@ -124,6 +128,7 @@ export function EmployeeCreatePanel({ step, activeStep, children, steps = EMPLOY
 
 export type EmployeeCreateReviewSection = {
   title: string;
+  step?: number;
   rows: Array<[string, string | number | undefined | null]>;
 };
 
@@ -141,7 +146,7 @@ export function EmployeeCreateReview({ sections, onEdit, busy = false, readOnly 
           <div className={styles.reviewHeading}>
             <h4>{t(section.title)}</h4>
             {!readOnly && onEdit && (
-              <button type="button" className={styles.editButton} disabled={busy} onClick={() => onEdit(index)} aria-label={t('Edit {section}', { section: t(section.title) })}>
+              <button type="button" className={styles.editButton} disabled={busy} onClick={() => onEdit(section.step ?? index)} aria-label={t('Edit {section}', { section: t(section.title) })}>
                 <Pencil size={13} aria-hidden="true" />
                 {t('Edit')}
               </button>
@@ -159,4 +164,20 @@ export function EmployeeCreateReview({ sections, onEdit, busy = false, readOnly 
       ))}
     </div>
   );
+}
+
+export function EmployeeAdditionalDetails({ title, children }: { title: string; children: ReactNode }) {
+  const { t } = useLocale();
+  return <details className={styles.additionalDetails}>
+    <summary>{t(title)}</summary>
+    <div className={styles.additionalFields}>{children}</div>
+  </details>;
+}
+
+export function EmployeeSetupChoice({ checked, onChange, disabled = false }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
+  const { t } = useLocale();
+  return <label className={styles.setupChoice}>
+    <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} disabled={disabled} />
+    <span><strong>{t('Set up payroll and documents now')}</strong><span>{t('Optional. You can save a draft first and finish these sections from the employee record.')}</span></span>
+  </label>;
 }
