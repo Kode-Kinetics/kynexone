@@ -1112,6 +1112,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     appliesOnProbation: existing?.appliesOnProbation ?? false,
     annualEntitlementDays: existing?.annualEntitlementDays ?? 21,
     accrualMethod: existing?.accrualMethod ?? 'Monthly',
+    proratePartialMonths: existing?.proratePartialMonths ?? false,
     // Pinned to 0, not echoed from the stored policy: a legacy row may hold a cap that was never
     // applied, and sending it back would make every edit of that policy fail the API's refusal.
     carryForwardMax: 0,
@@ -1196,6 +1197,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
                 {['Monthly', 'Yearly', 'Prorated'].map(m => <option key={m}>{m}</option>)}
               </select>
             </Field>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={form.accrualMethod !== 'Monthly'} checked={form.proratePartialMonths} onChange={e => set('proratePartialMonths', e.target.checked)} />{t('Prorate partial months by calendar days employed')}</label>
             {/* "Carry-Forward Max" was removed, not hidden. There is no leave year-end process of
                 any kind — no accrual job, no roll-over job, no expiry job — so a cap entered here
                 was stored, read back on screen, and consulted by nothing: on 1 January no balance

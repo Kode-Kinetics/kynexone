@@ -2,7 +2,7 @@ import client from './client';
 
 export interface SetupSections {
   org: boolean; leave: boolean; shifts: boolean; payroll: boolean; entity: boolean; governance: boolean;
-  leavePolicies: boolean; holidays: boolean; attendance: boolean; localization: boolean;
+  leavePolicies: boolean; holidays: boolean; attendance: boolean; localization: boolean; benefits?: boolean;
 }
 
 export interface CompanyProfile {
@@ -34,6 +34,7 @@ export interface CompanyProfile {
   payCycle?: string;             // Monthly | SemiMonthly | Biweekly | Weekly
   timeZone?: string;             // IANA zone; empty = derive from country
   defaultLanguage?: string;      // en | ar | bilingual
+  configuration?: SetupConfiguration;
 }
 
 export interface DraftDepartment { code: string; nameEn: string; }
@@ -48,7 +49,7 @@ export interface DraftWorkingWeek { workWeek: string; weekStartDay: string; }
 export interface DraftPayComponent { code: string; name: string; componentType: string; calculationType: string; amount: number; percentage: number; isTaxable: boolean; }
 export interface DraftStatutoryRule { ruleKey: string; ruleValue: string; dataType: string; description: string; }
 export interface DraftEmployeeIdRule { companyPrefix: string; useCountryPrefix: boolean; useBranchPrefix: boolean; useDepartmentPrefix: boolean; useYear: boolean; paddingLength: number; nextSequence: number; allowManualOverride: boolean; }
-export interface DraftLeavePolicy { name: string; leaveTypeCode: string; annualEntitlementDays: number; accrualMethod: string; encashmentAllowed: boolean; encashmentMaxDays: number; minimumDaysPerRequest: number; maximumDaysPerRequest: number; noticeRequiredDays: number; weekendsIncluded: boolean; publicHolidaysIncluded: boolean; appliesOnProbation: boolean; payrollImpact: string; }
+export interface DraftLeavePolicy { name: string; leaveTypeCode: string; annualEntitlementDays: number; accrualMethod: string; encashmentAllowed: boolean; encashmentMaxDays: number; minimumDaysPerRequest: number; maximumDaysPerRequest: number; noticeRequiredDays: number; weekendsIncluded: boolean; publicHolidaysIncluded: boolean; appliesOnProbation: boolean; payrollImpact: string; proratePartialMonths?: boolean; gradeCode?: string; departmentCode?: string; employmentType?: string; }
 export interface DraftHoliday { nameEn: string; nameAr: string; date: string; isRecurring: boolean; isOptional: boolean; holidayType: string; notes: string; }
 export interface DraftHolidayCalendar { name: string; calendarYear: number; holidays: DraftHoliday[]; }
 export interface DraftAttendancePolicy { code: string; name: string; graceMinutes: number; lateThresholdMinutes: number; earlyExitThresholdMinutes: number; halfDayThresholdMinutes: number; absentThresholdMinutes: number; standardWorkMinutes: number; breakMinutes: number; roundingRule: string; requiresOvertimeApproval: boolean; allowAbsenceToLeaveConversion: boolean; }
@@ -57,7 +58,25 @@ export interface DraftOvertimePolicy { code: string; name: string; hourlyRateBas
 export interface DraftLocalization { defaultLanguage: string; rtlEnabled: boolean; calendarSystem: string; defaultTimezone: string; dateFormat: string; hijriDatesEnabled: boolean; }
 export interface DraftHrConfig { useDeptHeadApproval: boolean; useHrFinalApproval: boolean; useSupervisorBeforeManager: boolean; allowDottedLineApproval: boolean; autoCreateDeptOnImport: boolean; autoCreateDesignationOnImport: boolean; requireImportPreviewBeforeCommit: boolean; allowCrossDeptManager: boolean; allowCrossLocationManager: boolean; requireCostCenterForPayroll: boolean; requireGradeForApprovalPolicy: boolean; }
 
+export interface DraftBenefitPlan {
+  code: string; name: string; planType: string; currency: string;
+  effectiveFrom: string; effectiveTo?: string | null; requiresEnrollment: boolean; gradeCodes: string[];
+}
+export interface SetupConfiguration {
+  attendanceMethods?: string[];
+  attendancePolicy?: DraftAttendancePolicy;
+  overtimeModes?: string[];
+  overtimePolicy?: DraftOvertimePolicy;
+  grades?: DraftGrade[] | null;
+  leavePolicies?: DraftLeavePolicy[] | null;
+  hrConfig?: DraftHrConfig;
+  benefitPlans?: DraftBenefitPlan[] | null;
+  policySourceText?: string;
+  usePolicySourceForAi?: boolean;
+}
+
 export interface SetupDraft {
+  benefitPlans?: DraftBenefitPlan[];
   branches: DraftBranch[];
   departments: DraftDepartment[];
   costCenters: DraftCostCenter[];
@@ -78,7 +97,7 @@ export interface SetupDraft {
   localization: DraftLocalization | null;
 }
 
-export interface SetupPreviewResult { draft: SetupDraft; notes: string[]; engine: string; }
+export interface SetupPreviewResult { configurationVersion?: number; draft: SetupDraft; notes: string[]; engine: string; }
 
 const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
@@ -91,6 +110,7 @@ const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 export function normalizeDraft(raw: unknown): SetupDraft {
   const d = (raw ?? {}) as Partial<SetupDraft>;
   return {
+    benefitPlans: asArray<DraftBenefitPlan>(d.benefitPlans).map(p => ({ ...p, gradeCodes: asArray<string>(p.gradeCodes) })),
     branches: asArray<DraftBranch>(d.branches),
     departments: asArray<DraftDepartment>(d.departments),
     costCenters: asArray<DraftCostCenter>(d.costCenters),
@@ -124,6 +144,7 @@ export const setupAssistantApi = {
       draft: normalizeDraft(r.data?.draft),
       notes: asArray<string>(r.data?.notes),
       engine: r.data?.engine ?? '',
+      configurationVersion: r.data?.configurationVersion,
     })),
 
   apply: (draft: SetupDraft, countryCode: string, currencyCode: string, legalEntityName?: string) =>

@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CheckCircle2, Eye, Info, Pencil, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
 import Link from 'next/link';
+import { SetupPolicyEditor } from './SetupPolicyEditor';
 import type { CompanyDto } from '../api/organization';
 import { tenantAdminApi } from '../api/intelligence';
 import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
-import { setupAssistantApi, type CompanyProfile, type SetupDraft } from '../api/setupAssistant';
+import { setupAssistantApi, type CompanyProfile, type SetupDraft, type SetupConfiguration } from '../api/setupAssistant';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -51,9 +52,6 @@ const ATTENDANCE_CAPTURE: [string, string][] = [
 ];
 const PAY_CYCLES: [string, string][] = [
   ['Monthly', 'Monthly'],
-  ['SemiMonthly', 'Twice a month'],
-  ['Biweekly', 'Every two weeks'],
-  ['Weekly', 'Weekly'],
 ];
 const LANGUAGES: [string, string][] = [
   ['en', 'English'],
@@ -66,13 +64,14 @@ const TIMEZONES = [
 ];
 const CURRENCIES = ['SAR', 'AED', 'QAR', 'KWD', 'BHD', 'OMR', 'USD', 'EUR', 'GBP', 'INR', 'EGP'];
 
-type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization';
+type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization' | 'benefits';
 
 
 const SETUP_STEPS = [
   { title: 'Company details', description: 'Your organization at a glance', heading: 'Start with your company', help: 'Tell us about your organization. Your legal entity, country, currency and industry are required to prepare your draft.' },
   { title: 'Working week', description: 'Schedules, attendance and leave', heading: 'How does your team work?', help: 'Choose the working arrangements your team uses. You can review the proposed policies before applying them.' },
   { title: 'People & pay', description: 'Pay structure and approvals', heading: 'Set your people and pay preferences', help: 'These choices shape your draft. Check them against your company policies before continuing.' },
+  { title: 'Grades & benefits', description: 'Salary bands and benefit plans', heading: 'Configure your grades and benefits', help: 'Use your established company policy or review an AI-assisted grade draft.' },
   { title: 'Review & create', description: 'Choose, preview and apply', heading: 'Choose what to include', help: 'Generate a draft, review the proposed records, then apply when you are ready.' },
 ];
 const APPROVAL_MODELS = [['DepartmentHead', 'Department head, then HR'], ['SupervisorFirst', 'Supervisor, department head, then HR']];
@@ -115,9 +114,10 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const [defaultLanguage, setDefaultLanguage] = useState('en');
   const [sections, setSections] = useState<Record<SectionKey, boolean>>({
     entity: true, org: true, leave: true, leavePolicies: true, shifts: true,
-    attendance: true, payroll: true, holidays: true, governance: true, localization: true,
+    attendance: true, payroll: true, holidays: true, governance: true, localization: true, benefits: true,
   });
 
+  const [configuration, setConfiguration] = useState<SetupConfiguration>({ attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], grades: null, leavePolicies: null, benefitPlans: [] });
   const [step, setStep] = useState(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -155,7 +155,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   }, [country, currency, industry, size, legalEntityName, branchCity, operatingModel, payrollModel,
     approvalModel, strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
     notes, workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays,
-    workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage, sections]);
+    workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage, sections, configuration]);
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
@@ -178,11 +178,23 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const setAllSections = (value: boolean) =>
     setSections({
       entity: value, org: value, leave: value, leavePolicies: value, shifts: value,
-      attendance: value, payroll: value, holidays: value, governance: value, localization: value,
+      attendance: value, payroll: value, holidays: value, governance: value, localization: value, benefits: value,
     });
-  const sectionCount = 10;
+  const sectionCount = 11;
 
   const generate = async () => {
+    if (!configuration.attendanceMethods?.length || !configuration.overtimeModes?.length) {
+      setError(t('Select at least one time-recording method and overtime option.')); setStep(1); return;
+    }
+    if (configuration.grades?.some(g => !g.code.trim() || !g.name.trim() || !Number.isFinite(g.minSalary + g.midSalary + g.maxSalary) || g.minSalary < 0 || g.minSalary > g.midSalary || g.midSalary > g.maxSalary)) {
+      setError(t('Complete each grade and keep minimum salary at or below midpoint and maximum.')); setStep(3); return;
+    }
+    if (configuration.benefitPlans?.some(b => !b.code.trim() || !b.name.trim() || !b.planType.trim() || !b.effectiveFrom || (b.effectiveTo && b.effectiveTo < b.effectiveFrom))) {
+      setError(t('Complete each benefit plan and check its effective dates.')); setStep(3); return;
+    }
+    if (configuration.leavePolicies?.some(p => !p.name.trim() || !p.leaveTypeCode.trim() || !Number.isFinite(p.annualEntitlementDays) || p.annualEntitlementDays < 0)) {
+      setError(t('Complete each leave policy name, type and entitlement.')); setStep(1); return;
+    }
     if (!legalEntityName.trim()) { setError('Choose an existing legal entity or enter its registered name.'); return; }
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
     if (!country) { setError('Pick the country this workspace operates in — the statutory defaults, holidays and working week all follow it.'); return; }
@@ -216,9 +228,11 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
         payCycle,
         timeZone: timeZone || undefined,
         defaultLanguage,
+        configuration: { ...configuration, grades: configuration.grades?.map(g => ({ ...g, currency })) ?? configuration.grades, benefitPlans: configuration.benefitPlans?.map(b => ({ ...b, currency, gradeCodes: b.gradeCodes.map(code => code.trim()).filter(Boolean) })) },
       };
       const r = await setupAssistantApi.preview(profile);
       if (revision !== profileRevision.current) return;
+      if (r.configurationVersion !== 1) { setError(t('The setup service needs an update to support these policy settings. Your entries are preserved; no configuration has been applied.')); return; }
       setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
       requestAnimationFrame(() => headingRef.current?.focus());
     } catch (e: unknown) {
@@ -287,7 +301,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     // The multipliers are rows of their own once applied, so they count as items here too —
     // otherwise the button promises fewer than the apply writes.
     (draft.overtimePolicy ? 1 + draft.overtimePolicy.multipliers.length : 0) +
-    (draft.localization ? 1 : 0)
+    (draft.localization ? 1 : 0) + (draft.benefitPlans?.length ?? 0)
     : 0;
 
   if (done) {
@@ -318,12 +332,12 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           <nav aria-label="Company setup steps">
             <ol className="grid grid-cols-2 gap-1.5 lg:grid-cols-1">
               {SETUP_STEPS.map((item, index) => (
-                <li key={item.title}>
+                <li key={t(item.title)}>
                   <button type="button" onClick={() => goToStep(index)} disabled={loading || applying}
                     aria-current={step === index ? 'step' : undefined}
                     className={`flex w-full items-start gap-3 rounded-lg px-3 py-3 text-start transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
                     <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${step === index ? 'border-sapphire bg-sapphire text-white' : 'border-slate-300 dark:border-slate-600'}`}>{index + 1}</span>
-                    <span><span className="block text-sm font-semibold">{item.title}</span><span className={`mt-0.5 hidden text-xs leading-5 lg:block ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{item.description}</span></span>
+                    <span><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 lg:block ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
                   </button>
                 </li>
               ))}
@@ -337,8 +351,8 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
         </aside>
         <div className="min-w-0 p-5 sm:p-7">
           <div className="mb-7">
-            <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 3 && draft ? 'Review your setup draft' : SETUP_STEPS[step].heading}</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">{step === 3 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : SETUP_STEPS[step].help}</p>
+            <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 4 && draft ? 'Review your setup draft' : t(SETUP_STEPS[step].heading)}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
           </div>
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
@@ -406,6 +420,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Used for dates and times across your workspace.</span>
                 </label>
               </div>
+              <SetupPolicyEditor area="source" value={configuration} onChange={setConfiguration} currency={currency} />
             </div>
             <div hidden={step !== 1}>
               <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
@@ -423,25 +438,8 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   </select>
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Every leave day and overtime hour is counted against this.</span>
                 </label>
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">How is time recorded?</span>
-                  <select className="select w-full" value={attendanceCapture} onChange={e => { setAttendanceCapture(e.target.value); setDraft(null); }}>
-                    {ATTENDANCE_CAPTURE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                  </select>
-                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Used to propose attendance and lateness settings.</span>
-                </label>
-                <div>
-                  <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Leave balance year</p>
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">Calendar year (1 January)</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">Leave balances currently follow the calendar year.</p>
-                </div>
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Overtime</span>
-                  <select className="select w-full" value={overtimeHandling} onChange={e => { setOvertimeHandling(e.target.value); setDraft(null); }}>
-                    {OVERTIME_HANDLING.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                  </select>
-                </label>
               </div>
+              <div className="mt-6"><SetupPolicyEditor area="work" value={configuration} onChange={setConfiguration} currency={currency} /></div>
             </div>
             <div hidden={step !== 2}>
               <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
@@ -453,17 +451,12 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   </select>
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Helps tailor suggested allowances to your workforce.</span>
                 </label>
-                <div>
-                  <p className="mb-1.5 text-sm font-medium text-slate-700 dark:text-slate-300">Pay structure in this draft</p>
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">Salary grades</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">The starter configuration uses salary grades. Review the proposed bands and pay components before applying.</p>
-                </div>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Pay cycle</span>
                   <select className="select w-full" value={payCycle} onChange={e => { setPayCycle(e.target.value); setDraft(null); }}>
                     {PAY_CYCLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                   </select>
-                  <span className="mt-1 block text-xs leading-5 text-slate-600 dark:text-slate-400">A drafting preference. Payroll periods are created separately.</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Salary amounts currently use a monthly basis. Custom pay calendars require payroll conversion support and cannot be activated here yet.')}</span>
                 </label>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -510,8 +503,10 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   ))}
                 </div>
               </details>
+              <SetupPolicyEditor area="governance" value={configuration} onChange={setConfiguration} currency={currency} />
             </div>
-            <div hidden={step !== 3}>
+            <div hidden={step !== 3}><SetupPolicyEditor area="rewards" value={configuration} onChange={setConfiguration} currency={currency} releaseA={releaseA} /></div>
+            <div hidden={step !== 4}>
               <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-5 dark:border-white/10">
                 <div className="flex items-start gap-3">
                   <Building2 className="mt-1 h-5 w-5 shrink-0 text-slate-500" aria-hidden="true" />
@@ -537,7 +532,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                       ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
                       ['shifts', 'Shifts & working week'], ['attendance', 'Attendance & overtime'],
                       ['payroll', 'Payroll & statutory'], ['holidays', 'Public holidays'],
-                      ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'],
+                      ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'], ['benefits', 'Benefits'],
                     ] as [SectionKey, string][]).map(([k, label]) => (
                       <label key={k}
                         className={`flex cursor-pointer items-center gap-2 border-b border-slate-100 py-3 text-sm transition dark:border-white/10 ${sections[k]
@@ -559,7 +554,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
             </div>
           </fieldset>
           {/* Preview */}
-          {step === 3 && draft && (
+          {step === 4 && draft && (
             <fieldset disabled={applying || loading} className="mt-6 min-w-0 space-y-4">
               {/* Draft-only banner */}
               <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
@@ -568,6 +563,8 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   Company-specific records will use <span className="font-semibold text-slate-900 dark:text-white">{legalEntityName}</span>. Shared policies and master data apply across the workspace. Review all {totalItems} proposed items before applying.
                 </p>
               </div>
+
+              {!!draft.benefitPlans?.length && <section className="rounded-lg border border-slate-200 p-4 dark:border-white/10" aria-label={t('Benefits')}><h3 className="text-base font-semibold">{t('Benefits')}</h3><div className="mt-3 space-y-3">{draft.benefitPlans.map((plan, i) => <div key={i} className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 py-3 dark:border-white/10"><div><p className="text-sm font-semibold"><bdi>{plan.name}</bdi></p><p className="text-xs text-slate-500"><bdi>{plan.code}</bdi> · <bdi>{plan.currency}</bdi> · <bdi>{plan.effectiveFrom}</bdi>{plan.effectiveTo && <> – <bdi>{plan.effectiveTo}</bdi></>} · <bdi>{plan.gradeCodes.join(', ') || t('All grades')}</bdi></p></div><button type="button" className="btn-secondary" onClick={() => removeAt('benefitPlans', i)}>{t('Remove benefit')}</button></div>)}</div></section>}
 
               {/* Provenance: how the draft was generated (surfaces engine + genNotes, incl. the deterministic-template note) */}
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
@@ -676,13 +673,18 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               <DraftSection title="Leave Entitlement"
                 rows={draft.leavePolicies.map((x, i) => ({
                   code: x.leaveTypeCode,
-                  desc: `${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
+                  desc: `${x.name} · ${[x.gradeCode, x.departmentCode, x.employmentType].filter(Boolean).join(' / ') || t('All employees in this company')} · ${x.proratePartialMonths && x.accrualMethod === 'Monthly' ? t('Partial months prorated') + ' · ' : ''}${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
                     ` · ${x.payrollImpact === 'Unpaid' ? 'unpaid' : 'full pay'}` +
                     `${x.noticeRequiredDays > 0 ? ` · ${x.noticeRequiredDays}d notice` : ''}` +
                     `${x.appliesOnProbation ? ' · available on probation' : ''}`,
                   fields: [
+                    txt(t('Policy name'), x.name, v => patch('leavePolicies', i, { name: v })),
+                    txt(t('Grade code (optional)'), x.gradeCode ?? '', v => patch('leavePolicies', i, { gradeCode: v })),
+                    txt(t('Department code (optional)'), x.departmentCode ?? '', v => patch('leavePolicies', i, { departmentCode: v })),
+                    txt(t('Employment type (optional)'), x.employmentType ?? '', v => patch('leavePolicies', i, { employmentType: v })),
+                    ...(x.accrualMethod === 'Monthly' ? [boolf(t('Prorate partial months by calendar days employed'), x.proratePartialMonths ?? false, v => patch('leavePolicies', i, { proratePartialMonths: v }))] : []),
                     numf('Days per year', x.annualEntitlementDays, v => patch('leavePolicies', i, { annualEntitlementDays: v }), 0, 365, 0.5),
-                    selectf('Accrual', x.accrualMethod, ['Yearly', 'Monthly'], v => patch('leavePolicies', i, { accrualMethod: v })),
+                    selectf('Accrual', x.accrualMethod, ['Yearly', 'Monthly'], v => patch('leavePolicies', i, { accrualMethod: v, proratePartialMonths: v === 'Monthly' && x.proratePartialMonths })),
                     numf('Notice days', x.noticeRequiredDays, v => patch('leavePolicies', i, { noticeRequiredDays: v }), 0, 365),
                     numf('Max per request', x.maximumDaysPerRequest, v => patch('leavePolicies', i, { maximumDaysPerRequest: v }), 0, 365),
                     boolf('Encashable', x.encashmentAllowed, v => patch('leavePolicies', i, { encashmentAllowed: v })),
@@ -863,8 +865,8 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
             </fieldset>
           )}
           <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5 dark:border-white/10">
-            {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">Step 1 of 4</span>}
-            {step < 3 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
+            {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">{t('Step 1 of 5')}</span>}
+            {step < 4 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
               <div className="flex flex-wrap items-center gap-3">
                 <button type="button" className={draft ? 'btn-secondary' : 'btn-primary'} onClick={generate}
                   disabled={loading || applying || selectedCount === 0 || !legalEntityName.trim() || !industry.trim() || !country || !currency}>
@@ -876,7 +878,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               </div>
             )}
           </div>
-          {step === 3 && <p role="status" className="mt-3 text-xs text-slate-600 dark:text-slate-400">{selectedCount === 0 ? 'Select at least one section to generate a draft.' : draft && totalItems === 0 ? 'There are no items left to apply. Regenerate your draft to start again.' : 'Your workspace changes only when you choose Apply.'}</p>}
+          {step === 4 && <p role="status" className="mt-3 text-xs text-slate-600 dark:text-slate-400">{selectedCount === 0 ? 'Select at least one section to generate a draft.' : draft && totalItems === 0 ? 'There are no items left to apply. Regenerate your draft to start again.' : 'Your workspace changes only when you choose Apply.'}</p>}
 
         </div>
       </div>

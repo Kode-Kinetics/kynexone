@@ -113,7 +113,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
             await using var db = fixture.CreateDb();
             var controller = new SetupAssistantController(db, new NoModel(), new AuditService(db))
             {
-                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(seed.TenantId, "HR Manager", "organization.setup.apply") } },
+                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(seed.TenantId, "HR Manager", "organization.setup.apply", "organization.write") } },
             };
             var draft = SetupDraft.Empty() with
             {

@@ -54,6 +54,7 @@ public sealed class SetupAssistantApplyGateTests
                     {
                         new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "organization.setup.apply"),
+                        new Claim("permission", "organization.write"),
                         new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(scopedTo is null
                             ? new { v = 2, m = "group", c = Array.Empty<Guid>() }
                             : new { v = 2, m = "companies", c = scopedTo })),

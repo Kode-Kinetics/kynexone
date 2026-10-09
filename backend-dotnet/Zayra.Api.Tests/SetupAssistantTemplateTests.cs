@@ -846,17 +846,12 @@ public class SetupAssistantTemplateTests
     // ── Pay cycle & workforce mix ───────────────────────────────────────────
 
     [Fact]
-    public async Task PayCycle_TravelsWithEveryPayComponent()
+    public async Task NonMonthlyPayCycle_IsRefusedUntilSalaryWriterConvertsFrequency()
     {
-        // The ladder is monthly; paying a month's salary weekly is the failure this prevents.
         var monthly = await Generate(Profile(payCycle: "Monthly"));
-        var weekly = await Generate(Profile(payCycle: "Weekly"));
-
-        weekly.Draft.GradePayComponents.Should().OnlyContain(x => x.Frequency == "Weekly");
-        var monthlyBasic = monthly.Draft.GradePayComponents.First(x => x.ComponentCode == "BASIC").Amount;
-        var weeklyBasic = weekly.Draft.GradePayComponents.First(x => x.ComponentCode == "BASIC").Amount;
-        weeklyBasic.Should().BeLessThan(monthlyBasic);
-        weekly.Notes.Should().Contain(n => n.Contains("per-run amount"));
+        monthly.Draft.GradePayComponents.Should().OnlyContain(x => x.Frequency == "Monthly");
+        var weekly = () => Generate(Profile(payCycle: "Weekly"));
+        await weekly.Should().ThrowAsync<ArgumentException>().WithMessage("*monthly salary amounts*");
     }
 
     [Theory]
@@ -872,14 +867,13 @@ public class SetupAssistantTemplateTests
     // ── Employment terms → tenant rules ─────────────────────────────────────
 
     [Fact]
-    public async Task ProbationAndNotice_BecomeRulesOnlyWhenChosen()
+    public async Task ProbationAndNotice_DoNotCreateRulesWithoutRuntimeConsumers()
     {
-        var chosen = await Generate(Profile(probationMonths: 3, noticePeriodDays: 30, leaveYearBasis: "JoiningDate"));
+        var chosen = await Generate(Profile(probationMonths: 3, noticePeriodDays: 30, leaveYearBasis: "Calendar"));
         var untouched = await Generate(Profile());
 
-        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "employment.probation_months" && r.RuleValue == "3");
-        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "employment.notice_period_days" && r.RuleValue == "30");
-        chosen.Draft.StatutoryRules.Should().Contain(r => r.RuleKey == "leave.year_basis" && r.RuleValue == "JoiningDate");
+        chosen.Draft.StatutoryRules.Should().NotContain(r => r.RuleKey.StartsWith("employment.") || r.RuleKey == "leave.year_basis");
+        chosen.Notes.Should().Contain(n => n.Contains("not applied by this setup"));
 
         // An untouched field must not become a rule that says "0 days' notice".
         untouched.Draft.StatutoryRules.Should().NotContain(r => r.RuleKey.StartsWith("employment."));

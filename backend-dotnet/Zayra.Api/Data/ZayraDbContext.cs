@@ -2161,6 +2161,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("leave_policies");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.AnnualEntitlementDays).HasPrecision(6,2);
+            entity.Property(x => x.ProratePartialMonths).HasDefaultValue(false);
             entity.Property(x => x.CarryForwardMax).HasPrecision(6,2);
             entity.Property(x => x.EncashmentMaxDays).HasPrecision(6,2);
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);

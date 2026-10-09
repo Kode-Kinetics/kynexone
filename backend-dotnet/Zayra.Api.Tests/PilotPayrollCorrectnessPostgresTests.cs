@@ -1007,6 +1007,7 @@ public class PilotPayrollCorrectnessPostgresTests
         new Claim("permission", "payroll.read"),
         new Claim("permission", "payroll.write"),
         new Claim("permission", "payroll.rates.statutory_override"),
+        new Claim("permission", "payroll.rates.manage"),
         new Claim("permission", "organization.setup.apply"),
     }, "Test"));
 

@@ -19,7 +19,8 @@ public sealed record SetupRequester(Guid TenantId, Guid? UserId, string UserRole
 /// </summary>
 public sealed record SetupSections(
     bool Org, bool Leave, bool Shifts, bool Payroll, bool Entity, bool Governance,
-    bool LeavePolicies = true, bool Holidays = true, bool Attendance = true, bool Localization = true);
+    bool LeavePolicies = true, bool Holidays = true, bool Attendance = true, bool Localization = true,
+    bool Benefits = false);
 
 public sealed record CompanyProfile(
     string CountryCode,   // 2- or 3-letter (e.g. "SA"/"SAU"); normalised by the service
@@ -38,9 +39,8 @@ public sealed record CompanyProfile(
     SetupSections Sections,
 
     // ── Operating choices ────────────────────────────────────────────────────
-    // Each one lands in a column the product already has and the setup previously left at its
-    // construction-time default: a Saudi tenant was written America/New_York + MM/DD/YYYY, and
-    // its leave types were created granting nobody any days at all.
+    // Supported choices map to runtime policy fields. Legacy employment-term inputs remain
+    // context only; they are not saved as rules with no runtime consumer.
     //
     // Optional with null/0 defaults so callers built before they existed still compile; the
     // service reads every one of them through a Resolve* helper that supplies the country- or
@@ -53,7 +53,7 @@ public sealed record CompanyProfile(
     /// <summary>CountryDefault | Fri-Sat | Sat-Sun | Fri | Sun — the REST days, not the working ones.</summary>
     string? WeekendPattern = null,
 
-    /// <summary>Calendar | JoiningDate | Fiscal — recorded as the leave.year_basis rule.</summary>
+    /// <summary>Only Calendar is supported. Other leave-year engines are refused.</summary>
     string? LeaveYearBasis = null,
 
     /// <summary>0 = unset; the service then uses the country default.</summary>
@@ -74,14 +74,30 @@ public sealed record CompanyProfile(
     /// rounding an honest policy can claim for that capture method.</summary>
     string? AttendanceCapture = null,
 
-    /// <summary>Monthly | SemiMonthly | Biweekly | Weekly — the pay component frequency.</summary>
+    /// <summary>Only Monthly is supported: the employee salary writer uses monthly amounts.</summary>
     string? PayCycle = null,
 
     /// <summary>IANA zone. Empty = derive from the country.</summary>
     string? TimeZone = null,
 
     /// <summary>en | ar | bilingual. Empty = derive from the country.</summary>
-    string? DefaultLanguage = null);
+    string? DefaultLanguage = null,
+    SetupConfiguration? Configuration = null);
+
+/// <summary>Explicit customer choices override generated suggestions. Null lists ask for a
+/// suggestion; empty lists deliberately exclude that kind of record. Source text is context,
+/// never executable instructions or an authority for statutory values.</summary>
+public sealed record SetupConfiguration(
+    List<string>? AttendanceMethods = null,
+    DraftAttendancePolicy? AttendancePolicy = null,
+    List<string>? OvertimeModes = null,
+    DraftOvertimePolicy? OvertimePolicy = null,
+    List<DraftGrade>? Grades = null,
+    List<DraftLeavePolicy>? LeavePolicies = null,
+    DraftHrConfig? HrConfig = null,
+    List<DraftBenefitPlan>? BenefitPlans = null,
+    string? PolicySourceText = null,
+    bool UsePolicySourceForAi = false);
 
 // ── Draft items (mirror the real entities but only the safe, configurable fields) ──
 
@@ -108,7 +124,15 @@ public sealed record DraftLeavePolicy(
     string Name, string LeaveTypeCode, decimal AnnualEntitlementDays, string AccrualMethod,
     bool EncashmentAllowed, decimal EncashmentMaxDays,
     decimal MinimumDaysPerRequest, decimal MaximumDaysPerRequest, int NoticeRequiredDays,
-    bool WeekendsIncluded, bool PublicHolidaysIncluded, bool AppliesOnProbation, string PayrollImpact);
+    bool WeekendsIncluded, bool PublicHolidaysIncluded, bool AppliesOnProbation, string PayrollImpact,
+    bool ProratePartialMonths = false, string? GradeCode = null,
+    string? DepartmentCode = null, string? EmploymentType = null);
+
+/// <summary>A plan and its grade eligibility, scoped to the reviewed legal entity on apply.
+/// This does not enroll employees or invent contribution amounts.</summary>
+public sealed record DraftBenefitPlan(
+    string Code, string Name, string PlanType, string Currency, string EffectiveFrom,
+    string? EffectiveTo = null, bool RequiresEnrollment = true, List<string>? GradeCodes = null);
 
 /// <summary><paramref name="Date"/> is yyyy-MM-dd. Only holidays with a fixed Gregorian date are
 /// ever drafted; moon-sighting holidays are named in a note instead of being given an invented date.</summary>
@@ -150,14 +174,15 @@ public sealed record SetupDraft(
     DraftHolidayCalendar? HolidayCalendar,
     DraftAttendancePolicy? AttendancePolicy,
     DraftOvertimePolicy? OvertimePolicy,
-    DraftLocalization? Localization)
+    DraftLocalization? Localization,
+    List<DraftBenefitPlan>? BenefitPlans = null)
 {
     public static SetupDraft Empty() =>
         new(new(), new(), new(), new(), new(), new(), new(), new(), null, new(), new(), null, null,
             new(), null, null, null, null);
 }
 
-public sealed record SetupPreviewResult(SetupDraft Draft, List<string> Notes, string Engine);
+public sealed record SetupPreviewResult(SetupDraft Draft, List<string> Notes, string Engine, int ConfigurationVersion = 1);
 
 public interface ISetupAssistantService
 {

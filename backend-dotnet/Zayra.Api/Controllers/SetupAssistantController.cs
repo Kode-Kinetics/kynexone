@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -16,6 +18,7 @@ using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Setup;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -46,7 +49,21 @@ public class SetupAssistantController : ControllerBase
         // against anyone. Refuse rather than spend tokens on an unattributable request.
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId))
             return Unauthorized(new { message = "Tenant context is missing." });
+        var inputProblems = SetupAssistantService.ValidateConfiguration(profile);
+        if (inputProblems.Count > 0) return RefuseConfiguration(inputProblems);
         var result = await _assistant.GenerateAsync(new SetupRequester(tenantId, GetUserId(), CallerRole()), profile, ct);
+        if (profile.Configuration is not null)
+        {
+            var request = new ApplySetupRequest(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName);
+            var referenceProblems = await ValidatePolicyReferencesAsync(tenantId, request, null, preview: true, ct);
+            if (referenceProblems.Count > 0) return RefuseConfiguration(referenceProblems);
+        }
+        if (result.Draft.AttendancePolicy is not null || result.Draft.OvertimePolicy is not null)
+        {
+            var branch = await ResolveSetupBranchAsync(tenantId, new(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName), null, ct);
+            if (branch.Problem is not null) return RefuseConfiguration([branch.Problem]);
+            result = result with { Notes = result.Notes.Append($"Attendance and overtime policies are assigned to branch '{branch.Code}' of the reviewed legal entity.").ToList() };
+        }
         return Ok(result);
     }
 
@@ -55,17 +72,64 @@ public class SetupAssistantController : ControllerBase
     public async Task<IActionResult> Apply([FromBody] ApplySetupRequest req, CancellationToken ct)
     {
         if (!HasPermission("organization.setup.apply")) return Forbid();
+        if (!_db.Database.IsRelational()) return await ApplyCore(req, ct);
+        // Setup policies have composite scopes rather than a single natural unique key. Serialize
+        // setup writers for this tenant, then re-read all gates INSIDE the transaction. A retry
+        // revalidates committed rows and cannot create a competing active leave policy.
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            if (_db.Database.IsNpgsql())
+            {
+                var key = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"SETUP:{GetTenantId():N}"));
+                var lockId = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(key.AsSpan(0, 8));
+                await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({lockId})", ct);
+            }
+            var result = await ApplyCore(req, ct);
+            if (result is OkObjectResult) await tx.CommitAsync(ct);
+            else { await tx.RollbackAsync(ct); _db.ChangeTracker.Clear(); }
+            return result;
+        });
+    }
+
+    private async Task<IActionResult> ApplyCore(ApplySetupRequest req, CancellationToken ct)
+    {
+        if (!HasPermission("organization.setup.apply")) return Forbid();
+        if (req.Draft is null) return BadRequest(new { message = "A reviewed draft is required." });
         // One spelling of the country everywhere it is written (company, branches, leave policies, calendars, rules):
         // the forms store ISO codes upper-case, and "sa" would otherwise sit beside "SA".
-        req = req with { CountryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
+        req = req with { CountryCode = CountryCodeStandard.NormalizeToIso2(req.CountryCode) ?? (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
         var tenantId = GetTenantId();
         var d = req.Draft;
+        var reviewedDraftBytes = JsonSerializer.SerializeToUtf8Bytes(d);
+        if (reviewedDraftBytes.Length > 131072)
+            return RefuseConfiguration(["The reviewed draft exceeds the 128 KiB setup audit limit. Apply smaller sections."]);
+        var values = SetupAssistantService.ValidateDraftValues(d, req.CurrencyCode);
+        if (values.Count > 0) return RefuseConfiguration(values);
+        if (d.LeavePolicies.Count > 0 && !HasPermission("leave.policy_manage")
+            || d.OvertimePolicy is not null && !HasPermission("overtime.policy_manage")
+            || (d.HrConfig is not null || d.Grades.Count > 0 || d.GradePayComponents.Count > 0) && !HasPermission("organization.write")
+            || d.PayComponents.Count > 0 && !HasPermission("payroll.structure_manage")
+            || d.StatutoryRules.Count > 0 && !HasPermission("payroll.rates.manage")
+            || d.BenefitPlans is { Count: > 0 } && !HasPermission("employees.approve")) return Forbid();
+        foreach (var rule in d.StatutoryRules)
+        {
+            if (GosiStatutoryValues.TenantWriteRefusal(rule.RuleKey) is { } statutoryRefusal)
+                return UnprocessableEntity(statutoryRefusal);
+            if (StatutoryValueUnits.Validate(rule.RuleKey, rule.DataType, rule.RuleValue) is { } unitError)
+                return BadRequest(StatutoryValueUnits.Refusal(unitError));
+            if (rule.RuleKey is "employment.probation_months" or "employment.notice_period_days" or "payroll.pay_cycle" or "leave.year_basis")
+                return RefuseConfiguration([ $"Rule '{rule.RuleKey}' has no runtime consumer and cannot be applied. Configure supported policy fields instead." ]);
+        }
         // Before anything is written: a reviewed draft can still have been edited below the Saudi
         // statutory floor, and applying half of it first would leave the tenant half-configured.
         if (await RefuseBelowStatutoryLeaveFloorAsync(tenantId, req, ct) is { } floorRefusal)
             return floorRefusal;
         // The Setup forms' gates, before anything is written (P1, the same class as the org-structure import).
         var gate = await EvaluateOrgGatesAsync(tenantId, req, ct);
+        gate.Problems.AddRange(await ValidatePolicyReferencesAsync(tenantId, req, gate.Company, preview: false, ct));
         if (gate.Problems.Count > 0)
             return UnprocessableEntity(new
             {
@@ -77,6 +141,7 @@ public class SetupAssistantController : ControllerBase
         void Bump(string k, int n) => counts[k] = counts.GetValueOrDefault(k) + n;
         // One audit row per organisation entity, with the Setup forms' action names, saved with the data.
         var audited = new List<(string Action, string Entity, Guid Id, string Key)>();
+        var auditChanges = new Dictionary<Guid, object>();
         void Audit(string action, string entity, Guid id, string key) => audited.Add((action, entity, id, key));
 
         // ── Entity context: company → branch. Config rows are explicitly wired
@@ -143,7 +208,8 @@ public class SetupAssistantController : ControllerBase
                 Bump("branches", 1);
             }
         }
-        var defaultBranch = branchByCode.Values.FirstOrDefault(x => company is null || x.CompanyId == company.Id);
+        var defaultBranch = gate.DefaultBranchCode is { } defaultCode && branchByCode.TryGetValue(defaultCode.ToUpperInvariant(), out var chosenBranch)
+            ? chosenBranch : null;
 
         // ── Org: departments → grades/pay scale → cost centers → designations ─
         var existingDept = await _db.Departments.Where(x => x.TenantId == tenantId)
@@ -167,6 +233,8 @@ public class SetupAssistantController : ControllerBase
         {
             if (gradeByCode.TryGetValue(g.Code.ToUpperInvariant(), out var existing))
             {
+                var before = new DraftGrade(existing.Code, existing.Name, existing.Band, existing.Level,
+                    existing.MinSalary, existing.MidSalary, existing.MaxSalary, existing.Currency);
                 existing.Name = g.Name;
                 existing.Band = g.Band;
                 existing.Level = g.Level;
@@ -178,6 +246,8 @@ public class SetupAssistantController : ControllerBase
                 existing.IsActive = true;
                 existing.UpdatedAtUtc = DateTime.UtcNow;
                 Audit("organization.grade_updated", nameof(Grade), existing.Id, g.Code);
+                auditChanges[existing.Id] = new { before, after = new DraftGrade(existing.Code, existing.Name,
+                    existing.Band, existing.Level, existing.MinSalary, existing.MidSalary, existing.MaxSalary, existing.Currency) };
             }
             else
             {
@@ -221,13 +291,13 @@ public class SetupAssistantController : ControllerBase
         {
             if (!gradeByCode.TryGetValue(component.GradeCode.ToUpperInvariant(), out var grade)) continue;
             var exists = await _db.GradePayScaleComponents.AnyAsync(x =>
-                x.TenantId == tenantId && x.GradeId == grade.Id && x.ComponentCode == component.ComponentCode, ct);
+                x.TenantId == tenantId && x.GradeId == grade.Id && x.ComponentCode.ToUpper() == component.ComponentCode.ToUpper(), ct);
             if (exists) continue;
             var payComponent = new GradePayScaleComponent
             {
                 TenantId = tenantId,
                 GradeId = grade.Id,
-                ComponentCode = component.ComponentCode,
+                ComponentCode = component.ComponentCode.ToUpperInvariant(),
                 ComponentName = component.ComponentName,
                 ComponentType = component.ComponentType,
                 CalculationType = component.CalculationType,
@@ -296,15 +366,21 @@ public class SetupAssistantController : ControllerBase
         // ── Leave entitlement ────────────────────────────────────────────────
         // The days themselves. Without these the leave types above exist and grant nobody
         // anything, because LeaveType carries no entitlement — LeavePolicy does.
-        var existingPolicyKeys = (await _db.LeavePolicies.Where(x => x.TenantId == tenantId)
-            .Select(x => new { x.LeaveTypeId, x.Name }).ToListAsync(ct))
-            .Select(x => $"{x.LeaveTypeId}|{x.Name.ToUpperInvariant()}").ToHashSet();
+        var policyCompanyId = company?.Id;
+        var savedPolicies = await _db.LeavePolicies.Where(x => x.TenantId == tenantId && x.CompanyId == policyCompanyId).ToListAsync(ct);
+        var savedEligibility = await _db.LeavePolicyEligibilities.Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(ct);
         foreach (var lp in d.LeavePolicies)
         {
-            if (!leaveByCode.TryGetValue((lp.LeaveTypeCode ?? "").ToUpperInvariant(), out var leaveType)) continue;
+            var leaveType = leaveByCode[lp.LeaveTypeCode.ToUpperInvariant()];
             var policyName = string.IsNullOrWhiteSpace(lp.Name) ? $"{leaveType.NameEn} Policy" : lp.Name.Trim();
-            if (!existingPolicyKeys.Add($"{leaveType.Id}|{policyName.ToUpperInvariant()}")) continue;
-            _db.LeavePolicies.Add(new LeavePolicy
+            Guid? gradeId = string.IsNullOrWhiteSpace(lp.GradeCode) ? null : gradeByCode[lp.GradeCode.ToUpperInvariant()].Id;
+            Guid? departmentId = string.IsNullOrWhiteSpace(lp.DepartmentCode) ? null : existingDept[lp.DepartmentCode.ToUpperInvariant()];
+            var employmentType = (lp.EmploymentType ?? string.Empty).Trim();
+            var existingPolicy = savedPolicies.FirstOrDefault(p => p.LeaveTypeId == leaveType.Id
+                && string.Equals(p.Name, policyName, StringComparison.OrdinalIgnoreCase)
+                && SameLeaveScope(p, savedEligibility, gradeId, departmentId, employmentType, req.CountryCode ?? string.Empty, company?.Id));
+            if (existingPolicy is not null) continue;
+            var policy = new LeavePolicy
             {
                 TenantId = tenantId,
                 Name = policyName,
@@ -314,6 +390,8 @@ public class SetupAssistantController : ControllerBase
                 AppliesOnProbation = lp.AppliesOnProbation,
                 AnnualEntitlementDays = Math.Clamp(lp.AnnualEntitlementDays, 0m, 365m),
                 AccrualMethod = string.Equals(lp.AccrualMethod, "Monthly", StringComparison.OrdinalIgnoreCase) ? "Monthly" : "Yearly",
+                ProratePartialMonths = lp.ProratePartialMonths,
+                EmploymentType = employmentType,
                 // Both fixed at zero, not taken from the draft. LeavePoliciesController refuses any
                 // non-zero cap or expiry because this build has no year-end rollover to consult one;
                 // writing one here would be a way round that refusal, not a feature.
@@ -331,8 +409,52 @@ public class SetupAssistantController : ControllerBase
                 // permission, which is the whole of this screen's job. Leaving it Draft would mean
                 // nobody's leave worked until they opened another screen and said yes again.
                 Status = "Active",
-            });
+            };
+            _db.LeavePolicies.Add(policy);
+            savedPolicies.Add(policy);
+            if (gradeId.HasValue || departmentId.HasValue)
+            {
+                var eligibility = new LeavePolicyEligibility
+                {
+                    TenantId = tenantId, LeavePolicyId = policy.Id, CompanyId = company?.Id,
+                    CountryCode = req.CountryCode ?? string.Empty, GradeId = gradeId, DepartmentId = departmentId,
+                    EmploymentType = employmentType, IsActive = true,
+                };
+                _db.LeavePolicyEligibilities.Add(eligibility);
+                savedEligibility.Add(eligibility);
+            }
+            Audit("leave.policy_created", nameof(LeavePolicy), policy.Id, policy.Name);
             Bump("leavePolicies", 1);
+        }
+
+        // ── Company benefit plans and grade eligibility ──────────────────────
+        // All dates, canonical references, permissions and release-A gates were checked before
+        // tracking any write. Reapplying an identical plan skips it; changed plans are refused.
+        var existingBenefitCodes = (await _db.BenefitPlans.Where(b => b.TenantId == tenantId && b.CompanyId == policyCompanyId)
+            .Select(b => b.Code).ToListAsync(ct)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var benefit in d.BenefitPlans ?? [])
+        {
+            if (!existingBenefitCodes.Add(benefit.Code)) continue;
+            var plan = new BenefitPlan
+            {
+                TenantId = tenantId, CompanyId = company!.Id, Code = benefit.Code.ToUpperInvariant(),
+                Name = benefit.Name.Trim(), PlanType = benefit.PlanType.Trim(), Currency = benefit.Currency.ToUpperInvariant(),
+                EffectiveFrom = DateOnly.ParseExact(benefit.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                EffectiveTo = string.IsNullOrEmpty(benefit.EffectiveTo) ? null : DateOnly.ParseExact(benefit.EffectiveTo, "yyyy-MM-dd", CultureInfo.InvariantCulture),
+                RequiresEnrollment = benefit.RequiresEnrollment, IsActive = true, CreatedBy = GetUserId(),
+            };
+            _db.BenefitPlans.Add(plan);
+            foreach (var gradeCode in benefit.GradeCodes ?? [])
+                _db.BenefitEligibilityRules.Add(new BenefitEligibilityRule
+                {
+                    TenantId = tenantId, BenefitPlanId = plan.Id, CompanyId = company.Id,
+                    GradeId = gradeByCode[gradeCode.ToUpperInvariant()].Id,
+                    EffectiveFrom = plan.EffectiveFrom, EffectiveTo = plan.EffectiveTo,
+                    IsActive = true, CreatedBy = GetUserId(),
+                });
+            Audit("benefits.plan_created", nameof(BenefitPlan), plan.Id, plan.Code);
+            Bump("benefitPlans", 1);
+            Bump("benefitEligibilityRules", benefit.GradeCodes?.Count ?? 0);
         }
 
         // ── Shifts ───────────────────────────────────────────────────────────
@@ -433,13 +555,13 @@ public class SetupAssistantController : ControllerBase
         {
             var ap = d.AttendancePolicy;
             var existingAttendance = await _db.AttendancePolicies
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == ap.Code, ct);
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code.ToUpper() == ap.Code.ToUpper(), ct);
             if (existingAttendance is null)
             {
-                _db.AttendancePolicies.Add(new AttendancePolicy
+                var policy = new AttendancePolicy
                 {
                     TenantId = tenantId,
-                    Code = ap.Code,
+                    Code = ap.Code.ToUpperInvariant(),
                     Name = ap.Name,
                     BranchId = defaultBranch?.Id,
                     GraceMinutes = Math.Clamp(ap.GraceMinutes, 0, 120),
@@ -453,7 +575,9 @@ public class SetupAssistantController : ControllerBase
                     RequiresOvertimeApproval = ap.RequiresOvertimeApproval,
                     AllowAbsenceToLeaveConversion = ap.AllowAbsenceToLeaveConversion,
                     IsActive = true,
-                });
+                };
+                _db.AttendancePolicies.Add(policy);
+                Audit("attendance.policy_created", nameof(AttendancePolicy), policy.Id, policy.Code);
                 Bump("attendancePolicies", 1);
             }
         }
@@ -463,16 +587,16 @@ public class SetupAssistantController : ControllerBase
         {
             var op = d.OvertimePolicy;
             var overtimePolicy = await _db.OvertimePolicies
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code == op.Code, ct);
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == op.Code.ToUpper(), ct);
             if (overtimePolicy is null)
             {
                 overtimePolicy = new OvertimePolicy
                 {
                     TenantId = tenantId,
-                    Code = op.Code,
+                    Code = op.Code.ToUpperInvariant(),
                     Name = op.Name,
                     BranchId = defaultBranch?.Id,
-                    HourlyRateBasis = string.IsNullOrWhiteSpace(op.HourlyRateBasis) ? "BasicSalary" : op.HourlyRateBasis,
+                    HourlyRateBasis = string.Equals(op.HourlyRateBasis, "GrossSalary", StringComparison.OrdinalIgnoreCase) ? "GrossSalary" : "BasicSalary",
                     StandardMonthlyHours = Math.Clamp(op.StandardMonthlyHours, 1, 400),
                     MinimumMinutes = Math.Clamp(op.MinimumMinutes, 0, 480),
                     MaximumMinutesPerDay = Math.Clamp(op.MaximumMinutesPerDay, 0, 960),
@@ -484,6 +608,7 @@ public class SetupAssistantController : ControllerBase
                     CreatedBy = GetUserId(),
                 };
                 _db.OvertimePolicies.Add(overtimePolicy);
+                Audit("overtime.policy_created", nameof(OvertimePolicy), overtimePolicy.Id, overtimePolicy.Code);
                 Bump("overtimePolicies", 1);
             }
 
@@ -502,7 +627,8 @@ public class SetupAssistantController : ControllerBase
                 {
                     TenantId = tenantId,
                     OvertimePolicyId = overtimePolicy.Id,
-                    DayCategory = m.DayCategory,
+                    DayCategory = string.Equals(m.DayCategory, "Weekend", StringComparison.OrdinalIgnoreCase) ? "Weekend"
+                        : string.Equals(m.DayCategory, "PublicHoliday", StringComparison.OrdinalIgnoreCase) ? "PublicHoliday" : "RegularDay",
                     Multiplier = m.Multiplier,
                     IsActive = true,
                 });
@@ -567,6 +693,7 @@ public class SetupAssistantController : ControllerBase
         if (d.HrConfig is not null)
         {
             var config = await _db.TenantHrConfigs.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            var before = config is null ? null : HrConfigSnapshot(config);
             if (config is null)
             {
                 // Onboarding tenants default to ADVISORY establishment enforcement (budget warns, never
@@ -592,6 +719,8 @@ public class SetupAssistantController : ControllerBase
             config.RequireCostCenterForPayroll = d.HrConfig.RequireCostCenterForPayroll;
             config.RequireGradeForApprovalPolicy = d.HrConfig.RequireGradeForApprovalPolicy;
             config.UpdatedAtUtc = DateTime.UtcNow;
+            Audit("organization.hr_config_updated", nameof(TenantHrConfig), config.Id, "governance");
+            auditChanges[config.Id] = new { before, after = HrConfigSnapshot(config) };
         }
 
         // ── Statutory rules ──────────────────────────────────────────────────
@@ -628,9 +757,13 @@ public class SetupAssistantController : ControllerBase
         var context = Context(tenantId);
         var at = DateTime.UtcNow;
         foreach (var (action, entity, id, key) in audited.DistinctBy(a => (a.Action, a.Id)))
-            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
-                JsonSerializer.Serialize(new { source = "setup_assistant", key })));
-        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, "setup.assistant_applied", "SetupDraft", "bulk", context,
+        {
+            var row = AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
+                JsonSerializer.Serialize(new { source = "setup_assistant", key, change = auditChanges.GetValueOrDefault(id) }));
+            if (entity is not nameof(Grade) and not nameof(GradePayScaleComponent) and not nameof(TenantHrConfig)) row.CompanyId = company?.Id;
+            _db.AuditLogs.Add(row);
+        }
+        var appliedAudit = AuthAuditEntry.Create(Guid.NewGuid(), at, "setup.assistant_applied", "SetupDraft", "bulk", context,
             JsonSerializer.Serialize(new
             {
                 countryCode = req.CountryCode,
@@ -639,49 +772,292 @@ public class SetupAssistantController : ControllerBase
                 applied = counts,
                 total = counts.Values.Sum(),
                 entities = audited.Count,
+                policyContractVersion = 1,
+                reviewedDraftSha256 = Convert.ToHexString(SHA256.HashData(reviewedDraftBytes)),
+                // Bounded typed DTO: no employee data, source document, or AI prompt field exists here.
+                reviewedDraft = d,
                 skipped,
-            })));
-        // The company gate is asked again INSIDE the save's transaction, as the org-structure import does: another
-        // legal entity created between the gate above and this save (a second apply, the form) could otherwise take
-        // the plan's last company or turn a single-company account into two.
+            }));
+        appliedAudit.CompanyId = company?.Id;
+        _db.AuditLogs.Add(appliedAudit);
+        // Recheck creation limits inside the apply transaction immediately before the single save.
         var creatingCompany = company is not null && _db.Entry(company).State == EntityState.Added;
         if (creatingCompany && _db.Database.IsRelational())
         {
-            IActionResult? refusal = null;
-            var strategy = _db.Database.CreateExecutionStrategy();
-            await strategy.ExecuteAsync(async () =>
-            {
-                refusal = null;
-                await using var tx = await _db.Database.BeginTransactionAsync(ct);
-                var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
-                if (!creation.Allowed)
-                {
-                    await tx.RollbackAsync(ct);
-                    refusal = UnprocessableEntity(new
-                    {
-                        error = "setup_apply_refused",
-                        message = "Nothing was applied. " + creation.Message,
-                        problems = new[] { creation.Message },
-                    });
-                    return;
-                }
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-            });
-            if (refusal is not null)
-            {
-                _db.ChangeTracker.Clear();
-                return refusal;
-            }
+            var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+            if (!creation.Allowed) return RefuseConfiguration([creation.Message]);
         }
-        else
-        {
-            await _db.SaveChangesAsync(ct);
-        }
+        await _db.SaveChangesAsync(ct);
         return Ok(new { applied = counts, total = counts.Values.Sum(), skipped });
     }
 
-    private sealed record OrgGateResult(List<string> Problems, Company? Company, bool CreateAsDraft);
+    private sealed record OrgGateResult(List<string> Problems, Company? Company, bool CreateAsDraft, string? DefaultBranchCode = null);
+    private sealed record BranchSelection(string? Code, string? Problem = null);
+
+    private async Task<BranchSelection> ResolveSetupBranchAsync(Guid tenantId, ApplySetupRequest request, Company? company, CancellationToken ct)
+    {
+        if (company is null && !string.IsNullOrWhiteSpace(request.LegalEntityName))
+        {
+            var name = request.LegalEntityName.Trim().ToUpperInvariant();
+            company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tenantId && !c.IsDeleted && c.LegalNameEn.ToUpper() == name, ct);
+        }
+        List<Branch> existing = company is null ? [] : await _db.Branches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.CompanyId == company.Id && !b.IsDeleted && b.IsActive).ToListAsync(ct);
+        var choices = existing.ToDictionary(b => b.Code, b => b.IsHeadOffice, StringComparer.OrdinalIgnoreCase);
+        foreach (var branch in request.Draft.Branches.Where(b => !string.IsNullOrWhiteSpace(b.Code) && !string.IsNullOrWhiteSpace(b.NameEn)))
+            choices[branch.Code] = branch.IsHeadOffice;
+        var requestedHeadOffices = request.Draft.Branches.Where(b => b.IsHeadOffice && !string.IsNullOrWhiteSpace(b.Code)).ToArray();
+        if (requestedHeadOffices.Length == 1) return new(requestedHeadOffices[0].Code);
+        var headOffices = choices.Where(b => b.Value).Select(b => b.Key).ToArray();
+        if (headOffices.Length == 1) return new(headOffices[0]);
+        if (choices.Count == 1) return new(choices.Keys.Single());
+        if (choices.Count == 0) return new(null, request.Draft.AttendancePolicy is not null || request.Draft.OvertimePolicy is not null
+            ? "Add a branch for the reviewed company before configuring attendance or overtime. Setup cannot create an implicit workspace-wide policy." : null);
+        return new(null, "Attendance and overtime need an unambiguous branch. Mark exactly one reviewed branch as head office, or configure branch policies separately.");
+    }
+
+    private static DraftHrConfig HrConfigSnapshot(TenantHrConfig c) => new(
+        c.UseDeptHeadApproval, c.UseHrFinalApproval, c.UseSupervisorBeforeManager, c.AllowDottedLineApproval,
+        c.AutoCreateDeptOnImport, c.AutoCreateDesignationOnImport, c.RequireImportPreviewBeforeCommit,
+        c.AllowCrossDeptManager, c.AllowCrossLocationManager, c.RequireCostCenterForPayroll, c.RequireGradeForApprovalPolicy);
+
+    private static bool SameLeaveScope(LeavePolicy policy, List<LeavePolicyEligibility> eligibility,
+        Guid? gradeId, Guid? departmentId, string employmentType, string country, Guid? companyId)
+    {
+        // Legacy filters represent narrower populations. They are not interchangeable with
+        // a company-wide or canonical-ID rule even when its displayed name is identical.
+        if (policy.BranchId.HasValue || !string.IsNullOrEmpty(policy.DepartmentName) || !string.IsNullOrEmpty(policy.Grade)
+            || !string.IsNullOrEmpty(policy.ContractType) || !string.IsNullOrEmpty(policy.Gender)
+            || !string.IsNullOrEmpty(policy.CountryCode) && CountryCodeStandard.NormalizeToIso2(policy.CountryCode) != CountryCodeStandard.NormalizeToIso2(country)
+            || !string.Equals(policy.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) return false;
+        var rows = eligibility.Where(e => e.LeavePolicyId == policy.Id && e.IsActive).ToArray();
+        if (!gradeId.HasValue && !departmentId.HasValue) return rows.Length == 0;
+        return rows.Length == 1 && rows[0].GradeId == gradeId && rows[0].DepartmentId == departmentId
+            && (rows[0].CompanyId is null || rows[0].CompanyId == companyId) && rows[0].BranchId is null
+            && (string.IsNullOrEmpty(rows[0].CountryCode) || CountryCodeStandard.NormalizeToIso2(rows[0].CountryCode) == CountryCodeStandard.NormalizeToIso2(country))
+            && (string.IsNullOrEmpty(rows[0].EmploymentType) || string.Equals(rows[0].EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase))
+            && string.IsNullOrEmpty(rows[0].ContractType);
+    }
+
+    private UnprocessableEntityObjectResult RefuseConfiguration(IEnumerable<string> problems)
+    {
+        var distinct = problems.Distinct().ToArray();
+        return UnprocessableEntity(new
+        {
+            error = "setup_configuration_invalid",
+            message = "Nothing was applied. " + string.Join(" ", distinct),
+            problems = distinct,
+        });
+    }
+
+    private async Task<List<string>> ValidatePolicyReferencesAsync(
+        Guid tenantId, ApplySetupRequest req, Company? company, bool preview, CancellationToken ct)
+    {
+        var errors = new List<string>();
+        var d = req.Draft;
+        if (d.LeavePolicies.Count > 0 && string.IsNullOrWhiteSpace(req.LegalEntityName))
+            errors.Add("Leave policies require an explicit reviewed legal entity.");
+        if (company is null && !string.IsNullOrWhiteSpace(req.LegalEntityName))
+        {
+            var legalName = req.LegalEntityName.Trim().ToUpperInvariant();
+            company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c =>
+                c.TenantId == tenantId && !c.IsDeleted && c.LegalNameEn.ToUpper() == legalName, ct);
+        }
+        if (company is not null && (d.LeavePolicies.Count > 0 || d.BenefitPlans is { Count: > 0 }))
+        {
+            if (CountryCodeStandard.NormalizeToIso2(company.CountryCode) != CountryCodeStandard.NormalizeToIso2(req.CountryCode)
+                || !string.Equals(company.DefaultCurrency, req.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+                errors.Add("The reviewed country and currency must match the selected legal entity before applying its policies.");
+        }
+        var grades = (await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && g.IsActive)
+            .Select(g => g.Code).ToListAsync(ct)).Concat(d.Grades.Select(g => g.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var departments = await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive)
+            .Select(x => new { x.Code, x.BranchId }).ToListAsync(ct);
+        var departmentCodes = departments.Select(x => x.Code).Concat(d.Departments.Select(x => x.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var types = (await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && t.IsActive)
+            .Select(t => t.Code).ToListAsync(ct)).Concat(d.LeaveTypes.Select(t => t.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var savedBranches = await _db.Branches.AsNoTracking().Where(b => b.TenantId == tenantId && !b.IsDeleted)
+            .Select(b => new { b.Id, b.CompanyId, b.Code }).ToListAsync(ct);
+        var branchCompanies = savedBranches.ToDictionary(b => b.Id, b => b.CompanyId);
+        var selectedBranch = await ResolveSetupBranchAsync(tenantId, req, company, ct);
+        bool BranchMatches(Guid? id) => id is null ? selectedBranch.Code is null
+            : savedBranches.Any(b => b.Id == id && string.Equals(b.Code, selectedBranch.Code, StringComparison.OrdinalIgnoreCase));
+        foreach (var policy in d.LeavePolicies)
+        {
+            if (!types.Contains(policy.LeaveTypeCode))
+                errors.Add($"Leave policy '{policy.Name}' references unknown leave type '{policy.LeaveTypeCode}'. Include that leave type or use an existing code.");
+            if (!string.IsNullOrWhiteSpace(policy.GradeCode) && !grades.Contains(policy.GradeCode))
+                errors.Add($"Leave policy '{policy.Name}' references unknown or inactive grade '{policy.GradeCode}'.");
+            if (!string.IsNullOrWhiteSpace(policy.DepartmentCode))
+            {
+                if (!departmentCodes.Contains(policy.DepartmentCode))
+                    errors.Add($"Leave policy '{policy.Name}' references unknown or inactive department '{policy.DepartmentCode}'.");
+                var department = departments.FirstOrDefault(x => string.Equals(x.Code, policy.DepartmentCode, StringComparison.OrdinalIgnoreCase));
+                if (department?.BranchId is { } branch && branchCompanies.TryGetValue(branch, out var owner)
+                    && (company is null || owner != company.Id))
+                    errors.Add($"Leave policy '{policy.Name}' references a department outside the reviewed company.");
+            }
+        }
+        if (!preview && company is not null && d.LeavePolicies.Count > 0)
+        {
+            var saved = await _db.LeavePolicies.AsNoTracking().Where(p => p.TenantId == tenantId && p.CompanyId == company.Id).ToListAsync(ct);
+            var eligibility = await _db.LeavePolicyEligibilities.AsNoTracking().Where(e => e.TenantId == tenantId && e.IsActive).ToListAsync(ct);
+            var typeIds = await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId).ToDictionaryAsync(t => t.Code.ToUpper(), t => t.Id, ct);
+            var gradeIds = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
+            var departmentIds = await _db.Departments.AsNoTracking().Where(g => g.TenantId == tenantId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
+            foreach (var policy in d.LeavePolicies)
+            {
+                if (!typeIds.TryGetValue(policy.LeaveTypeCode.ToUpperInvariant(), out var typeId)) continue;
+                Guid? gradeId = !string.IsNullOrEmpty(policy.GradeCode) && gradeIds.TryGetValue(policy.GradeCode.ToUpperInvariant(), out var g) ? g : null;
+                Guid? departmentId = !string.IsNullOrEmpty(policy.DepartmentCode) && departmentIds.TryGetValue(policy.DepartmentCode.ToUpperInvariant(), out var dep) ? dep : null;
+                // A new grade/department cannot match an existing unscoped policy.
+                var newScopeReference = !string.IsNullOrEmpty(policy.GradeCode) && gradeId is null || !string.IsNullOrEmpty(policy.DepartmentCode) && departmentId is null;
+                var existing = newScopeReference ? null : saved.FirstOrDefault(p => p.LeaveTypeId == typeId
+                    && SameLeaveScope(p, eligibility, gradeId, departmentId, (policy.EmploymentType ?? "").Trim(), req.CountryCode, company.Id));
+                if (existing is not null && (!string.Equals(existing.Name, policy.Name.Trim(), StringComparison.OrdinalIgnoreCase)
+                    || existing.AnnualEntitlementDays != policy.AnnualEntitlementDays
+                    || !string.Equals(existing.AccrualMethod, policy.AccrualMethod, StringComparison.OrdinalIgnoreCase)
+                    || existing.ProratePartialMonths != policy.ProratePartialMonths || existing.EncashmentAllowed != policy.EncashmentAllowed
+                    || existing.EncashmentMaxDays != policy.EncashmentMaxDays || existing.MinimumDaysPerRequest != policy.MinimumDaysPerRequest
+                    || existing.MaximumDaysPerRequest != policy.MaximumDaysPerRequest || existing.NoticeRequiredDays != policy.NoticeRequiredDays
+                    || existing.WeekendsIncluded != policy.WeekendsIncluded || existing.PublicHolidaysIncluded != policy.PublicHolidaysIncluded
+                    || existing.AppliesOnProbation != policy.AppliesOnProbation || !string.Equals(existing.PayrollImpact, policy.PayrollImpact, StringComparison.OrdinalIgnoreCase)
+                    || existing.Status != "Active"))
+                    errors.Add($"Leave policy '{policy.Name}' already exists with different settings. Change it in Leave Policies; setup will not rewrite an existing entitlement.");
+                foreach (var savedPolicy in saved.Where(p => p.LeaveTypeId == typeId && p.Status == "Active"
+                    && p.BranchId is null && string.IsNullOrEmpty(p.DepartmentName) && string.IsNullOrEmpty(p.Grade)
+                    && string.IsNullOrEmpty(p.ContractType) && string.IsNullOrEmpty(p.Gender)))
+                {
+                    var rows = eligibility.Where(e => e.LeavePolicyId == savedPolicy.Id).ToList();
+                    if (rows.Count == 0)
+                    {
+                        if (SetupAssistantService.LeaveScopesConflict(policy.GradeCode, policy.DepartmentCode, policy.EmploymentType,
+                            null, null, savedPolicy.EmploymentType))
+                            errors.Add($"Leave policy '{policy.Name}' overlaps existing policy '{savedPolicy.Name}' without a clear broader/narrower scope.");
+                        continue;
+                    }
+                    foreach (var row in rows)
+                    {
+                        var savedGrade = row.GradeId.HasValue ? gradeIds.FirstOrDefault(g => g.Value == row.GradeId).Key : null;
+                        var savedDepartment = row.DepartmentId.HasValue ? departmentIds.FirstOrDefault(g => g.Value == row.DepartmentId).Key : null;
+                        var savedEmployment = string.IsNullOrWhiteSpace(row.EmploymentType) ? savedPolicy.EmploymentType : row.EmploymentType;
+                        if (SetupAssistantService.LeaveScopesConflict(policy.GradeCode, policy.DepartmentCode, policy.EmploymentType,
+                            savedGrade, savedDepartment, savedEmployment))
+                            errors.Add($"Leave policy '{policy.Name}' overlaps existing policy '{savedPolicy.Name}' without a clear broader/narrower scope. Resolve the policy populations in Leave Policies first.");
+                    }
+                }
+            }
+        }
+        foreach (var component in d.GradePayComponents)
+            if (!grades.Contains(component.GradeCode)) errors.Add($"Salary component '{component.ComponentCode}' references unknown grade '{component.GradeCode}'.");
+        if (!preview && d.GradePayComponents.Count > 0 && !await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+        {
+            var savedComponents = await _db.GradePayScaleComponents.AsNoTracking().Where(c => c.TenantId == tenantId)
+                .Join(_db.Grades.Where(g => g.TenantId == tenantId), c => c.GradeId, g => g.Id, (c, g) => new { Component = c, GradeCode = g.Code }).ToListAsync(ct);
+            foreach (var component in d.GradePayComponents)
+            {
+                var existing = savedComponents.FirstOrDefault(c => string.Equals(c.GradeCode, component.GradeCode, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(c.Component.ComponentCode, component.ComponentCode, StringComparison.OrdinalIgnoreCase))?.Component;
+                if (existing is not null && (existing.ComponentName != component.ComponentName || existing.ComponentType != component.ComponentType
+                    || existing.CalculationType != component.CalculationType || existing.Amount != component.Amount
+                    || existing.Percentage != component.Percentage || existing.IsTaxable != component.IsTaxable || existing.Frequency != component.Frequency || !existing.IsActive))
+                    errors.Add($"Salary component '{component.GradeCode}/{component.ComponentCode}' already exists with different settings. Review changes in grade compensation; setup will not overwrite it.");
+            }
+        }
+        if (!preview && d.PayComponents.Count > 0)
+        {
+            var structureCode = company is null ? "DEFAULT" : $"DEFAULT-{company.Id.ToString()[..8]}";
+            var structure = await _db.SalaryStructures.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Code == structureCode, ct);
+            if (structure is not null)
+            {
+                var savedComponents = await _db.SalaryComponents.AsNoTracking().Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id).ToListAsync(ct);
+                foreach (var component in d.PayComponents)
+                {
+                    var existing = savedComponents.FirstOrDefault(c => string.Equals(c.Code, component.Code, StringComparison.OrdinalIgnoreCase));
+                    if (existing is not null && (existing.Name != component.Name || existing.ComponentType != component.ComponentType
+                        || existing.CalculationType != component.CalculationType || existing.Amount != component.Amount
+                        || existing.Percentage != component.Percentage || existing.IsTaxable != component.IsTaxable || !existing.IsActive))
+                        errors.Add($"Salary component '{component.Code}' already exists with different settings. Review changes in salary structures; setup will not overwrite it.");
+                }
+            }
+        }
+        foreach (var designation in d.Designations)
+        {
+            if (!string.IsNullOrWhiteSpace(designation.GradeCode) && !grades.Contains(designation.GradeCode))
+                errors.Add($"Designation '{designation.Code}' references unknown grade '{designation.GradeCode}'.");
+            if (!string.IsNullOrWhiteSpace(designation.DepartmentCode) && !departmentCodes.Contains(designation.DepartmentCode))
+                errors.Add($"Designation '{designation.Code}' references unknown department '{designation.DepartmentCode}'.");
+        }
+        if (!preview && d.AttendancePolicy is { } attendance)
+        {
+            var code = attendance.Code.ToUpperInvariant();
+            var saved = await _db.AttendancePolicies.AsNoTracking().FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Code.ToUpper() == code, ct);
+            if (saved is not null && (saved.Name != attendance.Name || saved.GraceMinutes != attendance.GraceMinutes
+                || saved.LateThresholdMinutes != attendance.LateThresholdMinutes || saved.EarlyExitThresholdMinutes != attendance.EarlyExitThresholdMinutes
+                || saved.HalfDayThresholdMinutes != attendance.HalfDayThresholdMinutes || saved.AbsentThresholdMinutes != attendance.AbsentThresholdMinutes
+                || saved.StandardWorkMinutes != attendance.StandardWorkMinutes || saved.BreakMinutes != attendance.BreakMinutes
+                || !string.Equals(saved.RoundingRule, attendance.RoundingRule, StringComparison.OrdinalIgnoreCase)
+                || saved.RequiresOvertimeApproval != attendance.RequiresOvertimeApproval || saved.AllowAbsenceToLeaveConversion != attendance.AllowAbsenceToLeaveConversion
+                || !saved.IsActive || !BranchMatches(saved.BranchId) || saved.DepartmentId.HasValue || saved.GradeId.HasValue
+                || saved.BranchId is { } branch && branchCompanies.TryGetValue(branch, out var owner) && owner != company?.Id))
+                errors.Add($"Attendance policy '{attendance.Code}' already exists with different settings or company scope. Choose a new policy code or manage the existing policy.");
+        }
+        if (!preview && d.OvertimePolicy is { } overtime)
+        {
+            var code = overtime.Code.ToUpperInvariant();
+            var saved = await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(p => p.TenantId == tenantId && !p.IsDeleted && p.Code.ToUpper() == code, ct);
+            if (saved is not null)
+            {
+                var multipliers = await _db.OvertimeMultipliers.AsNoTracking().Where(m => m.TenantId == tenantId && m.OvertimePolicyId == saved.Id && m.IsActive).ToListAsync(ct);
+                if (saved.Name != overtime.Name || !string.Equals(saved.HourlyRateBasis, overtime.HourlyRateBasis, StringComparison.OrdinalIgnoreCase)
+                    || saved.StandardMonthlyHours != overtime.StandardMonthlyHours || saved.MinimumMinutes != overtime.MinimumMinutes
+                    || saved.MaximumMinutesPerDay != overtime.MaximumMinutesPerDay || saved.MonthlyCapMinutes != overtime.MonthlyCapMinutes
+                    || !string.Equals(saved.RoundingRule, overtime.RoundingRule, StringComparison.OrdinalIgnoreCase)
+                    || saved.RequiresApproval != overtime.RequiresApproval || saved.AllowCompOffConversion != overtime.AllowCompOffConversion
+                    || !saved.IsActive || !BranchMatches(saved.BranchId) || saved.DepartmentId.HasValue || saved.GradeId.HasValue
+                    || saved.BranchId is { } branch && branchCompanies.TryGetValue(branch, out var owner) && owner != company?.Id
+                    || multipliers.Count != overtime.Multipliers.Count
+                    || overtime.Multipliers.Any(m => !multipliers.Any(s => string.Equals(s.DayCategory, m.DayCategory, StringComparison.OrdinalIgnoreCase) && s.Multiplier == m.Multiplier)))
+                    errors.Add($"Overtime policy '{overtime.Code}' already exists with different settings or company scope. Choose a new policy code or manage the existing policy.");
+            }
+        }
+        if (d.BenefitPlans is { Count: > 0 } benefits)
+        {
+            if (string.IsNullOrWhiteSpace(req.LegalEntityName))
+                errors.Add("Benefit plans require an explicit reviewed legal entity.");
+            if (company is not null && !this.GetEntityScope().CanAccessCompany(company.Id))
+                errors.Add("The benefit plan company is outside your company scope.");
+            if (benefits.Any(b => b.GradeCodes is { Count: > 0 })
+                && await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
+                errors.Add("Grade eligibility is managed in Benefits by grade for this workspace (moved_to_benefits_by_grade). Remove grade eligibility from this draft and configure it there.");
+            foreach (var benefit in benefits)
+            {
+                foreach (var grade in benefit.GradeCodes ?? [])
+                    if (!grades.Contains(grade)) errors.Add($"Benefit plan '{benefit.Code}' references unknown or inactive grade '{grade}'.");
+                if (preview || company is null) continue;
+                var code = benefit.Code.ToUpperInvariant();
+                var existing = await _db.BenefitPlans.AsNoTracking().FirstOrDefaultAsync(b =>
+                    b.TenantId == tenantId && b.CompanyId == company.Id && b.Code.ToUpper() == code, ct);
+                if (existing is null) continue;
+                var start = DateOnly.ParseExact(benefit.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+                DateOnly? end = string.IsNullOrEmpty(benefit.EffectiveTo) ? null : DateOnly.ParseExact(benefit.EffectiveTo, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var savedGrades = await _db.BenefitEligibilityRules.AsNoTracking()
+                    .Where(r => r.TenantId == tenantId && r.BenefitPlanId == existing.Id && r.IsActive && r.GradeId.HasValue)
+                    .Join(_db.Grades.Where(g => g.TenantId == tenantId), r => r.GradeId, g => (Guid?)g.Id, (r, g) => g.Code)
+                    .ToListAsync(ct);
+                var savedRules = await _db.BenefitEligibilityRules.AsNoTracking()
+                    .Where(r => r.TenantId == tenantId && r.BenefitPlanId == existing.Id && r.IsActive).ToListAsync(ct);
+                if (existing.IsDeleted || !existing.IsActive || existing.Name != benefit.Name.Trim() || existing.PlanType != benefit.PlanType.Trim()
+                    || !string.Equals(existing.Currency, benefit.Currency, StringComparison.OrdinalIgnoreCase)
+                    || existing.EffectiveFrom != start || existing.EffectiveTo != end || existing.RequiresEnrollment != benefit.RequiresEnrollment
+                    || !savedGrades.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(benefit.GradeCodes ?? [])
+                    || savedRules.Count != (benefit.GradeCodes?.Count ?? 0)
+                    || savedRules.Any(r => r.CompanyId != company.Id || r.EffectiveFrom != start || r.EffectiveTo != end || !r.GradeId.HasValue))
+                    errors.Add($"Benefit plan '{benefit.Code}' already exists with different settings. Review and change it in Benefits Administration; setup will not overwrite an existing plan.");
+            }
+        }
+        return errors;
+    }
 
     /// <summary>
     /// THE SETUP FORMS' GATES for the assistant's Apply (P1, the class #199 closed for the org-structure import).
@@ -700,6 +1076,10 @@ public class SetupAssistantController : ControllerBase
         var scope = this.GetEntityScope();
         var d = req.Draft;
         if (OrganizationSetupService.CountryCodeProblem(req.CountryCode) is { } countryProblem) problems.Add(countryProblem);
+        if (!scope.IsGroupLevel && (d.Grades.Count > 0 || d.GradePayComponents.Count > 0))
+            problems.Add("Only a group-scope administrator can configure shared grades and grade pay components.");
+        if (!scope.IsGroupLevel && d.HrConfig is not null)
+            problems.Add("Only a group-scope administrator can change the shared workspace approval and governance settings.");
 
         Company? company = null;
         var createAsDraft = false;
@@ -733,6 +1113,9 @@ public class SetupAssistantController : ControllerBase
             if (company is not null && !scope.CanAccessCompany(company.Id))
                 problems.Add($"Company '{company.LegalNameEn}' is outside your company scope.");
         }
+        if (!scope.IsGroupLevel && (d.AttendancePolicy is not null || d.OvertimePolicy is not null)
+            && d.Branches.Count == 0 && (company is null || !await _db.Branches.AnyAsync(b => b.TenantId == tenantId && b.CompanyId == company.Id && !b.IsDeleted, ct)))
+            problems.Add("Add a branch for the reviewed company before configuring attendance or overtime; a company-scoped user cannot create a workspace-wide policy.");
 
         if (d.Branches.Count > 0)
         {
@@ -753,7 +1136,10 @@ public class SetupAssistantController : ControllerBase
             else if (g.MidSalary > 0 && (g.MidSalary < g.MinSalary || (g.MaxSalary > 0 && g.MidSalary > g.MaxSalary)))
                 problems.Add($"Grade '{g.Code}': MidSalary must fall between MinSalary and MaxSalary.");
         }
-        return new OrgGateResult(problems.Distinct().ToList(), company, createAsDraft);
+        var selectedBranch = await ResolveSetupBranchAsync(tenantId, req, company, ct);
+        if ((d.AttendancePolicy is not null || d.OvertimePolicy is not null) && selectedBranch.Problem is not null)
+            problems.Add(selectedBranch.Problem);
+        return new OrgGateResult(problems.Distinct().ToList(), company, createAsDraft, selectedBranch.Code);
     }
 
     /// <summary>Only the two rules the overtime/attendance engines actually evaluate. Anything

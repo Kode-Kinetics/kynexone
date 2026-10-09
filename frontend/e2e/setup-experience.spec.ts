@@ -31,6 +31,7 @@ interface ApplyRequest {
 
 interface BootOptions {
   missingLocalization?: boolean;
+  legacySetup?: boolean;
   forbidFirstApply?: boolean;
   readOnly?: boolean;
   route?: string;
@@ -55,7 +56,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/auth/me') return reply({
       id: 'setup-reviewer', tenantId: 'setup-tenant', tenantSlug: 'setup-fixture', fullName: 'Setup Reviewer',
       roles: options.readOnly ? ['Auditor'] : ['Admin'],
-      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read'],
+      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage'],
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
@@ -67,7 +68,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/grades' || path === '/api/branches' || path === '/api/departments' || path === '/api/organization/cost-centers') return reply(paged([]));
     if (path === '/api/setup-assistant/preview') {
       previews.push(request.postDataJSON() as CompanyProfile);
-      return reply({ draft, engine: 'Synthetic browser fixture', notes: ['Review the proposed rows before applying.'] });
+      return reply({ configurationVersion: options.legacySetup ? undefined : 1, draft, engine: 'Synthetic browser fixture', notes: ['Review the proposed rows before applying.'] });
     }
     if (path === '/api/setup-assistant/apply') {
       applies.push(request.postDataJSON() as ApplyRequest);
@@ -92,11 +93,11 @@ async function companyDetails(page: Page) {
 
 async function continueStep(page: Page) {
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Guided setup', exact: true }).getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(page.locator('#setup-aiSetup').getByRole('heading', { level: 2 })).toBeFocused();
 }
 
 async function toReview(page: Page) {
-  for (let index = 0; index < 3; index++) await continueStep(page);
+  for (let index = 0; index < 4; index++) await continueStep(page);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toBeVisible();
 }
 
@@ -124,7 +125,7 @@ test('preserves the selected profile, reviews editable rows, and retains a draft
   const state = await boot(page, { forbidFirstApply: true });
   await expect(page.getByLabel(/^Country/)).toHaveValue('SA');
   await expect(page.getByLabel(/^Currency/)).toHaveValue('SAR');
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
   await accessible(page, '#setup-aiSetup');
   await companyDetails(page);
   await page.getByLabel(/^Company size/).selectOption('201-500');
@@ -133,13 +134,14 @@ test('preserves the selected profile, reviews editable rows, and retains a draft
   await continueStep(page);
   await page.getByLabel('How do people work?', { exact: false }).selectOption('TwoShifts');
   await page.getByLabel(/^Weekend/).selectOption('Sat-Sun');
-  await page.getByLabel('How is time recorded?', { exact: false }).selectOption('BiometricDevice');
-  await page.getByLabel(/^Overtime/).selectOption('CompensatoryOff');
+  await page.getByRole('checkbox', { name: 'Biometric device', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Time off in lieu', exact: true }).check();
   await continueStep(page);
-  await page.getByLabel(/^Pay cycle/).selectOption('Biweekly');
-  await expect(page.getByText('Salary grades', { exact: true })).toBeVisible();
+  await page.getByLabel(/^Pay cycle/).selectOption('Monthly');
   await page.locator('summary').filter({ hasText: 'Planning preferences (optional)' }).click();
   await page.getByLabel(/^Approval preference/).selectOption('SupervisorFirst');
+  await continueStep(page);
+  await expect(page.getByRole('heading', { name: 'Salary grades', exact: true })).toBeVisible();
   await continueStep(page);
   await page.getByRole('checkbox', { name: 'Include Public holidays in the generated draft', exact: true }).uncheck();
   expect(state.previews).toHaveLength(0);
@@ -149,7 +151,7 @@ test('preserves the selected profile, reviews editable rows, and retains a draft
   expect(state.previews[0]).toMatchObject({
     industry: 'Healthcare', legalEntityName: 'Meridian Health LLC', branchCity: 'Jeddah', companySize: '201-500',
     countryCode: 'SA', currencyCode: 'SAR', workPattern: 'TwoShifts', weekendPattern: 'Sat-Sun',
-    attendanceCapture: 'BiometricDevice', overtimeHandling: 'CompensatoryOff', payCycle: 'Biweekly',
+    configuration: { attendanceMethods: ['WebCheckIn', 'BiometricDevice'], overtimeModes: ['PaidOvertime', 'CompensatoryOff'] }, payCycle: 'Monthly',
     payrollModel: 'GradeBased', approvalModel: 'SupervisorFirst',
     sections: { entity: true, org: true, leave: true, leavePolicies: true, shifts: true, attendance: true, payroll: true, holidays: false, governance: true, localization: true },
   });
@@ -216,7 +218,7 @@ test('requires country and currency when the workspace has not supplied them', a
 
 test('offers import separately from guided setup and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
   await page.getByRole('button', { name: 'Import organization', exact: true }).click();
   await expect(page.locator('input[type="file"]:visible').first()).toBeVisible();
   await expect(page.getByLabel(/^Industry/)).not.toBeVisible();
@@ -225,7 +227,7 @@ test('offers import separately from guided setup and preserves its organization 
   await evidence(page, info, 'import-entry');
   await page.getByRole('button', { name: 'Guided setup', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
   await page.getByRole('button', { name: 'Manage settings', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Manage settings', exact: true })).toBeVisible();
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
@@ -409,3 +411,104 @@ for (const failure of ['blocked422', 'failed422', 'conflict409'] as const) {
     expect(state.errors).toEqual([]);
   });
 }
+
+test('collects scoped company policies, custom grades and benefits without activating them', async ({ page }, info) => {
+  const state = await boot(page);
+  await companyDetails(page);
+  await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy: Professional grade receives 30 days annual leave.');
+  await expect(page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft' })).not.toBeChecked();
+  await continueStep(page);
+  await page.getByRole('checkbox', { name: 'Configure leave entitlements from company policy', exact: true }).check();
+  await page.getByLabel('Policy name', { exact: false }).fill('Professional annual leave');
+  await page.getByLabel('Annual entitlement (days)', { exact: true }).fill('30');
+  await page.getByLabel('Grade code (optional)', { exact: true }).fill('P1');
+  await expect(page.getByRole('checkbox', { name: 'Prorate partial months by calendar days employed', exact: true })).toBeChecked();
+  await page.getByRole('combobox', { name: 'Accrual', exact: true }).selectOption('Yearly');
+  await expect(page.getByRole('checkbox', { name: 'Prorate partial months by calendar days employed', exact: true })).not.toBeChecked();
+  await page.getByRole('combobox', { name: 'Accrual', exact: true }).selectOption('Monthly');
+  await page.getByRole('checkbox', { name: 'Prorate partial months by calendar days employed', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'No overtime policy', exact: true }).check();
+  await expect(page.getByRole('checkbox', { name: 'Paid overtime', exact: true })).not.toBeChecked();
+  await page.getByRole('checkbox', { name: 'Paid overtime', exact: true }).check();
+  await expect(page.getByRole('checkbox', { name: 'No overtime policy', exact: true })).not.toBeChecked();
+  await accessible(page, '#setup-aiSetup');
+  await continueStep(page);
+  await page.getByRole('checkbox', { name: 'Customize management preferences', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Dotted-line manager review', exact: true }).check();
+  await continueStep(page);
+  await page.getByRole('combobox', { name: 'How would you like to build your grades?', exact: true }).selectOption('manual');
+  await page.getByRole('button', { name: 'Add salary grade', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Grade code *', exact: true }).fill('P1');
+  await page.getByLabel('Grade name', { exact: false }).fill('Professional');
+  await page.getByLabel('Minimum salary', { exact: true }).fill('5000');
+  await page.getByLabel('Midpoint salary', { exact: true }).fill('7500');
+  await page.getByLabel('Maximum salary', { exact: true }).fill('10000');
+  await page.getByRole('combobox', { name: 'How would you like to build your grades?', exact: true }).selectOption('assisted');
+  await page.getByRole('combobox', { name: 'How would you like to build your grades?', exact: true }).selectOption('manual');
+  await expect(page.getByRole('textbox', { name: 'Grade code *', exact: true })).toHaveValue('P1');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  await page.getByLabel('Benefit code', { exact: false }).fill('MED');
+  await page.getByLabel('Benefit name', { exact: false }).fill('Company medical plan');
+  await page.getByLabel('Effective from', { exact: false }).fill('2026-10-01');
+  await page.getByLabel('Eligible grade codes', { exact: false }).pressSequentially('P1,P2');
+  await page.getByLabel('Eligible grade codes', { exact: false }).fill('P1');
+  await contained(page);
+  await accessible(page, '#setup-aiSetup');
+  await evidence(page, info, 'custom-grades-benefits');
+  await continueStep(page);
+  await generate(page);
+  expect(state.previews[0].configuration?.usePolicySourceForAi).not.toBe(true);
+  expect(state.previews[0].configuration).toMatchObject({
+    policySourceText: 'Approved policy: Professional grade receives 30 days annual leave.',
+    overtimeModes: ['PaidOvertime'],
+    leavePolicies: [{ name: 'Professional annual leave', annualEntitlementDays: 30, gradeCode: 'P1', proratePartialMonths: true }],
+    grades: [{ code: 'P1', minSalary: 5000, midSalary: 7500, maxSalary: 10000, currency: 'SAR' }],
+    benefitPlans: [{ code: 'MED', effectiveFrom: '2026-10-01', currency: 'SAR', gradeCodes: ['P1'] }],
+    hrConfig: { allowDottedLineApproval: true },
+  });
+  expect(state.applies).toHaveLength(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('refuses a server that would discard custom configuration', async ({ page }) => {
+  const state = await boot(page, { legacySetup: true });
+  await companyDetails(page);
+  await toReview(page);
+  await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'The setup service needs an update' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Apply \d+ item/ })).toHaveCount(0);
+  expect(state.applies).toHaveLength(0);
+});
+
+test('refuses invalid grade ranges before requesting a draft and preserves entered values', async ({ page }) => {
+  const state = await boot(page);
+  await companyDetails(page);
+  for (let i = 0; i < 3; i++) await continueStep(page);
+  await page.getByRole('combobox', { name: 'How would you like to build your grades?', exact: true }).selectOption('manual');
+  await page.getByRole('button', { name: 'Add salary grade', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Grade code *', exact: true }).fill('P1');
+  await page.getByLabel('Grade name', { exact: false }).fill('Professional');
+  await page.getByLabel('Minimum salary', { exact: true }).fill('9000');
+  await page.getByLabel('Midpoint salary', { exact: true }).fill('7500');
+  await page.getByLabel('Maximum salary', { exact: true }).fill('10000');
+  await continueStep(page);
+  await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Complete each grade' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Grade code *', exact: true })).toHaveValue('P1');
+  expect(state.previews).toHaveLength(0);
+  expect(state.applies).toHaveLength(0);
+});
+
+test('renders custom grade configuration in Arabic with an accessible mobile layout', async ({ page }, info) => {
+  const state = await boot(page, { locale: 'ar' });
+  await companyDetails(page);
+  for (let i = 0; i < 3; i++) await continueStep(page);
+  await expect(page.getByRole('heading', { name: 'درجات الرواتب', exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: 'كيف ترغب في إعداد درجات الرواتب؟', exact: true }).selectOption('manual');
+  await page.getByRole('button', { name: 'إضافة درجة راتب', exact: true }).click();
+  await expect(page.getByLabel('الحد الأدنى للراتب', { exact: true })).toBeVisible();
+  await contained(page);
+  await accessible(page, '#setup-aiSetup');
+  await evidence(page, info, 'arabic-custom-grades');
+  expect(state.errors).toEqual([]);
+});
