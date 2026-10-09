@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Eye, EyeOff } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
 import { CountrySelect } from '../components/CountrySelect';
@@ -68,28 +69,36 @@ import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
 
-type Tab = 'aiSetup' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
+type Tab = 'aiSetup' | 'importOrganization' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
   | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
+type SettingsCategory = 'organization' | 'peoplePay' | 'system';
+type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization'>;
 
-const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'aiSetup', label: 'AI Setup', icon: Sparkles },
-  { id: 'establishment', label: 'Cost Centres & Budget', icon: Landmark },
-  { id: 'companies', label: 'Companies', icon: Building2 },
-  { id: 'branches', label: 'Branches', icon: GitBranch },
-  { id: 'departments', label: 'Departments', icon: Layers },
-  { id: 'designations', label: 'Designations', icon: Tag },
-  { id: 'grades', label: 'Grades', icon: Award },
-  { id: 'masterData', label: 'Master Data', icon: Database },
-  { id: 'numberingRules', label: 'Numbering', icon: Hash },
-  { id: 'systemSettings', label: 'System Settings', icon: Settings },
-  { id: 'gccSettings', label: 'GCC Settings', icon: Globe },
-  { id: 'fiscalYears', label: 'Fiscal Years', icon: Calendar },
-  { id: 'locations', label: 'Locations', icon: MapPin },
-  { id: 'glMapping', label: 'GL & Rates', icon: Landmark },
-  { id: 'notificationTemplates', label: 'Notifications', icon: Bell },
-  { id: 'emailConfig', label: 'Email / SMTP', icon: Settings },
-  { id: 'adminAuditLogs', label: 'Audit Logs', icon: ClipboardList },
+const settingsCategories: { id: SettingsCategory; label: string }[] = [
+  { id: 'organization', label: 'Organization' },
+  { id: 'peoplePay', label: 'People & pay' },
+  { id: 'system', label: 'System' },
+];
+
+const tabs: { id: SettingsTab; label: string; icon: React.ElementType; category: SettingsCategory }[] = [
+  { id: 'companies', label: 'Companies', icon: Building2, category: 'organization' },
+  { id: 'branches', label: 'Branches', icon: GitBranch, category: 'organization' },
+  { id: 'departments', label: 'Departments', icon: Layers, category: 'organization' },
+  { id: 'costCenters', label: 'Cost centers', icon: Landmark, category: 'organization' },
+  { id: 'establishment', label: 'Staffing & budgets', icon: Landmark, category: 'organization' },
+  { id: 'locations', label: 'Locations', icon: MapPin, category: 'organization' },
+  { id: 'designations', label: 'Job titles', icon: Tag, category: 'peoplePay' },
+  { id: 'grades', label: 'Grades & salary bands', icon: Award, category: 'peoplePay' },
+  { id: 'fiscalYears', label: 'Fiscal years', icon: Calendar, category: 'peoplePay' },
+  { id: 'glMapping', label: 'GL & rates', icon: Landmark, category: 'peoplePay' },
+  { id: 'gccSettings', label: 'GCC compliance', icon: Globe, category: 'peoplePay' },
+  { id: 'masterData', label: 'Master data', icon: Database, category: 'system' },
+  { id: 'numberingRules', label: 'Numbering', icon: Hash, category: 'system' },
+  { id: 'systemSettings', label: 'System settings', icon: Settings, category: 'system' },
+  { id: 'notificationTemplates', label: 'Notifications', icon: Bell, category: 'system' },
+  { id: 'emailConfig', label: 'Email / SMTP', icon: Settings, category: 'system' },
+  { id: 'adminAuditLogs', label: 'Audit logs', icon: ClipboardList, category: 'system' },
 ];
 
 // Small read-only field for the statutory pack profile panel.
@@ -2249,26 +2258,37 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
 export function SetupPage() {
-  // Deep-link support (e.g. the blocked-assignment popup's "Edit staffing budget"
-  // opens /setup?tab=establishment&department=…&level=… in a new tab).
+  const router = useRouter();
+  // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission } = useAuth();
-  // organization.read-only viewers (folded in from the retired /companies route) may
-  // reach Setup, but only to view the Companies list — every other tab configures
-  // master data and requires write access. Restrict the tab surface accordingly so
-  // read-only entrants never see (or deep-link into) config tabs they cannot use.
+  // Readers entering from /companies must only see the Companies list. Hiding a
+  // mode also prevents its component from mounting or requesting restricted data.
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const visibleTabs = canWrite ? tabs : tabs.filter((t) => t.id === 'companies');
+  const visibleTabs = canWrite ? tabs : tabs.filter((tab) => tab.id === 'companies');
   const tabParam = searchParams?.get('tab');
-  const initialTab: Tab = visibleTabs.some((x) => x.id === tabParam)
-    ? (tabParam as Tab)
-    : (visibleTabs[0]?.id ?? 'companies');
+  const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || tabParam === 'importOrganization')
+    ? tabParam
+    : visibleTabs.some((tab) => tab.id === tabParam)
+      ? (tabParam as SettingsTab)
+      : canWrite ? 'aiSetup' : 'companies';
+  const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
+  const [lastSettingsTab, setLastSettingsTab] = useState<SettingsTab>(
+    requestedTab === 'aiSetup' || requestedTab === 'importOrganization' ? 'companies' : requestedTab,
+  );
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
   const focusLevelId = searchParams?.get('level') ?? undefined;
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+
+  // Also follow links and browser navigation after the page has already mounted.
+  useEffect(() => {
+    setActiveTab(requestedTab);
+    if (requestedTab !== 'aiSetup' && requestedTab !== 'importOrganization') {
+      setLastSettingsTab(requestedTab);
+    }
+  }, [requestedTab]);
 
   useEffect(() => {
     companiesApi.listAll().then(setCompanies).catch(() => {});
@@ -2276,55 +2296,143 @@ export function SetupPage() {
     costCentersApi.listAll().then(setCostCenters).catch(() => {});
   }, []);
 
+  const selectTab = (tab: Tab) => {
+    setActiveTab(tab);
+    if (tab !== 'aiSetup' && tab !== 'importOrganization') setLastSettingsTab(tab);
+    const params = new URLSearchParams(searchParams?.toString());
+    params.set('tab', tab);
+    router.replace(`/setup?${params.toString()}`, { scroll: false });
+  };
+
+  // Resolve permissions on every render so a permission change cannot leave a
+  // formerly available settings panel visible until the synchronization effect.
+  const selectedTab = canWrite ? activeTab : 'companies';
+  const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization';
+  const selectedCategory = tabs.find((tab) => tab.id === selectedTab)?.category ?? 'organization';
+  const categoryTabs = visibleTabs.filter((tab) => tab.category === selectedCategory);
+  const visibleCategories = settingsCategories.filter((category) => visibleTabs.some((tab) => tab.category === category.id));
+  const modes = [
+    { id: 'aiSetup' as const, label: 'Guided setup', icon: Sparkles },
+    { id: 'importOrganization' as const, label: 'Import organization', icon: Upload },
+    { id: 'settings' as const, label: 'Manage settings', icon: Settings },
+  ];
+
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Setup & Administration</h1>
-        <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Configure everything yourself, or use the <span className="font-medium text-sapphire dark:text-cyanAccent">AI Setup</span> tab to have a starter configuration drafted for you — your choice.
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">Company setup</h1>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+          {canWrite
+            ? 'Build your organization, set your people policies, and get ready to welcome your team.'
+            : 'View your organization’s companies and legal entity details.'}
         </p>
-      </div>
+      </header>
 
-      {/* Tab bar — wrapping pill tabs */}
-      <div className="flex flex-wrap gap-1.5">
-        {visibleTabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-all ${
-              activeTab === id
-                ? 'bg-sapphire text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/[0.06] dark:text-slate-400 dark:hover:bg-white/[0.10] dark:hover:text-slate-200'
-            }`}
-          >
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            {label}
-          </button>
-        ))}
-      </div>
+      {canWrite && (
+        <nav aria-label="Setup paths" className="grid grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
+          {modes.map(({ id, label, icon: Icon }) => {
+            const selected = id === 'settings' ? isSettings : selectedTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={selected}
+                aria-controls={id === 'settings' ? 'setup-settings' : `setup-${id}`}
+                onClick={() => selectTab(id === 'settings' ? lastSettingsTab : id)}
+                className={`flex min-w-0 flex-col items-center justify-center gap-2 border-b-2 px-2 py-3 text-center text-xs font-semibold transition-colors sm:flex-row sm:px-4 sm:text-sm ${
+                  selected
+                    ? 'border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent'
+                    : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-950 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-white'
+                }`}
+              >
+                <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                {label}
+              </button>
+            );
+          })}
+        </nav>
+      )}
 
-      {/* Tab content */}
-      <div>
-        {activeTab === 'aiSetup' && <AiSetupAssistant />}
-        {activeTab === 'establishment' && <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />}
-        {activeTab === 'companies' && <CompaniesTab />}
-        {activeTab === 'branches' && <BranchesTab companies={companies} />}
-        {activeTab === 'departments' && <DepartmentsTab costCenters={costCenters} />}
-        {activeTab === 'designations' && <DesignationsTab grades={grades} />}
-        {activeTab === 'grades' && <GradesTab />}
-        {activeTab === 'costCenters' && <CostCentersTab companies={companies} />}
-        {activeTab === 'masterData' && <MasterDataTab />}
-        {activeTab === 'numberingRules' && <NumberingRulesTab />}
-        {activeTab === 'systemSettings' && <SystemSettingsTab />}
-        {activeTab === 'gccSettings' && <GCCSettingsTab />}
-        {activeTab === 'fiscalYears' && <FiscalYearsTab />}
-        {activeTab === 'locations' && <LocationsTab />}
-        {activeTab === 'glMapping' && <GlSetupPanel companies={companies} costCenters={costCenters} />}
-        {activeTab === 'notificationTemplates' && <NotificationTemplatesTab />}
-        {activeTab === 'emailConfig' && <EmailConfigTab />}
-        {activeTab === 'adminAuditLogs' && <AdminAuditLogsTab />}
-      </div>
+      {/* Keep drafts and uploaded files intact when users explore another path. */}
+      {canWrite && (
+        <>
+          <section id="setup-aiSetup" aria-label="Guided setup" hidden={selectedTab !== 'aiSetup'}>
+            <AiSetupAssistant companies={companies} />
+          </section>
+          <section id="setup-importOrganization" aria-label="Import organization" hidden={selectedTab !== 'importOrganization'}>
+            <OrgStructureImportPanel />
+          </section>
+        </>
+      )}
+
+      {isSettings && (
+        <section id="setup-settings" aria-label="Manage settings" className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
+          <aside className="space-y-3">
+            <div>
+              <label htmlFor="setup-settings-category" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Settings area</label>
+              <select
+                id="setup-settings-category"
+                value={selectedCategory}
+                onChange={(event) => {
+                  const firstTab = visibleTabs.find((tab) => tab.category === event.target.value);
+                  if (firstTab) selectTab(firstTab.id);
+                }}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
+              >
+                {visibleCategories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+              </select>
+            </div>
+            <nav aria-label={`${settingsCategories.find((category) => category.id === selectedCategory)?.label} settings`} className="hidden space-y-1 lg:block">
+              {categoryTabs.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={selectedTab === id}
+                  onClick={() => selectTab(id)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-start text-sm transition-colors ${
+                    selectedTab === id
+                      ? 'bg-sapphire/10 font-semibold text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent'
+                      : 'font-medium text-slate-600 hover:bg-slate-200/60 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white'
+                  }`}
+                >
+                  <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                  {label}
+                </button>
+              ))}
+            </nav>
+            <div className="lg:hidden">
+              <label htmlFor="setup-settings-page" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Setting</label>
+              <select
+                id="setup-settings-page"
+                value={selectedTab}
+                onChange={(event) => selectTab(event.target.value as SettingsTab)}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
+              >
+                {categoryTabs.map((tab) => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
+              </select>
+            </div>
+          </aside>
+          <div className="min-w-0">
+            {selectedTab === 'establishment' && <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />}
+            {selectedTab === 'companies' && <CompaniesTab />}
+            {selectedTab === 'branches' && <BranchesTab companies={companies} />}
+            {selectedTab === 'departments' && <DepartmentsTab costCenters={costCenters} />}
+            {selectedTab === 'designations' && <DesignationsTab grades={grades} />}
+            {selectedTab === 'grades' && <GradesTab />}
+            {selectedTab === 'costCenters' && <CostCentersTab companies={companies} />}
+            {selectedTab === 'masterData' && <MasterDataTab />}
+            {selectedTab === 'numberingRules' && <NumberingRulesTab />}
+            {selectedTab === 'systemSettings' && <SystemSettingsTab />}
+            {selectedTab === 'gccSettings' && <GCCSettingsTab />}
+            {selectedTab === 'fiscalYears' && <FiscalYearsTab />}
+            {selectedTab === 'locations' && <LocationsTab />}
+            {selectedTab === 'glMapping' && <GlSetupPanel companies={companies} costCenters={costCenters} />}
+            {selectedTab === 'notificationTemplates' && <NotificationTemplatesTab />}
+            {selectedTab === 'emailConfig' && <EmailConfigTab />}
+            {selectedTab === 'adminAuditLogs' && <AdminAuditLogsTab />}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
