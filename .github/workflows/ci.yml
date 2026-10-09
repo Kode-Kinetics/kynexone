@@ -30,28 +30,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Hosted runners share Docker Hub pull quotas. Use Google's cache before the canonical
-      # registry without changing fixture image names/versions or skipping tests. Docker falls
-      # back to Docker Hub for cache misses; existing daemon options and mirrors are retained.
-      # Configure before Testcontainers starts any fixtures so the restart cannot interrupt them.
-      - name: Configure Docker Hub cache for test fixtures
+      # Testcontainers can request Docker Hub directly, bypassing daemon mirrors. Fetch the
+      # same image tags through Google's cache and retain their canonical local names; the
+      # default missing-image pull policy then uses these images without weakening any test.
+      - name: Cache test fixture images
         run: |
           set -euo pipefail
-          sudo python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path("/etc/docker/daemon.json")
-          config = json.loads(path.read_text()) if path.exists() else {}
-          mirrors = config.get("registry-mirrors", [])
-          if not isinstance(mirrors, list) or any(not isinstance(value, str) for value in mirrors):
-              raise ValueError("Docker registry-mirrors must be a list of registry URLs")
-          config["registry-mirrors"] = list(dict.fromkeys(["https://mirror.gcr.io", *mirrors]))
-          path.parent.mkdir(parents=True, exist_ok=True)
-          path.write_text(json.dumps(config, indent=2) + "\n")
-          PY
-          sudo systemctl restart docker
-          docker info --format '{{json .RegistryConfig.Mirrors}}'
+          for fixture_image in postgres:16 postgres:16-alpine edoburu/pgbouncer:v1.26.0-p0 localstack/localstack:3.8 testcontainers/ryuk:0.6.0; do
+            cached_path="$fixture_image"
+            if [[ "$cached_path" != */* ]]; then cached_path="library/$cached_path"; fi
+            docker pull "mirror.gcr.io/$cached_path"
+            docker tag "mirror.gcr.io/$cached_path" "$fixture_image"
+            docker image inspect "$fixture_image" --format '{{.Id}}'
+          done
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -852,28 +843,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Hosted runners share Docker Hub pull quotas. Use Google's cache before the canonical
-      # registry without changing fixture image names/versions or skipping tests. Docker falls
-      # back to Docker Hub for cache misses; existing daemon options and mirrors are retained.
-      # Configure before Testcontainers starts any fixtures so the restart cannot interrupt them.
-      - name: Configure Docker Hub cache for test fixtures
+      # Compose services and BuildKit resolve image metadata separately. Route this disposable
+      # CI stack through the cache explicitly, preserving the Node digest from its Dockerfile.
+      - name: Configure cached images for the browser stack
         run: |
           set -euo pipefail
-          sudo python3 - <<'PY'
-          import json
+          python3 - <<'PY_CACHE'
+          import json, os, re
           from pathlib import Path
 
-          path = Path("/etc/docker/daemon.json")
-          config = json.loads(path.read_text()) if path.exists() else {}
-          mirrors = config.get("registry-mirrors", [])
-          if not isinstance(mirrors, list) or any(not isinstance(value, str) for value in mirrors):
-              raise ValueError("Docker registry-mirrors must be a list of registry URLs")
-          config["registry-mirrors"] = list(dict.fromkeys(["https://mirror.gcr.io", *mirrors]))
-          path.parent.mkdir(parents=True, exist_ok=True)
-          path.write_text(json.dumps(config, indent=2) + "\n")
-          PY
-          sudo systemctl restart docker
-          docker info --format '{{json .RegistryConfig.Mirrors}}'
+          source = Path("frontend/Dockerfile").read_text()
+          node = re.search(r"^ARG NODE_IMAGE=(node:[^\s]+@sha256:[a-f0-9]{64})$", source, re.MULTILINE)
+          if node is None:
+              raise ValueError("Expected the existing digest-pinned Node image")
+          override = Path(os.environ["RUNNER_TEMP"]) / "browser-image-cache.json"
+          override.write_text(json.dumps({"services": {
+              "postgres": {"image": "mirror.gcr.io/library/postgres:16-alpine"},
+              "redis": {"image": "mirror.gcr.io/library/redis:7-alpine"},
+              "frontend": {"build": {"args": {
+                  "NODE_IMAGE": "mirror.gcr.io/library/" + node.group(1),
+                  "BUILDKIT_SYNTAX": "mirror.gcr.io/docker/dockerfile:1"
+              }}}
+          }}))
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"COMPOSE_FILE={Path.cwd() / 'docker-compose.yml'}:{override}\n")
+          PY_CACHE
 
       - uses: actions/setup-node@v4
         with:
