@@ -61,6 +61,7 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
 
   const plan = detail ? plans.find((p) => p.id === detail.enrollment.benefitPlanId) : null;
   const currency = plan?.currency ?? '';
+  const superseded = detail?.enrollment.status === 'Superseded';
   const canRecordContribution = canRecord && detail?.enrollment.status === 'Active'
     && (!detail.enrollment.effectiveTo || detail.enrollment.effectiveTo >= today());
 
@@ -133,9 +134,9 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
             <section className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-white/[0.06] dark:bg-white/[0.03]" data-testid="enrollment-entitlement">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <AssignmentLabel enrollment={detail.enrollment} />
-                {detail.enrollment.assignmentSource === 'IndividualAdditional'
+                {!superseded && (detail.enrollment.assignmentSource === 'IndividualAdditional'
                   ? canPropose && <button type="button" disabled={loadingAmendment} className={SECONDARY} onClick={() => void amendAdditional()}><Pencil className="h-3.5 w-3.5" />{t('Amend additional benefit')}</button>
-                  : canApplyException && !editingException && <button type="button" className={SECONDARY} onClick={() => setEditingException(true)}><Pencil className="h-3.5 w-3.5" />{t('Adjust existing benefit')}</button>}
+                  : canApplyException && !editingException && <button type="button" className={SECONDARY} onClick={() => setEditingException(true)}><Pencil className="h-3.5 w-3.5" />{t('Adjust existing benefit')}</button>)}
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-2">
                 <div><dt className="text-slate-500 dark:text-slate-400">{t("Entitlement tier")}</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{detail.enrollment.entitlementTier || 'Standard tier'}</dd></div>
@@ -144,7 +145,8 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
                 <div><dt className="text-slate-500 dark:text-slate-400">{t("Enrolled value")}</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{detail.enrollment.requestedBenefitAmount === null ? 'Not specified' : `${money(detail.enrollment.requestedBenefitAmount)} ${currency}`}</dd></div>
               </dl>
               {detail.enrollment.exceptionReason && <p className="mt-3 border-t border-slate-200 pt-2 text-slate-600 dark:border-white/10 dark:text-slate-300"><span className="font-semibold">{t('Exception reason')}: </span>{detail.enrollment.exceptionReason}</p>}
-              {editingException && canApplyException && detail.enrollment.assignmentSource !== 'IndividualAdditional' && <BenefitExceptionForm key={detail.enrollment.id} enrollment={detail.enrollment} mandatory={plan?.classification === 'Mandatory'} currency={currency}
+              {superseded && <p className="mt-3 text-slate-500 dark:text-slate-400">{t('Replaced before activation after the employee’s draft details changed.')}</p>}
+              {!superseded && editingException && canApplyException && detail.enrollment.assignmentSource !== 'IndividualAdditional' && <BenefitExceptionForm key={detail.enrollment.id} enrollment={detail.enrollment} mandatory={plan?.classification === 'Mandatory'} currency={currency}
                 onCancel={() => setEditingException(false)} onSaved={(id) => { setEditingException(false); if (id === enrollmentId) void load(); onChanged(id); }} />}
             </section>
             <BenefitPolicySummary policy={detail.enrollment.paymentPolicy} currency={currency} />
@@ -214,7 +216,7 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
                   ))}
                 </ul>
               )}
-              {canRecord && (
+              {canRecord && !superseded && (
                 detail.contributions.length === 0 ? (
                   <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{t("Record a contribution first; a deduction is linked to a contribution.")}</p>
                 ) : candidates && candidates.length === 0 ? (

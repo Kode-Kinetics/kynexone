@@ -126,21 +126,23 @@ test('an individual grant cannot bypass plan company scope', async ({ page }) =>
 });
 
 
-test('plan enrolment count includes scheduled assignments and excludes ended or waived benefits', async ({ page }) => {
+test('plan enrolment count includes scheduled assignments and excludes ended, waived or superseded benefits', async ({ page }) => {
   const { errors } = await boot(page, false);
   const rows = [
     { ...initialEnrollment, effectiveFrom: '2099-01-01', effectiveTo: '2099-01-31' },
     { ...initialEnrollment, id: 'scheduled-successor', effectiveFrom: '2099-02-01' },
     { ...initialEnrollment, id: 'ended-enrollment', effectiveFrom: '2026-01-01', effectiveTo: '2026-01-31' },
     { ...initialEnrollment, id: 'waived-enrollment', status: 'Waived' },
+    { ...initialEnrollment, id: 'superseded-enrollment', status: 'Superseded', employeeId: 43 },
   ];
   await page.route('**/api/compensation/benefits/enrollments', route => route.fulfill({ json: rows }));
   await page.reload();
   await expect(page.getByTestId('benefit-plan-list')).toContainText('1 enrolled');
-  await page.getByRole('tab', { name: 'Enrolments (4)' }).click();
+  await page.getByRole('tab', { name: 'Enrolments (5)' }).click();
   const table = page.getByTestId('enrollments-table');
   await expect(table.getByText('Scheduled', { exact: true })).toHaveCount(2);
   await expect(table.getByText('Ended', { exact: true })).toBeVisible();
   await expect(table.getByText('Waived', { exact: true })).toBeVisible();
+  await expect(table.getByText('Replaced', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });

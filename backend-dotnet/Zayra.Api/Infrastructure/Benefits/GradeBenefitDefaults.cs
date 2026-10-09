@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -16,9 +17,88 @@ public sealed record GradeBenefitDefaultWitness(Guid? GradeId,
         JsonSerializer.Serialize(new GradeBenefitDefaultWitness(gradeId, benefit));
 }
 
+public sealed record GradeBenefitDraftPlacement(Guid? GradeId, Guid? CompanyId, DateOnly JoiningDate,
+    DateOnly? ConfirmationDate, DateOnly? ProbationEndDate)
+{
+    public static GradeBenefitDraftPlacement Capture(Employee employee) => new(employee.GradeId, employee.CompanyId,
+        DateOnly.FromDateTime(employee.JoiningDate), employee.ConfirmationDate, employee.ProbationEndDate);
+}
+
 public static class GradeBenefitDefaults
 {
+    public const string SupersededStatus = "Superseded";
     private sealed record Catalog(IReadOnlyList<BenefitPlan> Plans, IReadOnlyList<BenefitEligibilityRule> Rules, IReadOnlyDictionary<Guid, int> GradeLevels);
+
+    /// <summary>Replaces only untouched automatic draft defaults. The caller owns the transaction and
+    /// holds the employee row and benefits locks before reading or editing the employee.</summary>
+    public static async Task ReconcileDraftAsync(ZayraDbContext db, Employee employee,
+        GradeBenefitDraftPlacement previousPlacement, Guid? actorId, CancellationToken ct)
+    {
+        var currentPlacement = GradeBenefitDraftPlacement.Capture(employee);
+        if (previousPlacement == currentPlacement || employee.TenantId is not Guid tenantId
+            || employee.ActivatedAtUtc is not null || !string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)) return;
+        var occupyingStatuses = EstablishmentOccupancy.OccupyingStatuses.Select(x => x.ToLowerInvariant()).ToArray();
+        if (await db.EmployeeStatusHistories.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id
+            && (occupyingStatuses.Contains(x.OldStatus.ToLower()) || occupyingStatuses.Contains(x.NewStatus.ToLower())), ct)) return;
+        if (await Entitlements.EntitlementMatrixService.ReleaseAEnabledAsync(db, tenantId, ct)) return;
+
+        var defaults = await db.BenefitEnrollments.Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id
+            && x.AssignmentSource == "GradeDefault" && x.Status != SupersededStatus).ToListAsync(ct);
+        const string protectedMessage = "This draft has a grade benefit with an individual exception, waiver, or financial history. "
+            + "HR must resolve that benefit through its governed review before changing the draft's grade, company, joining date, or probation dates.";
+        if (defaults.Any(x => !IsUntouchedDefault(x))) throw new InvalidOperationException(protectedMessage);
+        var ids = defaults.Select(x => x.Id).ToArray();
+        if (ids.Length > 0)
+        {
+            if (await db.BenefitContributions.AnyAsync(x => x.TenantId == tenantId && ids.Contains(x.BenefitEnrollmentId), ct)
+                || await db.BenefitPayrollDeductionLinks.AnyAsync(x => x.TenantId == tenantId && ids.Contains(x.BenefitEnrollmentId), ct))
+                throw new InvalidOperationException(protectedMessage);
+            var payroll = await db.PayrollAdjustments.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id
+                && x.SourceType == BenefitPayroll.RecurringSource).ToListAsync(ct);
+            if (payroll.Any(x => BenefitPayroll.Read(x) is not { } witness || ids.Contains(witness.ChainId)))
+                throw new InvalidOperationException(protectedMessage);
+            var claims = await db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId
+                && x.RequestedForEmployeeId == employee.Id && x.EntityName == BenefitClaims.EntityName
+                && (x.Status == "Pending" || x.Status == "Approved")).ToListAsync(ct);
+            if (claims.Any(x => BenefitClaims.Read(x) is { } claim && (ids.Contains(claim.EnrollmentId) || ids.Contains(claim.EnrollmentChainId))))
+                throw new InvalidOperationException(protectedMessage);
+        }
+
+        var now = DateTime.UtcNow;
+        foreach (var row in defaults)
+        {
+            // Preserve agreed dates and both immutable snapshots as evidence; these rows never become payable again.
+            row.Status = SupersededStatus;
+            row.UpdatedAtUtc = now;
+            row.UpdatedBy = actorId;
+            db.AuditLogs.Add(new AuditLog
+            {
+                TenantId = tenantId, CompanyId = row.CompanyId, UserId = actorId,
+                EntityName = nameof(BenefitEnrollment), EntityId = row.Id.ToString(),
+                Action = "benefits.grade_default.superseded",
+                Metadata = JsonSerializer.Serialize(new { EmployeeId = employee.Id, PreviousPlacement = previousPlacement, CurrentPlacement = currentPlacement }),
+            });
+        }
+        await StageDefaultsAsync(db, employee, actorId, ct);
+    }
+
+    private static bool IsUntouchedDefault(BenefitEnrollment row)
+    {
+        if (row.Status != "Active" || row.HasException || row.OriginalEnrollmentId.HasValue || row.ApprovalRequestId.HasValue
+            || !string.IsNullOrWhiteSpace(row.ExceptionReason) || row.CoverageTier != "Employee"
+            || row.RequestedBenefitAmount.HasValue || row.ReviewDate.HasValue) return false;
+        try
+        {
+            var witness = JsonSerializer.Deserialize<GradeBenefitDefaultWitness>(row.EligibilitySnapshotJson);
+            var original = witness?.DefaultBenefit;
+            return original is not null && original.BenefitPlanId == row.BenefitPlanId
+                && original.EligibilityRuleId == row.EligibilityRuleId && (original.EntitlementTier ?? string.Empty) == row.EntitlementTier
+                && original.MaximumBenefitAmount == row.MaximumBenefitAmount
+                && (original.LimitPeriod ?? BenefitLimitPeriods.PerEnrollment) == row.LimitPeriod
+                && original.EffectiveFrom == row.EffectiveFrom && original.EffectiveTo == row.EffectiveTo;
+        }
+        catch (JsonException) { return false; }
+    }
 
     private static async Task<Catalog> LoadAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) => new(
         await db.BenefitPlans.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted).OrderBy(x => x.Name).ToListAsync(ct),
@@ -43,12 +123,16 @@ public static class GradeBenefitDefaults
             var ids = batch.Select(x => x.Id).ToArray();
             var existing = await db.BenefitEnrollments.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId)).ToListAsync(ct);
-            existing.AddRange(db.BenefitEnrollments.Local.Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId)));
+            var local = db.BenefitEnrollments.Local.Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId)).ToList();
+            var localIds = local.Select(x => x.Id).ToHashSet();
+            existing.RemoveAll(x => localIds.Contains(x.Id));
+            existing.AddRange(local);
             foreach (var employee in batch)
             foreach (var item in Preview(catalog, employee, DateOnly.FromDateTime(employee.JoiningDate)).Where(x => x.Eligible))
             {
                 // A previous assignment or waiver is intentional. Replaying a hire must never duplicate or undo it.
                 if (existing.Any(x => x.EmployeeId == employee.Id && x.BenefitPlanId == item.BenefitPlanId
+                    && !(x.AssignmentSource == "GradeDefault" && x.Status == SupersededStatus && !x.HasException)
                     && (!item.EffectiveTo.HasValue || x.EffectiveFrom <= item.EffectiveTo)
                     && (!x.EffectiveTo.HasValue || x.EffectiveTo >= item.EffectiveFrom))) continue;
                 var row = new BenefitEnrollment

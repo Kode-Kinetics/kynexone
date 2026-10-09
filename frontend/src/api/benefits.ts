@@ -249,7 +249,7 @@ export interface EmployeeBenefitPackageItem extends BenefitEnrollment {
   planCode: string;
   currency: string;
   classification: BenefitPlan['classification'];
-  effectiveStatus: 'Current' | 'Scheduled' | 'Expired' | 'Waived' | 'Cancelled';
+  effectiveStatus: 'Current' | 'Scheduled' | 'Expired' | 'Waived' | 'Cancelled' | 'Superseded';
   reviewDate: string | null;
   reviewRequired: boolean;
   reviewReasons: string[];

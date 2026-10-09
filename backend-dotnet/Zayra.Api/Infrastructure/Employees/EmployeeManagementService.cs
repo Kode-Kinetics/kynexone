@@ -10,8 +10,10 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -268,8 +270,24 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        var publicId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted)
+            .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
+        if (!publicId.HasValue) return null;
+        var updateAuditId = Guid.NewGuid();
+        return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, publicId.Value, UpdateOnceAsync, cancellationToken);
+
+        async Task<EmployeeDetailDto?> UpdateOnceAsync()
+        {
+        // Stable audit marker makes a lost COMMIT acknowledgement an idempotent retry.
+        if (await _db.AuditLogs.AsNoTracking().AnyAsync(x => x.Id == updateAuditId && x.TenantId == tenantId
+            && x.Action == "employee.updated" && x.EntityId == id.ToString(), cancellationToken))
+            return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+        // Same lifecycle lock order as activation: tenant anchor, then the employee. Re-read after locks.
+        await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag).FirstOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+        var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorPositionId = employee.PositionId;
         // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
         var priorWorkEmail = employee.WorkEmail;
@@ -291,6 +309,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
@@ -319,11 +338,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
+        var updateAudit = AuthAuditEntry.Create(updateAuditId, DateTime.UtcNow, "employee.updated", "Employee", id.ToString(), context with { TenantId = tenantId });
+        updateAudit.CompanyId = employee.CompanyId;
+        _db.AuditLogs.Add(updateAudit);
+        await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
         return updated is null ? null : updated with { LoginUsernameDiffers = workEmailAudit.LoginUsernameDiffers };
+        }
     }
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)

@@ -107,7 +107,7 @@ export function MyBenefitsPage() {
                     : 'bg-slate-200 text-slate-600 dark:bg-white/[0.08] dark:text-slate-300'}`}>{t(status)}</span>
                 </div>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t(e.assignmentSource === 'GradeDefault' ? 'Assigned from your grade' : ['IndividualAdditional', 'IndividualException'].includes(e.assignmentSource) ? 'Additional benefit' : 'Assigned by HR')}{e.hasException && e.assignmentSource === 'GradeDefault' ? ` · ${t('Individual terms')}` : ''}</p>
-                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Covered from {date}', { date: format.date(e.effectiveFrom) })}{e.effectiveTo ? ` · ${t('Ends {date}', { date: format.date(e.effectiveTo) })}` : ` · ${t('Ongoing')}`}</p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{status === 'Superseded' ? t('Replaced before activation after the employee’s draft details changed.') : <>{t('Covered from {date}', { date: format.date(e.effectiveFrom) })}{e.effectiveTo ? ` · ${t('Ends {date}', { date: format.date(e.effectiveTo) })}` : ` · ${t('Ongoing')}`}</>}</p>
                 <BenefitPolicySummary policy={e.paymentPolicy} currency={e.currency} />
                 {e.grantReason && <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{e.grantReason}</p>}
                 {e.reviewRequired && <p className="mt-2 text-xs font-semibold text-amber-700 dark:text-amber-300">{t('Pending HR review')}</p>}

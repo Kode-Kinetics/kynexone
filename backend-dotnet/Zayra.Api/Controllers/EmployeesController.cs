@@ -18,6 +18,8 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Benefits;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
@@ -3692,21 +3694,37 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
-        // A WORK-EMAIL edit runs in ONE explicit transaction: the employee row lock WorkEmailLoginGuard takes holds to
-        // commit (serialising with invitations, links and reset links, which read the setter under the same lock), and
-        // the new address commits together with its employee.work_email_changed row — never one without the other.
+        // Work-email and draft entitlement edits commit atomically with their audit/default rows.
+        // Placement edits also serialize with activation and individual benefit writers.
+        var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
         if (!_db.Database.IsRelational()
-            || !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase)))
+            || (!placementEdit && !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))))
             return await UpdateEmployeeCoreAsync(id, request, cancellationToken);
 
         IActionResult? result = null;
+        var operationId = Guid.NewGuid();
+        var tenantId = RequireTenant();
         await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             _db.ChangeTracker.Clear();
+            // A lost COMMIT acknowledgement must not duplicate a mixed grade + salary approval.
+            if (placementEdit && result is not null && await _db.AuditLogs.AsNoTracking()
+                .AnyAsync(x => x.Id == operationId && x.TenantId == tenantId, cancellationToken)) return;
             await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
             result = await UpdateEmployeeCoreAsync(id, request, cancellationToken);
             if (result is ObjectResult { StatusCode: >= 200 and < 300 } or OkResult or AcceptedResult)
+            {
+                if (placementEdit)
+                {
+                    var companyId = await _db.Employees.Where(x => x.Id == id && x.TenantId == tenantId)
+                        .Select(x => x.CompanyId).SingleAsync(cancellationToken);
+                    _db.AuditLogs.Add(new AuditLog { Id = operationId, TenantId = tenantId, CompanyId = companyId,
+                        UserId = GetUserId(), EntityName = nameof(Employee), EntityId = id.ToString(),
+                        Action = "employee.draft_benefits.update_committed" });
+                    await _db.SaveChangesAsync(cancellationToken);
+                }
                 await transaction.CommitAsync(cancellationToken);
+            }
             else
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -3719,7 +3737,21 @@ public class EmployeesController : ControllerBase
     private async Task<IActionResult> UpdateEmployeeCoreAsync(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+        var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
+        if (placementEdit && _db.Database.IsRelational())
+        {
+            var employeeKey = await _db.Employees.AsNoTracking()
+                .Where(x => x.Id == id && x.TenantId == tenantId).Select(x => (Guid?)x.PublicId)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (employeeKey is null) return NotFound();
+            await FinanceDecisionSerializer.AcquireAsync(_db, AdditionalBenefitGrants.LockScope,
+                tenantId, employeeKey.Value, cancellationToken);
+            await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+        }
+        var employeeQuery = _db.Employees.AsQueryable();
+        if (placementEdit) employeeQuery = employeeQuery.TagWith(RowLockingInterceptor.ForUpdateTag);
+        var employee = await employeeQuery.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
@@ -3778,6 +3810,7 @@ public class EmployeesController : ControllerBase
         // resulting (department, designation) pair change routes through the guard on BOTH
         // persistence branches below (department/designation are not SensitiveFields, so they ride
         // the immediate branch even when mixed with sensitive fields).
+        var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
         // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
@@ -3820,6 +3853,8 @@ public class EmployeesController : ControllerBase
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
+                    await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
                     await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
@@ -3880,6 +3915,8 @@ public class EmployeesController : ControllerBase
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
+            await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
@@ -3905,6 +3942,21 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
+    {
+        if (!changedFields.Contains("grade") || employee.Status != "Draft" || employee.ActivatedAtUtc is not null) return;
+        var term = employee.Grade.Trim();
+        if (term.Length == 0) { employee.GradeId = null; return; }
+        var candidates = await _db.Grades.AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.IsActive && !x.IsDeleted
+                && (x.Code.ToLower() == term.ToLower() || x.Name.ToLower() == term.ToLower()))
+            .Take(2).ToListAsync(ct);
+        if (candidates.Count != 1)
+            throw new InvalidOperationException("Select one active grade from company master data before changing this draft employee's benefits.");
+        employee.GradeId = candidates[0].Id;
+        employee.Grade = candidates[0].Code;
     }
 
     /// <summary>F02 — a GOSI first-registration date is null (clear it back to Unknown) or an ISO calendar

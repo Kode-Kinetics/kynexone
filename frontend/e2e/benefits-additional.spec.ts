@@ -198,6 +198,44 @@ async function mockEmployeeProfile(page: Page) {
   });
 }
 
+test('superseded draft defaults remain read-only history in HR and ESS', async ({ page }) => {
+  const { errors, directWrites } = await boot(page, { manage: true });
+  await mockEmployeeProfile(page);
+  const current = { ...baseline, planName: medical.name, planCode: medical.code, planType: medical.planType, currency: 'SAR', effectiveStatus: 'Current', reviewRequired: false, currentEmployeeAmount: null, currentEmployerAmount: null, deductions: [] };
+  const replaced = { ...current, id: 'replaced-default', planName: 'Previous grade medical', entitlementTier: 'Silver', maximumBenefitAmount: 5000, status: 'Superseded', effectiveStatus: 'Superseded' };
+  await page.route(`**${base}/employees/42/package`, route => route.fulfill({ json: { employeeId: 42, employeeName: 'Alex Morgan', companyId, gradeId: 'G5', asOf: '2026-10-09', enrollments: [current, replaced], additionalRequests: [] } }));
+  await page.route(`**${base}/enrollments/${replaced.id}`, route => route.fulfill({ json: { enrollment: replaced, exceptions: [], contributions: [], links: [], deductions: [] } }));
+  await page.route('**/api/ess/benefits', route => route.fulfill({ json: { employeeId: 42, enrollments: [current, replaced] } }));
+
+  await page.goto('/people?employeeId=42&tab=benefits');
+  const panel = page.getByTestId('employee-benefits-panel');
+  await expect(panel.getByText(medical.name, { exact: true })).toBeVisible();
+  await expect(panel.getByText(replaced.planName, { exact: true })).toBeHidden();
+  await panel.getByText('Past benefits (1)', { exact: true }).click();
+  const history = panel.locator('li').filter({ has: page.getByText(replaced.planName, { exact: true }) });
+  await expect(history.getByText('Replaced', { exact: true })).toBeVisible();
+  await expect(history.getByRole('button', { name: 'Adjust existing benefit', exact: true })).toHaveCount(0);
+  await history.getByRole('button', { name: 'View benefit', exact: true }).click();
+  const drawer = page.getByRole('dialog', { name: 'Enrolment detail', exact: true });
+  await expect(drawer.getByText('Replaced before activation after the employee’s draft details changed.', { exact: true })).toBeVisible();
+  await expect(drawer.getByRole('button', { name: 'Adjust existing benefit', exact: true })).toHaveCount(0);
+  await expect(drawer.getByRole('form', { name: 'Apply benefit exception' })).toHaveCount(0);
+  await expect(drawer.getByRole('form', { name: 'Record contribution' })).toHaveCount(0);
+  await expect(drawer.getByRole('form', { name: 'Link payroll deduction' })).toHaveCount(0);
+
+  await page.goto('/ess/benefits');
+  const benefits = page.getByTestId('my-benefits-list');
+  await expect(benefits.getByText(medical.name, { exact: true })).toBeVisible();
+  await expect(benefits.getByText(replaced.planName, { exact: true })).toHaveCount(0);
+  await benefits.getByRole('button', { name: 'Past benefits (1)', exact: true }).click();
+  const oldBenefit = benefits.getByRole('article').filter({ has: page.getByRole('heading', { name: replaced.planName, exact: true }) });
+  await expect(oldBenefit.getByText('Replaced', { exact: true })).toBeVisible();
+  await expect(oldBenefit).not.toContainText('Covered from');
+  await expect(oldBenefit).toContainText('Replaced before activation');
+  expect(directWrites()).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 test('an employee Benefits URL opens the populated panel before activation cards and the mobile list', async ({ page }, info) => {
   const { errors } = await boot(page, { extra: true });
   await mockEmployeeProfile(page);

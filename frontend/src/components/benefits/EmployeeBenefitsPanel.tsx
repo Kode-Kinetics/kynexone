@@ -62,6 +62,7 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
         <StatusPill active={status === 'Active'} label={status} />
       </div>
       <div className="mt-3 text-xs text-slate-600 dark:text-slate-300"><AssignmentLabel enrollment={enrollment} /></div>
+      {status === 'Superseded' && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Replaced before activation after the employee’s draft details changed.')}</p>}
       <p className="mt-3 text-sm font-semibold text-slate-800 dark:text-slate-100">{enrollment.maximumBenefitAmount === null ? t('No monetary cap') : format.money(enrollment.maximumBenefitAmount, enrollment.currency)}<span className="text-xs font-normal text-slate-500 dark:text-slate-400"> · {t(enrollment.limitPeriod === 'PerEnrollment' ? 'Per enrollment' : enrollment.limitPeriod)}</span></p>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Starts {date}', { date: format.date(enrollment.effectiveFrom) })}{enrollment.effectiveTo ? ` · ${t('Ends {date}', { date: format.date(enrollment.effectiveTo) })}` : ''}</p>
       <BenefitPolicySummary policy={enrollment.paymentPolicy} currency={enrollment.currency} />

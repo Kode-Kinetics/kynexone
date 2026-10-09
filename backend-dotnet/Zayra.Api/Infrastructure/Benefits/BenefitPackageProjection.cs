@@ -12,8 +12,8 @@ public static class BenefitPackageProjection
     public static BenefitEnrollmentDto From(BenefitEnrollment row, BenefitPlan? plan, Employee employee, DateOnly today)
     {
         var reasons = new List<string>();
-        var effective = row.Status == "Cancelled" ? "Cancelled" : row.EffectiveTo < today ? "Expired" : row.EffectiveFrom > today ? "Scheduled" : row.Status == "Active" ? "Current" : row.Status;
-        var terminal = effective is "Expired" or "Cancelled";
+        var effective = row.Status is "Cancelled" or GradeBenefitDefaults.SupersededStatus ? row.Status : row.EffectiveTo < today ? "Expired" : row.EffectiveFrom > today ? "Scheduled" : row.Status == "Active" ? "Current" : row.Status;
+        var terminal = effective is "Expired" or "Cancelled" or GradeBenefitDefaults.SupersededStatus;
         AdditionalBenefitGrantRequest? terms = null;
         var currency = plan?.Currency;
         var classification = plan?.Classification;
