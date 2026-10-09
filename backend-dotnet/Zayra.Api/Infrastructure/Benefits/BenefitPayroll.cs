@@ -26,6 +26,8 @@ public static class BenefitPayroll
     public const string RecurringSource = "BenefitRecurring";
     public const string ClaimSource = "BenefitClaim";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    /// <summary>Serializes only the agreed, typed payment witness, never a payroll or Employee entity.</summary>
+    public static string SerializeWitness(BenefitPayrollWitness witness) => JsonSerializer.Serialize(witness, Json);
     public static bool IsBenefit(PayrollAdjustment row) => row.SourceType is RecurringSource or ClaimSource;
     public static BenefitPayrollWitness? Read(PayrollAdjustment row)
     {
@@ -129,7 +131,7 @@ public static class BenefitPayroll
                 envelope.Currency, start, end, policyJson, component);
             var row = new PayrollAdjustment { TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = enrollment.EmployeeId,
                 AdjustmentType = component.Code, Amount = amount, Reason = planName, Status = "Approved",
-                SourceType = source, SourceId = sourceId, SourceSnapshotJson = JsonSerializer.Serialize(witness, Json) };
+                SourceType = source, SourceId = sourceId, SourceSnapshotJson = SerializeWitness(witness) };
             db.PayrollAdjustments.Add(row); allSourceRows.Add(row); sourceIds[(source, sourceId)] = row;
             expected.Add(row.Id); results.Add(row);
             db.AuditLogs.Add(new AuditLog { TenantId = tenantId, CompanyId = companyId, EntityName = "PayrollAdjustment",

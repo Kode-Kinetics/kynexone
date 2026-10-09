@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
@@ -6,6 +7,14 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Benefits;
+
+/// <summary>Restricted grade-default decision evidence; never serializes an Employee entity.</summary>
+public sealed record GradeBenefitDefaultWitness(Guid? GradeId,
+    [property: JsonPropertyName("defaultBenefit")] GradeBenefitDefaultDto DefaultBenefit)
+{
+    public static string Serialize(Guid? gradeId, GradeBenefitDefaultDto benefit) =>
+        JsonSerializer.Serialize(new GradeBenefitDefaultWitness(gradeId, benefit));
+}
 
 public static class GradeBenefitDefaults
 {
@@ -51,7 +60,7 @@ public static class GradeBenefitDefaults
                     EffectiveFrom = item.EffectiveFrom, EffectiveTo = item.EffectiveTo,
                     AssignmentSource = "GradeDefault", CreatedBy = actorId,
                     PaymentPolicySnapshotJson = BenefitPaymentPolicies.Snapshot(catalog.Plans.First(x => x.Id == item.BenefitPlanId)),
-                    EligibilitySnapshotJson = JsonSerializer.Serialize(new { employee.GradeId, defaultBenefit = item }),
+                    EligibilitySnapshotJson = GradeBenefitDefaultWitness.Serialize(employee.GradeId, item),
                 };
                 db.BenefitEnrollments.Add(row);
                 db.AuditLogs.Add(new AuditLog
