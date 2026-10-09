@@ -247,9 +247,7 @@ async function advanceEmployeeToEmployment(dialog: Locator) {
 }
 
 async function advanceEmployeeToReview(dialog: Locator) {
-  for (const step of ['Payroll', 'Salary', 'Identity', 'Review']) {
-    await dialog.getByRole('button', { name: `Next: ${step}`, exact: true }).click();
-  }
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
 }
 
@@ -465,7 +463,7 @@ test("Add Employee: a '+' or a non-English character is refused as HR types, bef
   await expect(dialog.getByTestId('work-email-problem')).toHaveText("Work email can't contain '+'.");
   await local.fill('monä');
   await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
-  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Place them in the organization', exact: true })).toBeVisible();
   await expect(dialog.getByText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.')).toHaveCount(2);
   expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
@@ -621,7 +619,7 @@ test('a different domain is refused, never quietly changed to the company one', 
   await local.fill('noah@gmail.com');
   await expect(local).toHaveValue('noah@gmail.com');
   await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email must end in @evostel.com.');
-  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Place them in the organization', exact: true })).toBeVisible();
   expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
   // Typing the company's own domain is just the full address.
