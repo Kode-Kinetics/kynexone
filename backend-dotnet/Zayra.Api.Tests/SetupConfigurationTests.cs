@@ -289,6 +289,43 @@ public sealed class SetupConfigurationApplyTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ConcurrentTenantsWithIdenticalCodesKeepPoliciesAndEligibilityIsolated()
+    {
+        var first = await Seed();
+        var second = await Seed();
+        var firstDraft = Draft();
+        var secondDraft = Draft() with
+        {
+            Grades = [SetupConfigurationTests.Grade() with { MinSalary = 7000, MidSalary = 8000, MaxSalary = 9000 }],
+            LeavePolicies = [SetupConfigurationTests.Leave() with { Name = "Second tenant annual", AnnualEntitlementDays = 27 }],
+            BenefitPlans = [SetupConfigurationTests.Benefit() with { Name = "Second tenant medical" }],
+        };
+        async Task<IActionResult> Apply(Guid tenant, SetupDraft draft)
+        {
+            await using var db = fixture.CreateDb();
+            return await Controller(db, tenant).Apply(Request(draft), CancellationToken.None);
+        }
+        var results = await Task.WhenAll(Apply(first.Tenant, firstDraft), Apply(second.Tenant, secondDraft));
+        results.Should().OnlyContain(r => r is OkObjectResult);
+
+        await using var verify = fixture.CreateDb();
+        foreach (var (scope, draft) in new[] { (first, firstDraft), (second, secondDraft) })
+        {
+            var grade = await verify.Grades.SingleAsync(g => g.TenantId == scope.Tenant);
+            grade.MidSalary.Should().Be(draft.Grades.Single().MidSalary);
+            var policy = await verify.LeavePolicies.SingleAsync(p => p.TenantId == scope.Tenant);
+            policy.CompanyId.Should().Be(scope.Company);
+            policy.Name.Should().Be(draft.LeavePolicies.Single().Name);
+            policy.AnnualEntitlementDays.Should().Be(draft.LeavePolicies.Single().AnnualEntitlementDays);
+            (await verify.LeavePolicyEligibilities.SingleAsync(p => p.TenantId == scope.Tenant)).GradeId.Should().Be(grade.Id);
+            var benefit = await verify.BenefitPlans.SingleAsync(p => p.TenantId == scope.Tenant);
+            benefit.CompanyId.Should().Be(scope.Company);
+            benefit.Name.Should().Be(draft.BenefitPlans.Single().Name);
+            (await verify.BenefitEligibilityRules.SingleAsync(p => p.TenantId == scope.Tenant)).GradeId.Should().Be(grade.Id);
+        }
+    }
+
+    [Fact]
     public async Task CompanyScopedGovernanceAndBranchlessAttendanceAreRefused()
     {
         var (tenant, company) = await Seed();
