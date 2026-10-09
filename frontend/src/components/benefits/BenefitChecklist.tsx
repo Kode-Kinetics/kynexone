@@ -10,6 +10,7 @@ import { AdditionalBenefitForm, type BenefitEmployee } from './AdditionalBenefit
 import { BenefitExceptionForm } from './BenefitExceptionForm';
 import { AdditionalBenefitRequestDetail } from './AdditionalBenefitRequestDetail';
 import { COST_FREQUENCY_LABELS, PERIOD_LABELS, TREATMENT_LABELS } from './AdditionalBenefitSummary';
+import { BenefitPolicySummary, policyTreatment } from './BenefitPaymentPolicy';
 import { COVERAGE_TIERS, FormError, INPUT, LABEL, Modal, PRIMARY, SECONDARY, today } from './benefitUi';
 
 type Selection = {
@@ -22,7 +23,7 @@ type Selection = {
 const initialTerms = (plan: BenefitPlan): Selection => ({
   selected: false, effectiveFrom: plan.effectiveFrom > today() ? plan.effectiveFrom : today(),
   effectiveTo: plan.effectiveTo ?? '', reviewDate: '', limit: '', coverageTier: 'Employee', entitlementTier: plan.name,
-  limitPeriod: 'Annual', treatment: ['Medical', 'Dental', 'Life', 'Vision'].includes(plan.planType) ? 'Coverage'
+  limitPeriod: 'Annual', treatment: plan.paymentPolicy && (plan.policyVersion ?? 0) > 0 ? policyTreatment(plan.paymentPolicy) : ['Medical', 'Dental', 'Life', 'Vision'].includes(plan.planType) ? 'Coverage'
     : ['Education', 'Reimbursement'].includes(plan.planType) ? 'Reimbursement' : 'OtherNonCash',
   requestedBenefitAmount: '', plannedEmployerCost: '', plannedEmployeeCost: '', costFrequency: 'Monthly',
 });
@@ -201,6 +202,7 @@ export function BenefitChecklist({ plans, employee: fixedEmployee, initialPlanId
           return <section key={plan.id} aria-label={plan.name} className={`rounded-xl border p-3 ${row.selected ? 'border-sapphire/40 bg-sapphire/[0.03]' : 'border-slate-200 dark:border-white/10'}`}>
             <label className="flex cursor-pointer items-center gap-3 text-sm font-semibold text-slate-800 dark:text-slate-100"><input type="checkbox" aria-label={plan.name} checked={row.selected} disabled={saving || !!row.request} className="h-4 w-4 shrink-0 accent-sapphire" onChange={event => update(plan, { selected: event.target.checked })} /><span className="min-w-0 flex-1">{plan.name}</span><span className="text-xs font-normal text-slate-500">{plan.currency}</span></label>
             {row.request ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-700 dark:text-emerald-300"><span>{t('Pending approval')}</span><button type="button" className={SECONDARY} onClick={() => setRequestId(row.request!.id)}>{t('View request')}</button></div> : row.selected && <div className="mt-3 space-y-3">
+              <BenefitPolicySummary policy={plan.paymentPolicy} currency={plan.currency} />
               <fieldset disabled={saving} className="grid gap-3 sm:grid-cols-3">
                 <label className={LABEL}>{t('Starts')}<input type="date" className={INPUT} required min={plan.effectiveFrom > today() ? plan.effectiveFrom : today()} max={plan.effectiveTo ?? undefined} value={row.effectiveFrom} onChange={event => update(plan, { effectiveFrom: event.target.value })} /></label>
                 <label className={LABEL}>{t('Ends')}<input type="date" className={INPUT} required={!!plan.effectiveTo} min={row.effectiveFrom} max={plan.effectiveTo ?? undefined} value={row.effectiveTo} onChange={event => update(plan, { effectiveTo: event.target.value })} /></label>
@@ -211,12 +213,12 @@ export function BenefitChecklist({ plans, employee: fixedEmployee, initialPlanId
                 <label className={LABEL}>{t('Coverage tier')}<select aria-label={t('Coverage tier')} className={INPUT} value={row.coverageTier} onChange={event => update(plan, { coverageTier: event.target.value })}>{COVERAGE_TIERS.map(value => <option key={value} value={value}>{t(value)}</option>)}</select></label>
                 <label className={LABEL}>{t('Entitlement tier')}<input className={INPUT} required maxLength={100} value={row.entitlementTier} onChange={event => update(plan, { entitlementTier: event.target.value })} /></label>
                 <label className={LABEL}>{t('Limit period')}<select aria-label={t('Limit period')} className={INPUT} value={row.limitPeriod} onChange={event => update(plan, { limitPeriod: event.target.value as Selection['limitPeriod'] })}>{Object.entries(PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}</select></label>
-                <label className={LABEL}>{t('Benefit treatment')}<select aria-label={t('Benefit treatment')} className={INPUT} value={row.treatment} onChange={event => update(plan, { treatment: event.target.value as Selection['treatment'] })}>{Object.entries(TREATMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}</select></label>
+                {!(plan.policyVersion ?? 0) && <label className={LABEL}>{t('Benefit treatment')}<select aria-label={t('Benefit treatment')} className={INPUT} value={row.treatment} onChange={event => update(plan, { treatment: event.target.value as Selection['treatment'] })}>{Object.entries(TREATMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}</select></label>}
                 <label className={LABEL}>{t('Enrolled value')}<input type="number" className={INPUT} min="0.01" max={row.limit || undefined} step="0.01" value={row.requestedBenefitAmount} onChange={event => update(plan, { requestedBenefitAmount: event.target.value })} /></label>
                 <label className={LABEL}>{t('Planned employer cost')}<input type="number" className={INPUT} min="0" step="0.01" value={row.plannedEmployerCost} onChange={event => update(plan, { plannedEmployerCost: event.target.value })} /></label>
                 <label className={LABEL}>{t('Planned employee cost')}<input type="number" className={INPUT} min="0" max={plan.classification === 'Mandatory' ? 0 : undefined} step="0.01" value={row.plannedEmployeeCost} onChange={event => update(plan, { plannedEmployeeCost: event.target.value })} /></label>
                 <label className={LABEL}>{t('Cost frequency')}<select aria-label={t('Cost frequency')} className={INPUT} value={row.costFrequency} onChange={event => update(plan, { costFrequency: event.target.value as Selection['costFrequency'] })}>{Object.entries(COST_FREQUENCY_LABELS).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}</select></label>
-              </fieldset><p className="mt-2 text-slate-500">{t('Approval assigns the benefit. Payments, contributions and payroll deductions must be recorded separately.')}</p></details>
+              </fieldset><p className="mt-2 text-slate-500">{t((plan.policyVersion ?? 0) > 0 ? 'The plan’s payment policy determines payroll and claims. Planned costs do not change the payment amount.' : 'Approval assigns the benefit. Payments, contributions and payroll deductions must be recorded separately.')}</p></details>
               <FormError message={row.error || checkErrors[plan.id] || blocked(plan.id).map(item => item.detail).join(' ') || (checks[plan.id]?.alreadyEnrolled ? t('This employee already has this benefit. Adjust the existing benefit instead.') : null)} />
             </div>}
           </section>;

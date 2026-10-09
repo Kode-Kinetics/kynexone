@@ -29,10 +29,11 @@ public record AdditionalBenefitGrantRequest(
 public record AdditionalBenefitEndRequest(DateOnly EndDate, string Reason, string InternalJustification, DateTime? ExpectedUpdatedAtUtc);
 
 public record AdditionalBenefitProposal(int Version, Guid RequestId, Guid TenantId, Guid? CompanyId, Guid? GradeId,
-    string EmployeeName, string PlanName, string Currency, AdditionalBenefitGrantRequest Terms, BenefitEnrollmentDto? Baseline, string PlanClassification = BenefitPlanClassifications.Discretionary, string? WorkflowSha256 = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null);
+    string EmployeeName, string PlanName, string Currency, AdditionalBenefitGrantRequest Terms, BenefitEnrollmentDto? Baseline, string PlanClassification = BenefitPlanClassifications.Discretionary, string? WorkflowSha256 = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null, string? PaymentPolicySnapshot = null, int PaymentPolicyVersion = 0);
 public record AdditionalBenefitRequestDto(Guid Id, string Status, int EmployeeId, string EmployeeName, Guid BenefitPlanId,
     string PlanName, string Currency, string? RequestedByName, DateTime CreatedAtUtc, AdditionalBenefitGrantRequest Terms,
-    BenefitEnrollmentDto? Baseline, Guid ApprovalRequestId, Guid? AppliedEnrollmentId, ApprovalRequestDto? Approval = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null);
+    BenefitEnrollmentDto? Baseline, Guid ApprovalRequestId, Guid? AppliedEnrollmentId, ApprovalRequestDto? Approval = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null,
+    BenefitPaymentPolicy? PaymentPolicy = null, int PaymentPolicyVersion = 0);
 
 /// <summary>Additional entitlement proposals reuse the shared approval witness and decision ledger.
 /// Only final approval stages an enrollment; no money, contribution or deduction is created by a grant.</summary>
@@ -95,7 +96,7 @@ public static class AdditionalBenefitGrants
         var first = route.FirstStep;
         var approver = await router.ResolveApproverAsync(tenantId, employee.Id, first, ct);
         var proposal = new AdditionalBenefitProposal(1, requestId, tenantId, employee.CompanyId, employee.GradeId,
-            employee.FullName, plan.Name, plan.Currency, terms, baseline is null ? null : BenefitEnrollmentDto.From(baseline), plan.Classification, WorkflowDigest(route.Steps), operation, endDate);
+            employee.FullName, plan.Name, plan.Currency, terms, baseline is null ? null : BenefitEnrollmentDto.From(baseline), plan.Classification, WorkflowDigest(route.Steps), operation, endDate, baseline?.PaymentPolicySnapshotJson ?? BenefitPaymentPolicies.Snapshot(plan), plan.PolicyVersion);
         var payload = JsonSerializer.Serialize(proposal, Json);
         var now = DateTime.UtcNow;
         var approval = new ApprovalRequest
@@ -183,7 +184,8 @@ public static class AdditionalBenefitGrants
         catch (JsonException) { }
         if (plan.Classification == BenefitPlanClassifications.Mandatory || originallyMandatory)
             throw new InvalidOperationException("Mandatory benefit coverage cannot be ended or cancelled by an individual request. Use the benefit plan policy.");
-        var affectedFrom = endDate.AddDays(1);
+        var affectedFrom = operation == "Cancel" ? row.EffectiveFrom : endDate.AddDays(1);
+        await BenefitPayroll.EnsureMutableAsync(db, tenantId, row.Id, affectedFrom, ct);
         if (await (from link in db.BenefitPayrollDeductionLinks.AsNoTracking() join run in db.PayrollRuns.AsNoTracking() on link.PayrollRunId equals run.Id
             where link.TenantId == tenantId && run.TenantId == tenantId && link.BenefitEnrollmentId == row.Id && (run.Status == "Locked" || run.Status == "Paid")
                 && (run.Year > affectedFrom.Year || run.Year == affectedFrom.Year && run.Month >= affectedFrom.Month) select link.Id).AnyAsync(ct))
@@ -271,6 +273,8 @@ public static class AdditionalBenefitGrants
         var plan = await ValidateTermsAsync(db, approval.TenantId, employee, terms, clock ?? new TenantClock(db, TimeProvider.System), ct);
         if (plan.Currency != proposal.Currency || plan.Classification != proposal.PlanClassification)
             throw new InvalidOperationException("The benefit plan currency or classification changed after submission. Submit a new request for review.");
+        if (plan.PolicyVersion != proposal.PaymentPolicyVersion)
+            throw new InvalidOperationException("The benefit payment policy changed after submission. Submit a new request for review.");
         var previous = await ValidateBaselineAsync(db, approval.TenantId, employee, terms, ct);
         await EnsureNoOverlapAsync(db, approval.TenantId, terms, approval.Id, ct);
         if (await db.BenefitEnrollments.AnyAsync(e => e.TenantId == approval.TenantId && e.ApprovalRequestId == approval.Id, ct))
@@ -286,7 +290,7 @@ public static class AdditionalBenefitGrants
         row.MaximumBenefitAmount = terms.MaximumBenefitAmount; row.RequestedBenefitAmount = terms.RequestedBenefitAmount;
         row.LimitPeriod = terms.LimitPeriod; row.EffectiveFrom = terms.EffectiveFrom; row.EffectiveTo = terms.EffectiveTo;
         row.ReviewDate = terms.ReviewDate; row.GrantReason = terms.Reason; row.ApprovalRequestId = approval.Id;
-        row.EligibilitySnapshotJson = approval.Payload!; row.Status = "Active"; row.UpdatedBy = context.UserId;
+        row.EligibilitySnapshotJson = approval.Payload!; row.PaymentPolicySnapshotJson = proposal.PaymentPolicySnapshot ?? "{}"; row.Status = "Active"; row.UpdatedBy = context.UserId;
         if (previous is not null && !sameStart)
         {
             previous.EffectiveTo = terms.EffectiveFrom.AddDays(-1); previous.UpdatedBy = context.UserId;
@@ -364,6 +368,7 @@ public static class AdditionalBenefitGrants
         if (row.UpdatedAtUtc?.Ticks / 10 != terms.ExpectedUpdatedAtUtc?.Ticks / 10) throw new InvalidOperationException("The benefit changed after this request was prepared. Refresh and submit a new request.");
         if (terms.EffectiveFrom < row.EffectiveFrom || (row.EffectiveTo.HasValue && terms.EffectiveFrom > row.EffectiveTo))
             throw new InvalidOperationException("The amendment must begin during the existing benefit period.");
+        await BenefitPayroll.EnsureMutableAsync(db, tenantId, row.Id, terms.EffectiveFrom, ct);
         if (terms.EffectiveFrom == row.EffectiveFrom && (await db.BenefitContributions.AnyAsync(x => x.TenantId == tenantId && x.BenefitEnrollmentId == id, ct)
             || await db.BenefitPayrollDeductionLinks.AnyAsync(x => x.TenantId == tenantId && x.BenefitEnrollmentId == id, ct)))
             throw new InvalidOperationException("This benefit has financial history. Use a later amendment date to preserve it.");
@@ -419,9 +424,11 @@ public static class AdditionalBenefitGrants
     public static AdditionalBenefitRequestDto ToDto(ApprovalRequest approval, string? requesterName, Guid? appliedEnrollmentId, ApprovalRequestDto? routing = null)
     {
         var p = Read(approval);
+        var payment = BenefitPaymentPolicies.ReadSnapshotEnvelope(p.PaymentPolicySnapshot);
         return new(approval.Id, approval.Status, p.Terms.EmployeeId, p.EmployeeName, p.Terms.BenefitPlanId, p.PlanName, p.Currency,
             requesterName, approval.CreatedAtUtc, p.Terms, p.Baseline, approval.Id,
-            approval.Status == "Approved" && (p.Operation is "End" or "Cancel") ? p.Baseline?.Id : appliedEnrollmentId, routing, p.Operation, p.EndDate);
+            approval.Status == "Approved" && (p.Operation is "End" or "Cancel") ? p.Baseline?.Id : appliedEnrollmentId, routing, p.Operation, p.EndDate,
+            payment?.Policy, payment?.Version ?? 0);
     }
 
     public static string WorkflowDigest(IEnumerable<ApprovalRouteStep> steps) => Digest(JsonSerializer.Serialize(steps.OrderBy(x => x.StepOrder), Json));

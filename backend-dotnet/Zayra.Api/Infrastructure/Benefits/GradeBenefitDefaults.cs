@@ -50,6 +50,7 @@ public static class GradeBenefitDefaults
                     MaximumBenefitAmount = item.MaximumBenefitAmount, LimitPeriod = item.LimitPeriod ?? BenefitLimitPeriods.PerEnrollment,
                     EffectiveFrom = item.EffectiveFrom, EffectiveTo = item.EffectiveTo,
                     AssignmentSource = "GradeDefault", CreatedBy = actorId,
+                    PaymentPolicySnapshotJson = BenefitPaymentPolicies.Snapshot(catalog.Plans.First(x => x.Id == item.BenefitPlanId)),
                     EligibilitySnapshotJson = JsonSerializer.Serialize(new { employee.GradeId, defaultBenefit = item }),
                 };
                 db.BenefitEnrollments.Add(row);

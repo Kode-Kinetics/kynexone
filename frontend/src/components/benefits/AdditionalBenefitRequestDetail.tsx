@@ -33,7 +33,7 @@ export function AdditionalBenefitRequestContent({ requestId, showApprovalLink = 
       {request.status === 'Pending' && <p className="text-xs text-slate-500">{t('Current coverage stays unchanged until this request is approved.')}</p>}
       <div><p className="text-xs font-semibold text-slate-500">{t('Reason shown to employee')}</p><p className="mt-1 text-slate-700 dark:text-slate-200">{request.terms.reason}</p></div>
       <div><p className="text-xs font-semibold text-slate-500">{t('Internal justification')}</p><p className="mt-1 text-slate-700 dark:text-slate-200">{request.terms.internalJustification}</p></div>
-    </section> : <AdditionalBenefitSummary terms={request.terms} currency={request.currency ?? ''} baseline={request.baseline} employeeName={request.employeeName} planName={request.planName} />}
+    </section> : <AdditionalBenefitSummary terms={request.terms} currency={request.currency ?? ''} baseline={request.baseline} employeeName={request.employeeName} planName={request.planName} paymentPolicy={request.paymentPolicy} />}
     {request.approval && <div className="rounded-lg border border-slate-200 p-3 text-xs dark:border-white/10">
       {request.status === 'Pending' && <p className="text-slate-600 dark:text-slate-300">{t('Awaiting {approver}', { approver: request.approval.currentApproverName || request.approval.currentApproverRole || t('Assigned approver') })}</p>}
       {request.approval.decisionBlockedReason && <p className="mt-1 text-slate-500 dark:text-slate-400">{request.approval.decisionBlockedReason}</p>}

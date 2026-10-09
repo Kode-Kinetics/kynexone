@@ -8,12 +8,13 @@ const education = { ...medical, id: 'education', code: 'EDU', name: 'Education A
 const baseline = { id: 'default-medical', benefitPlanId: medical.id, employeeId: 42, employeeName: 'Alex Morgan', companyId, coverageTier: 'Employee', eligibilityRuleId: 'grade-rule', entitlementTier: 'Gold', maximumBenefitAmount: 25000, requestedBenefitAmount: null, limitPeriod: 'Annual', effectiveFrom: '2026-01-01', effectiveTo: null, status: 'Active', assignmentSource: 'GradeDefault', hasException: false, exceptionReason: null, updatedAtUtc: '2026-10-09T12:00:00Z' };
 const additional = { ...baseline, id: 'extra-education', benefitPlanId: education.id, assignmentSource: 'IndividualAdditional', entitlementTier: 'Education award', maximumBenefitAmount: 15000, effectiveStatus: 'Current', planName: education.name, planCode: education.code, currency: 'SAR', classification: 'Discretionary', reviewDate: '2027-01-01', reviewRequired: true, reviewReasons: ['Review date reached'], approvalRequestId: 'approved-request', grantReason: 'Professional development support.', treatment: 'Reimbursement', plannedEmployerCost: 15000, plannedEmployeeCost: 0, costFrequency: 'Annual' };
 
-async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: boolean; extra?: boolean; readonly?: boolean; manage?: boolean; partialFailure?: boolean } = {}) {
+async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: boolean; extra?: boolean; readonly?: boolean; manage?: boolean; partialFailure?: boolean; policy?: boolean } = {}) {
   const errors: string[] = [], submitted: Record<string, unknown>[] = [];
   let directWrites = 0;
   const endRequests: Record<string, unknown>[] = [];
   let request: Record<string, unknown> | null = null;
-  const plans = [medical, { ...education, effectiveTo: options.fixedTerm ? '2027-12-31' : null }, transport];
+  const frozenPolicy = { delivery: 'SalaryAllowance', amount: 750, frequency: 'Monthly', salaryComponentId: 'mapping', prorate: false, paymentMonth: null, receiptRequired: false, receiptLabel: '', claimWindowDays: null, instructions: '' };
+  const plans = [medical, { ...education, ...(options.policy ? { paymentPolicy: { ...frozenPolicy, amount: 950 }, policyVersion: 2 } : {}), effectiveTo: options.fixedTerm ? '2027-12-31' : null }, transport];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
     if (message.type() === 'error' && !((options.missingRoute && message.text().includes('422')) || (options.partialFailure && message.text().includes('409')))) errors.push(message.text());
@@ -44,7 +45,7 @@ async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: b
       submitted.push(req.postDataJSON());
       if (options.partialFailure && req.postDataJSON().benefitPlanId === transport.id && submitted.filter(item => item.benefitPlanId === transport.id).length === 1) return reply({ message: 'Limit needs correction.' }, 409);
       if (options.missingRoute) return reply({ code: 'approval_route_not_configured', message: 'No approval route is configured.', setupUrl: '/benefits#additional-benefit-approval' }, 422);
-      request = { id: 'request-1', approvalRequestId: 'request-1', status: 'Pending', employeeId: 42, employeeName: 'Alex Morgan', benefitPlanId: education.id, planName: education.name, currency: 'SAR', terms: req.postDataJSON(), baseline: options.extra ? additional : null, createdAtUtc: '2026-10-09T12:00:00Z', requestedByName: 'HR Officer', approval: { status: 'Pending', currentApproverName: 'Benefits Approver', currentApproverRole: 'HR Manager', canDecide: false, decisionBlockedReason: 'The requester cannot approve this request.', decisions: [] } };
+      request = { ...(options.policy ? { paymentPolicy: frozenPolicy, paymentPolicyVersion: 1 } : {}), id: 'request-1', approvalRequestId: 'request-1', status: 'Pending', employeeId: 42, employeeName: 'Alex Morgan', benefitPlanId: education.id, planName: education.name, currency: 'SAR', terms: req.postDataJSON(), baseline: options.extra ? additional : null, createdAtUtc: '2026-10-09T12:00:00Z', requestedByName: 'HR Officer', approval: { status: 'Pending', currentApproverName: 'Benefits Approver', currentApproverRole: 'HR Manager', canDecide: false, decisionBlockedReason: 'The requester cannot approve this request.', decisions: [] } };
       return reply(request, 201);
     }
     if (path === `${base}/additional-grants/request-1`) return reply(request);
@@ -307,4 +308,29 @@ test('Manage benefits keeps assigned additional edits and grade adjustments in c
   await expect(dialog).toBeVisible();
   await expect(adjust).toBeFocused();
   expect(errors).toEqual([]);
+});
+
+
+test('benefit request review displays its frozen salary policy instead of the live plan amount', async ({ page }) => {
+  await boot(page, { policy: true });
+  const dialog = await fillAdditional(page);
+  await dialog.getByLabel('Review due', { exact: false }).fill('2027-01-01');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('1 benefit requests sent');
+  await dialog.getByRole('button', { name: 'View request', exact: true }).click();
+  const request = page.getByRole('dialog', { name: 'Additional benefit request', exact: true });
+  await expect(request.getByTestId('benefit-payment-summary')).toContainText('Add to salary');
+  await expect(request.getByTestId('benefit-payment-summary')).toContainText('750.00');
+  await expect(request.getByTestId('benefit-payment-summary')).not.toContainText('950.00');
+  await expect(request).not.toContainText('Payments, contributions and payroll deductions must be recorded separately.');
+});
+
+test('benefit catalogue finds custom plans by name, code and category', async ({ page }) => {
+  await boot(page);
+  const search = page.getByLabel('Find a benefit plan', { exact: false });
+  await search.fill('medical'); await expect(page.getByText('Medical Gold', { exact: true })).toBeVisible(); await expect(page.getByText('Education Allowance', { exact: true })).toHaveCount(0);
+  await search.fill('TRN'); await expect(page.getByText('Transport Allowance', { exact: true })).toBeVisible(); await expect(page.getByText('Medical Gold', { exact: true })).toHaveCount(0);
+  await search.fill('Education'); await expect(page.getByText('Education Allowance', { exact: true })).toBeVisible();
+  await search.fill('unmatched'); await expect(page.getByRole('status')).toHaveText('No benefit plans match your search.');
+  await search.fill(''); await expect(page.getByText('Medical Gold', { exact: true })).toBeVisible();
 });

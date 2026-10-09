@@ -12,10 +12,12 @@ import { FormError, INPUT, LABEL, PRIMARY, SECONDARY } from './benefitUi';
 
 type Step = { stepOrder: number; stepName: string; approverRole: string; approverType: string; isFinalStep: boolean; escalationAfterHours?: number | null };
 type Workflow = { id: string; code: string; name: string; isActive: boolean; isDefault: boolean; departmentId?: string | null; gradeId?: string | null; steps: Step[] };
-const ENTITY = 'BenefitAdditionalGrant';
 
 /** A focused editor for the tenant's fallback route. Scoped routes remain authoritative. */
-export function AdditionalBenefitApprovalSetup() {
+export function AdditionalBenefitApprovalSetup({ entityName = 'BenefitAdditionalGrant' }: { entityName?: 'BenefitAdditionalGrant' | 'BenefitClaim' }) {
+  const isClaim = entityName === 'BenefitClaim';
+  const anchor = isClaim ? 'benefit-claim-approval' : 'additional-benefit-approval';
+  const heading = isClaim ? 'Benefit claim approvals' : 'Additional benefit approvals';
   const { hasPermission, hasRole } = useAuth();
   const { t } = useLocale();
   const allowed = hasPermission('approvals.manage') && (hasRole('Admin') || hasRole('HR Manager'));
@@ -30,17 +32,17 @@ export function AdditionalBenefitApprovalSetup() {
   const close = () => {
     if (saving) return;
     setOpen(false);
-    if (window.location.hash === '#additional-benefit-approval') {
+    if (window.location.hash === `#${anchor}`) {
       window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
     }
   };
 
   useEffect(() => {
-    const onHash = () => { if (allowed && window.location.hash === '#additional-benefit-approval') setOpen(true); };
+    const onHash = () => { if (allowed && window.location.hash === `#${anchor}`) setOpen(true); };
     onHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, [allowed]);
+  }, [allowed, anchor]);
 
   useEffect(() => {
     if (!open) return;
@@ -51,7 +53,7 @@ export function AdditionalBenefitApprovalSetup() {
       let page = 1;
       let total = 0;
       do {
-        const response = await client.get('/api/approval-workflows', { params: { entityName: ENTITY, page, pageSize: 100 } });
+        const response = await client.get('/api/approval-workflows', { params: { entityName, page, pageSize: 100 } });
         const data = requirePage<{ items: Workflow[]; total: number; page: number; pageSize: number }>(response.data, 'benefit approval routes');
         routes.push(...data.items); total = data.total; page++;
         if (data.items.length === 0) break;
@@ -74,14 +76,14 @@ export function AdditionalBenefitApprovalSetup() {
     void load().catch(err => { if (live) setError(benefitsErrorMessage(err, t('Could not load the approval route.'))); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [open, t]);
+  }, [open, t, entityName]);
 
   const save = async () => {
     setSaving(true); setError(null);
     try {
       const payload = {
-        code: existing?.code ?? 'BENEFIT_ADDITIONAL_DEFAULT', name: existing?.name ?? 'Additional benefit approval',
-        entityName: ENTITY, isActive: true, isDefault: true, departmentId: null, gradeId: null,
+        code: existing?.code ?? (isClaim ? 'BENEFIT_CLAIM_DEFAULT' : 'BENEFIT_ADDITIONAL_DEFAULT'), name: existing?.name ?? (isClaim ? 'Benefit claim approval' : 'Additional benefit approval'),
+        entityName, isActive: true, isDefault: true, departmentId: null, gradeId: null,
         steps: roles.map((role, index) => ({ stepOrder: index + 1, stepName: role.trim(), approverRole: role.trim(), approverType: 'Role', isFinalStep: index === roles.length - 1, escalationAfterHours: existing?.steps.find(step => step.stepOrder === index + 1)?.escalationAfterHours ?? null })),
       };
       const response = existing
@@ -94,14 +96,14 @@ export function AdditionalBenefitApprovalSetup() {
 
   if (!allowed) return null;
   return <>
-    <button id="additional-benefit-approval" type="button" className={SECONDARY} onClick={() => setOpen(true)}>
-      <Settings2 className="h-4 w-4" />{t('Additional benefit approvals')}
+    <button id={anchor} type="button" className={SECONDARY} onClick={() => setOpen(true)}>
+      <Settings2 className="h-4 w-4" />{t(heading)}
     </button>
-    <Modal isOpen={open} title={t('Additional benefit approvals')} onClose={close} size="lg"
+    <Modal isOpen={open} title={t(heading)} onClose={close} size="lg"
       footer={<><button type="button" className={SECONDARY} disabled={saving} onClick={close}>{t('Close')}</button>
         <button type="button" className={PRIMARY} disabled={loading || saving || !editable || roles.some(role => !role.trim() || role.trim().toLowerCase() === 'any')} onClick={() => void save()}>{saving ? t('Saving…') : t('Save approval route')}</button></>}>
       <div className="space-y-4">
-        <p className="text-sm text-slate-600 dark:text-slate-300">{t('Set the default approval sequence for additional benefits. Department and grade-specific routes take priority.')}</p>
+        <p className="text-sm text-slate-600 dark:text-slate-300">{t(isClaim ? 'Set the default approval sequence for benefit claims. Department and grade-specific routes take priority.' : 'Set the default approval sequence for additional benefits. Department and grade-specific routes take priority.')}</p>
         <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-500/10 dark:text-blue-200">{t('Each approver must hold the named role and employee approval permission. The requester, beneficiary and earlier approvers cannot approve the next step.')}</p>
         <FormError message={error} />
         {saved && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{t('Approval route saved.')}</p>}

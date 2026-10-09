@@ -8,6 +8,8 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
 import { useReleaseA } from '@/src/lib/releaseA';
 import { AssignmentLabel, EnrollmentDrawer } from './BenefitEnrollmentDrawer';
+import { BenefitClaimsPanel } from './BenefitClaims';
+import { BenefitPolicySummary } from './BenefitPaymentPolicy';
 import { BenefitChecklist } from './BenefitChecklist';
 import { AdditionalBenefitForm } from './AdditionalBenefitForm';
 import { AdditionalBenefitRequestDetail } from './AdditionalBenefitRequestDetail';
@@ -62,6 +64,7 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
       <div className="mt-3 text-xs text-slate-600 dark:text-slate-300"><AssignmentLabel enrollment={enrollment} /></div>
       <p className="mt-3 text-sm font-semibold text-slate-800 dark:text-slate-100">{enrollment.maximumBenefitAmount === null ? t('No monetary cap') : format.money(enrollment.maximumBenefitAmount, enrollment.currency)}<span className="text-xs font-normal text-slate-500 dark:text-slate-400"> · {t(enrollment.limitPeriod === 'PerEnrollment' ? 'Per enrollment' : enrollment.limitPeriod)}</span></p>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Starts {date}', { date: format.date(enrollment.effectiveFrom) })}{enrollment.effectiveTo ? ` · ${t('Ends {date}', { date: format.date(enrollment.effectiveTo) })}` : ''}</p>
+      <BenefitPolicySummary policy={enrollment.paymentPolicy} currency={enrollment.currency} />
       {enrollment.reviewRequired && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Review required')}{enrollment.reviewDate ? ` · ${format.date(enrollment.reviewDate)}` : ''}</p>}
       {!enrollment.reviewRequired && enrollment.reviewDate && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Review on {date}', { date: format.date(enrollment.reviewDate) })}</p>}
       <div className="mt-3 flex flex-wrap gap-2"><button type="button" className={SECONDARY} onClick={() => setOpenEnrollment({ id: enrollment.id })}>{t('View benefit')}</button>
@@ -83,6 +86,7 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
         : <>
           {pending.length > 0 && <section className="space-y-2"><h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Pending benefit requests')}</h4>{pending.map(request => <button type="button" key={request.id} className={`${CARD} flex w-full items-center justify-between gap-3 p-3 text-start text-xs`} onClick={() => setRequestId(request.id)}><span className="font-semibold text-slate-800 dark:text-slate-100">{request.planName}</span><StatusPill active={false} label={t(['End', 'Cancel'].includes(request.operation ?? '') ? 'Removal pending approval' : 'Addition pending approval')} /></button>)}<p className="text-xs text-slate-500 dark:text-slate-400">{t('Pending requests do not change the employee’s benefits until approved.')}</p></section>}
           {current.length ? benefitList(current) : <div className={`${CARD} flex flex-col items-center gap-2 p-7 text-center`}><HeartPulse className="h-7 w-7 text-slate-300" /><p className="text-sm text-slate-600 dark:text-slate-300">{t('No current or upcoming benefits.')}</p></div>}
+          {data?.enrollments.some(item => item.paymentPolicy?.delivery === 'Reimbursement') && <BenefitClaimsPanel employeeId={employeeId} benefits={data.enrollments} canWrite={canPropose} onChanged={() => void load()} />}
           {requestHistory.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Benefit request history')}</summary><div className="mt-3 space-y-2">{requestHistory.map(request => <button type="button" key={request.id} onClick={() => setRequestId(request.id)} className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-start text-xs dark:border-white/10"><span className="text-slate-700 dark:text-slate-200">{request.planName}</span><StatusPill active={request.status === 'Approved'} label={request.status} /></button>)}</div></details>}
           {previous.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Past benefits ({count})', { count: previous.length })}</summary><div className="mt-3">{benefitList(previous)}</div></details>}
         </>}

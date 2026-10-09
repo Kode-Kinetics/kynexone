@@ -18,6 +18,7 @@ using Zayra.Api.Infrastructure.Jawazat;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Documents;
 
 namespace Zayra.Api.Infrastructure.Approvals;
 
@@ -34,6 +35,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IDataProtector? _changeBaselineProtector;
     private readonly IDataScopeService _dataScopes;
     private readonly IHttpContextAccessor? _http;
+    private readonly IDocumentStorage? _documentStorage;
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
     private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
@@ -51,7 +53,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IApprovalRouter? router = null,
         IDataProtectionProvider? dataProtection = null,
         IDataScopeService? dataScopes = null,
-        IHttpContextAccessor? http = null)
+        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null)
     {
         _db = db;
         _audit = audit;
@@ -62,6 +64,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         _router = router ?? new ApprovalRouter(db, hierarchy);
         _leaveService = leaveService ?? new LeaveService(db, _router);
         _http = http;
+        _documentStorage = documentStorage;
         _dataScopes = dataScopes ?? new Zayra.Api.Infrastructure.Common.DataScopeService(db, http: http);
     }
 
@@ -84,7 +87,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        if (request.EntityName.Equals(AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
+        if (BenefitClaims.IsGovernedBenefit(request.EntityName)
             && request.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Every additional benefit approval step must name an explicit approver role with employees.approve authority.");
         EnsureRoleStepsNameARole(request);
@@ -102,8 +105,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalWorkflowDto?> UpdateWorkflowAsync(Guid tenantId, Guid id, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var currentEntity = await _db.ApprovalWorkflows.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.EntityName).FirstOrDefaultAsync(cancellationToken);
-        if (string.Equals(currentEntity, AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(request.EntityName, AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase))
+        if (BenefitClaims.IsGovernedBenefit(currentEntity)
+            || BenefitClaims.IsGovernedBenefit(request.EntityName))
             return await FinanceDecisionSerializer.SerializeAsync(_db, "approval.workflow", tenantId, id,
                 () => UpdateWorkflowCoreAsync(tenantId, id, request, context, cancellationToken), cancellationToken);
         return await UpdateWorkflowCoreAsync(tenantId, id, request, context, cancellationToken);
@@ -113,10 +116,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
-        if ((string.Equals(workflow.EntityName, AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase) || string.Equals(request.EntityName, AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase))
+        if ((BenefitClaims.IsGovernedBenefit(workflow.EntityName) || BenefitClaims.IsGovernedBenefit(request.EntityName))
             && await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.WorkflowId == id && x.Status == "Pending", cancellationToken))
             throw new InvalidOperationException("This benefit workflow has pending requests. Complete or withdraw them before changing its routing.");
-        if (request.EntityName.Equals(AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
+        if (BenefitClaims.IsGovernedBenefit(request.EntityName)
             && request.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Every additional benefit approval step must name an explicit approver role with employees.approve authority.");
         EnsureRoleStepsNameARole(request);
@@ -257,7 +260,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     /// </summary>
     public async Task<ApprovalRequestDto?> WithdrawAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken)
     {
-        var benefitSubject = await _db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && x.EntityName == AdditionalBenefitGrants.EntityName)
+        var benefitSubject = await _db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && (x.EntityName == AdditionalBenefitGrants.EntityName || x.EntityName == BenefitClaims.EntityName))
             .Select(x => x.RequestedForEmployeeId).FirstOrDefaultAsync(cancellationToken);
         if (benefitSubject is int employeeId)
         {
@@ -277,11 +280,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (approval.Status != "Pending") throw new InvalidOperationException("Only a pending request can be withdrawn.");
         if (context.UserId is null || approval.RequestedByUserId != context.UserId)
             throw new InvalidOperationException("Only the person who requested this can withdraw it.");
-        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) && !AdditionalBenefitGrants.IsAdditional(approval))
+        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) && !BenefitClaims.IsGovernedBenefit(approval.EntityName))
             throw new InvalidOperationException("This kind of request is withdrawn from its own screen, not from the Approval Center.");
 
         var note = string.IsNullOrWhiteSpace(reason) ? "Withdrawn by the requester." : Clean(reason);
-        if (!AdditionalBenefitGrants.IsAdditional(approval) && Guid.TryParse(approval.EntityId, out var changeId)
+        if (!BenefitClaims.IsGovernedBenefit(approval.EntityName) && Guid.TryParse(approval.EntityId, out var changeId)
             && await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == changeId, cancellationToken) is { } change)
         {
             if (!string.Equals(change.Status, EmployeeChangeStatuses.PendingApproval, StringComparison.OrdinalIgnoreCase))
@@ -289,14 +292,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             change.Status = EmployeeChangeStatuses.Cancelled;
             change.RejectionReason = note;
         }
-        if (AdditionalBenefitGrants.IsAdditional(approval))
+        if (BenefitClaims.IsGovernedBenefit(approval.EntityName))
         {
-            if (!AdditionalBenefitGrants.ResolveScope(context, _http).CanAccessCompany(approval.CompanyId))
+            if (!AdditionalBenefitGrants.ResolveScope(context, _http).CanAccessCompany(approval.CompanyId)
+                && !(BenefitClaims.IsClaim(approval) && approval.RequestedByUserId == context.UserId
+                    && await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, context.UserId, approval.RequestedForEmployeeId ?? 0, cancellationToken)))
                 throw new InvalidOperationException("This benefit request is outside your company scope.");
             _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
             {
                 TenantId = tenantId, CompanyId = approval.CompanyId, UserId = context.UserId,
-                EntityName = AdditionalBenefitGrants.EntityName, EntityId = approval.Id.ToString(), Action = "benefits.additional.withdrawn",
+                EntityName = approval.EntityName, EntityId = approval.Id.ToString(), Action = BenefitClaims.IsClaim(approval) ? "benefits.claim.withdrawn" : "benefits.additional.withdrawn",
                 Metadata = JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }),
             });
         }
@@ -312,7 +317,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         {
             throw new InvalidOperationException("This request was decided while you were withdrawing it. Refresh to see the outcome.", ex);
         }
-        if (!AdditionalBenefitGrants.IsAdditional(approval)) await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
+        if (!BenefitClaims.IsGovernedBenefit(approval.EntityName)) await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }), cancellationToken);
         return await GetRequestAsync(tenantId, approval.Id, context, cancellationToken);
     }
@@ -327,7 +332,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             && await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false);
         var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
         var canWithdraw = approval.Status == "Pending" && requestedByCaller
-            && (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) || AdditionalBenefitGrants.IsAdditional(approval));
+            && (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) || BenefitClaims.IsGovernedBenefit(approval.EntityName));
         string? blockedReason = null;
         if (context is not null && !canDecide && approval.Status == "Pending")
         {
@@ -427,7 +432,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var entityName = Clean(request.EntityName);
-        if (string.Equals(entityName, AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase))
+        if (BenefitClaims.IsGovernedBenefit(entityName))
             throw new InvalidOperationException("Additional benefit approvals must be submitted from the employee Benefits page, not created directly.");
         if (string.Equals(entityName, JawazatConstants.ApprovalEntityName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Jawazat approvals are created by the governed Jawazat request workflow, not directly.");
@@ -490,7 +495,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto?> DecideAsync(Guid tenantId, Guid approvalRequestId, ApprovalDecisionRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var benefitSubject = await _db.ApprovalRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && x.EntityName == AdditionalBenefitGrants.EntityName)
+            .Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && (x.EntityName == AdditionalBenefitGrants.EntityName || x.EntityName == BenefitClaims.EntityName))
             .Select(x => x.RequestedForEmployeeId).FirstOrDefaultAsync(cancellationToken);
         if (benefitSubject is int employeeId)
         {
@@ -527,6 +532,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 throw new InvalidOperationException(Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message);
         }
         await AdditionalBenefitGrants.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+        await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
@@ -594,6 +600,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await AdditionalBenefitGrants.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+            await BenefitClaims.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http), _documentStorage);
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
@@ -607,6 +614,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
             await AdditionalBenefitGrants.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+            await BenefitClaims.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http), _documentStorage);
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
@@ -663,7 +671,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     /// </summary>
     private async Task ValidateBenefitWorkflowRolesAsync(Guid tenantId, ApprovalWorkflowRequest request, CancellationToken ct)
     {
-        if (!request.EntityName.Equals(AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)) return;
+        if (!BenefitClaims.IsGovernedBenefit(request.EntityName)) return;
         var roles = request.Steps.Select(x => x.ApproverRole.Trim().ToUpper()).Distinct().ToList();
         var matches = await _db.Roles.AsNoTracking().Where(x => (x.TenantId == tenantId || x.TenantId == null)
             && x.IsActive && !x.IsDeleted && roles.Contains(x.Name.ToUpper()))
@@ -935,6 +943,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (AdditionalBenefitGrants.IsAdditional(approval))
         {
             try { await AdditionalBenefitGrants.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http)); }
+            catch (InvalidOperationException) { return false; }
+        }
+        if (BenefitClaims.IsClaim(approval))
+        {
+            try { await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http)); }
             catch (InvalidOperationException) { return false; }
         }
         var permissions = context.Permissions ?? Array.Empty<string>();

@@ -4,7 +4,40 @@ import type { ApprovalRequest } from './approvals';
 // Benefits administration (api/compensation/benefits) and the employee's own view (api/ess/benefits).
 // Dates are ISO yyyy-MM-dd strings (DateOnly on the server).
 
+export interface BenefitPaymentPolicy {
+  delivery: 'Coverage' | 'SalaryAllowance' | 'PayrollDeduction' | 'Reimbursement';
+  amount: number | null;
+  frequency: 'Monthly' | 'Annual' | 'OneTime';
+  paymentMonth: number | null;
+  prorate: boolean;
+  salaryComponentId: string | null;
+  receiptRequired: boolean;
+  receiptLabel: string;
+  claimWindowDays: number | null;
+  instructions: string;
+}
+
+export interface BenefitClaimBalance {
+  canClaim: boolean; maximumAmount: number; reservedAmount: number; approvedAmount: number;
+  remainingAmount: number; periodFrom: string; periodTo: string;
+}
+export interface BenefitReceipt { id: string; fileName: string; contentType: string; versionNumber: number; }
+export interface BenefitClaimInput {
+  enrollmentId: string; amount: number; expenseDate: string; invoiceReference: string;
+  description: string; documentIds: string[];
+}
+export interface BenefitClaim {
+  id: string; status: string; employeeId: number; employeeName: string; enrollmentId: string;
+  benefitPlanId: string; planName: string; currency: string; amount: number; expenseDate: string;
+  invoiceReference: string; description: string; receipts: BenefitReceipt[]; createdAtUtc: string;
+  approvalRequestId: string; payrollRunId: string | null;
+  settlementStatus: 'AwaitingApproval' | 'AwaitingPayroll' | 'IncludedInPayroll' | 'Paid' | 'Rejected' | 'Withdrawn';
+  reservedAmount: number; remainingAmount: number; requestedByUserId?: string | null; canWithdraw: boolean;
+}
+
 export interface BenefitPlan {
+  paymentPolicy?: BenefitPaymentPolicy;
+  policyVersion?: number;
   id: string;
   companyId: string | null;
   code: string;
@@ -19,6 +52,8 @@ export interface BenefitPlan {
 }
 
 export interface BenefitPlanCreateInput {
+  paymentPolicy?: BenefitPaymentPolicy;
+  expectedPolicyVersion?: number;
   companyId: string | null;
   code: string;
   name: string;
@@ -132,6 +167,8 @@ export interface BenefitException {
 }
 
 export interface BenefitEnrollment {
+  paymentPolicy?: BenefitPaymentPolicy | null;
+  claimBalance?: BenefitClaimBalance | null;
   updatedAtUtc: string | null;
   id: string;
   benefitPlanId: string;
@@ -187,6 +224,8 @@ export interface AdditionalBenefitInput extends AdditionalBenefitTerms {
 }
 
 export interface AdditionalBenefitRequest {
+  paymentPolicy?: BenefitPaymentPolicy | null;
+  paymentPolicyVersion?: number;
   operation?: 'GrantOrAmend' | 'End' | 'Cancel';
   endDate?: string | null;
   id: string;
@@ -301,6 +340,8 @@ export interface BenefitDeductionCandidate {
 }
 
 export interface EssBenefitEnrollment {
+  paymentPolicy?: BenefitPaymentPolicy | null;
+  claimBalance?: BenefitClaimBalance | null;
   id: string;
   benefitPlanId: string;
   assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException' | 'IndividualAdditional';
@@ -341,6 +382,16 @@ export interface EssBenefits {
 const base = '/api/compensation/benefits';
 
 export const benefitsApi = {
+  claimBalance: (id: string, expenseDate: string, selfService = false) => client.get<BenefitClaimBalance>(`${selfService ? '/api/ess/benefits' : base}/enrollments/${id}/claim-balance`, { params: { expenseDate } }).then(r => r.data),
+  claims: (employeeId?: number) => client.get<BenefitClaim[]>(employeeId == null ? '/api/ess/benefits/claims' : `${base}/employees/${employeeId}/claims`).then(r => r.data),
+  claim: (id: string) => client.get<BenefitClaim>(`${base}/claims/${id}`).then(r => r.data),
+  submitClaim: (input: BenefitClaimInput, selfService = false) => client.post<BenefitClaim>(selfService ? '/api/ess/benefits/claims' : `${base}/claims`, input).then(r => r.data),
+  withdrawClaim: (id: string, selfService = false) => client.post<BenefitClaim>(`${selfService ? '/api/ess/benefits' : base}/claims/${id}/withdraw`).then(r => r.data),
+  uploadReceipt: (file: File, employeeId?: number) => {
+    const form = new FormData(); form.append('file', file);
+    return client.post<BenefitReceipt>(employeeId == null ? '/api/ess/benefits/receipts' : `${base}/employees/${employeeId}/receipts`, form).then(r => r.data);
+  },
+  downloadReceipt: (claimId: string, documentId: string, selfService = false) => client.get<Blob>(`${selfService ? '/api/ess/benefits' : base}/claims/${claimId}/receipts/${documentId}/download`, { responseType: 'blob' }).then(r => r.data),
   employeePackage: (employeeId: number) => client.get<EmployeeBenefitPackage>(`${base}/employees/${employeeId}/package`).then(r => r.data),
   requestAdditional: (input: AdditionalBenefitInput) => client.post<AdditionalBenefitRequest>(`${base}/additional-grants`, input).then(r => r.data),
   requestBenefitEnd: (id: string, input: { endDate: string; reason: string; internalJustification: string; expectedUpdatedAtUtc: string | null }) => client.post<AdditionalBenefitRequest>(`${base}/enrollments/${id}/end-request`, input).then(r => r.data),

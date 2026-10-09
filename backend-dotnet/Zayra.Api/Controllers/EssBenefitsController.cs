@@ -74,6 +74,7 @@ public class EssBenefitsController : ControllerBase
 
         var today = await _clock.TodayAsync(tenantId, ct);
         var employee = await _db.Employees.AsNoTracking().FirstAsync(x => x.TenantId == tenantId && x.Id == employeeId, ct);
+        var balances = await BenefitClaims.BalancesAsync(_db, tenantId, employeeId.Value, enrollments, today, ct);
         var items = enrollments.Select(e =>
         {
             plans.TryGetValue(e.BenefitPlanId, out var plan);
@@ -103,7 +104,7 @@ public class EssBenefitsController : ControllerBase
                 deductions.Where(d => d.EnrollmentId == e.Id).Select(d => d.Deduction).ToList(),
                 e.AssignmentSource, e.HasException, null, e.ReviewDate, e.GrantReason, e.ApprovalRequestId,
                 package.EffectiveStatus, package.ReviewRequired, package.ReviewReasons,
-                package.Treatment, package.PlannedEmployerCost, package.PlannedEmployeeCost, package.CostFrequency);
+                package.Treatment, package.PlannedEmployerCost, package.PlannedEmployeeCost, package.CostFrequency, BenefitPaymentPolicies.ReadSnapshot(e), balances.GetValueOrDefault(e.Id));
         }).ToList();
 
         return Ok(new EssBenefitsDto(employeeId.Value, items));
@@ -129,7 +130,7 @@ public record EssBenefitEnrollmentDto(
     IReadOnlyList<BenefitDeductionDto> Deductions, string AssignmentSource = "Manual", bool HasException = false, string? ExceptionReason = null,
     DateOnly? ReviewDate = null, string? GrantReason = null, Guid? ApprovalRequestId = null,
     string? EffectiveStatus = null, bool ReviewRequired = false, IReadOnlyList<string>? ReviewReasons = null,
-    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null);
+    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null, BenefitPaymentPolicy? PaymentPolicy = null, BenefitClaimBalanceDto? ClaimBalance = null);
 
 public record EssBenefitsDto(int EmployeeId, IReadOnlyList<EssBenefitEnrollmentDto> Enrollments);
 internal record EssBenefitDeductionRow(Guid EnrollmentId, BenefitDeductionDto Deduction);

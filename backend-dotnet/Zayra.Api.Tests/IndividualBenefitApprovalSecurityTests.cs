@@ -23,6 +23,33 @@ public class IndividualBenefitApprovalSecurityTests
     private static readonly DateOnly Today = new(2026, 10, 9);
 
     [Fact]
+    public async Task ApprovalDetailShowsSealedPaymentTerms_AfterCataloguePolicyChanges()
+    {
+        await using var db = Db();
+        var f = await Seed(db);
+        var component = new SalaryComponent { TenantId = f.Tenant, Code = "BEN_REVIEW", Name = "Benefit allowance", ComponentType = "Earning", IsTaxable = true };
+        db.SalaryComponents.Add(component); await db.SaveChangesAsync();
+        var original = new BenefitPaymentPolicy("SalaryAllowance", 310m, "Monthly", Prorate: true, SalaryComponentId: component.Id,
+            Instructions: "Agreed monthly allowance");
+        f.Plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(db, f.Plan, original, default);
+        f.Plan.PolicyVersion++; await db.SaveChangesAsync();
+        var request = await Submit(db, f);
+
+        f.Plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(db, f.Plan,
+            original with { Amount = 620m, Prorate = false, Instructions = "Changed terms for future assignments" }, default);
+        f.Plan.PolicyVersion++; await db.SaveChangesAsync();
+        var detail = await AdditionalBenefitGrants.ToDtoAsync(db, request, default);
+
+        Assert.Equal(310m, detail.PaymentPolicy!.Amount);
+        Assert.Equal("SalaryAllowance", detail.PaymentPolicy.Delivery);
+        Assert.True(detail.PaymentPolicy.Prorate);
+        Assert.Equal("Agreed monthly allowance", detail.PaymentPolicy.Instructions);
+        Assert.Equal(1, detail.PaymentPolicyVersion);
+        Assert.Equal(620m, BenefitPaymentPolicies.ReadPlan(f.Plan).Amount);
+        Assert.Equal(2, f.Plan.PolicyVersion);
+    }
+
+    [Fact]
     public async Task AuthorizedSelfProposal_IsPendingAndCreatesNoFinancialOrEntitlementRecords()
     {
         await using var db = Db();

@@ -437,6 +437,9 @@ public class BenefitPlan : ITenantOwned, ICompanyScoped
     /// <summary>Mandatory, Contractual, or Discretionary. Only the latter two may be grade-gated.</summary>
     public string Classification { get; set; } = BenefitPlanClassifications.Discretionary;
     public string Currency { get; set; } = "AED";
+    /// <summary>Versioned company policy. Legacy empty policies never authorize payroll or claims.</summary>
+    public string PaymentPolicyJson { get; set; } = "{}";
+    public int PolicyVersion { get; set; }
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public DateOnly? EffectiveTo { get; set; }
     public bool RequiresEnrollment { get; set; } = true;
@@ -514,6 +517,8 @@ public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational
     public decimal? RequestedBenefitAmount { get; set; }
     public string LimitPeriod { get; set; } = string.Empty;
     public string EligibilitySnapshotJson { get; set; } = "{}";
+    /// <summary>Payment and evidence rules agreed for this enrollment, preserved across plan edits.</summary>
+    public string PaymentPolicySnapshotJson { get; set; } = "{}";
     public string AssignmentSource { get; set; } = "Manual";
     public Guid? OriginalEnrollmentId { get; set; }
     public bool HasException { get; set; }
@@ -589,6 +594,8 @@ public class PayrollAdjustment : ITenantOwned
     public string SourceType { get; set; } = string.Empty;
     /// <summary>Stable source aggregate id; unique with TenantId/SourceType when populated.</summary>
     public Guid? SourceId { get; set; }
+    /// <summary>Frozen source-specific payment terms; benefit lines retain their policy and component mapping.</summary>
+    public string SourceSnapshotJson { get; set; } = "{}";
 }
 
 public static class PayrollAdjustmentSources

@@ -40,6 +40,69 @@ public class BenefitsController : ControllerBase
         GetUserId(), this.GetTenantId(), User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
         User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 
+    [HttpGet("payment-components")]
+    [HasPermission("employees.approve")]
+    public async Task<IActionResult> PaymentComponents(CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId(); if (tenantId is null) return Unauthorized();
+        // These are neutral tenant catalogue labels; no company's salary values are read.
+        return Ok(await _db.SalaryComponents.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == null
+            && x.IsActive && (x.ComponentType == "Earning" || x.ComponentType == "Deduction")).OrderBy(x => x.Code)
+            .Select(x => new BenefitPaymentComponentDto(x.Id, x.Code, x.Name, x.ComponentType, x.IsTaxable, x.IsActive, x.SalaryStructureId)).ToListAsync(ct));
+    }
+
+    [HttpPost("payment-components")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> CreatePaymentComponent([FromBody] BenefitPaymentComponentRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId(); if (tenantId is null) return Unauthorized();
+        var code = req.Code?.Trim().ToUpperInvariant() ?? "";
+        var name = req.Name?.Trim() ?? "";
+        if (code.Length is < 1 or > 40 || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z][A-Z0-9_]*$")
+            || Zayra.Api.Infrastructure.Payroll.PayComponentPolicy.IsReservedCode(code)) return BadRequest(new { message = "Use a unique benefit component code of up to 40 uppercase letters, numbers or underscores. System payroll codes are reserved." });
+        if (name.Length is < 1 or > 180 || req.ComponentType is not ("Earning" or "Deduction")) return BadRequest(new { message = "Provide a name and select Earning or Deduction." });
+        if (req.ComponentType == "Deduction" && req.IsTaxable) return BadRequest(new { message = "Income-taxable is an earning property, not a salary deduction property." });
+        return await FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "benefits.component", tenantId.Value, tenantId.Value, async () =>
+        {
+            if (await _db.SalaryComponents.AnyAsync(x => x.TenantId == tenantId && x.Code == code, ct)
+                || await _db.PayComponents.AnyAsync(x => x.TenantId == tenantId && x.Code == code, ct))
+                return Conflict(new { message = "This component code already exists. Select its existing dedicated mapping or use a different code." });
+            var component = new SalaryComponent { TenantId = tenantId.Value, Code = code, Name = name,
+                ComponentType = req.ComponentType, CalculationType = "Fixed", Amount = 0, Percentage = 0, IsTaxable = req.IsTaxable };
+            _db.SalaryComponents.Add(component);
+            _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog { TenantId = tenantId.Value, UserId = GetUserId(), EntityName = nameof(SalaryComponent),
+                EntityId = component.Id.ToString(), Action = "benefits.payment_component.created", Metadata = JsonSerializer.Serialize(new { code, name, req.ComponentType, req.IsTaxable }) });
+            await _db.SaveChangesAsync(ct);
+            return Ok(new BenefitPaymentComponentDto(component.Id, code, name, component.ComponentType, component.IsTaxable, true, null));
+        }, ct);
+    }
+
+    [HttpPut("plans/{planId:guid}/payment-policy")]
+    [HasPermission("employees.approve")]
+    public async Task<IActionResult> ConfigurePaymentPolicy(Guid planId, [FromBody] BenefitPaymentPolicyRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+        var plan = await _db.BenefitPlans.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == planId && !x.IsDeleted, ct);
+        if (plan is null) return NotFound();
+        if (!this.GetEntityScope().CanAccessCompany(plan.CompanyId)) return Forbid();
+        if (plan.PolicyVersion != req.ExpectedPolicyVersion) return Conflict(new { message = "The payment policy changed. Refresh before saving." });
+        try
+        {
+            var before = plan.PaymentPolicyJson;
+            plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(_db, plan, req.Policy, ct);
+            plan.PolicyVersion++;
+            _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog { TenantId = tenantId.Value, CompanyId = plan.CompanyId,
+                UserId = GetUserId(), EntityName = nameof(BenefitPlan), EntityId = plan.Id.ToString(), Action = "benefits.policy.updated",
+                Metadata = JsonSerializer.Serialize(new { before, after = plan.PaymentPolicyJson, plan.PolicyVersion }) });
+            await _db.SaveChangesAsync(ct);
+            return Ok(BenefitPlanDto.From(plan));
+        }
+        catch (DbUpdateConcurrencyException) { return Conflict(new { message = "The payment policy changed. Refresh before saving." }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpPost("additional-grants")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
     [HasPermission("employees.write")]
@@ -113,8 +176,9 @@ public class BenefitsController : ControllerBase
         var requestDtos = requests.Select(x => AdditionalBenefitGrants.ToDto(x,
             x.RequestedByUserId.HasValue ? requesterNames.GetValueOrDefault(x.RequestedByUserId.Value) : null,
             rows.FirstOrDefault(e => e.ApprovalRequestId == x.Id)?.Id)).ToList();
+        var balances = await BenefitClaims.BalancesAsync(_db, tenantId.Value, employee.Id, rows, today, ct);
         return Ok(new EmployeeBenefitPackageDto(employee.Id, employee.FullName, employee.GradeId, employee.CompanyId, today,
-            rows.Select(x => BenefitPackageProjection.From(x, plans.GetValueOrDefault(x.BenefitPlanId), employee, today)).ToList(), requestDtos));
+            rows.Select(x => BenefitPackageProjection.From(x, plans.GetValueOrDefault(x.BenefitPlanId), employee, today) with { ClaimBalance = balances.GetValueOrDefault(x.Id) }).ToList(), requestDtos));
     }
 
     [HttpGet("grade-defaults")]
@@ -180,6 +244,13 @@ public class BenefitsController : ControllerBase
             IsActive = req.IsActive,
             CreatedBy = GetUserId(),
         };
+        if (!this.GetEntityScope().CanAccessCompany(plan.CompanyId)) return Forbid();
+        if (req.PaymentPolicy is not null)
+        {
+            if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+            try { plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(_db, plan, req.PaymentPolicy, ct); plan.PolicyVersion++; }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
         _db.BenefitPlans.Add(plan);
         await _db.SaveChangesAsync(ct);
         return CreatedAtAction(nameof(ListPlans), new { companyId = plan.CompanyId }, BenefitPlanDto.From(plan));
@@ -295,6 +366,18 @@ public class BenefitsController : ControllerBase
         if (req.EffectiveTo.HasValue && req.EffectiveTo < req.EffectiveFrom)
             return BadRequest("EffectiveTo cannot be before EffectiveFrom.");
 
+        if (!this.GetEntityScope().CanAccessCompany(plan.CompanyId)) return Forbid();
+        if (plan.PolicyVersion > 0 && !string.IsNullOrWhiteSpace(req.Currency) && req.Currency.Trim() != plan.Currency)
+            return BadRequest("Create a separate plan for a different payment currency; existing policy witnesses keep their approved currency.");
+        if (req.PaymentPolicy is not null)
+        {
+            if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+            if (req.ExpectedPolicyVersion != plan.PolicyVersion) return Conflict("The payment policy changed. Refresh before saving.");
+            // The first policy is sealed in the currency saved by this same request.
+            plan.Currency = string.IsNullOrWhiteSpace(req.Currency) ? plan.Currency : req.Currency.Trim();
+            try { plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(_db, plan, req.PaymentPolicy, ct); plan.PolicyVersion++; }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
         plan.Name = req.Name.Trim();
         plan.PlanType = string.IsNullOrWhiteSpace(req.PlanType) ? plan.PlanType : req.PlanType.Trim();
         plan.Classification = classification;
@@ -425,6 +508,7 @@ public class BenefitsController : ControllerBase
             TenantId = tenantId.Value,
             CompanyId = employee.CompanyId,
             BenefitPlanId = plan.Id,
+            PaymentPolicySnapshotJson = BenefitPaymentPolicies.Snapshot(plan),
             EmployeeId = employee.Id,
             EmployeeName = employee.FullName,
             CoverageTier = string.IsNullOrWhiteSpace(req.CoverageTier) ? "Employee" : req.CoverageTier.Trim(),
@@ -562,6 +646,8 @@ public class BenefitsController : ControllerBase
         var start = req.EffectiveFrom ?? await _clock.TodayAsync(tenantId.Value, ct);
         if (start < await _clock.TodayAsync(tenantId.Value, ct)) return BadRequest("Benefit exceptions cannot take effect in the past.");
         if (start < enrollment.EffectiveFrom) return BadRequest("The exception cannot start before the existing enrollment.");
+        try { await BenefitPayroll.EnsureMutableAsync(_db, tenantId.Value, enrollment.Id, start, ct); }
+        catch (BenefitPaymentException ex) { return Conflict(new { message = ex.Message }); }
         var sameStart = start == enrollment.EffectiveFrom;
         if (sameStart && (await _db.BenefitContributions.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.BenefitEnrollmentId == enrollmentId, ct)
             || await _db.BenefitPayrollDeductionLinks.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.BenefitEnrollmentId == enrollmentId, ct)))
@@ -606,7 +692,7 @@ public class BenefitsController : ControllerBase
             MaximumBenefitAmount = req.MaximumBenefitAmount, RequestedBenefitAmount = req.RequestedBenefitAmount,
             LimitPeriod = req.LimitPeriod, Status = req.Status, HasException = true, ExceptionReason = req.Reason.Trim(),
             AssignmentSource = enrollment.AssignmentSource, EligibilityRuleId = enrollment.EligibilityRuleId,
-            EligibilitySnapshotJson = enrollment.EligibilitySnapshotJson, OriginalEnrollmentId = enrollment.OriginalEnrollmentId ?? enrollment.Id,
+            EligibilitySnapshotJson = enrollment.EligibilitySnapshotJson, PaymentPolicySnapshotJson = enrollment.PaymentPolicySnapshotJson, OriginalEnrollmentId = enrollment.OriginalEnrollmentId ?? enrollment.Id,
             EffectiveFrom = start, EffectiveTo = enrollment.EffectiveTo, CreatedBy = actorId,
         };
         successor.CoverageTier = req.CoverageTier.Trim();
@@ -808,7 +894,9 @@ public class BenefitsController : ControllerBase
     }
 }
 
-public record BenefitPlanRequest(Guid? CompanyId, string Code, string Name, string PlanType, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment = true, bool IsActive = true, string Classification = BenefitPlanClassifications.Discretionary);
+public record BenefitPlanRequest(Guid? CompanyId, string Code, string Name, string PlanType, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment = true, bool IsActive = true, string Classification = BenefitPlanClassifications.Discretionary, BenefitPaymentPolicy? PaymentPolicy = null, int? ExpectedPolicyVersion = null);
+public record BenefitPaymentComponentRequest(string Code, string Name, string ComponentType, bool IsTaxable = false);
+public record BenefitPaymentComponentDto(Guid Id, string Code, string Name, string ComponentType, bool IsTaxable, bool IsActive, Guid? SalaryStructureId);
 public record BenefitEligibilityRequest(
     Guid? CompanyId,
     Guid? GradeId,
@@ -826,9 +914,9 @@ public record BenefitEnrollmentRequest(Guid BenefitPlanId, int EmployeeId, strin
 public record BenefitContributionRequest(decimal EmployeeAmount, decimal EmployerAmount, string? Frequency, string? PayrollComponentCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive = true);
 public record BenefitPayrollDeductionLinkRequest(Guid BenefitContributionId, Guid PayrollDeductionId, decimal? LinkedAmount);
 
-public record BenefitPlanDto(Guid Id, Guid? CompanyId, string Code, string Name, string PlanType, string Classification, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment, bool IsActive)
+public record BenefitPlanDto(Guid Id, Guid? CompanyId, string Code, string Name, string PlanType, string Classification, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment, bool IsActive, BenefitPaymentPolicy? PaymentPolicy = null, int PolicyVersion = 0)
 {
-    public static BenefitPlanDto From(BenefitPlan x) => new(x.Id, x.CompanyId, x.Code, x.Name, x.PlanType, x.Classification, x.Currency, x.EffectiveFrom, x.EffectiveTo, x.RequiresEnrollment, x.IsActive);
+    public static BenefitPlanDto From(BenefitPlan x) => new(x.Id, x.CompanyId, x.Code, x.Name, x.PlanType, x.Classification, x.Currency, x.EffectiveFrom, x.EffectiveTo, x.RequiresEnrollment, x.IsActive, BenefitPaymentPolicies.ReadPlan(x), x.PolicyVersion);
 }
 
 public record BenefitEligibilityDto(
@@ -851,12 +939,12 @@ public record BenefitEnrollmentDto(
     DateOnly? ReviewDate = null, Guid? ApprovalRequestId = null, string? GrantReason = null,
     string? PlanName = null, string? PlanCode = null, string? Currency = null, string? Classification = null,
     string? EffectiveStatus = null, bool ReviewRequired = false, IReadOnlyList<string>? ReviewReasons = null,
-    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null)
+    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null, BenefitPaymentPolicy? PaymentPolicy = null, BenefitClaimBalanceDto? ClaimBalance = null)
 {
     public static BenefitEnrollmentDto From(BenefitEnrollment x) => new(
         x.Id, x.BenefitPlanId, x.EmployeeId, x.CompanyId, x.EmployeeName, x.CoverageTier,
         x.EligibilityRuleId, x.EntitlementTier, x.MaximumBenefitAmount, x.RequestedBenefitAmount, x.LimitPeriod,
-        x.EffectiveFrom, x.EffectiveTo, x.Status, x.AssignmentSource, x.HasException, x.ExceptionReason, x.UpdatedAtUtc, x.ReviewDate, x.ApprovalRequestId, x.GrantReason);
+        x.EffectiveFrom, x.EffectiveTo, x.Status, x.AssignmentSource, x.HasException, x.ExceptionReason, x.UpdatedAtUtc, x.ReviewDate, x.ApprovalRequestId, x.GrantReason, PaymentPolicy: BenefitPaymentPolicies.ReadSnapshot(x));
 }
 
 public record BenefitContributionDto(Guid Id, Guid BenefitEnrollmentId, Guid BenefitPlanId, int EmployeeId, decimal EmployeeAmount, decimal EmployerAmount, string Frequency, string PayrollComponentCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive)
@@ -869,7 +957,7 @@ public record BenefitPayrollDeductionLinkDto(Guid Id, Guid BenefitEnrollmentId, 
     public static BenefitPayrollDeductionLinkDto From(BenefitPayrollDeductionLink x) => new(x.Id, x.BenefitEnrollmentId, x.BenefitContributionId, x.PayrollDeductionId, x.PayrollRunId, x.EmployeeId, x.LinkedAmount);
 }
 
-public record BenefitPlanUpdateRequest(string Name, string? PlanType, string? Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment = true, bool IsActive = true, string Classification = BenefitPlanClassifications.Discretionary);
+public record BenefitPlanUpdateRequest(string Name, string? PlanType, string? Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment = true, bool IsActive = true, string Classification = BenefitPlanClassifications.Discretionary, BenefitPaymentPolicy? PaymentPolicy = null, int? ExpectedPolicyVersion = null);
 public record BenefitEligibilityCheckItem(string Key, string Label, bool Passed, string Detail);
 public record BenefitEligibilityCheckDto(
     Guid BenefitPlanId, string Currency, int EmployeeId, string EmployeeName, Guid? CompanyId, string? CompanyName,

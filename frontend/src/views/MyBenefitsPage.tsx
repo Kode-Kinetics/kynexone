@@ -7,6 +7,10 @@ import { benefitsApi, type EssBenefits } from '@/src/api/benefits';
 import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFormat } from '../hooks/useFormat';
+import { BenefitClaimsPanel } from '../components/benefits/BenefitClaims';
+import { BenefitPolicySummary } from '../components/benefits/BenefitPaymentPolicy';
+import { useCanWriteEss } from '../components/ess/EssParts';
+import { useReleaseA } from '../lib/releaseA';
 import { COST_FREQUENCY_LABELS } from '../components/benefits/AdditionalBenefitSummary';
 
 
@@ -15,6 +19,8 @@ export function MyBenefitsPage() {
   const { t } = useLocale();
   const { hasPermission } = useAuth();
   const format = useFormat();
+  const canWrite = useCanWriteEss();
+  const releaseA = useReleaseA();
   const money = (amount: number) => format.number(amount, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const [showPast, setShowPast] = useState(false);
   const [data, setData] = useState<EssBenefits | null>(null);
@@ -102,6 +108,7 @@ export function MyBenefitsPage() {
                 </div>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t(e.assignmentSource === 'GradeDefault' ? 'Assigned from your grade' : ['IndividualAdditional', 'IndividualException'].includes(e.assignmentSource) ? 'Additional benefit' : 'Assigned by HR')}{e.hasException && e.assignmentSource === 'GradeDefault' ? ` · ${t('Individual terms')}` : ''}</p>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Covered from {date}', { date: format.date(e.effectiveFrom) })}{e.effectiveTo ? ` · ${t('Ends {date}', { date: format.date(e.effectiveTo) })}` : ` · ${t('Ongoing')}`}</p>
+                <BenefitPolicySummary policy={e.paymentPolicy} currency={e.currency} />
                 {e.grantReason && <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{e.grantReason}</p>}
                 {e.reviewRequired && <p className="mt-2 text-xs font-semibold text-amber-700 dark:text-amber-300">{t('Pending HR review')}</p>}
                 {e.reviewDate && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Review on {date}', { date: format.date(e.reviewDate) })}</p>}
@@ -112,16 +119,16 @@ export function MyBenefitsPage() {
                     {e.requestedBenefitAmount !== null && <p className="mt-1 text-slate-600 dark:text-slate-300">{t('Enrolled value')}: {format.money(e.requestedBenefitAmount, e.currency)}</p>}
                   </div>
                 )}
-                {e.currentEmployeeAmount !== null ? (
+                {(e.currentEmployeeAmount !== null || !e.paymentPolicy) && (e.currentEmployeeAmount !== null ? (
                   <dl className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 text-xs dark:bg-white/[0.03]">
                     <div><dt className="text-slate-500 dark:text-slate-400">{t('You pay ({frequency})', { frequency: t(e.contributionFrequency || 'Monthly') })}</dt><dd className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{money(e.currentEmployeeAmount)} {e.currency}</dd></div>
                     <div><dt className="text-slate-500 dark:text-slate-400">{t("Employer pays")}</dt><dd className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{money(e.currentEmployerAmount ?? 0)} {e.currency}</dd></div>
                   </dl>
                 ) : (
                   <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">{t("No contribution is currently recorded for this plan.")}</p>
-                )}
+                ))}
                 {e.assignmentSource === 'IndividualAdditional' && (e.plannedEmployeeCost != null || e.plannedEmployerCost != null) && <details className="mt-3 rounded-lg border border-slate-200 p-3 text-xs dark:border-white/10"><summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">{t('Approved planned costs')}</summary><dl className="mt-2 grid grid-cols-2 gap-2"><div><dt>{t('Planned employer cost')}</dt><dd>{e.plannedEmployerCost == null ? t('Not specified') : format.money(e.plannedEmployerCost, e.currency)}</dd></div><div><dt>{t('Planned employee cost')}</dt><dd>{e.plannedEmployeeCost == null ? t('Not specified') : format.money(e.plannedEmployeeCost, e.currency)}</dd></div></dl>{e.costFrequency && <p className="mt-1">{t(COST_FREQUENCY_LABELS[e.costFrequency])}</p>}<p className="mt-2 text-slate-500 dark:text-slate-400">{t('These are planned costs. Actual contributions and deductions are shown separately.')}</p></details>}
-                <div className="mt-3 border-t border-slate-100 pt-3 dark:border-white/[0.06]">
+                {(!e.paymentPolicy || e.deductions.length > 0) && <div className="mt-3 border-t border-slate-100 pt-3 dark:border-white/[0.06]">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t("Payroll deductions")}</p>
                   {e.deductions.length === 0 ? (
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t("No benefit deduction has been recorded on payroll yet.")}</p>
@@ -138,11 +145,12 @@ export function MyBenefitsPage() {
                       ))}
                     </ul>
                   )}
-                </div>
+                </div>}
               </article>
             );
           })}
           </div>
+          {!releaseA && data.enrollments.some(item => item.paymentPolicy?.delivery === 'Reimbursement') && <BenefitClaimsPanel benefits={data.enrollments} canWrite={canWrite} onChanged={() => void load()} />}
           {pastCount > 0 && <button type="button" aria-expanded={showPast} onClick={() => setShowPast(value => !value)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 dark:border-white/10 dark:text-slate-300">{showPast ? t('Hide past benefits') : t('Past benefits ({count})', { count: pastCount })}</button>}
         </div>
       )}

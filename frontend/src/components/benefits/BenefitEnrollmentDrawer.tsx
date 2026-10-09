@@ -10,6 +10,7 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useReleaseA } from '@/src/lib/releaseA';
 import { BenefitExceptionForm } from './BenefitExceptionForm';
+import { BenefitPolicySummary } from './BenefitPaymentPolicy';
 import { BenefitChecklist } from './BenefitChecklist';
 import { AdditionalBenefitForm } from './AdditionalBenefitForm';
 import { AdditionalBenefitRequestDetail } from './AdditionalBenefitRequestDetail';
@@ -146,6 +147,7 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
               {editingException && canApplyException && detail.enrollment.assignmentSource !== 'IndividualAdditional' && <BenefitExceptionForm key={detail.enrollment.id} enrollment={detail.enrollment} mandatory={plan?.classification === 'Mandatory'} currency={currency}
                 onCancel={() => setEditingException(false)} onSaved={(id) => { setEditingException(false); if (id === enrollmentId) void load(); onChanged(id); }} />}
             </section>
+            <BenefitPolicySummary policy={detail.enrollment.paymentPolicy} currency={currency} />
             {(detail.exceptions ?? []).length > 0 && <section data-testid="benefit-exception-history">
               <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">{t("Exception history")}</h3>
               <ul className="space-y-2">{detail.exceptions.map(item => <li key={item.id} className="rounded-lg border border-slate-200 p-3 text-xs dark:border-white/[0.06]">

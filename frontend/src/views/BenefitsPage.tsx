@@ -21,6 +21,7 @@ import type { BenefitEmployee } from '@/src/components/benefits/AdditionalBenefi
 import { BenefitChecklist } from '@/src/components/benefits/BenefitChecklist';
 import { AdditionalBenefitRequestDetail } from '@/src/components/benefits/AdditionalBenefitRequestDetail';
 import { AdditionalBenefitApprovalSetup } from '@/src/components/benefits/AdditionalBenefitApprovalSetup';
+import { BenefitPaymentPolicyEditor, BenefitPolicySummary, DEFAULT_PAYMENT_POLICY } from '@/src/components/benefits/BenefitPaymentPolicy';
 import { AssignmentLabel, EnrollmentDrawer } from '@/src/components/benefits/BenefitEnrollmentDrawer';
 import { INPUT, LABEL, PRIMARY, SECONDARY, CARD, COVERAGE_TIERS, today, enrollmentStatus, StatusPill, Modal, FormError } from '@/src/components/benefits/benefitUi';
 
@@ -46,6 +47,7 @@ export function BenefitsPage() {
   const canProposeAdditional = hasPermission('employees.write') && !releaseA;
 
   const [tab, setTab] = useState<Tab>('plans');
+  const [planSearch, setPlanSearch] = useState('');
   const [plans, setPlans] = useState<BenefitPlan[]>([]);
   const [enrollments, setEnrollments] = useState<BenefitEnrollment[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
@@ -122,7 +124,7 @@ export function BenefitsPage() {
         )}
       </div>
 
-      {!releaseA && <AdditionalBenefitApprovalSetup />}
+      {!releaseA && <div className="flex flex-wrap gap-2"><AdditionalBenefitApprovalSetup /><AdditionalBenefitApprovalSetup entityName="BenefitClaim" /></div>}
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">
@@ -154,8 +156,12 @@ export function BenefitsPage() {
 
           {tab === 'plans' ? (
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-              <PlanList plans={plans} selectedId={selectedPlanId} onSelect={setSelectedPlanId}
-                companyName={companyName} enrolledCount={enrolledCount} />
+              <div className="space-y-3">
+                <label className={LABEL}>{t('Find a benefit plan')}<input type="search" className={INPUT} value={planSearch} onChange={event => setPlanSearch(event.target.value)} placeholder={t('Search by name, code or category')} /></label>
+                <PlanList plans={plans.filter(plan => !planSearch.trim() || [plan.name, plan.code, plan.planType].some(value => value.toLocaleLowerCase().includes(planSearch.trim().toLocaleLowerCase())))} selectedId={selectedPlanId} onSelect={setSelectedPlanId}
+                  companyName={companyName} enrolledCount={enrolledCount} />
+                {planSearch.trim() && !plans.some(plan => [plan.name, plan.code, plan.planType].some(value => value.toLocaleLowerCase().includes(planSearch.trim().toLocaleLowerCase()))) && <p role="status" className="p-3 text-sm text-slate-500">{t('No benefit plans match your search.')}</p>}
+              </div>
               {selectedPlan ? (
                 <PlanDetail key={selectedPlan.id} plan={selectedPlan} companyName={companyName} gradeName={gradeName}
                   companies={companies} grades={grades} canManage={canManagePlans} canEnroll={canEnroll}
@@ -309,6 +315,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
         <div>
           <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{plan.name}</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400"><span className="font-mono">{plan.code}</span> · {plan.planType} · {plan.classification} · {plan.currency}</p>
+          <BenefitPolicySummary policy={plan.paymentPolicy} currency={plan.currency} />
         </div>
         <div className="flex gap-2">
           {canManage && <button type="button" className={SECONDARY} onClick={onEdit}><Pencil className="h-3.5 w-3.5" /> Edit plan</button>}
@@ -498,6 +505,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 }) {
   const toast = useAppToast();
   const editing = initial !== null;
+  const [paymentPolicy, setPaymentPolicy] = useState(initial?.paymentPolicy ?? DEFAULT_PAYMENT_POLICY);
   const initialUsesCustomType = !!initial && !PLAN_TYPES.includes(initial.planType);
   const [customPlanType, setCustomPlanType] = useState(initialUsesCustomType ? initial!.planType : '');
   const [form, setForm] = useState({
@@ -526,6 +534,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
         name: form.name.trim(), planType: form.planType === 'Custom' ? customPlanType.trim() : form.planType, classification: form.classification, currency: form.currency.trim().toUpperCase(),
         effectiveFrom: form.effectiveFrom, effectiveTo: form.effectiveTo || null,
         requiresEnrollment: form.requiresEnrollment, isActive: form.isActive,
+        paymentPolicy, expectedPolicyVersion: initial?.policyVersion ?? 0,
       };
       const saved = editing
         ? await benefitsApi.updatePlan(initial!.id, body)
@@ -582,6 +591,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
             <input type="date" value={form.effectiveTo} onChange={(e) => set('effectiveTo', e.target.value)} className={INPUT} />
           </label>
         </div>
+        <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
         {editing && <p className="text-[11px] text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> Active (open for enrolment)
