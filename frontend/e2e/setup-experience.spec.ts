@@ -34,6 +34,7 @@ interface BootOptions {
   forbidFirstApply?: boolean;
   readOnly?: boolean;
   route?: string;
+  locale?: 'en' | 'ar';
 }
 
 async function boot(page: Page, options: BootOptions = {}) {
@@ -42,7 +43,10 @@ async function boot(page: Page, options: BootOptions = {}) {
   const errors: string[] = [];
   const unexpectedWrites: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'setup-browser-fixture'));
+  await page.addInitScript(({ locale }) => {
+    localStorage.setItem('zayra_access_token', 'setup-browser-fixture');
+    localStorage.setItem('kynexone-locale-choice-v2', locale);
+  }, { locale: options.locale ?? 'en' });
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -76,7 +80,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     return reply(paged([]));
   });
   await page.goto(options.route ?? '/setup');
-  await expect(page.getByRole('heading', { level: 1, name: 'Company setup', exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'إعداد الشركة' : 'Company setup', exact: true })).toBeVisible({ timeout: 60_000 });
   return { previews, applies, errors, unexpectedWrites };
 }
 
@@ -230,6 +234,18 @@ test('offers import separately from guided setup and preserves its organization 
   expect(state.applies).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
   expect(state.errors).toEqual([]);
+});
+
+test('renders the setup shell and organization import path in Arabic RTL', async ({ page }) => {
+  const state = await boot(page, { locale: 'ar' });
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  await page.getByRole('button', { name: 'استيراد هيكل المنظمة', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'استيراد منظمتك', exact: true })).toBeVisible();
+  await expect(page.getByLabel('رفع حزمة المنظمة', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'التحقق من الملفات', exact: true })).toBeDisabled();
+  await contained(page);
+  expect(state.errors).toEqual([]);
+  expect(state.unexpectedWrites).toEqual([]);
 });
 
 test('a read-only organization viewer cannot enter guided setup through a write-tab deep link', async ({ page }) => {

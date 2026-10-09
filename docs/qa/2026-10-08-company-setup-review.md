@@ -55,12 +55,12 @@ dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
 
 - Production frontend build: **passed**, including type validity checks; exact committed lockfile restored, TypeScript 6.0.3.
 - Backend: **92 passed, 0 failed, 0 skipped** across the four named suites, using disposable PostgreSQL.
-- Browser: **20 passed**, 10 desktop (1440 × 1000) and 10 mobile (390 × 844), against the production build. No retries. Includes explicit target, payload fidelity, edit/remove, application refusal, draft invalidation, read-only restrictions, import concurrency/replacement and 409/422 recovery.
+- Browser: **22 passed**, 11 desktop (1440 × 1000) and 11 mobile (390 × 844), against the production build. No retries. Includes explicit target, payload fidelity, edit/remove, application refusal, draft invalidation, read-only restrictions, import concurrency/replacement, 409/422 recovery, and an Arabic RTL smoke journey through the setup shell and organization import path.
 - Focused accessibility scans: **no critical or serious axe violations** in the initial guided/import regions at either viewport. This is scoped automation, not complete accessibility certification.
 - Independent source review: the two material policy-truth findings were verified resolved. Independent visual review: **ship within the five captured states**. Mobile lower controls and People & pay were exercised by browser interaction; they are outside the visual crops.
 - `git diff --check`: passed.
 
-The first expanded browser run exposed an ambiguous test locator matching both the form alert and Next’s route announcer. Scoping the locator to Guided setup fixed the test; the entire 20-case suite then passed against unchanged product code.
+The first expanded browser run exposed an ambiguous test locator matching both the form alert and Next’s route announcer. Scoping the locator to Guided setup fixed the test; the entire suite then passed against unchanged product code. The GitHub i18n ratchet later identified new English-only setup copy; the setup shell and import path now use the existing English/Arabic dictionaries and tenant-aware date and number formatting.
 
 Screenshots use a synthetic Admin and synthetic organization data:
 
@@ -70,4 +70,4 @@ Screenshots use a synthetic Admin and synthetic organization data:
 - [Import entry — mobile](assets/company-setup-2026-10-08/import-entry-mobile.png)
 - [Draft retained after refused application](assets/company-setup-2026-10-08/review-retained-after-refusal-desktop.png)
 
-No production deployment, live tenant mutation, full Arabic localization assessment, scale benchmark, or go-live rehearsal was performed. Those are distinct release/implementation activities.
+No production deployment, live tenant mutation, full-product Arabic localization assessment, scale benchmark, or go-live rehearsal was performed. Those are distinct release/implementation activities.

@@ -66,6 +66,7 @@ import { ImportExportToolbar, downloadCsv } from '../components/ImportExportTool
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useT } from '../hooks/useT';
+import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
 
@@ -76,29 +77,29 @@ type SettingsCategory = 'organization' | 'peoplePay' | 'system';
 type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization'>;
 
 const settingsCategories: { id: SettingsCategory; label: string }[] = [
-  { id: 'organization', label: 'Organization' },
-  { id: 'peoplePay', label: 'People & pay' },
-  { id: 'system', label: 'System' },
+  { id: 'organization', label: msg('Organization') },
+  { id: 'peoplePay', label: msg('People & pay') },
+  { id: 'system', label: msg('System') },
 ];
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType; category: SettingsCategory }[] = [
-  { id: 'companies', label: 'Companies', icon: Building2, category: 'organization' },
-  { id: 'branches', label: 'Branches', icon: GitBranch, category: 'organization' },
-  { id: 'departments', label: 'Departments', icon: Layers, category: 'organization' },
-  { id: 'costCenters', label: 'Cost centers', icon: Landmark, category: 'organization' },
-  { id: 'establishment', label: 'Staffing & budgets', icon: Landmark, category: 'organization' },
-  { id: 'locations', label: 'Locations', icon: MapPin, category: 'organization' },
-  { id: 'designations', label: 'Job titles', icon: Tag, category: 'peoplePay' },
-  { id: 'grades', label: 'Grades & salary bands', icon: Award, category: 'peoplePay' },
-  { id: 'fiscalYears', label: 'Fiscal years', icon: Calendar, category: 'peoplePay' },
-  { id: 'glMapping', label: 'GL & rates', icon: Landmark, category: 'peoplePay' },
-  { id: 'gccSettings', label: 'GCC compliance', icon: Globe, category: 'peoplePay' },
-  { id: 'masterData', label: 'Master data', icon: Database, category: 'system' },
-  { id: 'numberingRules', label: 'Numbering', icon: Hash, category: 'system' },
-  { id: 'systemSettings', label: 'System settings', icon: Settings, category: 'system' },
-  { id: 'notificationTemplates', label: 'Notifications', icon: Bell, category: 'system' },
-  { id: 'emailConfig', label: 'Email / SMTP', icon: Settings, category: 'system' },
-  { id: 'adminAuditLogs', label: 'Audit logs', icon: ClipboardList, category: 'system' },
+  { id: 'companies', label: msg('Companies'), icon: Building2, category: 'organization' },
+  { id: 'branches', label: msg('Branches'), icon: GitBranch, category: 'organization' },
+  { id: 'departments', label: msg('Departments'), icon: Layers, category: 'organization' },
+  { id: 'costCenters', label: msg('Cost centers'), icon: Landmark, category: 'organization' },
+  { id: 'establishment', label: msg('Staffing & budgets'), icon: Landmark, category: 'organization' },
+  { id: 'locations', label: msg('Locations'), icon: MapPin, category: 'organization' },
+  { id: 'designations', label: msg('Job titles'), icon: Tag, category: 'peoplePay' },
+  { id: 'grades', label: msg('Grades & salary bands'), icon: Award, category: 'peoplePay' },
+  { id: 'fiscalYears', label: msg('Fiscal years'), icon: Calendar, category: 'peoplePay' },
+  { id: 'glMapping', label: msg('GL & rates'), icon: Landmark, category: 'peoplePay' },
+  { id: 'gccSettings', label: msg('GCC compliance'), icon: Globe, category: 'peoplePay' },
+  { id: 'masterData', label: msg('Master data'), icon: Database, category: 'system' },
+  { id: 'numberingRules', label: msg('Numbering'), icon: Hash, category: 'system' },
+  { id: 'systemSettings', label: msg('System settings'), icon: Settings, category: 'system' },
+  { id: 'notificationTemplates', label: msg('Notifications'), icon: Bell, category: 'system' },
+  { id: 'emailConfig', label: msg('Email / SMTP'), icon: Settings, category: 'system' },
+  { id: 'adminAuditLogs', label: msg('Audit logs'), icon: ClipboardList, category: 'system' },
 ];
 
 // Small read-only field for the statutory pack profile panel.
@@ -2259,6 +2260,7 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 
 export function SetupPage() {
   const router = useRouter();
+  const t = useT();
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission } = useAuth();
@@ -2312,24 +2314,24 @@ export function SetupPage() {
   const categoryTabs = visibleTabs.filter((tab) => tab.category === selectedCategory);
   const visibleCategories = settingsCategories.filter((category) => visibleTabs.some((tab) => tab.category === category.id));
   const modes = [
-    { id: 'aiSetup' as const, label: 'Guided setup', icon: Sparkles },
-    { id: 'importOrganization' as const, label: 'Import organization', icon: Upload },
-    { id: 'settings' as const, label: 'Manage settings', icon: Settings },
+    { id: 'aiSetup' as const, label: t('Guided setup'), icon: Sparkles },
+    { id: 'importOrganization' as const, label: t('Import organization'), icon: Upload },
+    { id: 'settings' as const, label: t('Manage settings'), icon: Settings },
   ];
 
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">Company setup</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Company setup')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? 'Build your organization, set your people policies, and get ready to welcome your team.'
-            : 'View your organization’s companies and legal entity details.'}
+            ? t('Build your organization, set your people policies, and get ready to welcome your team.')
+            : t('View your organization’s companies and legal entity details.')}
         </p>
       </header>
 
       {canWrite && (
-        <nav aria-label="Setup paths" className="grid grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
+        <nav aria-label={t('Setup paths')} className="grid grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
           {modes.map(({ id, label, icon: Icon }) => {
             const selected = id === 'settings' ? isSettings : selectedTab === id;
             return (
@@ -2356,20 +2358,20 @@ export function SetupPage() {
       {/* Keep drafts and uploaded files intact when users explore another path. */}
       {canWrite && (
         <>
-          <section id="setup-aiSetup" aria-label="Guided setup" hidden={selectedTab !== 'aiSetup'}>
+          <section id="setup-aiSetup" aria-label={t('Guided setup')} hidden={selectedTab !== 'aiSetup'}>
             <AiSetupAssistant companies={companies} />
           </section>
-          <section id="setup-importOrganization" aria-label="Import organization" hidden={selectedTab !== 'importOrganization'}>
+          <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={selectedTab !== 'importOrganization'}>
             <OrgStructureImportPanel />
           </section>
         </>
       )}
 
       {isSettings && (
-        <section id="setup-settings" aria-label="Manage settings" className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
+        <section id="setup-settings" aria-label={t('Manage settings')} className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
           <aside className="space-y-3">
             <div>
-              <label htmlFor="setup-settings-category" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Settings area</label>
+              <label htmlFor="setup-settings-category" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Settings area')}</label>
               <select
                 id="setup-settings-category"
                 value={selectedCategory}
@@ -2379,10 +2381,10 @@ export function SetupPage() {
                 }}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
               >
-                {visibleCategories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+                {visibleCategories.map((category) => <option key={category.id} value={category.id}>{t(category.label)}</option>)}
               </select>
             </div>
-            <nav aria-label={`${settingsCategories.find((category) => category.id === selectedCategory)?.label} settings`} className="hidden space-y-1 lg:block">
+            <nav aria-label={t('{area} settings', { area: t(settingsCategories.find((category) => category.id === selectedCategory)?.label ?? 'Organization') })} className="hidden space-y-1 lg:block">
               {categoryTabs.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
@@ -2396,19 +2398,19 @@ export function SetupPage() {
                   }`}
                 >
                   <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-                  {label}
+                  {t(label)}
                 </button>
               ))}
             </nav>
             <div className="lg:hidden">
-              <label htmlFor="setup-settings-page" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">Setting</label>
+              <label htmlFor="setup-settings-page" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Setting')}</label>
               <select
                 id="setup-settings-page"
                 value={selectedTab}
                 onChange={(event) => selectTab(event.target.value as SettingsTab)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
               >
-                {categoryTabs.map((tab) => <option key={tab.id} value={tab.id}>{tab.label}</option>)}
+                {categoryTabs.map((tab) => <option key={tab.id} value={tab.id}>{t(tab.label)}</option>)}
               </select>
             </div>
           </aside>
