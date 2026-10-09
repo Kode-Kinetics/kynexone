@@ -1,5 +1,6 @@
 /** Policy setup copy. English keys remain the fallback; Arabic is translated explicitly. */
 const ar: Record<string, string> = {
+  'Choose an existing company or a new entity (permission and plan limits apply).': 'اختر شركة حالية أو كيانًا جديدًا (تُطبق حدود الصلاحيات والخطة).',
   'Add policy text': 'إضافة نص السياسة',
   'Choose AI assistance': 'اختيار المساعدة بالذكاء الاصطناعي',
   'Build and review': 'الإعداد والمراجعة',

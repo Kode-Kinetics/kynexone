@@ -55,7 +55,7 @@ export function SetupPolicySource({
 
   return (
     <section
-      className="mb-6 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30 dark:bg-blue-400/5 sm:p-5"
+      className="mb-4 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30 dark:bg-blue-400/5 sm:p-4"
       aria-label={t("Existing HR policy")}
     >
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -68,7 +68,7 @@ export function SetupPolicySource({
             <h3 className="text-base font-semibold text-slate-950 dark:text-white">
               {t("Start from your existing HR policy")}
             </h3>
-            <p className="mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300">
+            <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300 ${open ? "" : "xl:sr-only"}`}>
               {t(
                 "Add your approved policy as a reference for setup. We will guide you through the next steps.",
               )}

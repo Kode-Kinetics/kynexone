@@ -2320,8 +2320,9 @@ export function SetupPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <header>
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between xl:gap-6">
+      <header className="min-w-0">
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Company setup')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
@@ -2331,7 +2332,7 @@ export function SetupPage() {
       </header>
 
       {canWrite && (
-        <nav aria-label={t('Setup paths')} className="grid grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
+        <nav aria-label={t('Setup paths')} className="grid shrink-0 grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
           {modes.map(({ id, label, icon: Icon }) => {
             const selected = id === 'settings' ? isSettings : selectedTab === id;
             return (
@@ -2341,7 +2342,7 @@ export function SetupPage() {
                 aria-pressed={selected}
                 aria-controls={id === 'settings' ? 'setup-settings' : `setup-${id}`}
                 onClick={() => selectTab(id === 'settings' ? lastSettingsTab : id)}
-                className={`flex min-w-0 flex-col items-center justify-center gap-2 border-b-2 px-2 py-3 text-center text-xs font-semibold transition-colors sm:flex-row sm:px-4 sm:text-sm ${
+                className={`flex min-w-0 flex-col items-center justify-center gap-2 border-b-2 px-2 py-2 text-center text-xs font-semibold transition-colors sm:flex-row sm:px-4 sm:text-sm ${
                   selected
                     ? 'border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent'
                     : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-950 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-white'
@@ -2354,6 +2355,8 @@ export function SetupPage() {
           })}
         </nav>
       )}
+
+      </div>
 
       {/* Keep drafts and uploaded files intact when users explore another path. */}
       {canWrite && (

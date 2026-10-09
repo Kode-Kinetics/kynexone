@@ -67,3 +67,9 @@ Guide validation: production build and all 34 desktop/mobile browser cases passe
 The previous remote backend gate failed only the raw-SQL inventory (6,260/6,261 tests passed). The new parameterized, tenant-keyed transaction advisory lock is now documented in that inventory, with a real PostgreSQL simultaneous cross-tenant isolation regression. Local focused ratchet/apply tests passed 17/17; the broader setup/leave/security selection passed 160/160, no skips. These counts overlap. The remote full gate requires a fresh run after push.
 
 The premium static audit scanned the whole repository and reported existing ownership/style findings beyond this task. Its new policy-textarea finding was corrected; native setup control ownership remains explicitly documented in DESIGN.md. This is not a claim that the repository-wide static audit passes.
+
+## Desktop density follow-up
+
+The setup heading and path navigation share a row on wide screens. Company details use four columns; the step rail shows only the active description, and introductory copy remains available in the expanded guide or smaller layouts. Footer spacing protects the primary action from the Kody launcher.
+
+Verified against the production build: 35 setup browser cases passed; the desktop-only viewport case is intentionally skipped for mobile. All eight company fields, the policy action and Continue fit simultaneously at 1728×900, 1440×900 and 1366×768 with the MFA reminder and Kody enabled, and Continue passes the browser clickability check. English/Arabic mobile regression coverage remains passing. The i18n gate passed 8 checks with its intentional repin skip. No runtime policy/API behavior changed. Expanded tutorials, smaller viewports and zoomed layouts may scroll normally; no fixed-height clipping was introduced.

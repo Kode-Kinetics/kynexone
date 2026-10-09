@@ -12,3 +12,5 @@ Visual context: [DESIGN.md](DESIGN.md). Existing domain and permission contracts
 - Repeatable fieldsets use visible labels; keyboard navigation and focus after step changes follow existing setup behavior. Mobile layouts must not overflow. Dynamic statuses and errors are accessible.
 - Leave balance year, accrual frequency, partial-month proration, use eligibility and settlement are distinct. Unsupported accounting periods cannot be activated by storing an unused preference.
 - Reviewed benefits create plans and eligibility, not enrollment or contributions. Effective dates, grade references, company scope, permission parity, replay behavior and audit evidence must be tested.
+
+- Desktop company details use four columns from 1280px, a compact active-step description and a shared heading/navigation row. With the policy guide closed, all eight fields and Continue remain visible at 1728×900, 1440×900 and 1366×768 with the MFA reminder. Footer spacing keeps the assistant launcher away from the action. Smaller/zoomed layouts retain natural scrolling rather than clipping controls.

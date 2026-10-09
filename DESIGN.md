@@ -30,7 +30,7 @@ Runtime ownership remains in `frontend/tailwind.config.ts` and application CSS. 
 Use the existing Geist and IBM Plex Sans Arabic stack. Headings identify the task; labels identify the exact policy value. Keep financial values and machine codes readable in bidirectional text.
 
 ## Layout
-Use the setup step rail on large screens and the existing responsive navigation on phones. Group repeatable policies in bordered fieldsets. Reveal detailed custom rules only on request. Show employee-group scope beside each policy instead of unexplained global multi-selects.
+Use a compact setup step rail on large screens, showing the description of the active step, and the existing responsive navigation on phones. Company details use four columns on desktop and two or one on smaller screens; align setup paths beside the page heading when width permits. Group repeatable policies in bordered fieldsets. Reveal detailed custom rules only on request. Show employee-group scope beside each policy instead of unexplained global multi-selects.
 
 ## Elevation & Depth
 Retain existing button and shell elevation. Policy rows use borders rather than nested decorative cards.

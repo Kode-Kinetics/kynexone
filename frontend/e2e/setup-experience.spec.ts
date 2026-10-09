@@ -30,6 +30,7 @@ interface ApplyRequest {
 }
 
 interface BootOptions {
+  mfaReminder?: boolean;
   missingLocalization?: boolean;
   legacySetup?: boolean;
   forbidFirstApply?: boolean;
@@ -53,10 +54,11 @@ async function boot(page: Page, options: BootOptions = {}) {
     const path = new URL(request.url()).pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
+    if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: options.mfaReminder ?? false, enforceFromUtc: '2026-10-20T00:00:00Z' });
     if (path === '/api/auth/me') return reply({
       id: 'setup-reviewer', tenantId: 'setup-tenant', tenantSlug: 'setup-fixture', fullName: 'Setup Reviewer',
       roles: options.readOnly ? ['Auditor'] : ['Admin'],
-      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage'],
+      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...(options.mfaReminder ? ['ai.query'] : [])],
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
@@ -570,4 +572,23 @@ test('keeps the policy guide visible and usable in Arabic RTL', async ({ page })
   await contained(page);
   await page.getByRole('button', { name: 'التالي: خطوات المراجعة', exact: true }).click();
   await page.getByRole('button', { name: 'متابعة إعداد الشركة', exact: true }).click();
+});
+
+
+test('fits company details and Continue together with the sign-in reminder on desktop', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'Desktop density contract; mobile retains natural scrolling.');
+  for (const viewport of [{ width: 1728, height: 900 }, { width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+    await page.setViewportSize(viewport);
+    await boot(page, { mfaReminder: true });
+    await expect(page.getByRole('region', { name: 'Two-step sign-in', exact: true })).toBeVisible();
+    const form = page.locator('#setup-aiSetup');
+    for (const name of [/^Legal entity name/, /^Industry/, /^Country/, /^Currency/, /^Company size/, /^Suggested head office city/, /^Working language/, /^Time zone/]) {
+      await expect(form.getByLabel(name)).toBeInViewport({ ratio: 1 });
+    }
+    await expect(form.getByRole('button', { name: 'Continue', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(form.getByRole('button', { name: 'Add your HR policy', exact: true })).toBeInViewport({ ratio: 1 });
+    await form.getByRole('button', { name: 'Continue', exact: true }).click({ trial: true });
+    await contained(page);
+    await evidence(page, info, `compact-company-${viewport.width}`);
+  }
 });

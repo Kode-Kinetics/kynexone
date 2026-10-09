@@ -327,39 +327,39 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
-      <div className="grid lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-5">
+      <div className="grid lg:grid-cols-[200px_minmax(0,1fr)]">
+        <aside className="border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
           <nav aria-label="Company setup steps">
             <ol className="grid grid-cols-5 gap-1.5 lg:grid-cols-1">
               {SETUP_STEPS.map((item, index) => (
                 <li key={t(item.title)}>
                   <button type="button" onClick={() => goToStep(index)} disabled={loading || applying}
                     aria-current={step === index ? 'step' : undefined}
-                    className={`flex w-full items-center justify-center rounded-lg px-2 py-3 text-start lg:items-start lg:justify-start lg:gap-3 lg:px-3 transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
+                    className={`flex w-full items-center justify-center rounded-lg px-2 py-3 text-start lg:items-start lg:justify-start lg:gap-3 lg:px-3 lg:py-2 transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
                     <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${step === index ? 'border-sapphire bg-sapphire text-white' : 'border-slate-300 dark:border-slate-600'}`}>{index + 1}</span>
-                    <span className="sr-only lg:not-sr-only"><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 lg:block ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
+                    <span className="sr-only lg:not-sr-only"><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 ${step === index ? 'lg:block' : ''} ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
                   </button>
                 </li>
               ))}
             </ol>
             <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200 lg:hidden">{step + 1} / {SETUP_STEPS.length} · {t(SETUP_STEPS[step].title)}</p>
           </nav>
-          <div className="mt-8 hidden border-t border-slate-200 pt-5 dark:border-white/10 lg:block">
+          <div className="mt-4 hidden border-t border-slate-200 pt-4 dark:border-white/10 lg:block">
             <ShieldCheck className="mb-2 h-5 w-5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">You stay in control</p>
             <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">The assistant prepares a draft. Nothing changes in your workspace until you review and apply it.</p>
           </div>
         </aside>
-        <div className="min-w-0 p-5 sm:p-7">
-          <div className="mb-7">
+        <div className="min-w-0 p-5">
+          <div className="mb-4">
             <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 4 && draft ? 'Review your setup draft' : t(SETUP_STEPS[step].heading)}</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
+            <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-400 ${step === 0 ? 'xl:sr-only' : ''}`}>{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
           </div>
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
               <SetupPolicyEditor area="source" value={configuration} onChange={setConfiguration} currency={currency} />
-              <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
+              <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
                   <input className="input w-full" list="setup-legal-entities" required value={legalEntityName} onChange={e => {
@@ -370,7 +370,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                     setDraft(null);
                   }} placeholder="Choose or enter the registered name" />
                   <datalist id="setup-legal-entities">{companies.map(company => <option key={company.id} value={company.legalNameEn} />)}</datalist>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">Choose an existing company or enter a new legal entity. New entities require permission and an available plan allowance.</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">Choose an existing company or a new entity (permission and plan limits apply).</span>
                 </label>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Industry <span aria-hidden="true" className="text-slate-500">*</span></span>
@@ -865,7 +865,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               )}
             </fieldset>
           )}
-          <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5 dark:border-white/10">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10">
             {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">{t('Step 1 of 5')}</span>}
             {step < 4 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
               <div className="flex flex-wrap items-center gap-3">
