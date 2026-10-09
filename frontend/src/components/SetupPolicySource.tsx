@@ -15,9 +15,11 @@ const steps = [
 export function SetupPolicySource({
   value,
   onChange,
+  onOpenChange,
 }: {
   value: SetupConfiguration;
   onChange: (value: SetupConfiguration) => void;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -41,6 +43,7 @@ export function SetupPolicySource({
     onChange({ ...value, ...patch });
   const close = () => {
     setOpen(false);
+    onOpenChange?.(false);
     requestAnimationFrame(() =>
       trigger.current?.focus({ preventScroll: true }),
     );
@@ -48,6 +51,7 @@ export function SetupPolicySource({
   const show = (next: number) => {
     setStep(next);
     setOpen(true);
+    onOpenChange?.(true);
     requestAnimationFrame(() =>
       heading.current?.focus({ preventScroll: true }),
     );
@@ -68,12 +72,14 @@ export function SetupPolicySource({
             <h3 className="text-base font-semibold text-slate-950 dark:text-white">
               {t("Start from your existing HR policy")}
             </h3>
-            <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300 ${open ? "" : "xl:sr-only"}`}>
+            <p
+              className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300 xl:sr-only`}
+            >
               {t(
                 "Add your approved policy as a reference for setup. We will guide you through the next steps.",
               )}
             </p>
-            {text.trim() && (
+            {text.trim() && !open && (
               <p className="mt-2 text-xs font-medium text-sapphire dark:text-blue-300">
                 {t("Policy text added")}
               </p>
@@ -110,10 +116,10 @@ export function SetupPolicySource({
       <div
         id={panelId}
         hidden={!open}
-        className="mt-5 border-t border-sapphire/20 pt-5 dark:border-blue-400/20"
+        className="mt-3 border-t border-sapphire/20 pt-3 dark:border-blue-400/20"
       >
         <ol
-          className="mb-5 flex flex-wrap gap-x-5 gap-y-2 text-xs"
+          className="mb-3 flex flex-wrap gap-x-5 gap-y-2 text-xs"
           aria-label={t("Policy setup guide")}
         >
           {steps.map((label, index) => (
@@ -137,134 +143,155 @@ export function SetupPolicySource({
         >
           {t(steps[step])}
         </h4>
-        <div hidden={step !== 0} className="space-y-4">
-          <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-            {t(
-              "Paste relevant policy sections or choose a plain-text (.txt) file, up to 12,000 characters. For PDF or Word documents, copy the relevant text here.",
-            )}
-          </p>
-          <div>
-            <label htmlFor={`${panelId}-text`} className="mb-1.5 block text-sm font-medium">
-              {t("Policy excerpts")}
-            </label>
-            <textarea
-              id={`${panelId}-text`}
-              className="input min-h-40 w-full resize-none"
-              maxLength={12000}
-              value={text}
-              onChange={(e) => {
-                revision.current++;
-                setReading(false);
-                setFileError("");
-                update({ policySourceText: e.target.value });
-              }}
-            />
+        <div hidden={step !== 0}>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-2">
+              <div>
+                <label
+                  htmlFor={`${panelId}-text`}
+                  className="mb-1.5 block text-sm font-medium"
+                >
+                  {t("Policy excerpts")}
+                </label>
+                <textarea
+                  id={`${panelId}-text`}
+                  className="input h-44 w-full resize-none"
+                  maxLength={12000}
+                  value={text}
+                  onChange={(e) => {
+                    revision.current++;
+                    setReading(false);
+                    setFileError("");
+                    update({ policySourceText: e.target.value });
+                  }}
+                />
+              </div>
+              <p className="text-xs text-slate-600">
+                {t("{count} of {limit} characters", {
+                  count: text.length,
+                  limit: 12000,
+                })}
+              </p>
+            </div>
+            <div className="min-w-0 space-y-3">
+              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                {t(
+                  "Paste relevant policy sections or choose a plain-text (.txt) file, up to 12,000 characters. For PDF or Word documents, copy the relevant text here.",
+                )}
+              </p>
+              <label className="block text-sm">
+                <span className="mb-1.5 block font-medium">
+                  {t("Load policy text (.txt, up to 12,000 characters)")}
+                </span>
+                <input
+                  type="file"
+                  accept=".txt,text/plain"
+                  className="block w-full min-w-0 text-sm file:me-3 file:rounded-lg file:border file:border-slate-300 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 dark:file:border-slate-600 dark:file:bg-slate-900 dark:file:text-slate-200"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    const current = ++revision.current;
+                    setFileError("");
+                    setReading(false);
+                    if (!file) return;
+                    if (
+                      !file.name.toLowerCase().endsWith(".txt") ||
+                      file.size > 48000
+                    ) {
+                      setFileError(
+                        t(
+                          "Choose a plain-text file within the policy text limit.",
+                        ),
+                      );
+                      return;
+                    }
+                    setReading(true);
+                    try {
+                      const content = await file.text();
+                      if (current !== revision.current) return;
+                      if (
+                        content.length > 12000 ||
+                        content.includes("\u0000")
+                      ) {
+                        setFileError(
+                          t(
+                            "Choose a plain-text file within the policy text limit.",
+                          ),
+                        );
+                        return;
+                      }
+                      latest.current.onChange({
+                        ...latest.current.value,
+                        policySourceText: content,
+                      });
+                    } catch {
+                      if (current === revision.current)
+                        setFileError(t("Could not read this policy file."));
+                    } finally {
+                      if (current === revision.current) setReading(false);
+                    }
+                  }}
+                />
+              </label>
+              {reading && (
+                <p role="status" className="text-sm">
+                  {t("Reading policy file…")}
+                </p>
+              )}
+              {fileError && (
+                <p
+                  role="alert"
+                  className="text-sm text-red-700 dark:text-red-300"
+                >
+                  {fileError}
+                </p>
+              )}
+              <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
+                {t(
+                  "Choosing a file does not send it. Policy text is sent to the setup service when you generate a draft. Sharing it with AI is optional.",
+                )}
+              </p>
+            </div>
           </div>
-          <p className="text-xs text-slate-600">
-            {t("{count} of {limit} characters", {
-              count: text.length,
-              limit: 12000,
-            })}
-          </p>
-          <label className="block text-sm">
-            <span className="mb-1.5 block font-medium">
-              {t("Load policy text (.txt, up to 12,000 characters)")}
-            </span>
-            <input
-              type="file"
-              accept=".txt,text/plain"
-              className="block w-full min-w-0 text-sm file:me-3 file:rounded-lg file:border file:border-slate-300 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 dark:file:border-slate-600 dark:file:bg-slate-900 dark:file:text-slate-200"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                const current = ++revision.current;
-                setFileError("");
-                setReading(false);
-                if (!file) return;
-                if (
-                  !file.name.toLowerCase().endsWith(".txt") ||
-                  file.size > 48000
-                ) {
-                  setFileError(
-                    t("Choose a plain-text file within the policy text limit."),
-                  );
-                  return;
-                }
-                setReading(true);
-                try {
-                  const content = await file.text();
-                  if (current !== revision.current) return;
-                  if (content.length > 12000 || content.includes("\u0000")) {
-                    setFileError(
-                      t(
-                        "Choose a plain-text file within the policy text limit.",
-                      ),
-                    );
-                    return;
-                  }
-                  latest.current.onChange({
-                    ...latest.current.value,
-                    policySourceText: content,
-                  });
-                } catch {
-                  if (current === revision.current)
-                    setFileError(t("Could not read this policy file."));
-                } finally {
-                  if (current === revision.current) setReading(false);
-                }
-              }}
-            />
-          </label>
-          {reading && (
-            <p role="status" className="text-sm">
-              {t("Reading policy file…")}
-            </p>
-          )}
-          {fileError && (
-            <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-              {fileError}
-            </p>
-          )}
-          <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-            {t(
-              "Choosing a file does not send it. Policy text is sent to the setup service when you generate a draft. Sharing it with AI is optional.",
-            )}
-          </p>
         </div>
-        <div hidden={step !== 1} className="space-y-4">
-          <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-            {t(
-              "Review the text and remove employee names, individual salaries and other personal information. Go back to edit it.",
-            )}
-          </p>
-          <div
-            role="region"
-            aria-label={t("Policy text preview")}
-            tabIndex={0}
-            className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white p-3 text-sm dark:border-white/10 dark:bg-slate-950"
-          >
-            {text || t("No policy text added")}
+        <div hidden={step !== 1}>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div
+              role="region"
+              aria-label={t("Policy text preview")}
+              tabIndex={0}
+              className="max-h-48 xl:h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white p-3 text-sm dark:border-white/10 dark:bg-slate-950"
+            >
+              {text || t("No policy text added")}
+            </div>
+            <div className="space-y-3">
+              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                {t(
+                  "Review the text and remove employee names, individual salaries and other personal information. Go back to edit it.",
+                )}
+              </p>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-sapphire"
+                  checked={value.usePolicySourceForAi ?? false}
+                  onChange={(e) =>
+                    update({ usePolicySourceForAi: e.target.checked })
+                  }
+                />
+                {t(
+                  "Use these excerpts with the configured AI provider when generating the draft",
+                )}
+              </label>
+              <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
+                {t(
+                  "This is optional. Without AI assistance, enter your policy rules in the setup fields. With AI assistance, the text provides context for suggestions; it does not automatically fill every setting.",
+                )}
+              </p>
+            </div>
           </div>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 accent-sapphire"
-              checked={value.usePolicySourceForAi ?? false}
-              onChange={(e) =>
-                update({ usePolicySourceForAi: e.target.checked })
-              }
-            />
-            {t(
-              "Use these excerpts with the configured AI provider when generating the draft",
-            )}
-          </label>
-          <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-            {t(
-              "This is optional. Without AI assistance, enter your policy rules in the setup fields. With AI assistance, the text provides context for suggestions; it does not automatically fill every setting.",
-            )}
-          </p>
         </div>
         <div hidden={step !== 2} className="space-y-4">
-          <ol className="space-y-3 text-sm leading-6">
+          <ol className="grid gap-4 text-sm leading-6 xl:grid-cols-3">
             <li>
               <strong>{t("Complete your settings")}</strong>
               <p className="text-slate-600 dark:text-slate-300">
@@ -296,7 +323,7 @@ export function SetupPolicySource({
             )}
           </p>
         </div>
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-sapphire/20 pt-4 dark:border-blue-400/20">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-sapphire/20 pt-3 xl:pe-40 dark:border-blue-400/20">
           {step > 0 ? (
             <button
               type="button"

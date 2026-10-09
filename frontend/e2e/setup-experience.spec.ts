@@ -31,6 +31,7 @@ interface ApplyRequest {
 
 interface BootOptions {
   mfaReminder?: boolean;
+  settingsSweep?: boolean;
   missingLocalization?: boolean;
   legacySetup?: boolean;
   forbidFirstApply?: boolean;
@@ -58,7 +59,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/auth/me') return reply({
       id: 'setup-reviewer', tenantId: 'setup-tenant', tenantSlug: 'setup-fixture', fullName: 'Setup Reviewer',
       roles: options.readOnly ? ['Auditor'] : ['Admin'],
-      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...(options.mfaReminder ? ['ai.query'] : [])],
+      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...(options.mfaReminder ? ['ai.query'] : []), ...(options.settingsSweep ? ['finance.gl.read', 'payroll.rates.read', 'organization.establishment.read', 'organization.establishment.write'] : [])],
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
@@ -77,6 +78,11 @@ async function boot(page: Page, options: BootOptions = {}) {
       if (options.forbidFirstApply && applies.length === 1) return reply({ message: 'This account cannot apply organization setup.' }, 403);
       return reply({ total: 2, applied: { branches: 1, grades: 1 } });
     }
+    if (path === '/api/admin/audit-logs') return reply(paged([]));
+    if (path === '/api/establishment/levels' || path === '/api/planning/establishment') return reply([]);
+    if (path === '/api/establishment/matrix') return reply({ enforcementMode: 'Enforced', unresolvedDepartmentCount: 0, departments: [] });
+    if (path === '/api/tenant-hr-config') return reply({ establishmentEnforcementMode: 'Enforced' });
+    if (path.startsWith('/api/finance/gl/') || path.startsWith('/api/finance/rates/')) return reply([]);
     if (request.method() !== 'GET') unexpectedWrites.push(`${request.method()} ${path}`);
     // Keep every shell/settings request within this synthetic session as well.
     if (path.startsWith('/api/admin/') || path.includes('country-packs')) return reply([]);
@@ -591,4 +597,86 @@ test('fits company details and Continue together with the sign-in reminder on de
     await contained(page);
     await evidence(page, info, `compact-company-${viewport.width}`);
   }
+});
+
+test('keeps each policy guide screen and its actions together on desktop', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
+  for (const viewport of [{ width: 1728, height: 900 }, { width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+    await page.setViewportSize(viewport);
+    await boot(page, { mfaReminder: true });
+    await companyDetails(page);
+    await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+    await expect(page.getByLabel(/^Legal entity name/)).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).not.toBeVisible();
+    await expect(page.getByLabel('Policy excerpts', { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByLabel('Load policy text (.txt, up to 12,000 characters)', { exact: true })).toBeInViewport({ ratio: 1 });
+    await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy. '.repeat(700));
+    for (const [stage, next] of ['Next: AI assistance', 'Next: review process', 'Continue company setup'].entries()) {
+      const action = page.getByRole('button', { name: next, exact: true });
+      await expect(page.getByRole('button', { name: 'Close guide', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(action).toBeInViewport({ ratio: 1 });
+      await action.click({ trial: true });
+      await contained(page);
+      await evidence(page, info, `policy-guide-${viewport.width}-${stage}`);
+      await action.click();
+    }
+    await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Meridian Health LLC');
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeInViewport({ ratio: 1 });
+    await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
+    await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved policy. '.repeat(700));
+    await page.getByRole('button', { name: 'Close guide', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Review policy text', exact: true })).toBeFocused();
+  }
+});
+
+test('keeps the default guided setup steps compact on desktop', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
+  for (const width of [1728, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await boot(page, { mfaReminder: true });
+    await companyDetails(page);
+    for (let step = 0; step < 5; step++) {
+      const action = page.getByRole('button', { name: step === 4 ? 'Generate draft' : 'Continue', exact: true });
+      await expect(action).toBeInViewport({ ratio: 1 });
+      await action.click({ trial: true });
+      await accessible(page, '#setup-aiSetup');
+      await contained(page);
+      await evidence(page, info, `compact-step-${step}-${width}`);
+      if (step < 4) await continueStep(page);
+    }
+  }
+});
+
+
+test('checks import and every settings entry screen for contained navigation', async ({ page }, info) => {
+  const state = await boot(page, { mfaReminder: info.project.name === 'desktop', settingsSweep: true });
+  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  if (info.project.name === 'desktop') {
+    await expect(page.getByRole('button', { name: 'Validate files', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: 'Download template', exact: true })).toBeInViewport({ ratio: 1 });
+  }
+  await contained(page);
+  await evidence(page, info, 'compact-import-entry');
+  for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
+    await page.goto(`/setup?tab=${tab}`);
+    await expect(page.locator('#setup-settings')).toBeVisible();
+    await expect(page.getByLabel('Settings area', { exact: true })).toBeInViewport({ ratio: 1 });
+    await contained(page);
+    await evidence(page, info, `settings-${tab}`);
+  }
+  expect(state.errors).toEqual([]);
+  expect(state.unexpectedWrites).toEqual([]);
+});
+
+
+test('restores company fields after applying while the policy guide was open', async ({ page }) => {
+  await boot(page);
+  await companyDetails(page);
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button', { name: /Review & create/ }).click();
+  await generate(page);
+  await page.getByRole('button', { name: 'Apply 3 item(s) to workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Start another setup', exact: true }).click();
+  await expect(page.getByLabel(/^Legal entity name/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
 });

@@ -2371,9 +2371,9 @@ export function SetupPage() {
       )}
 
       {isSettings && (
-        <section id="setup-settings" aria-label={t('Manage settings')} className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
-          <aside className="space-y-3">
-            <div>
+        <section id="setup-settings" aria-label={t('Manage settings')} className="grid min-w-0 gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-5">
+          <aside className="grid grid-cols-2 items-start gap-3 lg:block lg:space-y-3">
+            <div className="min-w-0">
               <label htmlFor="setup-settings-category" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Settings area')}</label>
               <select
                 id="setup-settings-category"
@@ -2382,7 +2382,7 @@ export function SetupPage() {
                   const firstTab = visibleTabs.find((tab) => tab.category === event.target.value);
                   if (firstTab) selectTab(firstTab.id);
                 }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
+                className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
               >
                 {visibleCategories.map((category) => <option key={category.id} value={category.id}>{t(category.label)}</option>)}
               </select>
@@ -2394,7 +2394,7 @@ export function SetupPage() {
                   type="button"
                   aria-pressed={selectedTab === id}
                   onClick={() => selectTab(id)}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-start text-sm transition-colors ${
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm transition-colors ${
                     selectedTab === id
                       ? 'bg-sapphire/10 font-semibold text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent'
                       : 'font-medium text-slate-600 hover:bg-slate-200/60 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white'
@@ -2405,13 +2405,13 @@ export function SetupPage() {
                 </button>
               ))}
             </nav>
-            <div className="lg:hidden">
+            <div className="min-w-0 lg:hidden">
               <label htmlFor="setup-settings-page" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Setting')}</label>
               <select
                 id="setup-settings-page"
                 value={selectedTab}
                 onChange={(event) => selectTab(event.target.value as SettingsTab)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
+                className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100"
               >
                 {categoryTabs.map((tab) => <option key={tab.id} value={tab.id}>{t(tab.label)}</option>)}
               </select>

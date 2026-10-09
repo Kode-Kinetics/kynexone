@@ -90,6 +90,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const [size, setSize] = useState('51-200');
   const [currency, setCurrency] = useState('');
   const [profileSource, setProfileSource] = useState<'loading' | 'workspace' | 'unstated'>('loading');
+  const [policyGuideOpen, setPolicyGuideOpen] = useState(false);
   const [legalEntityName, setLegalEntityName] = useState('');
   const [branchCity, setBranchCity] = useState('');
   const [operatingModel, setOperatingModel] = useState('Functional');
@@ -320,7 +321,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
         {(done.skipped?.gradePayComponents?.count ?? 0) > 0 && <p role="status" className="mt-3 text-xs text-amber-800 dark:text-amber-200">
           {t('{count} grade pay line(s) were not saved: grade allowances and benefits are set in Benefits by grade.', { count: done.skipped!.gradePayComponents.count })}
         </p>}
-        <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); setStep(0); }}>Start another setup</button>
+        <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); setPolicyGuideOpen(false); setStep(0); }}>Start another setup</button>
       </div>
     );
   }
@@ -351,15 +352,15 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           </div>
         </aside>
         <div className="min-w-0 p-5">
-          <div className="mb-4">
+          <div hidden={step === 0 && policyGuideOpen} className="mb-4">
             <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 4 && draft ? 'Review your setup draft' : t(SETUP_STEPS[step].heading)}</h2>
             <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-400 ${step === 0 ? 'xl:sr-only' : ''}`}>{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
           </div>
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
-              <SetupPolicyEditor area="source" value={configuration} onChange={setConfiguration} currency={currency} />
-              <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
+              <SetupPolicyEditor onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
+              <div className={policyGuideOpen ? 'hidden' : 'grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
                   <input className="input w-full" list="setup-legal-entities" required value={legalEntityName} onChange={e => {
@@ -440,10 +441,10 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Every leave day and overtime hour is counted against this.</span>
                 </label>
               </div>
-              <div className="mt-6"><SetupPolicyEditor area="work" value={configuration} onChange={setConfiguration} currency={currency} /></div>
+              <div className="mt-4"><SetupPolicyEditor area="work" value={configuration} onChange={setConfiguration} currency={currency} /></div>
             </div>
             <div hidden={step !== 2}>
-              <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
+              <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr]">
 
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Workforce</span>
@@ -474,7 +475,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   </label>
                 </div>
               </div>
-              <details className="mt-7 border-t border-slate-200 pt-4 dark:border-white/10">
+              <details className="mt-4 border-t border-slate-200 pt-4 dark:border-white/10">
                 <summary className="cursor-pointer text-sm font-medium text-slate-800 dark:text-slate-200">Planning preferences (optional)</summary>
                 <p className="mb-3 mt-2 text-xs leading-5 text-slate-600 dark:text-slate-400">These preferences are saved for reference. They do not activate approval workflows or enforce payroll and access rules.</p>
                 <div className="mb-4 grid gap-4 sm:grid-cols-2">
@@ -508,7 +509,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
             </div>
             <div hidden={step !== 3}><SetupPolicyEditor area="rewards" value={configuration} onChange={setConfiguration} currency={currency} releaseA={releaseA} /></div>
             <div hidden={step !== 4}>
-              <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-5 dark:border-white/10">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3 dark:border-white/10">
                 <div className="flex items-start gap-3">
                   <Building2 className="mt-1 h-5 w-5 shrink-0 text-slate-500" aria-hidden="true" />
                   <div><p className="font-semibold text-slate-900 dark:text-white">{legalEntityName || industry || 'Your company'}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{COUNTRIES.find(c => c.code === country)?.label} · {size} employees · {currency}</p></div>
@@ -516,7 +517,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                 <button type="button" className="text-sm font-medium text-sapphire hover:underline dark:text-blue-300" onClick={() => goToStep(0)}>Edit company details</button>
               </div>
               <details open={!draft} className="mb-4">
-                <summary className="mb-4 cursor-pointer text-sm font-medium text-slate-700 dark:text-slate-200">Draft choices · {selectedCount} sections included</summary>
+                <summary className="mb-2 cursor-pointer text-sm font-medium text-slate-700 dark:text-slate-200">Draft choices · {selectedCount} sections included</summary>
                 <fieldset role="group" aria-label="Sections to include in the draft" className="min-w-0">
                   <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
@@ -527,7 +528,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                     </div>
                   </div>
                   <p className="mb-2 text-xs text-slate-600 dark:text-slate-400">Uncheck anything you already have or prefer to configure yourself.</p>
-                  <div className="grid gap-x-6 sm:grid-cols-2">
+                  <div className="grid gap-x-4 sm:grid-cols-2 xl:grid-cols-3">
                     {([
                       ['entity', 'Entity & cost centers'], ['org', 'Org structure'],
                       ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
@@ -536,7 +537,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                       ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'], ['benefits', 'Benefits'],
                     ] as [SectionKey, string][]).map(([k, label]) => (
                       <label key={k}
-                        className={`flex cursor-pointer items-center gap-2 border-b border-slate-100 py-3 text-sm transition dark:border-white/10 ${sections[k]
+                        className={`flex cursor-pointer items-center gap-2 border-b border-slate-100 py-2 text-sm transition dark:border-white/10 ${sections[k]
                             ? 'text-slate-900 dark:text-white'
                             : 'text-slate-600 dark:text-slate-300'
                           }`}>
@@ -546,7 +547,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                     ))}
                   </div>
                 </fieldset>
-                <div className="mt-6"><label className="block sm:col-span-2">
+                <div className="mt-3"><label className="block sm:col-span-2">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
                   <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
                 </label>
@@ -865,7 +866,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               )}
             </fieldset>
           )}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10">
+          <div className={`${step === 0 && policyGuideOpen ? 'hidden' : 'flex'} mt-4 flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10`}>
             {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">{t('Step 1 of 5')}</span>}
             {step < 4 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
               <div className="flex flex-wrap items-center gap-3">

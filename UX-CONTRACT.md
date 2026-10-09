@@ -14,3 +14,6 @@ Visual context: [DESIGN.md](DESIGN.md). Existing domain and permission contracts
 - Reviewed benefits create plans and eligibility, not enrollment or contributions. Effective dates, grade references, company scope, permission parity, replay behavior and audit evidence must be tested.
 
 - Desktop company details use four columns from 1280px, a compact active-step description and a shared heading/navigation row. With the policy guide closed, all eight fields and Continue remain visible at 1728×900, 1440×900 and 1366×768 with the MFA reminder. Footer spacing keeps the assistant launcher away from the action. Smaller/zoomed layouts retain natural scrolling rather than clipping controls.
+
+- Opening the policy guide temporarily hides the company-detail fields and main Continue footer, preserving their values. The guide uses two desktop columns for intake/AI review and three for the final explanation. Close/finish restores company details and focus; starting another setup resets guide visibility.
+- Standard guided steps use available width for attendance/overtime, people/pay, grades/benefits, and review choices. Repeatable policy/grade/benefit rows and generated records retain natural scrolling. Import entry and all 17 settings entry screens must remain contained on desktop/mobile.

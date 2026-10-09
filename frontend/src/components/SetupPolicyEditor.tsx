@@ -19,6 +19,7 @@ type Props = {
   onChange: (value: SetupConfiguration) => void;
   currency: string;
   releaseA?: boolean;
+  onSourceOpenChange?: (open: boolean) => void;
 };
 const CAPTURE = [
   ["BiometricDevice", msg("Biometric device")],
@@ -138,7 +139,7 @@ function Choices({
         {options.map(([key, label]) => (
           <label
             key={key}
-            className="flex items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm dark:border-white/10"
+            className="flex items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-white/10"
           >
             <input
               className="mt-0.5 h-4 w-4 accent-sapphire"
@@ -167,6 +168,7 @@ export function SetupPolicyEditor({
   onChange,
   currency,
   releaseA,
+  onSourceOpenChange,
 }: Props) {
   const t = useT();
   const manualGradeDraft = useRef<DraftGrade[]>([]);
@@ -191,94 +193,104 @@ export function SetupPolicyEditor({
       ),
     });
   if (area === "source")
-    return <SetupPolicySource value={value} onChange={onChange} />;
+    return (
+      <SetupPolicySource
+        value={value}
+        onChange={onChange}
+        onOpenChange={onSourceOpenChange}
+      />
+    );
   if (area === "work")
     return (
-      <div className="space-y-6">
-        <Choices
-          legend={msg("How is time recorded?")}
-          options={CAPTURE}
-          selected={value.attendanceMethods ?? ["WebCheckIn"]}
-          onChange={(attendanceMethods) => update({ attendanceMethods })}
-        />
-        <p className="text-xs text-slate-600 dark:text-slate-400">
-          {t(
-            "Select every method you use. Device connections and location geofences are configured in Attendance after setup.",
-          )}
-        </p>
-        <details className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
-          <summary className="cursor-pointer text-sm font-semibold">
-            {t("Custom attendance rules")}
-          </summary>
-          <label className="my-3 flex gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={!!value.attendancePolicy}
-              onChange={(e) =>
-                update({
-                  attendancePolicy: e.target.checked
-                    ? { ...ATTENDANCE }
-                    : undefined,
-                })
-              }
-            />
-            {t("Use my company attendance policy")}
-          </label>
-          {value.attendancePolicy && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {(
-                [
-                  ["graceMinutes", msg("Grace period (minutes)")],
-                  ["lateThresholdMinutes", msg("Late threshold (minutes)")],
+      <div className="grid items-start gap-4 xl:grid-cols-2">
+        <div className="space-y-3">
+          <Choices
+            legend={msg("How is time recorded?")}
+            options={CAPTURE}
+            selected={value.attendanceMethods ?? ["WebCheckIn"]}
+            onChange={(attendanceMethods) => update({ attendanceMethods })}
+          />
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {t(
+              "Select every method you use. Device connections and location geofences are configured in Attendance after setup.",
+            )}
+          </p>
+          <details className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
+            <summary className="cursor-pointer text-sm font-semibold">
+              {t("Custom attendance rules")}
+            </summary>
+            <label className="my-3 flex gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={!!value.attendancePolicy}
+                onChange={(e) =>
+                  update({
+                    attendancePolicy: e.target.checked
+                      ? { ...ATTENDANCE }
+                      : undefined,
+                  })
+                }
+              />
+              {t("Use my company attendance policy")}
+            </label>
+            {value.attendancePolicy && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(
                   [
-                    "earlyExitThresholdMinutes",
-                    msg("Early exit threshold (minutes)"),
-                  ],
-                  ["standardWorkMinutes", msg("Working day (minutes)")],
-                  ["breakMinutes", msg("Break (minutes)")],
-                  [
-                    "halfDayThresholdMinutes",
-                    msg("Half-day threshold (minutes)"),
-                  ],
-                  [
-                    "absentThresholdMinutes",
-                    msg("Absence threshold (minutes)"),
-                  ],
-                ] as const
-              ).map(([key, label]) => (
-                <Field
-                  key={key}
-                  label={label}
-                  value={value.attendancePolicy![key]}
-                  type="number"
-                  min={0}
-                  max={1440}
-                  onChange={(v) =>
-                    update({
-                      attendancePolicy: {
-                        ...value.attendancePolicy!,
-                        [key]: Number(v),
-                      },
-                    })
-                  }
-                />
-              ))}
-            </div>
-          )}
-        </details>
-        <Choices
-          legend={msg("Overtime")}
-          options={OVERTIME}
-          selected={value.overtimeModes ?? ["PaidOvertime"]}
-          exclusive="NotApplicable"
-          onChange={(overtimeModes) => update({ overtimeModes })}
-        />
-        <p className="text-xs text-slate-600 dark:text-slate-400">
-          {t(
-            "Paid overtime and time off can coexist. Review eligibility, employee consent and country-specific calculation rules before applying. Custom rates and limits are editable in the generated overtime policy.",
-          )}
-        </p>
-        <section className="space-y-3 border-t border-slate-200 pt-5 dark:border-white/10">
+                    ["graceMinutes", msg("Grace period (minutes)")],
+                    ["lateThresholdMinutes", msg("Late threshold (minutes)")],
+                    [
+                      "earlyExitThresholdMinutes",
+                      msg("Early exit threshold (minutes)"),
+                    ],
+                    ["standardWorkMinutes", msg("Working day (minutes)")],
+                    ["breakMinutes", msg("Break (minutes)")],
+                    [
+                      "halfDayThresholdMinutes",
+                      msg("Half-day threshold (minutes)"),
+                    ],
+                    [
+                      "absentThresholdMinutes",
+                      msg("Absence threshold (minutes)"),
+                    ],
+                  ] as const
+                ).map(([key, label]) => (
+                  <Field
+                    key={key}
+                    label={label}
+                    value={value.attendancePolicy![key]}
+                    type="number"
+                    min={0}
+                    max={1440}
+                    onChange={(v) =>
+                      update({
+                        attendancePolicy: {
+                          ...value.attendancePolicy!,
+                          [key]: Number(v),
+                        },
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </details>
+        </div>
+        <div className="space-y-3">
+          <Choices
+            legend={msg("Overtime")}
+            options={OVERTIME}
+            selected={value.overtimeModes ?? ["PaidOvertime"]}
+            exclusive="NotApplicable"
+            onChange={(overtimeModes) => update({ overtimeModes })}
+          />
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {t(
+              "Paid overtime and time off can coexist. Review eligibility, employee consent and country-specific calculation rules before applying. Custom rates and limits are editable in the generated overtime policy.",
+            )}
+          </p>
+        </div>
+        <section className="space-y-2 border-t border-slate-200 pt-3 xl:col-span-2 dark:border-white/10">
           <h3 className="text-base font-semibold">
             {t("Leave year and accrual")}
           </h3>
@@ -312,7 +324,7 @@ export function SetupPolicyEditor({
               <legend className="px-1 text-sm font-semibold">
                 {t("Leave policy {number}", { number: i + 1 })}
               </legend>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <Field
                   label={msg("Policy name")}
                   value={p.name}
@@ -430,7 +442,7 @@ export function SetupPolicyEditor({
     );
   if (area === "governance")
     return (
-      <section className="mt-5 space-y-3 border-t border-slate-200 pt-5 dark:border-white/10">
+      <section className="mt-3 space-y-3 border-t border-slate-200 pt-3 dark:border-white/10">
         <h3 className="text-base font-semibold">
           {t("Custom management and approval preferences")}
         </h3>
@@ -482,7 +494,7 @@ export function SetupPolicyEditor({
       </section>
     );
   return (
-    <div className="space-y-7">
+    <div className="grid items-start gap-5 xl:grid-cols-2">
       <section className="space-y-4">
         <h3 className="text-base font-semibold">{t("Salary grades")}</h3>
         <label className="block">
@@ -522,7 +534,7 @@ export function SetupPolicyEditor({
             <legend className="px-1 text-sm font-semibold">
               {t("Grade {number}", { number: i + 1 })}
             </legend>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label={msg("Grade code")}
                 value={g.code}
@@ -596,7 +608,7 @@ export function SetupPolicyEditor({
           </button>
         )}
       </section>
-      <section className="space-y-4 border-t border-slate-200 pt-5 dark:border-white/10">
+      <section className="space-y-4 border-t border-slate-200 pt-4 dark:border-white/10 xl:border-t-0 xl:border-s xl:ps-5 xl:pt-0">
         <h3 className="text-base font-semibold">{t("Benefits")}</h3>
         <p className="text-sm text-slate-600 dark:text-slate-400">
           {t(

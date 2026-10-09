@@ -209,12 +209,12 @@ export function OrgStructureImportPanel() {
   return (
     <section aria-labelledby={`${inputId}-heading`} className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]">
       <fieldset disabled={Boolean(loading)} aria-busy={Boolean(loading)} className="min-w-0">
-      <div className="border-b border-slate-200 px-5 py-6 sm:px-7 dark:border-white/10">
+      <div className="border-b border-slate-200 px-4 py-4 sm:px-5 dark:border-white/10">
         <h3 id={`${inputId}-heading`} className="text-xl font-semibold tracking-tight text-slate-900 dark:text-white">{t('Import your organization')}</h3>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+        <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-300">
           {t('Bring your existing companies, teams, and job structure into KynexOne. Review every change before it is applied.')}
         </p>
-        <ol aria-label={t('Import progress')} className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3">
+        <ol aria-label={t('Import progress')} className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
           {runway.map((step, idx) => (
             <li key={step.label} aria-current={step.active ? 'step' : undefined} className={`flex items-center gap-2 text-sm ${step.active ? 'font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-600 dark:text-slate-300'}`}>
               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${step.done ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : step.active ? 'bg-sapphire text-white dark:bg-cyanAccent dark:text-slate-900' : 'bg-slate-100 dark:bg-white/10'}`}>
@@ -227,13 +227,13 @@ export function OrgStructureImportPanel() {
         </ol>
       </div>
 
-      <div className="px-5 py-6 sm:px-7">
-        <div className="flex flex-col gap-5 rounded-lg border border-dashed border-slate-300 bg-slate-50/70 p-5 sm:flex-row sm:items-start dark:border-white/20 dark:bg-white/[0.02]">
+      <div className="px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50/70 p-4 sm:flex-row sm:items-start dark:border-white/20 dark:bg-white/[0.02]">
           <UploadCloud className="h-7 w-7 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden="true" />
           <div className="min-w-0 flex-1">
             <label htmlFor={`${inputId}-package`} className="block text-base font-semibold text-slate-900 dark:text-white">{t('Upload an organization package')}</label>
-            <p id={`${inputId}-package-help`} className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">{t('Use the template to prepare your organization, then choose your completed .txt or .csv package. A new package replaces the files currently loaded.')}</p>
-            <input id={`${inputId}-package`} type="file" accept=".txt,.csv,text/plain,text/csv" aria-describedby={`${inputId}-package-help`} onChange={e => { void setPackageFile(e.target.files?.[0]); e.target.value = ''; }} className={`mt-4 ${fileInputClass}`} />
+            <p id={`${inputId}-package-help`} className="mt-1 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-300">{t('Use the template to prepare your organization, then choose your completed .txt or .csv package. A new package replaces the files currently loaded.')}</p>
+            <input id={`${inputId}-package`} type="file" accept=".txt,.csv,text/plain,text/csv" aria-describedby={`${inputId}-package-help`} onChange={e => { void setPackageFile(e.target.files?.[0]); e.target.value = ''; }} className={`mt-3 ${fileInputClass}`} />
             {packageName && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-sm" role="status">
                 <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
@@ -248,18 +248,18 @@ export function OrgStructureImportPanel() {
           </div>
         </div>
 
-        <details className="group mt-5 border-b border-slate-200 pb-5 dark:border-white/10">
+        <details className="group mt-4 border-b border-slate-200 pb-4 dark:border-white/10">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded text-sm font-semibold text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire [&::-webkit-details-marker]:hidden dark:text-slate-200">
             {t('Upload individual CSV files instead')}
             <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
           </summary>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">{t('Add only the sections you need. Related records can be in these files or already in your workspace; validation checks the connections.')}</p>
-          <div className="mt-4 divide-y divide-slate-200 dark:divide-white/10">
+          <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-300">{t('Add only the sections you need. Related records can be in these files or already in your workspace; validation checks the connections.')}</p>
+          <div className="mt-3 divide-y divide-slate-200 dark:divide-white/10">
             {importKeys.map(item => {
               const rows = countCsvRows(payload[item.key]);
               const loaded = Boolean(payload[item.key]);
               return (
-                <div key={item.key} className="py-4 first:pt-0 last:pb-0">
+                <div key={item.key} className="py-3 first:pt-0 last:pb-0">
                   <div className="grid items-start gap-3 sm:grid-cols-[minmax(180px,0.7fr)_minmax(0,1fr)]">
                     <div>
                       <label htmlFor={`${inputId}-${item.key}`} className="text-sm font-medium text-slate-900 dark:text-white">{t(item.label)}</label>
@@ -285,17 +285,17 @@ export function OrgStructureImportPanel() {
         </details>
 
         {hasAny && (
-          <div className="mt-5" aria-live="polite">
+          <div className="mt-3" aria-live="polite">
             <p className="text-sm font-medium text-slate-900 dark:text-white">{t('{count, plural, one {# section loaded} other {# sections loaded}} · approximately {rows, plural, one {# row} other {# rows}}', { count: loadedCount, rows: totalRows })}</p>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{importKeys.filter(item => payload[item.key]).map(item => t(item.label)).join(', ')}</p>
           </div>
         )}
 
-        {loading === 'reading' && <p role="status" className="mt-5 text-sm text-slate-600 dark:text-slate-300">{t('Reading your file…')}</p>}
-        {error && <p role="alert" className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+        {loading === 'reading' && <p role="status" className="mt-3 text-sm text-slate-600 dark:text-slate-300">{t('Reading your file…')}</p>}
+        {error && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
 
-        <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <p id={`${inputId}-validation-help`} className="flex max-w-2xl items-start gap-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p id={`${inputId}-validation-help`} className="flex max-w-2xl items-start gap-2 text-sm leading-5 text-slate-600 dark:text-slate-300">
             <ShieldCheck className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />
             {hasAny ? t('Validation checks your files against your workspace. Organization records change only when you apply the import.') : t('Choose a package or CSV file to begin. You will review the proposed changes before applying them.')}
           </p>
@@ -305,13 +305,13 @@ export function OrgStructureImportPanel() {
         </div>
       </div>
 
-      <div ref={resultsRef} className="border-t border-slate-200 px-5 py-5 sm:px-7 dark:border-white/10">
+      <div ref={resultsRef} className="border-t border-slate-200 px-4 py-4 sm:px-5 dark:border-white/10">
         {!batch ? (
           <div className="flex items-start gap-3 text-slate-600 dark:text-slate-300">
             <FileSpreadsheet className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
             <div>
               <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{t('Your review appears here')}</h4>
-              <p className="mt-1 text-sm leading-6">{t('After validation, see what will be added or updated and any issues to resolve.')}</p>
+              <p className="mt-1 text-sm leading-5">{t('After validation, see what will be added or updated and any issues to resolve.')}</p>
             </div>
           </div>
         ) : (
@@ -321,7 +321,7 @@ export function OrgStructureImportPanel() {
               <StatusPill status={batch.status} t={t} />
             </div>
             <p aria-live="polite" role="status" className={`mt-2 text-sm leading-6 ${batch.status === 'DryRunBlocked' || batch.status === 'Failed' ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-slate-300'}`}>{validationBanner}</p>
-            <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 border-y border-slate-200 py-4 sm:grid-cols-4 dark:border-white/10">
+            <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 border-y border-slate-200 py-3 sm:grid-cols-4 dark:border-white/10">
               <Impact label={batch.status === 'Committed' ? t('Added') : t('To add')} value={batch.createdRows} format={format} />
               <Impact label={batch.status === 'Committed' ? t('Updated') : t('To update')} value={batch.updatedRows} format={format} />
               <Impact label={t('Skipped')} value={batch.skippedRows} format={format} />
@@ -339,7 +339,7 @@ export function OrgStructureImportPanel() {
             {batch.status === 'Committed' && batch.result && Object.keys(batch.result.applied ?? {}).length > 0 && (
               <p className="mt-4 flex items-start gap-2 text-sm leading-6 text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />{t('Applied: {summary}', { summary: Object.entries(batch.result.applied).map(([k, v]) => t('{section}: {count}', { section: sectionLabel(k, t), count: v })).join(' · ') })}</p>
             )}
-            <details className="mt-5 text-sm text-slate-600 dark:text-slate-300">
+            <details className="mt-3 text-sm text-slate-600 dark:text-slate-300">
               <summary className="w-fit cursor-pointer rounded py-1 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire">{t('Import details & audit record')}</summary>
               <div className="mt-3 space-y-2 break-words text-xs leading-5">
                 <p>{t('Batch {batchId}', { batchId: batch.externalBatchId ?? batch.id })}</p>
@@ -351,7 +351,7 @@ export function OrgStructureImportPanel() {
                 <CountStrip label={t('Existing workspace records')} counts={{ ...batch.reconciliation.identityCounts, ...batch.reconciliation.operationalCounts }} muted t={t} format={format} />
               </div>
             </details>
-            <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 pt-5 dark:border-white/10">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-white/10">
               <button type="button" className="btn-secondary disabled:cursor-wait disabled:opacity-60" onClick={refreshStatus} disabled={loading === 'refresh'}><RefreshCw className="h-4 w-4" aria-hidden="true" />{loading === 'refresh' ? t('Refreshing…') : t('Refresh status')}</button>
               <div className="flex flex-wrap items-center gap-3">
                 {commitReason && <p id={`${inputId}-commit-reason`} className={`max-w-md text-sm ${batch.status === 'DryRunBlocked' ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-slate-300'}`}>{commitReason}</p>}
