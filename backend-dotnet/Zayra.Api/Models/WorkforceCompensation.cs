@@ -518,6 +518,10 @@ public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational
     public Guid? OriginalEnrollmentId { get; set; }
     public bool HasException { get; set; }
     public string? ExceptionReason { get; set; }
+    public DateOnly? ReviewDate { get; set; }
+    public Guid? ApprovalRequestId { get; set; }
+    /// <summary>Approved employee-visible purpose; internal justification remains in the approval witness.</summary>
+    public string? GrantReason { get; set; }
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public DateOnly? EffectiveTo { get; set; }
     public string Status { get; set; } = "Active";

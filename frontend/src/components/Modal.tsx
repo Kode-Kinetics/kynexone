@@ -40,6 +40,8 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
     requestAnimationFrame(() => closeButtonRef.current?.focus());
 
     const onKey = (e: KeyboardEvent) => {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs.item(dialogs.length - 1) !== dialogRef.current) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         onCloseRef.current();
@@ -66,7 +68,13 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
-      previouslyFocused?.focus();
+      const remainingDialogs = document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]');
+      const parentDialog = remainingDialogs.item(remainingDialogs.length - 1);
+      if (parentDialog && !parentDialog.contains(previouslyFocused)) {
+        parentDialog.querySelector<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), [tabindex="0"]')?.focus();
+      } else {
+        previouslyFocused?.focus();
+      }
     };
   }, [isOpen]);
 

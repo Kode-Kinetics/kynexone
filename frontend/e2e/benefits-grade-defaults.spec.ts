@@ -49,7 +49,7 @@ async function boot(page: Page, authorized: boolean, mandatory = false) {
 test('authorized HR records a reasoned exception without losing grade assignment provenance', async ({ page }, info) => {
   const { drawer, submitted, errors } = await boot(page, true);
   await expect(drawer.getByRole('form', { name: 'Record contribution' }).getByLabel('Effective from', { exact: true })).toHaveValue(initialEnrollment.effectiveFrom > new Date().toISOString().slice(0, 10) ? initialEnrollment.effectiveFrom : new Date().toISOString().slice(0, 10));
-  await drawer.getByRole('button', { name: 'Apply exception', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Adjust existing benefit', exact: true }).click();
   const form = drawer.getByRole('form', { name: 'Apply benefit exception' });
   await expect(form.getByRole('button', { name: 'Save exception' })).toBeDisabled();
   await form.getByLabel('Individual benefit limit (SAR)', { exact: true }).fill('30000');
@@ -70,7 +70,7 @@ test('authorized HR records a reasoned exception without losing grade assignment
 test('HR without approval authority can read the grade benefit but cannot change an exception', async ({ page }) => {
   const { drawer, submitted, errors } = await boot(page, false);
   await expect(drawer.getByTestId('enrollment-entitlement')).toContainText('Grade default');
-  await expect(drawer.getByRole('button', { name: 'Apply exception', exact: true })).toHaveCount(0);
+  await expect(drawer.getByRole('button', { name: 'Adjust existing benefit', exact: true })).toHaveCount(0);
   await expect(drawer.getByRole('form', { name: 'Apply benefit exception' })).toHaveCount(0);
   expect(submitted).toEqual([]);
   expect(errors).toEqual([]);
@@ -78,7 +78,7 @@ test('HR without approval authority can read the grade benefit but cannot change
 
 test('mandatory benefit exceptions keep the configured limit period', async ({ page }) => {
   const { drawer, submitted, errors } = await boot(page, true, true);
-  await drawer.getByRole('button', { name: 'Apply exception', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Adjust existing benefit', exact: true }).click();
   const form = drawer.getByRole('form', { name: 'Apply benefit exception' });
   const period = form.getByRole('combobox', { name: 'Limit period', exact: true });
   await expect(period).toHaveValue('Annual');
@@ -104,30 +104,23 @@ async function openIneligibleEnrollment(page: Page, companyAllowed = true) {
   return dialog;
 }
 
-test('authorized HR can grant an out-of-grade benefit only with an exception reason', async ({ page }) => {
+test('out-of-grade enrollment opens a separate additional benefit request', async ({ page }) => {
   const { errors } = await boot(page, true);
-  const grants: Record<string, unknown>[] = [];
-  await page.route('**/api/compensation/benefits/enrollments', async route => {
-    if (route.request().method() !== 'POST') return route.fallback();
-    grants.push(route.request().postDataJSON());
-    return route.fulfill({ json: { ...initialEnrollment, id: 'individual-grant', assignmentSource: 'IndividualException', hasException: true } });
-  });
   const dialog = await openIneligibleEnrollment(page);
   await expect(dialog.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
-  await dialog.getByRole('checkbox', { name: 'Apply an individual exception' }).check();
-  await expect(dialog.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
-  await dialog.getByLabel('Exception reason', { exact: false }).fill('Approved additional medical benefit for this employee.');
-  await dialog.getByRole('button', { name: 'Enrol', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  expect(grants).toHaveLength(1);
-  expect(grants[0]).toMatchObject({ employeeId: 42, benefitPlanId: plan.id, exceptionReason: 'Approved additional medical benefit for this employee.' });
+  await expect(dialog.getByRole('checkbox', { name: 'Apply an individual exception' })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add additional benefit', exact: true }).click();
+  const request = page.getByRole('dialog', { name: 'Add additional benefit', exact: true });
+  await expect(request.getByLabel('Reason shown to employee')).toBeVisible();
+  await expect(request.getByLabel('Internal justification')).toBeVisible();
+  await expect(request.getByRole('button', { name: 'Submit for approval' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
 test('an individual grant cannot bypass plan company scope', async ({ page }) => {
   await boot(page, true);
   const dialog = await openIneligibleEnrollment(page, false);
-  await expect(dialog.getByRole('checkbox', { name: 'Apply an individual exception' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Add additional benefit', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
 });
 

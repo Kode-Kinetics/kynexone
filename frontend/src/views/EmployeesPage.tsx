@@ -16,6 +16,7 @@ import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
 import { ReadinessChecklist, type ReadinessFixMode } from '../components/ReadinessChecklist';
 import { GosiCohortPanel } from '../components/GosiCohortPanel';
 import { EmployeePackagePanel } from '../components/entitlements/EmployeePackagePanel';
+import { EmployeeBenefitsPanel } from '../components/benefits/EmployeeBenefitsPanel';
 import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
 import { useReleaseA } from '../lib/releaseA';
 import client from '../api/client';
@@ -83,7 +84,7 @@ import {
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
-type DetailTab = 'personal' | 'employment' | 'payroll' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
+type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
 type EditField = EmployeeEditField;
 
 function employeeEditStep(field: EditField): number {
@@ -149,6 +150,7 @@ const tabs: { id: DetailTab; label: string; releaseA?: boolean }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
   { id: 'payroll', label: 'Payroll Profile' },
+  { id: 'benefits', label: 'Benefits' },
   { id: 'package', label: 'Package', releaseA: true },
   { id: 'deductions', label: 'Deductions', releaseA: true },
   { id: 'compliance', label: 'Compliance' },
@@ -287,6 +289,7 @@ export function EmployeesPage() {
   // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
   // "Access Denied" toast) for a background read they never asked for. The server still enforces the limit.
   const canReadUsage = hasPermission('security.manage');
+  const canReadBenefits = hasPermission('employees.write');
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -359,8 +362,18 @@ export function EmployeesPage() {
   const [readiness, setReadiness] = useState<EmployeeReadiness | null>(null);
   const [blockedPanel, setBlockedPanel] = useState<EmployeeNotActivatable | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('personal');
+  const benefitsTabRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (activeTab === 'benefits' && detail?.id) {
+      benefitsTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [activeTab, detail?.id]);
   const releaseA = useReleaseA();
-  const visibleTabs = useMemo(() => tabs.filter((tab) => !tab.releaseA || releaseA), [releaseA]);
+  const visibleTabs = useMemo(() => tabs.filter((tab) => tab.id === 'benefits'
+    ? !releaseA && canReadBenefits : !tab.releaseA || releaseA), [releaseA, canReadBenefits]);
+  useEffect(() => {
+    if (!visibleTabs.some(tab => tab.id === activeTab)) setActiveTab('personal');
+  }, [activeTab, visibleTabs]);
   const [statusReason, setStatusReason] = useState('');
   const [newStatus, setNewStatus] = useState<StatusFilter>('Active');
   const [transferReason, setTransferReason] = useState('');
@@ -805,7 +818,7 @@ export function EmployeesPage() {
     if (Number.isFinite(id) && id > 0 && selectedId !== id) {
       // ?tab=package (from the contract register's "Review proposal") opens the employee on that tab.
       const requestedTab = searchParams?.get('tab');
-      const tabWanted = tabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
+      const tabWanted = visibleTabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
       void openDetail(id, tabWanted !== null).then(() => { if (tabWanted) setActiveTab(tabWanted); });
       if (tabWanted) setActiveTab(tabWanted);
     }
@@ -2151,7 +2164,7 @@ export function EmployeesPage() {
           </div>
         </section>
 
-        <aside className="surface min-h-[560px] overflow-hidden">
+        <aside className={`surface min-h-[560px] overflow-hidden ${selectedId && activeTab === 'benefits' ? 'order-first xl:order-none' : ''}`}>
           {!selectedId && (
             <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
               <Users className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
@@ -2181,13 +2194,16 @@ export function EmployeesPage() {
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">
                   {visibleTabs.map((tab) => (
-                    <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
+                    <button key={tab.id} ref={tab.id === 'benefits' ? benefitsTabRef : undefined} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
                       {t(tab.label)}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="space-y-4 p-4">
+                {!releaseA && canReadBenefits && activeTab === 'benefits' && <EmployeeBenefitsPanel key={detail!.id}
+                  employeeId={detail!.id} employeeName={detail!.fullName} companyId={detail!.companyId ?? null} gradeId={detail!.gradeId} />}
+                {activeTab !== 'benefits' && <>
                 {/* Activation readiness — the 422 block and the live checklist share the SAME
                     server-authoritative component; fast-fix closes gaps in place (§8.3/§8.4). */}
                 {blockedPanel ? (
@@ -2237,6 +2253,7 @@ export function EmployeesPage() {
                     setWorkEmailFor({ id: selectedEmployee.id, name: selectedEmployee.fullName, englishName: selectedEmployee.englishName ?? selectedEmployee.fullName, arabicName: selectedEmployee.arabicName, companyId: selectedEmployee.companyId });
                   }}
                 />
+                </>}
 
                 {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
                     operator confirms it is a distinct person (clears the flag, audited) or merges it

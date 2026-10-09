@@ -78,7 +78,7 @@ public sealed class GradeBenefitExceptionSecurityTests
     [InlineData("self")]
     [InlineData("no_approval_authority")]
     [InlineData("backdated")]
-    public async Task IndividualGrant_CannotBypassExceptionAuthorityOrProspectiveDateRules(string attemptedBypass)
+    public async Task LegacyIndividualGrant_AlwaysRequiresTheIndependentApprovalRoute(string attemptedBypass)
     {
         await using var db = Db();
         var seeded = await Seed(db);
@@ -93,9 +93,8 @@ public sealed class GradeBenefitExceptionSecurityTests
 
         var result = await controller.Enroll(request, default);
 
-        if (attemptedBypass == "backdated") Assert.IsType<BadRequestObjectResult>(result);
-        else if (attemptedBypass == "no_approval_authority") Assert.IsType<ForbidResult>(result);
-        else Assert.Equal(StatusCodes.Status403Forbidden, Assert.IsType<ObjectResult>(result).StatusCode);
+        var refused = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("additional_benefit_approval_required", JsonSerializer.Serialize(refused.Value));
         Assert.Empty(await db.BenefitEnrollments.ToListAsync());
         Assert.Empty(await db.AuditLogs.Where(x => x.Action == "benefits.exception.applied").ToListAsync());
     }

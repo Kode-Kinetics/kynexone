@@ -35,6 +35,7 @@ public static class ApprovalEntities
     public static readonly IReadOnlyDictionary<string, string> ProducersWithEvidence =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            [Zayra.Api.Infrastructure.Benefits.AdditionalBenefitGrants.EntityName] = "submitting an additional individual benefit or amendment",
             // LeaveService.BuildApprovalProjection — the leave request's routing projection.
             [nameof(LeaveRequest)] = "submitting a leave request",
             // EmployeesController.RequestChange → IApprovalWorkflowService.CreateRequestAsync.

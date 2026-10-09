@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Entitlements;
@@ -21,14 +23,81 @@ public class BenefitsController : ControllerBase
     private readonly ZayraDbContext _db;
 
     private readonly ITenantClock _clock;
-    public BenefitsController(ZayraDbContext db, ITenantClock? clock = null)
+    private readonly IApprovalRouter? _approvalRouter;
+    private readonly IApprovalWorkflowService? _approvals;
+    public BenefitsController(ZayraDbContext db, ITenantClock? clock = null, IApprovalRouter? approvalRouter = null, IApprovalWorkflowService? approvals = null)
     {
         _db = db;
+        _approvalRouter = approvalRouter;
+        _approvals = approvals;
         _clock = clock ?? new TenantClock(db, TimeProvider.System);
     }
 
     private Guid? GetUserId() =>
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
+
+    private RequestContext BenefitContext() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
+        GetUserId(), this.GetTenantId(), User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
+        User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
+
+    [HttpPost("additional-grants")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> AdditionalGrant([FromBody] AdditionalBenefitGrantRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+        try
+        {
+            var router = _approvalRouter ?? HttpContext.RequestServices.GetRequiredService<IApprovalRouter>();
+            var approval = await AdditionalBenefitGrants.SubmitAsync(_db, router, tenantId.Value, req, BenefitContext(), _clock, ct, this.GetEntityScope());
+            return Ok(await AdditionalBenefitGrants.ToDtoAsync(_db, approval, ct));
+        }
+        catch (ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message, setupUrl = "/benefits#additional-benefit-approval" }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    [HttpGet("additional-grants/{requestId:guid}")]
+    [HasPermission("employees.write", "approvals.read")]
+    public async Task<IActionResult> AdditionalGrantDetail(Guid requestId, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var row = await _db.ApprovalRequests.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == requestId && x.EntityName == AdditionalBenefitGrants.EntityName, ct);
+        if (row is null) return NotFound();
+        if (!this.GetEntityScope().CanAccessCompany(row.CompanyId)) return Forbid();
+        var service = _approvals ?? HttpContext.RequestServices.GetRequiredService<IApprovalWorkflowService>();
+        var approval = await service.GetRequestAsync(tenantId.Value, requestId, BenefitContext(), ct);
+        if (!User.HasPermission("employees.write") && approval is null) return Forbid();
+        return Ok(await AdditionalBenefitGrants.ToDtoAsync(_db, row, ct, approval));
+    }
+
+    [HttpGet("employees/{employeeId:int}/package")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> EmployeePackage(int employeeId, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, ct);
+        if (employee is null) return NotFound();
+        if (!this.GetEntityScope().CanAccessCompany(employee.CompanyId)) return Forbid();
+        var today = await _clock.TodayAsync(tenantId.Value, ct);
+        var rows = await _db.BenefitEnrollments.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId).OrderByDescending(x => x.EffectiveFrom).ToListAsync(ct);
+        var planIds = rows.Select(x => x.BenefitPlanId).Distinct().ToList();
+        var plans = await _db.BenefitPlans.AsNoTracking().Where(x => x.TenantId == tenantId && planIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+        var requests = await _db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.RequestedForEmployeeId == employeeId && x.EntityName == AdditionalBenefitGrants.EntityName)
+            .OrderBy(x => x.Status != "Pending").ThenByDescending(x => x.CreatedAtUtc).Take(100).ToListAsync(ct);
+        var requesterIds = requests.Where(x => x.RequestedByUserId.HasValue).Select(x => x.RequestedByUserId!.Value).Distinct().ToList();
+        var requesterNames = await _db.Users.AsNoTracking().Where(x => x.TenantId == tenantId && requesterIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.FullName, ct);
+        var requestDtos = requests.Select(x => AdditionalBenefitGrants.ToDto(x,
+            x.RequestedByUserId.HasValue ? requesterNames.GetValueOrDefault(x.RequestedByUserId.Value) : null,
+            rows.FirstOrDefault(e => e.ApprovalRequestId == x.Id)?.Id)).ToList();
+        return Ok(new EmployeeBenefitPackageDto(employee.Id, employee.FullName, employee.GradeId, employee.CompanyId, today,
+            rows.Select(x => BenefitPackageProjection.From(x, plans.GetValueOrDefault(x.BenefitPlanId), employee, today)).ToList(), requestDtos));
+    }
 
     [HttpGet("grade-defaults")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
@@ -286,6 +355,7 @@ public class BenefitsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (req.ExceptionReason is not null) return Conflict(new { code = "additional_benefit_approval_required", message = "Submit an additional benefit request from the employee Benefits page for independent approval.", requestUrl = "/api/compensation/benefits/additional-grants" });
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == req.EmployeeId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (employee is null) return NotFound("Employee not found.");
         return await FinanceDecisionSerializer.SerializeAsync(_db, "benefits.enrollment", tenantId.Value, employee.PublicId,
@@ -310,30 +380,20 @@ public class BenefitsController : ControllerBase
         var plan = await _db.BenefitPlans.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == req.BenefitPlanId && x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
         if (plan is null) return NotFound("Benefit plan not found.");
-        var individualException = req.ExceptionReason is not null;
-        if (individualException)
-        {
-            if (!User.HasPermission("employees.approve")) return Forbid();
-            if (string.IsNullOrWhiteSpace(req.ExceptionReason) || req.ExceptionReason.Trim().Length > 1000)
-                return BadRequest("An exception reason of 1 to 1000 characters is required.");
-            if (req.EffectiveFrom < await _clock.TodayAsync(tenantId.Value, ct))
-                return BadRequest("Benefit exceptions cannot take effect in the past.");
-            if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
-            var actor = GetUserId();
-            if (await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct) == employee.Id
-                || (actor.HasValue && (employee.UserAccountId == actor || await _db.EmployeeUserAccounts.AsNoTracking()
-                    .AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.UserId == actor && !x.IsDeleted, ct))))
-                return StatusCode(StatusCodes.Status403Forbidden, "You cannot approve an exception to your own benefits. Another authorized person must apply it.");
-        }
         if (plan.EffectiveTo.HasValue && req.EffectiveTo.HasValue && req.EffectiveTo > plan.EffectiveTo)
             return BadRequest("Enrollment dates must be inside the benefit plan effective period.");
         // Same evaluator as GET eligibility-check, so the preview can never disagree with the gate.
         var evaluation = await GradeBenefitDefaults.EvaluateAsync(_db, tenantId.Value, plan, employee, req.EffectiveFrom, ct);
-        if (!evaluation.Eligible && (!individualException || evaluation.Checks.Any(x => !x.Passed && (x.Key == "plan_active" || x.Key == "company_scope" || x.Key == "plan_window"))))
+        if (!evaluation.Eligible)
             return BadRequest(evaluation.BlockingReason);
         if (req.RequestedBenefitAmount.HasValue && evaluation.MaximumBenefitAmount.HasValue
             && req.RequestedBenefitAmount.Value > evaluation.MaximumBenefitAmount.Value)
             return BadRequest($"Requested benefit amount exceeds the resolved tier limit of {evaluation.MaximumBenefitAmount.Value:0.00} {plan.Currency}.");
+        var pendingBenefits = await _db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EntityName == AdditionalBenefitGrants.EntityName
+            && x.RequestedForEmployeeId == employee.Id && x.Status == "Pending").ToListAsync(ct);
+        if (pendingBenefits.Select(AdditionalBenefitGrants.Read).Any(x => x.Terms.BenefitPlanId == plan.Id
+            && (!req.EffectiveTo.HasValue || x.Terms.EffectiveFrom <= req.EffectiveTo) && (!x.Terms.EffectiveTo.HasValue || x.Terms.EffectiveTo >= req.EffectiveFrom)))
+            return Conflict("A pending additional benefit request already covers this plan. Decide or withdraw it first.");
         var overlap = await _db.BenefitEnrollments.AsNoTracking().AnyAsync(x =>
             x.TenantId == tenantId && x.BenefitPlanId == plan.Id && x.EmployeeId == employee.Id
             && x.Status == "Active"
@@ -371,18 +431,9 @@ public class BenefitsController : ControllerBase
             EffectiveTo = req.EffectiveTo ?? plan.EffectiveTo,
             Status = "Active",
             CreatedBy = GetUserId(),
-            AssignmentSource = individualException ? "IndividualException" : "Manual",
-            HasException = individualException,
-            ExceptionReason = individualException ? req.ExceptionReason!.Trim() : null,
+            AssignmentSource = "Manual",
         };
         _db.BenefitEnrollments.Add(enrollment);
-        if (individualException)
-            _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
-            {
-                TenantId = tenantId, CompanyId = enrollment.CompanyId, UserId = GetUserId(),
-                EntityName = nameof(BenefitEnrollment), EntityId = enrollment.Id.ToString(), Action = "benefits.exception.applied",
-                Metadata = JsonSerializer.Serialize(new { Reason = enrollment.ExceptionReason, PreviousValuesJson = "{}", NewValuesJson = JsonSerializer.Serialize(BenefitEnrollmentDto.From(enrollment)) }),
-            });
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitEnrollmentDto.From(enrollment));
     }
@@ -481,6 +532,8 @@ public class BenefitsController : ControllerBase
         var enrollment = await _db.BenefitEnrollments.FirstOrDefaultAsync(x => x.Id == enrollmentId && x.TenantId == tenantId, ct);
         if (enrollment is null) return NotFound("Benefit enrollment not found.");
         if (!this.GetEntityScope().CanAccessCompany(enrollment.CompanyId)) return Forbid();
+        if (enrollment.AssignmentSource == AdditionalBenefitGrants.Source)
+            return Conflict(new { code = "additional_benefit_approval_required", message = "Amend an additional benefit through a new benefit request so the configured independent approval is preserved." });
         var actorId = GetUserId();
         var subject = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == enrollment.EmployeeId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (subject is null) return NotFound("Employee not found.");
@@ -776,12 +829,16 @@ public record BenefitEligibilityDto(
 public record BenefitEnrollmentDto(
     Guid Id, Guid BenefitPlanId, int EmployeeId, Guid? CompanyId, string EmployeeName, string CoverageTier,
     Guid? EligibilityRuleId, string EntitlementTier, decimal? MaximumBenefitAmount, decimal? RequestedBenefitAmount, string LimitPeriod,
-    DateOnly EffectiveFrom, DateOnly? EffectiveTo, string Status, string AssignmentSource = "Manual", bool HasException = false, string? ExceptionReason = null, DateTime? UpdatedAtUtc = null)
+    DateOnly EffectiveFrom, DateOnly? EffectiveTo, string Status, string AssignmentSource = "Manual", bool HasException = false, string? ExceptionReason = null, DateTime? UpdatedAtUtc = null,
+    DateOnly? ReviewDate = null, Guid? ApprovalRequestId = null, string? GrantReason = null,
+    string? PlanName = null, string? PlanCode = null, string? Currency = null, string? Classification = null,
+    string? EffectiveStatus = null, bool ReviewRequired = false, IReadOnlyList<string>? ReviewReasons = null,
+    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null)
 {
     public static BenefitEnrollmentDto From(BenefitEnrollment x) => new(
         x.Id, x.BenefitPlanId, x.EmployeeId, x.CompanyId, x.EmployeeName, x.CoverageTier,
         x.EligibilityRuleId, x.EntitlementTier, x.MaximumBenefitAmount, x.RequestedBenefitAmount, x.LimitPeriod,
-        x.EffectiveFrom, x.EffectiveTo, x.Status, x.AssignmentSource, x.HasException, x.ExceptionReason, x.UpdatedAtUtc);
+        x.EffectiveFrom, x.EffectiveTo, x.Status, x.AssignmentSource, x.HasException, x.ExceptionReason, x.UpdatedAtUtc, x.ReviewDate, x.ApprovalRequestId, x.GrantReason);
 }
 
 public record BenefitContributionDto(Guid Id, Guid BenefitEnrollmentId, Guid BenefitPlanId, int EmployeeId, decimal EmployeeAmount, decimal EmployerAmount, string Frequency, string PayrollComponentCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive)

@@ -1,4 +1,5 @@
 import client from './client';
+import type { ApprovalRequest } from './approvals';
 
 // Benefits administration (api/compensation/benefits) and the employee's own view (api/ess/benefits).
 // Dates are ISO yyyy-MM-dd strings (DateOnly on the server).
@@ -139,7 +140,7 @@ export interface BenefitEnrollment {
   employeeName: string;
   coverageTier: string;
   eligibilityRuleId: string | null;
-  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException';
+  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException' | 'IndividualAdditional';
   hasException: boolean;
   exceptionReason: string | null;
   entitlementTier: string;
@@ -159,6 +160,74 @@ export interface BenefitEnrollmentInput {
   effectiveFrom: string;
   effectiveTo: string | null;
   requestedBenefitAmount: number | null;
+}
+
+export interface AdditionalBenefitTerms {
+  coverageTier: string;
+  entitlementTier: string;
+  maximumBenefitAmount: number | null;
+  requestedBenefitAmount: number | null;
+  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  reviewDate: string | null;
+  reason: string;
+  internalJustification: string;
+  treatment: 'Coverage' | 'CashAllowance' | 'Reimbursement' | 'LoanEligibility' | 'OtherNonCash';
+  plannedEmployerCost: number | null;
+  plannedEmployeeCost: number | null;
+  costFrequency: 'OneTime' | 'Monthly' | 'Annual' | null;
+}
+
+export interface AdditionalBenefitInput extends AdditionalBenefitTerms {
+  employeeId: number;
+  benefitPlanId: string;
+  enrollmentId?: string;
+  expectedUpdatedAtUtc?: string | null;
+}
+
+export interface AdditionalBenefitRequest {
+  id: string;
+  status: string;
+  employeeId: number;
+  employeeName: string;
+  benefitPlanId: string;
+  planName: string;
+  requestedByName?: string | null;
+  createdAtUtc: string;
+  terms: AdditionalBenefitInput;
+  baseline?: BenefitEnrollment | null;
+  currency?: string;
+  approvalRequestId: string;
+  appliedEnrollmentId?: string | null;
+  approval?: ApprovalRequest | null;
+}
+
+export interface EmployeeBenefitPackageItem extends BenefitEnrollment {
+  planName: string;
+  planCode: string;
+  currency: string;
+  classification: BenefitPlan['classification'];
+  effectiveStatus: 'Current' | 'Scheduled' | 'Expired' | 'Waived';
+  reviewDate: string | null;
+  reviewRequired: boolean;
+  reviewReasons: string[];
+  approvalRequestId: string | null;
+  grantReason: string | null;
+  treatment?: AdditionalBenefitTerms['treatment'] | null;
+  plannedEmployerCost?: number | null;
+  plannedEmployeeCost?: number | null;
+  costFrequency?: AdditionalBenefitTerms['costFrequency'];
+}
+
+export interface EmployeeBenefitPackage {
+  employeeId: number;
+  employeeName: string;
+  gradeId: string | null;
+  companyId: string | null;
+  asOf: string;
+  enrollments: EmployeeBenefitPackageItem[];
+  additionalRequests: AdditionalBenefitRequest[];
 }
 
 export interface BenefitContribution {
@@ -232,7 +301,7 @@ export interface BenefitDeductionCandidate {
 export interface EssBenefitEnrollment {
   id: string;
   benefitPlanId: string;
-  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException';
+  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException' | 'IndividualAdditional';
   hasException: boolean;
   exceptionReason: string | null;
   planCode: string;
@@ -251,6 +320,15 @@ export interface EssBenefitEnrollment {
   currentEmployerAmount: number | null;
   contributionFrequency: string | null;
   deductions: BenefitDeduction[];
+  reviewDate?: string | null;
+  grantReason?: string | null;
+  approvalRequestId?: string | null;
+  effectiveStatus?: EmployeeBenefitPackageItem['effectiveStatus'];
+  reviewRequired?: boolean;
+  treatment?: AdditionalBenefitTerms['treatment'] | null;
+  plannedEmployerCost?: number | null;
+  plannedEmployeeCost?: number | null;
+  costFrequency?: AdditionalBenefitTerms['costFrequency'];
 }
 
 export interface EssBenefits {
@@ -261,6 +339,9 @@ export interface EssBenefits {
 const base = '/api/compensation/benefits';
 
 export const benefitsApi = {
+  employeePackage: (employeeId: number) => client.get<EmployeeBenefitPackage>(`${base}/employees/${employeeId}/package`).then(r => r.data),
+  requestAdditional: (input: AdditionalBenefitInput) => client.post<AdditionalBenefitRequest>(`${base}/additional-grants`, input).then(r => r.data),
+  additionalRequest: (id: string) => client.get<AdditionalBenefitRequest>(`${base}/additional-grants/${id}`).then(r => r.data),
   gradeDefaults: (params: { gradeId: string; companyId: string; effectiveFrom: string; probationEndDate?: string; confirmationDate?: string }) =>
     client.get<GradeBenefitDefault[]>(`${base}/grade-defaults`, { params }).then((r) => r.data),
   applyException: (enrollmentId: string, input: BenefitExceptionInput) =>

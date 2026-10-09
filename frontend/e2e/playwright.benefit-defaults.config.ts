@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Start this branch's frontend separately; every API request stays within the synthetic session.
 export default defineConfig({
   testDir: '.',
-  testMatch: /(?:employee-create-wizard|benefits-grade-defaults)\.spec\.ts/,
+  testMatch: /(?:employee-create-wizard|benefits-grade-defaults|benefit-approval-setup|benefits-additional)\.spec\.ts/,
   workers: 1,
   retries: 0,
   timeout: 60_000,

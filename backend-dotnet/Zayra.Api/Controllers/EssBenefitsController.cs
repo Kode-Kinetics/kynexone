@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Benefits;
+using Zayra.Api.Application.Common;
 
 namespace Zayra.Api.Controllers;
 
@@ -21,7 +23,11 @@ public class EssBenefitsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
 
-    public EssBenefitsController(ZayraDbContext db) => _db = db;
+    private readonly ITenantClock _clock;
+    public EssBenefitsController(ZayraDbContext db, ITenantClock? clock = null)
+    {
+        _db = db; _clock = clock ?? new TenantClock(db, TimeProvider.System);
+    }
 
     [HttpGet]
     public async Task<IActionResult> MyBenefits(CancellationToken ct)
@@ -66,7 +72,8 @@ public class EssBenefitsController : ControllerBase
                                         link.LinkedAmount, deduction.Source)))
                                .ToListAsync(ct);
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = await _clock.TodayAsync(tenantId, ct);
+        var employee = await _db.Employees.AsNoTracking().FirstAsync(x => x.TenantId == tenantId && x.Id == employeeId, ct);
         var items = enrollments.Select(e =>
         {
             plans.TryGetValue(e.BenefitPlanId, out var plan);
@@ -74,6 +81,7 @@ public class EssBenefitsController : ControllerBase
                 .Where(c => c.BenefitEnrollmentId == e.Id && c.IsActive && c.EffectiveFrom <= today && (!c.EffectiveTo.HasValue || c.EffectiveTo >= today))
                 .OrderByDescending(c => c.EffectiveFrom)
                 .FirstOrDefault();
+            var package = BenefitPackageProjection.From(e, plan, employee, today);
             return new EssBenefitEnrollmentDto(
                 e.Id,
                 e.BenefitPlanId,
@@ -93,7 +101,9 @@ public class EssBenefitsController : ControllerBase
                 current?.EmployerAmount,
                 current?.Frequency,
                 deductions.Where(d => d.EnrollmentId == e.Id).Select(d => d.Deduction).ToList(),
-                e.AssignmentSource, e.HasException, e.ExceptionReason);
+                e.AssignmentSource, e.HasException, null, e.ReviewDate, e.GrantReason, e.ApprovalRequestId,
+                package.EffectiveStatus, package.ReviewRequired, package.ReviewReasons,
+                package.Treatment, package.PlannedEmployerCost, package.PlannedEmployeeCost, package.CostFrequency);
         }).ToList();
 
         return Ok(new EssBenefitsDto(employeeId.Value, items));
@@ -116,7 +126,10 @@ public record EssBenefitEnrollmentDto(
     string CoverageTier, string EntitlementTier, decimal? MaximumBenefitAmount, decimal? RequestedBenefitAmount, string LimitPeriod,
     DateOnly EffectiveFrom, DateOnly? EffectiveTo, string Status,
     decimal? CurrentEmployeeAmount, decimal? CurrentEmployerAmount, string? ContributionFrequency,
-    IReadOnlyList<BenefitDeductionDto> Deductions, string AssignmentSource = "Manual", bool HasException = false, string? ExceptionReason = null);
+    IReadOnlyList<BenefitDeductionDto> Deductions, string AssignmentSource = "Manual", bool HasException = false, string? ExceptionReason = null,
+    DateOnly? ReviewDate = null, string? GrantReason = null, Guid? ApprovalRequestId = null,
+    string? EffectiveStatus = null, bool ReviewRequired = false, IReadOnlyList<string>? ReviewReasons = null,
+    string? Treatment = null, decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null);
 
 public record EssBenefitsDto(int EmployeeId, IReadOnlyList<EssBenefitEnrollmentDto> Enrollments);
 internal record EssBenefitDeductionRow(Guid EnrollmentId, BenefitDeductionDto Deduction);

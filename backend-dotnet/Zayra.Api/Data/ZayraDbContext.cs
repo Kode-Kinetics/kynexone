@@ -162,6 +162,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
+        EnforceBenefitApprovalWitness();
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
@@ -224,9 +225,24 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         return await SealPayrollAuditChainAndSaveAsync(cancellationToken);
     }
 
+    private void EnforceBenefitApprovalWitness()
+    {
+        foreach (var entry in ChangeTracker.Entries<ApprovalRequest>().Where(x => x.State is EntityState.Modified or EntityState.Deleted))
+        {
+            if (!string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)),
+                Infrastructure.Benefits.AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (entry.State == EntityState.Deleted || new[] { nameof(ApprovalRequest.Payload), nameof(ApprovalRequest.PayloadSha256),
+                nameof(ApprovalRequest.EntityName), nameof(ApprovalRequest.EntityId), nameof(ApprovalRequest.RequestedForEmployeeId),
+                nameof(ApprovalRequest.RequestedByUserId), nameof(ApprovalRequest.CompanyId), nameof(ApprovalRequest.WorkflowId) }
+                .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("Submitted benefit request terms and routing are immutable. Withdraw and submit a new request.");
+        }
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        EnforceBenefitApprovalWitness();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
@@ -2292,7 +2308,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.Property(x => x.Classification).HasMaxLength(32).HasDefaultValue(BenefitPlanClassifications.Discretionary); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
         modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.GradeMatchMode).HasMaxLength(32).HasDefaultValue(BenefitGradeMatchModes.Exact); entity.Property(x => x.TierName).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaxBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(BenefitLimitPeriods.PerEnrollment); entity.Property(x => x.CustomCriteriaNote).HasMaxLength(1000).HasDefaultValue(""); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
-        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.Property(x => x.EntitlementTier).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaximumBenefitAmount).HasPrecision(14,2); entity.Property(x => x.RequestedBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(""); entity.Property(x => x.EligibilitySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.AssignmentSource).HasMaxLength(32).HasDefaultValue("Manual"); entity.Property(x => x.HasException).HasDefaultValue(false); entity.Property(x => x.ExceptionReason).HasMaxLength(1000); entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
+        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.Property(x => x.EntitlementTier).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaximumBenefitAmount).HasPrecision(14,2); entity.Property(x => x.RequestedBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(""); entity.Property(x => x.EligibilitySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.AssignmentSource).HasMaxLength(32).HasDefaultValue("Manual"); entity.Property(x => x.HasException).HasDefaultValue(false); entity.Property(x => x.ExceptionReason).HasMaxLength(1000); entity.Property(x => x.GrantReason).HasMaxLength(1000); entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId }).IsUnique().HasFilter("approval_request_id IS NOT NULL"); entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitContribution>(entity => { entity.ToTable("benefit_contributions"); entity.HasKey(x => x.Id); entity.Property(x => x.EmployeeAmount).HasPrecision(14,2); entity.Property(x => x.EmployerAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.IsActive }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitPayrollDeductionLink>(entity => { entity.ToTable("benefit_payroll_deduction_links"); entity.HasKey(x => x.Id); entity.Property(x => x.LinkedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.PayrollRunId }); entity.HasIndex(x => new { x.TenantId, x.PayrollDeductionId }).IsUnique(); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
