@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import {
   apiLogin, crashIndicators, mainText, tenantLogin,
   INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_SLUG,
@@ -9,7 +10,7 @@ import {
 // a unique code. Assertions are on named content, never on body length.
 
 const BASE = '/api/compensation/benefits';
-const uid = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`.toUpperCase();
+const uid = () => randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase();
 
 async function adminToken(request: APIRequestContext) {
   return apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
