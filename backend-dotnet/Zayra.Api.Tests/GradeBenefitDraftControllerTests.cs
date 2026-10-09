@@ -26,7 +26,7 @@ public class GradeBenefitDraftControllerTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDb();
         var seed = await Seed(db);
-        var prior = await db.BenefitEnrollments.SingleAsync(x => x.EmployeeId == seed.Employee.Id);
+        var prior = await db.BenefitEnrollments.AsNoTracking().SingleAsync(x => x.EmployeeId == seed.Employee.Id);
         var snapshot = prior.EligibilitySnapshotJson;
         var changes = Changes(("grade", "G2"), ("joiningDate", "2026-11-01"));
         if (mixedSalary) changes["salary"] = JsonSerializer.SerializeToElement(9000m);
@@ -38,7 +38,7 @@ public class GradeBenefitDraftControllerTests(PostgresFixture fixture)
         Assert.Equal(seed.Grade.Id, employee.GradeId);
         Assert.Equal("G2", employee.Grade);
         Assert.Equal(new DateTime(2026, 11, 1), employee.JoiningDate.Date);
-        Assert.Equal(0m, employee.Salary);
+        Assert.Equal(5000m, employee.Salary);
         var rows = await db.BenefitEnrollments.Where(x => x.EmployeeId == employee.Id).ToListAsync();
         Assert.Equal(2, rows.Count);
         var old = Assert.Single(rows.Where(x => x.Status == GradeBenefitDefaults.SupersededStatus));
@@ -122,7 +122,7 @@ public class GradeBenefitDraftControllerTests(PostgresFixture fixture)
             new BenefitEligibilityRule { TenantId = tenant, BenefitPlanId = oldPlan.Id, GradeId = first.Id, EffectiveFrom = new(2026, 1, 1), MaxBenefitAmount = 1000 },
             new BenefitEligibilityRule { TenantId = tenant, BenefitPlanId = newPlan.Id, GradeId = second.Id, EffectiveFrom = new(2026, 1, 1), MaxBenefitAmount = 2000 });
         var employee = new Employee { TenantId = tenant, CompanyId = company.Id, GradeId = first.Id, Grade = first.Code,
-            EmployeeCode = "DRAFT-TEST", FullName = "Draft benefits test", Status = "Draft", JoiningDate = new(2026, 10, 8, 0, 0, 0, DateTimeKind.Utc) };
+            EmployeeCode = "DRAFT-TEST", FullName = "Draft benefits test", Status = "Draft", Salary = 5000m, JoiningDate = new(2026, 10, 8, 0, 0, 0, DateTimeKind.Utc) };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
         await GradeBenefitDefaults.StageDefaultsAsync(db, employee, null, default);
