@@ -28,6 +28,7 @@ async function boot(page: Page, options: Options = {}) {
   };
   const errors: string[] = [];
   const calls: Array<{ path: string; method: string; body: unknown }> = [];
+  const advisoryProbes: unknown[] = [];
   const profileSubmissions: Array<{ changes: Record<string, string> }> = [];
   const uploads: Array<{ contentType: string; body: string }> = [];
   const documents: Array<Record<string, unknown>> = [];
@@ -46,7 +47,9 @@ async function boot(page: Page, options: Options = {}) {
     const body = request.postData() && contentType.includes('application/json') ? request.postDataJSON() : undefined;
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
-    if (method !== 'GET') calls.push({ path, method, body });
+    // The editor may issue its read-only email suggestion probe before full-profile navigation.
+    // Keep every other non-GET request in the strict mutation assertions below.
+    if (method !== 'GET' && path !== '/api/employees/derive-work-email') calls.push({ path, method, body });
     if (path === '/api/auth/me') return reply({
       id: 'completion-user', employeeId: isEmployee ? 901 : undefined, tenantId: 'completion-tenant', tenantSlug: 'completion-fixture', fullName: isEmployee ? 'Alex Morgan' : 'HR Reviewer',
       roles: [isEmployee ? 'Employee' : readOnly ? 'Auditor' : 'HR Manager'],
@@ -59,7 +62,10 @@ async function boot(page: Page, options: Options = {}) {
     if (path === '/api/employees/field-catalog') return reply({ countryCode: 'SA', fields: [] });
     if (path === '/api/employees') return reply(paged([storedEmployee]));
     if (path === '/api/employees/901') return reply(storedEmployee);
-    if (path === '/api/employees/derive-work-email') return reply({ domain: company.emailDomain, pattern: 'first.last', localPart: 'alex.it-issued', workEmail: employee.workEmail, unique: true, status: 'derived' });
+    if (path === '/api/employees/derive-work-email') {
+      advisoryProbes.push(body);
+      return reply({ domain: company.emailDomain, pattern: 'first.last', localPart: 'alex.it-issued', workEmail: employee.workEmail, unique: true, status: 'derived' });
+    }
     if (path.endsWith('/readiness')) return reply({ employeeId: 901, state: 'NeedsAttention', score: 30, progress: { present: 1, requiredTotal: 2 }, policy: { countryCode: 'SA', tier: 'Standard', sources: [] }, blocking: [{ key: 'personal:gender', label: 'Gender', category: 'Personal', fix: { kind: 'field', target: 'gender' } }], payBlocking: [], recommended: [], present: [], expiringSoon: [], disclaimer: 'Synthetic browser fixture.' });
     if (path === '/api/employee-access/summary') return reply({ not_started: 1 });
     if (path === '/api/employee-access/901') return reply({ employeeId: 901, employeeName: employee.fullName, employeeCode: employee.employeeCode, workEmail: employee.workEmail, state: 'not_started', canIssue: false, reasonCode: 'employee_ineligible', blockedReason: 'Draft employee', emailDelivery: false });
@@ -100,7 +106,7 @@ async function boot(page: Page, options: Options = {}) {
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Close employee profile', exact: true })).toBeVisible();
   }
-  return { errors, calls, profileSubmissions, uploads };
+  return { errors, calls, advisoryProbes, profileSubmissions, uploads };
 }
 
 async function evidence(page: Page, info: TestInfo, name: string) {
@@ -124,7 +130,7 @@ test('HR queues employee completion without granting sign-in access or changing 
 
 for (const decision of ['approve', 'reject'] as const) {
   test(`HR explicitly ${decision}s submitted contact details through the existing approval endpoint`, async ({ page }, info) => {
-    const { errors, calls } = await boot(page, { status: 'PendingHR', changes: { preferredName: 'Alex submitted', phone: '+966500000003', salary: '987654321' } });
+    const { errors, calls, advisoryProbes } = await boot(page, { status: 'PendingHR', changes: { preferredName: 'Alex submitted', phone: '+966500000003', salary: '987654321' } });
     const handoff = page.getByTestId('employee-completion-handoff');
     await expect(handoff).toContainText('Employee details awaiting HR review');
     await expect(handoff).toContainText('Alex submitted');
@@ -140,6 +146,7 @@ for (const decision of ['approve', 'reject'] as const) {
     const preferredName = page.locator('dl > div').filter({ has: page.locator('dt').filter({ hasText: /^Preferred name$/ }) });
     await expect(preferredName.getByRole('definition')).toHaveText(decision === 'approve' ? 'Alex submitted' : 'Alex');
     expect(calls).toEqual([{ path: `/api/ess/profile-change-requests/${requestId}/${decision}`, method: 'POST', body: { notes: 'Please verify the contact details.' } }]);
+    for (const probe of advisoryProbes) expect(probe).toMatchObject({ companyId: company.id, englishName: employee.englishName, localPart: 'alex.it-issued', excludeEmployeeId: employee.id });
     expect(errors).toEqual([]);
   });
 }
