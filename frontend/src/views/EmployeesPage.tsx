@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
+import { benefitsApi, benefitsErrorMessage, type GradeBenefitDefault } from '../api/benefits';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
@@ -51,7 +52,7 @@ import { Avatar } from '../components/Avatar';
 import { ArabicNameField } from '../components/ArabicNameField';
 import { InfoTip } from '../components/InfoTip';
 import { Modal } from '../components/Modal';
-import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview, EmployeeAdditionalDetails, EmployeeSetupChoice } from '../components/EmployeeCreateWizard';
+import { EMPLOYEE_CREATE_STEPS, EMPLOYEE_EDIT_STEPS, EMPLOYEE_VIEW_STEPS, EmployeeCreateProgress, EmployeeCreatePanel, EmployeeCreateReview, EmployeeAdditionalDetails, EmployeeSetupChoice, EmployeeGradeBenefits } from '../components/EmployeeCreateWizard';
 import { StatusChip } from '../components/StatusChip';
 import { useCompany } from '../contexts/CompanyContext';
 import {
@@ -381,6 +382,10 @@ export function EmployeesPage() {
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
+  const [gradeBenefits, setGradeBenefits] = useState<GradeBenefitDefault[]>([]);
+  const [gradeBenefitsLoading, setGradeBenefitsLoading] = useState(false);
+  const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
+  const [gradeBenefitsRefresh, setGradeBenefitsRefresh] = useState(0);
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
@@ -877,6 +882,20 @@ export function EmployeesPage() {
   }, [form.salaryBreakdown]);
 
   useEffect(() => {
+    setGradeBenefits([]);
+    setGradeBenefitsError(null);
+    setGradeBenefitsLoading(false);
+    if (releaseA || !formOpen || !form.gradeId || !form.companyId) return;
+    let cancelled = false;
+    setGradeBenefitsLoading(true);
+    benefitsApi.gradeDefaults({ gradeId: form.gradeId, companyId: form.companyId, effectiveFrom: form.joiningDate || new Date().toISOString().slice(0, 10), probationEndDate: form.probationEndDate || undefined, confirmationDate: form.confirmationDate || undefined })
+      .then(defaults => { if (!cancelled) setGradeBenefits(defaults); })
+      .catch(error => { if (!cancelled) setGradeBenefitsError(benefitsErrorMessage(error, t('Could not load grade benefits. Try again before creating the employee.'))); })
+      .finally(() => { if (!cancelled) setGradeBenefitsLoading(false); });
+    return () => { cancelled = true; };
+  }, [formOpen, form.gradeId, form.companyId, form.joiningDate, form.probationEndDate, form.confirmationDate, releaseA, gradeBenefitsRefresh, t]);
+
+  useEffect(() => {
     // Release A: the grade's allowances live in Benefits by grade (the server fills blank allowances from it), so the
     // frozen legacy pay scale is not read here.
     if (!form.gradeId || releaseA) {
@@ -1136,6 +1155,8 @@ export function EmployeesPage() {
       ['Company', nameById(companies, form.companyId, 'legalNameEn')], ['Branch', nameById(branches, form.branchId, 'nameEn')],
       ['Department', nameById(departments, form.departmentId, 'nameEn')], ['Line manager', selectedLineManager?.fullName],
       ['Designation', nameById(designations, form.designationId, 'titleEn')], ['Grade', selectedGrade?.name],
+      ...(!releaseA && form.gradeId ? [[t('Default benefits'), gradeBenefitsLoading ? t('Loading grade benefits…') : gradeBenefitsError ? t('Grade benefits preview unavailable') : gradeBenefits.filter(item => item.eligible).map(item => item.name).join(', ') || t('No eligible grade benefits')],
+        ...(gradeBenefits.some(item => !item.eligible) ? [[t('Not yet eligible'), gradeBenefits.filter(item => !item.eligible).map(item => `${item.name}: ${item.blockingReason}`).join('; ')]] : [])] as Array<[string, string]> : []),
       ['Cost center', nameById(costCenters, form.costCenterId, 'name')], ['Job title', form.jobTitle],
       ['Employment type', form.employmentType], ['Contract type', form.contractType],
       ['Joining date', form.joiningDate], ['Work location', form.workLocation], ['Work email', form.workEmail],
@@ -2770,6 +2791,9 @@ export function EmployeesPage() {
               )}
             </label>
             <Lookup label="Designation" value={form.designationId ?? ''} onChange={setDesignation} items={designations} textKey="titleEn" />
+            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
+            {!releaseA && <EmployeeGradeBenefits gradeChosen={!!form.gradeId} companyChosen={!!form.companyId} assumedDate={!form.joiningDate ? new Date().toISOString().slice(0, 10) : undefined}
+              defaults={gradeBenefits} loading={gradeBenefitsLoading} error={gradeBenefitsError} onRetry={() => setGradeBenefitsRefresh(value => value + 1)} />}
             {selectedGrade && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
                 <p className="font-semibold text-slate-800 dark:text-white">{selectedGrade.code} salary band</p>
@@ -2789,7 +2813,6 @@ export function EmployeesPage() {
               suggest
             />
             <EmployeeAdditionalDetails title="More employment details">
-            <Lookup label="Grade" value={form.gradeId ?? ''} onChange={setGrade} items={eligibleGrades} textKey="name" />
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
             <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />

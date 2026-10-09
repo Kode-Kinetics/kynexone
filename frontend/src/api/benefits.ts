@@ -9,6 +9,7 @@ export interface BenefitPlan {
   code: string;
   name: string;
   planType: string;
+  classification: 'Mandatory' | 'Contractual' | 'Discretionary';
   currency: string;
   effectiveFrom: string;
   effectiveTo: string | null;
@@ -21,6 +22,7 @@ export interface BenefitPlanCreateInput {
   code: string;
   name: string;
   planType: string;
+  classification: 'Mandatory' | 'Contractual' | 'Discretionary';
   currency: string;
   effectiveFrom: string;
   effectiveTo: string | null;
@@ -35,6 +37,13 @@ export interface BenefitEligibilityRule {
   benefitPlanId: string;
   companyId: string | null;
   gradeId: string | null;
+  gradeMatchMode: 'Exact' | 'LevelAndAbove';
+  tierName: string;
+  maxBenefitAmount: number | null;
+  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  minimumServiceMonths: number;
+  requireProbationCompleted: boolean;
+  customCriteriaNote: string;
   effectiveFrom: string;
   effectiveTo: string | null;
   isActive: boolean;
@@ -43,6 +52,13 @@ export interface BenefitEligibilityRule {
 export interface BenefitEligibilityRuleInput {
   companyId: string | null;
   gradeId: string | null;
+  gradeMatchMode: 'Exact' | 'LevelAndAbove';
+  tierName: string | null;
+  maxBenefitAmount: number | null;
+  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  minimumServiceMonths: number;
+  requireProbationCompleted: boolean;
+  customCriteriaNote: string | null;
   effectiveFrom: string;
   effectiveTo: string | null;
   isActive: boolean;
@@ -57,6 +73,7 @@ export interface BenefitEligibilityCheckItem {
 
 export interface BenefitEligibilityCheck {
   benefitPlanId: string;
+  currency: string;
   employeeId: number;
   employeeName: string;
   companyId: string | null;
@@ -67,27 +84,81 @@ export interface BenefitEligibilityCheck {
   eligible: boolean;
   blockingReason: string | null;
   alreadyEnrolled: boolean;
+  matchedRuleId: string | null;
+  tierName: string | null;
+  maximumBenefitAmount: number | null;
+  limitPeriod: string | null;
+  customCriteriaNote: string | null;
   checks: BenefitEligibilityCheckItem[];
 }
 
+export interface GradeBenefitDefault {
+  benefitPlanId: string;
+  code: string;
+  name: string;
+  planType: string;
+  currency: string;
+  eligible: boolean;
+  blockingReason: string | null;
+  eligibilityRuleId: string | null;
+  entitlementTier: string | null;
+  maximumBenefitAmount: number | null;
+  limitPeriod: string | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+}
+
+export interface BenefitExceptionInput {
+  effectiveFrom: string;
+  expectedUpdatedAtUtc: string | null;
+  reason: string;
+  coverageTier: string;
+  entitlementTier: string;
+  maximumBenefitAmount: number | null;
+  requestedBenefitAmount: number | null;
+  limitPeriod: string;
+  status: 'Active' | 'Waived';
+}
+
+export interface BenefitException {
+  id: string;
+  reason: string;
+  previousValuesJson: string;
+  newValuesJson: string;
+  createdAtUtc: string;
+  createdBy: string | null;
+  createdByName?: string | null;
+}
+
 export interface BenefitEnrollment {
+  updatedAtUtc: string | null;
   id: string;
   benefitPlanId: string;
   employeeId: number;
   companyId: string | null;
   employeeName: string;
   coverageTier: string;
+  eligibilityRuleId: string | null;
+  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException';
+  hasException: boolean;
+  exceptionReason: string | null;
+  entitlementTier: string;
+  maximumBenefitAmount: number | null;
+  requestedBenefitAmount: number | null;
+  limitPeriod: string;
   effectiveFrom: string;
   effectiveTo: string | null;
   status: string;
 }
 
 export interface BenefitEnrollmentInput {
+  exceptionReason?: string;
   benefitPlanId: string;
   employeeId: number;
   coverageTier: string | null;
   effectiveFrom: string;
   effectiveTo: string | null;
+  requestedBenefitAmount: number | null;
 }
 
 export interface BenefitContribution {
@@ -124,10 +195,26 @@ export interface BenefitPayrollDeductionLink {
   linkedAmount: number;
 }
 
+export interface BenefitDeduction {
+  linkId: string;
+  payrollDeductionId: string;
+  payrollRunId: string;
+  year: number;
+  month: number;
+  runStatus: string;
+  componentCode: string;
+  componentName: string;
+  deductionAmount: number;
+  linkedAmount: number;
+  source: string;
+}
+
 export interface BenefitEnrollmentDetail {
   enrollment: BenefitEnrollment;
+  exceptions: BenefitException[];
   contributions: BenefitContribution[];
   links: BenefitPayrollDeductionLink[];
+  deductions: BenefitDeduction[];
 }
 
 export interface BenefitDeductionCandidate {
@@ -145,17 +232,25 @@ export interface BenefitDeductionCandidate {
 export interface EssBenefitEnrollment {
   id: string;
   benefitPlanId: string;
+  assignmentSource: 'Manual' | 'GradeDefault' | 'IndividualException';
+  hasException: boolean;
+  exceptionReason: string | null;
   planCode: string;
   planName: string;
   planType: string;
   currency: string;
   coverageTier: string;
+  entitlementTier: string;
+  maximumBenefitAmount: number | null;
+  requestedBenefitAmount: number | null;
+  limitPeriod: string;
   effectiveFrom: string;
   effectiveTo: string | null;
   status: string;
   currentEmployeeAmount: number | null;
   currentEmployerAmount: number | null;
   contributionFrequency: string | null;
+  deductions: BenefitDeduction[];
 }
 
 export interface EssBenefits {
@@ -166,6 +261,10 @@ export interface EssBenefits {
 const base = '/api/compensation/benefits';
 
 export const benefitsApi = {
+  gradeDefaults: (params: { gradeId: string; companyId: string; effectiveFrom: string; probationEndDate?: string; confirmationDate?: string }) =>
+    client.get<GradeBenefitDefault[]>(`${base}/grade-defaults`, { params }).then((r) => r.data),
+  applyException: (enrollmentId: string, input: BenefitExceptionInput) =>
+    client.patch<BenefitEnrollment>(`${base}/enrollments/${enrollmentId}/exception`, input).then((r) => r.data),
   listPlans: (companyId?: string) =>
     client.get<BenefitPlan[]>(`${base}/plans`, { params: { companyId } }).then((r) => r.data),
   createPlan: (input: BenefitPlanCreateInput) =>
@@ -203,7 +302,7 @@ export const benefitsApi = {
 /** Server errors here are plain strings (BadRequest("...")) or { message } / { error } objects. */
 export function benefitsErrorMessage(err: unknown, fallback: string): string {
   const e = err as { response?: { status?: number; data?: unknown } };
-  if (e?.response?.status === 403) return 'Your role cannot perform this action. Benefits changes need Admin or HR Manager.';
+  if (e?.response?.status === 403) return 'Your role cannot perform this benefit action.';
   const data = e?.response?.data;
   if (typeof data === 'string' && data.trim()) return data;
   if (data && typeof data === 'object') {

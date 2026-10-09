@@ -434,6 +434,8 @@ public class BenefitPlan : ITenantOwned, ICompanyScoped
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string PlanType { get; set; } = "Medical";
+    /// <summary>Mandatory, Contractual, or Discretionary. Only the latter two may be grade-gated.</summary>
+    public string Classification { get; set; } = BenefitPlanClassifications.Discretionary;
     public string Currency { get; set; } = "AED";
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public DateOnly? EffectiveTo { get; set; }
@@ -444,6 +446,15 @@ public class BenefitPlan : ITenantOwned, ICompanyScoped
     public Guid? CreatedBy { get; set; }
 }
 
+public static class BenefitPlanClassifications
+{
+    public const string Mandatory = "Mandatory";
+    public const string Contractual = "Contractual";
+    public const string Discretionary = "Discretionary";
+
+    public static readonly string[] All = [Mandatory, Contractual, Discretionary];
+}
+
 public class BenefitEligibilityRule : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -451,11 +462,39 @@ public class BenefitEligibilityRule : ITenantOwned, ICompanyScoped
     public Guid BenefitPlanId { get; set; }
     public Guid? CompanyId { get; set; }
     public Guid? GradeId { get; set; }
+    /// <summary>Exact matches one grade; LevelAndAbove uses the configured grade's Level as a floor.</summary>
+    public string GradeMatchMode { get; set; } = BenefitGradeMatchModes.Exact;
+    /// <summary>Employee-facing name for the entitlement resolved by this rule.</summary>
+    public string TierName { get; set; } = string.Empty;
+    /// <summary>Optional monetary entitlement ceiling in the benefit plan currency.</summary>
+    public decimal? MaxBenefitAmount { get; set; }
+    /// <summary>How often the configured ceiling resets or applies.</summary>
+    public string LimitPeriod { get; set; } = BenefitLimitPeriods.PerEnrollment;
+    public int MinimumServiceMonths { get; set; }
+    public bool RequireProbationCompleted { get; set; }
+    /// <summary>Human-readable policy detail shown in previews and ESS; never executed as code.</summary>
+    public string CustomCriteriaNote { get; set; } = string.Empty;
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public DateOnly? EffectiveTo { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
+}
+
+public static class BenefitGradeMatchModes
+{
+    public const string Exact = "Exact";
+    public const string LevelAndAbove = "LevelAndAbove";
+    public static readonly string[] All = [Exact, LevelAndAbove];
+}
+
+public static class BenefitLimitPeriods
+{
+    public const string PerEnrollment = "PerEnrollment";
+    public const string Monthly = "Monthly";
+    public const string Annual = "Annual";
+    public const string Lifetime = "Lifetime";
+    public static readonly string[] All = [PerEnrollment, Monthly, Annual, Lifetime];
 }
 
 public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational
@@ -467,6 +506,18 @@ public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string CoverageTier { get; set; } = "Employee";
+    /// <summary>The entitlement rule frozen when the employee was enrolled.</summary>
+    public Guid? EligibilityRuleId { get; set; }
+    public string EntitlementTier { get; set; } = string.Empty;
+    public decimal? MaximumBenefitAmount { get; set; }
+    /// <summary>Optional monetary value requested at enrollment; validated against the frozen tier ceiling.</summary>
+    public decimal? RequestedBenefitAmount { get; set; }
+    public string LimitPeriod { get; set; } = string.Empty;
+    public string EligibilitySnapshotJson { get; set; } = "{}";
+    public string AssignmentSource { get; set; } = "Manual";
+    public Guid? OriginalEnrollmentId { get; set; }
+    public bool HasException { get; set; }
+    public string? ExceptionReason { get; set; }
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public DateOnly? EffectiveTo { get; set; }
     public string Status { get; set; } = "Active";

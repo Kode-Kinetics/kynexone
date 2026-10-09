@@ -1723,6 +1723,11 @@ public class EmployeesController : ControllerBase
             foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
                 _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
 
+            // New imported hires get the same grade defaults as form-created employees. Existing
+            // records and their HR exceptions are not rewritten by an import/repair operation.
+            await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsForEmployeesAsync(
+                _db, createdRowMeta.Select(m => m.Emp).ToList(), GetUserId(), ct);
+
             // Every created row with a work email gets its staged login (contract §3), in this same transaction. A row
             // whose address is on the wrong domain, already someone's login, … gets none and shows as blocked.
             await new EmployeeLoginProvisioner(_db).EnsureStagedLoginsAsync(
@@ -3516,6 +3521,8 @@ public class EmployeesController : ControllerBase
                 {
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
+                    await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
+                        _db, employee, requestContext.UserId, ct);
 
                     foreach (var document in draftDocuments)
                     {
@@ -5564,6 +5571,25 @@ public class EmployeesController : ControllerBase
         await ResolveOne("branch", "Branch", draft.Branch,
             async () => (branchId, branchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, ct));
 
+        // Older drafts store a grade as text. Resolve the stable ID before provisioning benefits,
+        // retaining unrecognised legacy text rather than guessing at an entitlement-bearing grade.
+        var activeGrades = await _db.Grades.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
+        var gradeText = draft.Grade?.Trim() ?? string.Empty;
+        var gradeMatches = activeGrades.Where(x => string.Equals(x.Code, gradeText, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (gradeMatches.Count == 0 && gradeText.Length > 0)
+            gradeMatches = activeGrades.Where(x => string.Equals(x.Name, gradeText, StringComparison.OrdinalIgnoreCase)).ToList();
+        Guid? gradeId = gradeMatches.Count == 1 ? gradeMatches[0].Id : null;
+        if (gradeText.Length == 0 && desigId.HasValue)
+        {
+            var designationGradeId = await _db.Designations.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == desigId.Value && x.IsActive && !x.IsDeleted)
+                .Select(x => x.GradeId).SingleOrDefaultAsync(ct);
+            gradeId = activeGrades.FirstOrDefault(x => x.Id == designationGradeId)?.Id;
+        }
+        var gradeCode = activeGrades.FirstOrDefault(x => x.Id == gradeId)?.Code ?? draft.Grade ?? string.Empty;
+
         Guid? companyId = null;
         if (branchId.HasValue)
         {
@@ -5614,12 +5640,12 @@ public class EmployeesController : ControllerBase
                 .Select(x => x.CountryCode)
                 .FirstOrDefaultAsync(ct) ?? string.Empty
             : string.Empty;
-        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId, companyCountryCode);
+        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId, companyCountryCode, gradeId, gradeCode);
     }
 
     private sealed record DraftPlacement(
         Guid? DepartmentId, string DepartmentName, Guid? DesignationId, string DesignationTitle,
-        Guid? BranchId, string BranchName, Guid? CompanyId, string CompanyCountryCode);
+        Guid? BranchId, string BranchName, Guid? CompanyId, string CompanyCountryCode, Guid? GradeId, string GradeCode);
 
     /// <summary>The employee record a draft becomes (without its code, which is allocated under the
     /// tenant lock). Shared by approval and the review screen's activation check.</summary>
@@ -5654,7 +5680,8 @@ public class EmployeesController : ControllerBase
         Status = EmployeeStatuses.Active,
         JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
         ContractType = draft.ContractType,
-        Grade = draft.Grade,
+        Grade = placement.GradeCode,
+        GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,
         ContractStartDate = draft.ContractStartDate,
         ContractEndDate = draft.ContractEndDate,

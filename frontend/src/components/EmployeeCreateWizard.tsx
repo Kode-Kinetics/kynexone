@@ -1,10 +1,12 @@
 'use client';
 
-import { Check, Pencil } from 'lucide-react';
+import { Check, Loader2, Pencil } from 'lucide-react';
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import styles from './EmployeeCreateWizard.module.css';
+import type { GradeBenefitDefault } from '../api/benefits';
 
 export type EmployeeWizardStep = {
   label: string;
@@ -180,4 +182,38 @@ export function EmployeeSetupChoice({ checked, onChange, disabled = false }: { c
     <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} disabled={disabled} />
     <span><strong>{t('Set up payroll and documents now')}</strong><span>{t('Optional. You can save a draft first and finish these sections from the employee record.')}</span></span>
   </label>;
+}
+
+
+export function EmployeeGradeBenefits({ gradeChosen, companyChosen, assumedDate, defaults, loading, error, onRetry }: {
+  gradeChosen: boolean;
+  companyChosen: boolean;
+  assumedDate?: string;
+  defaults: GradeBenefitDefault[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const { t } = useLocale();
+  const format = useFormat();
+  const ready = gradeChosen && companyChosen;
+  return <section data-testid="employee-grade-benefits" aria-label={t('Grade benefits')} aria-live="polite" className="col-span-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs dark:border-white/10 dark:bg-white/[0.04]">
+    <h4 className="font-semibold text-slate-800 dark:text-white">{t('Grade benefits')}</h4>
+    {!ready ? <p className="mt-1 text-slate-500 dark:text-slate-400">{t('Choose a grade and company to see the default benefits.')}</p>
+      : loading ? <p className="mt-2 flex items-center gap-2 text-slate-500 dark:text-slate-400"><Loader2 size={14} className="animate-spin" />{t('Loading grade benefits…')}</p>
+      : error ? <div className="mt-2 text-rose-700 dark:text-rose-300"><p role="alert">{error}</p><button type="button" className="mt-1 font-semibold underline" onClick={onRetry}>{t('Retry')}</button></div>
+      : <>
+        <p className="mt-1 text-slate-500 dark:text-slate-400">{t('Eligible benefits are assigned when the employee is created. Authorized HR can record an exception later.')}</p>
+        {assumedDate && <p className="mt-1 text-slate-500 dark:text-slate-400">{t('Joining date is not set. This preview uses {date}.', { date: assumedDate })}</p>}
+        {defaults.length === 0 ? <p className="mt-2 text-slate-600 dark:text-slate-300">{t('No benefit plans are configured for this grade and joining date.')}</p>
+          : <ul className="mt-2 divide-y divide-slate-200 dark:divide-white/10">{defaults.map(item => <li key={item.benefitPlanId} className="flex flex-wrap justify-between gap-2 py-2">
+            <div className="min-w-0"><p className="font-semibold text-slate-800 dark:text-slate-100">{item.name}</p>
+              <p className="mt-0.5 text-slate-600 dark:text-slate-300">{item.entitlementTier || t('Standard tier')}{item.maximumBenefitAmount !== null ? ` · ${item.currency} ${format.number(item.maximumBenefitAmount)}` : ''}{item.limitPeriod ? ` · ${t(item.limitPeriod.replace(/([A-Z])/g, ' $1').trim())}` : ''}</p>
+              <p className="mt-1 text-slate-500 dark:text-slate-400">{t('Starts on {date}', { date: item.effectiveFrom })}{item.effectiveTo ? ` · ${t('Ends on {date}', { date: item.effectiveTo })}` : ''}</p>
+              {!item.eligible && <p className="mt-1 text-amber-800 dark:text-amber-300">{item.blockingReason}</p>}
+            </div>
+            <span className={`self-start rounded-full px-2 py-0.5 font-semibold ${item.eligible ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300'}`}>{t(item.eligible ? 'Assigned by default' : 'Not yet eligible')}</span>
+          </li>)}</ul>}
+      </>}
+  </section>;
 }

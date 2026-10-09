@@ -188,6 +188,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
                 await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+                // Grade defaults are part of the hire transaction, before any individual HR exceptions.
+                await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
+                    _db, employee, context.UserId, cancellationToken);
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
@@ -202,9 +205,28 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             // ONE transaction for the whole create: the generated code under the ID-rule lock (held until the code is
             // committed), the employee, and its work-email setter marker (the establishment guard joins it).
+            // SaveChanges accepts tracked state before COMMIT. A rolled-back attempt must therefore be rebuilt,
+            // including its generated employee key/code, rather than reusing cached benefits/history as persisted.
+            // The server-generated PublicId is stable across attempts and verifies an ambiguous successful COMMIT.
+            var preparedEmployee = _db.Entry(employee).CurrentValues.Clone();
+            var publicId = employee.PublicId;
+            var attempt = 0;
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
+                if (attempt++ > 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    var committedEmployee = await _db.Employees.AsTracking()
+                        .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PublicId == publicId, cancellationToken);
+                    if (committedEmployee is not null)
+                    {
+                        // The employee and every dependent row committed in the same transaction. Do not replay it.
+                        employee = committedEmployee;
+                        return;
+                    }
+                    employee = (Employee)preparedEmployee.ToObject();
+                }
                 await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
                 await PersistAsync();
                 await tx.CommitAsync(cancellationToken);

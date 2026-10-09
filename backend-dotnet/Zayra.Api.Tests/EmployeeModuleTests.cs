@@ -28,19 +28,27 @@ public class EmployeeModuleTests
     public EmployeeModuleTests(PostgresFixture fx) => _fx = fx;
     private ZayraDbContext PgDb() => _fx!.CreateDb();
 
-    [Fact]
-    public async Task ApproveDraft_ActivatesEmployeeCreatesUserAndHistory()
+    [Theory]
+    [InlineData("G5")]
+    [InlineData("Professional")]
+    [InlineData("")]
+    public async Task ApproveDraft_ActivatesEmployeeCreatesUserAndHistory(string draftGrade)
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         // Draft approval now resolves org names to IDs (establishment Batch A) — the referenced
         // master data must exist or the approve legitimately 422s.
         db.Departments.Add(new Department { TenantId = tenantId, Code = "PPL", NameEn = "People", IsActive = true });
-        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", IsActive = true });
-        // UPDATED (employee-access contract §3): the login is staged only on the employing company's official email
+                // UPDATED (employee-access contract §3): the login is staged only on the employing company's official email
         // domain, so the branch now belongs to a company that has one.
         var zayraCo = new Company { TenantId = tenantId, LegalNameEn = "Zayra", TradeName = "Zayra", CountryCode = "AE", Jurisdiction = "AE", EmailDomain = "zayra.local" };
         db.Companies.Add(zayraCo);
+        var benefitGrade = new Grade { TenantId = tenantId, Code = "G5", Name = "Professional", IsActive = true };
+        db.Designations.Add(new Designation { TenantId = tenantId, Code = "HRO", TitleEn = "HR Officer", GradeId = benefitGrade.Id, IsActive = true });
+        var benefitPlan = new BenefitPlan { TenantId = tenantId, CompanyId = zayraCo.Id, Code = "DRAFT-MED", Name = "Draft medical default", EffectiveFrom = new DateOnly(2020, 1, 1) };
+        db.Grades.Add(benefitGrade);
+        db.BenefitPlans.Add(benefitPlan);
+        db.BenefitEligibilityRules.Add(new BenefitEligibilityRule { TenantId = tenantId, CompanyId = zayraCo.Id, BenefitPlanId = benefitPlan.Id, GradeId = benefitGrade.Id, TierName = "Gold", EffectiveFrom = new DateOnly(2020, 1, 1) });
         await db.SaveChangesAsync();
         db.Branches.Add(new Branch { TenantId = tenantId, CompanyId = zayraCo.Id, Code = "DXB", NameEn = "Dubai", IsActive = true });
         await db.SaveChangesAsync();
@@ -51,7 +59,7 @@ public class EmployeeModuleTests
         // used to carry: "UAE" is neither ISO-2 nor ISO-3, so it normalises to nothing and the employee
         // would have no identifiable jurisdiction, which now refuses activation. The draft already
         // carries the Emirates ID the UAE floor requires.
-        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", "G5", "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
+        var draftResult = await controller.CreateDraft(new EmployeeDraftRequest("Review", "Sara Ahmed", "سارة أحمد", "sara.personal@example.com", "sara@zayra.local", "+9715000000", "Female", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-30)), "Married", "Ali Ahmed", "+9715111111", "Emirati", "AE", "People", "HR Officer", "Dubai", "Dubai HQ", null, DateTime.UtcNow.Date, "Unlimited", draftGrade, "HR-001", DateOnly.FromDateTime(DateTime.UtcNow.Date), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), DateOnly.FromDateTime(DateTime.UtcNow.Date.AddMonths(6)), "MONTHLY", 12000m, "Emirates NBD", "AE000000", "WPS-1", "DAY", "UAE-ANNUAL", "Zayra", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(-1)), "P123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(5)), DateOnly.FromDateTime(DateTime.UtcNow.Date), "V123", DateOnly.FromDateTime(DateTime.UtcNow.Date.AddYears(2)), null, null, null, null, "784-0000", "LC-1", "VF-1", null, null, null, null, null, null), CancellationToken.None);
         var draft = Assert.IsType<EmployeeDraftDto>(Assert.IsType<CreatedResult>(draftResult.Result).Value);
         await controller.SubmitDraft(draft.Id, CancellationToken.None);
 
@@ -62,7 +70,12 @@ public class EmployeeModuleTests
         Assert.Equal("Active", profile.Status);
         Assert.StartsWith("EMP-", profile.EmployeeCode);
         Assert.NotNull(profile.UserAccountId);
+        Assert.Equal(benefitGrade.Id, (await db.Employees.SingleAsync(x => x.Id == profile.Id)).GradeId);
         Assert.True(await db.EmployeeHistories.AnyAsync(x => x.EmployeeId == profile.Id && x.EventType == "Activated"));
+        var gradeBenefit = await db.BenefitEnrollments.SingleAsync(x => x.EmployeeId == profile.Id);
+        Assert.Equal(benefitPlan.Id, gradeBenefit.BenefitPlanId);
+        Assert.Equal(approver, gradeBenefit.CreatedBy);
+        Assert.Equal(zayraCo.Id, gradeBenefit.CompanyId);
         // The initial work email is a work-email change: attributed to the approver, naming the drafter.
         var initial = await db.AuditLogs.SingleAsync(x => x.Action == Zayra.Api.Infrastructure.Auth.AccessManagementService.WorkEmailChangedAction
             && x.EntityId == profile.Id.ToString());
