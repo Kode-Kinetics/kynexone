@@ -12,24 +12,25 @@ public static class BenefitPackageProjection
     public static BenefitEnrollmentDto From(BenefitEnrollment row, BenefitPlan? plan, Employee employee, DateOnly today)
     {
         var reasons = new List<string>();
-        var effective = row.EffectiveTo < today ? "Expired" : row.EffectiveFrom > today ? "Scheduled" : row.Status == "Active" ? "Current" : row.Status;
+        var effective = row.Status == "Cancelled" ? "Cancelled" : row.EffectiveTo < today ? "Expired" : row.EffectiveFrom > today ? "Scheduled" : row.Status == "Active" ? "Current" : row.Status;
+        var terminal = effective is "Expired" or "Cancelled";
         AdditionalBenefitGrantRequest? terms = null;
         var currency = plan?.Currency;
         var classification = plan?.Classification;
         if (row.AssignmentSource == AdditionalBenefitGrants.Source)
         {
-            if (row.ReviewDate <= today && effective != "Expired") reasons.Add("Review date reached");
-            if (row.CompanyId != employee.CompanyId && effective != "Expired") reasons.Add("Employee company changed; issuing-company review required");
+            if (row.ReviewDate <= today && !terminal) reasons.Add("Review date reached");
+            if (row.CompanyId != employee.CompanyId && !terminal) reasons.Add("Employee company changed; issuing-company review required");
             try
             {
                 var snapshot = JsonSerializer.Deserialize<AdditionalBenefitProposal>(row.EligibilitySnapshotJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 terms = snapshot?.Terms;
                 currency = snapshot?.Currency ?? currency;
                 classification = snapshot?.PlanClassification ?? classification;
-                if (effective != "Expired" && (plan is null || !plan.IsActive || plan.IsDeleted)) reasons.Add("Benefit plan is no longer active");
-                if (snapshot is not null && plan is not null && effective != "Expired" && (snapshot.Currency != plan.Currency || snapshot.PlanClassification != plan.Classification))
+                if (!terminal && (plan is null || !plan.IsActive || plan.IsDeleted)) reasons.Add("Benefit plan is no longer active");
+                if (snapshot is not null && plan is not null && !terminal && (snapshot.Currency != plan.Currency || snapshot.PlanClassification != plan.Classification))
                     reasons.Add("Benefit plan currency or classification changed");
-                if (snapshot?.GradeId != employee.GradeId && effective != "Expired") reasons.Add("Employee grade changed");
+                if (snapshot?.GradeId != employee.GradeId && !terminal) reasons.Add("Employee grade changed");
                 if (snapshot is null) reasons.Add("Original approval needs review");
             }
             catch (JsonException) { reasons.Add("Original approval needs review"); }

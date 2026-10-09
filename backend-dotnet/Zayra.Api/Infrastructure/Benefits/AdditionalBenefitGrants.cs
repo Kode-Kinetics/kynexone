@@ -26,11 +26,13 @@ public record AdditionalBenefitGrantRequest(
     Guid? EnrollmentId = null, DateTime? ExpectedUpdatedAtUtc = null, string Treatment = "Coverage",
     decimal? PlannedEmployerCost = null, decimal? PlannedEmployeeCost = null, string? CostFrequency = null);
 
+public record AdditionalBenefitEndRequest(DateOnly EndDate, string Reason, string InternalJustification, DateTime? ExpectedUpdatedAtUtc);
+
 public record AdditionalBenefitProposal(int Version, Guid RequestId, Guid TenantId, Guid? CompanyId, Guid? GradeId,
-    string EmployeeName, string PlanName, string Currency, AdditionalBenefitGrantRequest Terms, BenefitEnrollmentDto? Baseline, string PlanClassification = BenefitPlanClassifications.Discretionary, string? WorkflowSha256 = null);
+    string EmployeeName, string PlanName, string Currency, AdditionalBenefitGrantRequest Terms, BenefitEnrollmentDto? Baseline, string PlanClassification = BenefitPlanClassifications.Discretionary, string? WorkflowSha256 = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null);
 public record AdditionalBenefitRequestDto(Guid Id, string Status, int EmployeeId, string EmployeeName, Guid BenefitPlanId,
     string PlanName, string Currency, string? RequestedByName, DateTime CreatedAtUtc, AdditionalBenefitGrantRequest Terms,
-    BenefitEnrollmentDto? Baseline, Guid ApprovalRequestId, Guid? AppliedEnrollmentId, ApprovalRequestDto? Approval = null);
+    BenefitEnrollmentDto? Baseline, Guid ApprovalRequestId, Guid? AppliedEnrollmentId, ApprovalRequestDto? Approval = null, string Operation = "GrantOrAmend", DateOnly? EndDate = null);
 
 /// <summary>Additional entitlement proposals reuse the shared approval witness and decision ledger.
 /// Only final approval stages an enrollment; no money, contribution or deduction is created by a grant.</summary>
@@ -75,37 +77,127 @@ public static class AdditionalBenefitGrants
             var plan = await ValidateTermsAsync(db, tenantId, employee, terms, clock, ct);
             var baseline = await ValidateBaselineAsync(db, tenantId, employee, terms, ct);
             await EnsureNoOverlapAsync(db, tenantId, terms, null, ct);
-            var route = await router.ResolveAsync(tenantId, employee.Id, EntityName, ct);
-            await FinanceDecisionSerializer.AcquireAsync(db, "approval.workflow", tenantId, route.WorkflowId, ct);
-            var currentRoute = await router.ResolveAsync(tenantId, employee.Id, EntityName, ct);
-            if (currentRoute.WorkflowId != route.WorkflowId) throw new InvalidOperationException("The approval route changed during submission. Retry with the current workflow.");
-            route = currentRoute;
-            if (route.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
-                throw new ApprovalRouteInvalidException(tenantId, EntityName, route.WorkflowId, route.Code, "every benefit approval step must name an explicit approver role.");
-            var first = route.FirstStep;
-            var approver = await router.ResolveApproverAsync(tenantId, employee.Id, first, ct);
-            var proposal = new AdditionalBenefitProposal(1, requestId, tenantId, employee.CompanyId, employee.GradeId,
-                employee.FullName, plan.Name, plan.Currency, terms, baseline is null ? null : BenefitEnrollmentDto.From(baseline), plan.Classification, WorkflowDigest(route.Steps));
-            var payload = JsonSerializer.Serialize(proposal, Json);
-            var now = DateTime.UtcNow;
-            var approval = new ApprovalRequest
-            {
-                Id = requestId, TenantId = tenantId, EntityName = EntityName, EntityId = requestId.ToString(),
-                WorkflowId = route.WorkflowId, CompanyId = employee.CompanyId, RequestedForEmployeeId = employee.Id,
-                RequestedByUserId = context.UserId, Title = $"{(baseline is null ? "Additional benefit" : "Benefit amendment")}: {plan.Name} · {employee.FullName}",
-                Payload = payload, PayloadSha256 = Digest(payload), CurrentStepOrder = first.StepOrder,
-                CurrentApproverType = approver.EmployeeId.HasValue ? approver.ApproverType : "Role",
-                CurrentApproverEmployeeId = approver.EmployeeId, CurrentApproverUserId = approver.UserId,
-                CurrentApproverName = approver.Name, CurrentApproverRole = approver.QueueRole,
-                CurrentQueue = approver.EmployeeId.HasValue ? $"{approver.ApproverType}:{approver.Name}" : $"Role:{approver.QueueRole}",
-                SlaHours = Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720), LastRoutedAtUtc = now,
-                DueAtUtc = now.AddHours(Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720)),
-            };
-            db.ApprovalRequests.Add(approval);
-            StageAudit(db, approval, context.UserId, "benefits.additional.requested", new { proposal, route.WorkflowId, route.MatchedOn });
-            await db.SaveChangesAsync(ct);
-            return approval;
+            return await CreateApprovalAsync(db, router, tenantId, employee, plan, terms, baseline, context, requestId, "GrantOrAmend", null, ct);
         }, ct);
+    }
+
+    private static async Task<ApprovalRequest> CreateApprovalAsync(ZayraDbContext db, IApprovalRouter router, Guid tenantId,
+        Employee employee, BenefitPlan plan, AdditionalBenefitGrantRequest terms, BenefitEnrollment? baseline,
+        RequestContext context, Guid requestId, string operation, DateOnly? endDate, CancellationToken ct)
+    {
+        var route = await router.ResolveAsync(tenantId, employee.Id, EntityName, ct);
+        await FinanceDecisionSerializer.AcquireAsync(db, "approval.workflow", tenantId, route.WorkflowId, ct);
+        var currentRoute = await router.ResolveAsync(tenantId, employee.Id, EntityName, ct);
+        if (currentRoute.WorkflowId != route.WorkflowId) throw new InvalidOperationException("The approval route changed during submission. Retry with the current workflow.");
+        route = currentRoute;
+        if (route.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
+            throw new ApprovalRouteInvalidException(tenantId, EntityName, route.WorkflowId, route.Code, "every benefit approval step must name an explicit approver role.");
+        var first = route.FirstStep;
+        var approver = await router.ResolveApproverAsync(tenantId, employee.Id, first, ct);
+        var proposal = new AdditionalBenefitProposal(1, requestId, tenantId, employee.CompanyId, employee.GradeId,
+            employee.FullName, plan.Name, plan.Currency, terms, baseline is null ? null : BenefitEnrollmentDto.From(baseline), plan.Classification, WorkflowDigest(route.Steps), operation, endDate);
+        var payload = JsonSerializer.Serialize(proposal, Json);
+        var now = DateTime.UtcNow;
+        var approval = new ApprovalRequest
+        {
+            Id = requestId, TenantId = tenantId, EntityName = EntityName, EntityId = requestId.ToString(),
+            WorkflowId = route.WorkflowId, CompanyId = employee.CompanyId, RequestedForEmployeeId = employee.Id,
+            RequestedByUserId = context.UserId, Title = $"{(operation == "Cancel" ? "Cancel scheduled benefit" : operation == "End" ? "End additional benefit" : baseline is null ? "Additional benefit" : "Benefit amendment")}: {plan.Name} · {employee.FullName}",
+            Payload = payload, PayloadSha256 = Digest(payload), CurrentStepOrder = first.StepOrder,
+            CurrentApproverType = approver.EmployeeId.HasValue ? approver.ApproverType : "Role",
+            CurrentApproverEmployeeId = approver.EmployeeId, CurrentApproverUserId = approver.UserId,
+            CurrentApproverName = approver.Name, CurrentApproverRole = approver.QueueRole,
+            CurrentQueue = approver.EmployeeId.HasValue ? $"{approver.ApproverType}:{approver.Name}" : $"Role:{approver.QueueRole}",
+            SlaHours = Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720), LastRoutedAtUtc = now,
+            DueAtUtc = now.AddHours(Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720)),
+        };
+        db.ApprovalRequests.Add(approval);
+        StageAudit(db, approval, context.UserId, "benefits.additional.requested", new { proposal, route.WorkflowId, route.MatchedOn });
+        await db.SaveChangesAsync(ct);
+        return approval;
+    }
+
+    public static async Task<ApprovalRequest> SubmitEndAsync(ZayraDbContext db, IApprovalRouter router, Guid tenantId,
+        Guid enrollmentId, AdditionalBenefitEndRequest input, RequestContext context, ITenantClock clock, CancellationToken ct,
+        EntityScopeContext? scope = null)
+    {
+        EnsureActor(context, tenantId, "employees.write");
+        var owner = await db.BenefitEnrollments.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == enrollmentId)
+            .Select(x => new { x.EmployeeId, x.CompanyId }).FirstOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException("The additional benefit was not found in your company scope.");
+        if (!(scope ?? EntityScopeContext.Empty).CanAccessCompany(owner.CompanyId)) throw new InvalidOperationException("This benefit is outside your company scope.");
+        var employeeKey = await db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == owner.EmployeeId && !x.IsDeleted)
+            .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(ct)
+            ?? throw new InvalidOperationException("Employee not found in your company scope.");
+        var requestId = Guid.NewGuid();
+        return await FinanceDecisionSerializer.SerializeAsync(db, LockScope, tenantId, employeeKey, async () =>
+        {
+            var existing = await db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == requestId, ct);
+            if (existing is not null) return existing;
+            if (string.IsNullOrWhiteSpace(input.Reason) || input.Reason.Trim().Length > 1000
+                || string.IsNullOrWhiteSpace(input.InternalJustification) || input.InternalJustification.Trim().Length > 2000)
+                throw new InvalidOperationException("An employee-visible reason and an internal justification are required (maximum 1000 and 2000 characters).");
+            var employee = await db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == owner.EmployeeId && !x.IsDeleted, ct)
+                ?? throw new InvalidOperationException("Employee not found in your company scope.");
+            if (!(scope ?? EntityScopeContext.Empty).CanAccessCompany(employee.CompanyId)) throw new InvalidOperationException("This employee is outside your company scope.");
+            var (row, plan, operation) = await ValidateEndAsync(db, tenantId, employee, enrollmentId, input.EndDate, input.ExpectedUpdatedAtUtc, null, clock, ct);
+            await EnsureNoPendingEnrollmentChangeAsync(db, tenantId, employee.Id, enrollmentId, null, ct);
+            AdditionalBenefitGrantRequest? originalTerms = null;
+            try { originalTerms = JsonSerializer.Deserialize<AdditionalBenefitProposal>(row.EligibilitySnapshotJson, Json)?.Terms; }
+            catch (JsonException) { /* Known persisted entitlement fields remain the baseline; no hidden terms are invented. */ }
+            var terms = new AdditionalBenefitGrantRequest(employee.Id, row.BenefitPlanId, row.CoverageTier, row.EntitlementTier,
+                row.MaximumBenefitAmount, row.RequestedBenefitAmount, row.LimitPeriod, row.EffectiveFrom,
+                operation == "End" ? input.EndDate : row.EffectiveTo, row.ReviewDate, input.Reason.Trim(), input.InternalJustification.Trim(),
+                row.Id, row.UpdatedAtUtc, originalTerms?.Treatment ?? "Coverage", originalTerms?.PlannedEmployerCost,
+                originalTerms?.PlannedEmployeeCost, originalTerms?.CostFrequency);
+            return await CreateApprovalAsync(db, router, tenantId, employee, plan, terms, row, context, requestId, operation, input.EndDate, ct);
+        }, ct);
+    }
+
+    private static async Task<(BenefitEnrollment Row, BenefitPlan Plan, string Operation)> ValidateEndAsync(ZayraDbContext db,
+        Guid tenantId, Employee employee, Guid enrollmentId, DateOnly endDate, DateTime? expectedUpdatedAtUtc,
+        string? expectedOperation, ITenantClock clock, CancellationToken ct)
+    {
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(db, tenantId, ct)) throw new InvalidOperationException("Use Benefits by grade for this tenant's individual package.");
+        var today = await clock.TodayAsync(tenantId, ct);
+        if (endDate < today || endDate == DateOnly.MaxValue) throw new InvalidOperationException("The end date must be today or later. A passed end date requires a new request.");
+        var row = await db.BenefitEnrollments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == enrollmentId, ct)
+            ?? throw new InvalidOperationException("The additional benefit was not found.");
+        if (row.AssignmentSource != Source || row.Status != "Active" || row.EmployeeId != employee.Id || row.CompanyId != employee.CompanyId)
+            throw new InvalidOperationException("Only an active additional benefit for this employee and company can be ended. Grade defaults require an explicit benefit adjustment.");
+        if (row.UpdatedAtUtc?.Ticks / 10 != expectedUpdatedAtUtc?.Ticks / 10)
+            throw new InvalidOperationException("The benefit changed after this request was prepared. Refresh and submit a new request.");
+        var operation = endDate < row.EffectiveFrom ? "Cancel" : "End";
+        if (expectedOperation is not null && (expectedOperation != operation || expectedOperation == "Cancel" && row.EffectiveFrom <= today))
+            throw new InvalidOperationException("This scheduled benefit has already started or its dates changed. Submit a new end request for its current state.");
+        if (row.EffectiveTo.HasValue && endDate >= row.EffectiveTo)
+            throw new InvalidOperationException("The end date must shorten the existing benefit period.");
+        // Ending existing cover is allowed after catalog retirement. This identity-only integrity read is
+        // pinned to the already scoped enrollment's exact plan; no other company's catalog is disclosed.
+        var plan = await ScopedBypass.TenantWide(db.BenefitPlans, tenantId,
+            "End an existing additional entitlement: read only its exact assigned plan including retired or deleted catalog rows to enforce mandatory classification; employee and issuing company were already authorized.")
+            .AsNoTracking().FirstOrDefaultAsync(x => x.Id == row.BenefitPlanId && (x.CompanyId == null || x.CompanyId == employee.CompanyId), ct)
+            ?? throw new InvalidOperationException("The original benefit plan is unavailable. Its policy must be reviewed before ending this benefit.");
+        var originallyMandatory = false;
+        try { originallyMandatory = JsonSerializer.Deserialize<AdditionalBenefitProposal>(row.EligibilitySnapshotJson, Json)?.PlanClassification == BenefitPlanClassifications.Mandatory; }
+        catch (JsonException) { }
+        if (plan.Classification == BenefitPlanClassifications.Mandatory || originallyMandatory)
+            throw new InvalidOperationException("Mandatory benefit coverage cannot be ended or cancelled by an individual request. Use the benefit plan policy.");
+        var affectedFrom = endDate.AddDays(1);
+        if (await (from link in db.BenefitPayrollDeductionLinks.AsNoTracking() join run in db.PayrollRuns.AsNoTracking() on link.PayrollRunId equals run.Id
+            where link.TenantId == tenantId && run.TenantId == tenantId && link.BenefitEnrollmentId == row.Id && (run.Status == "Locked" || run.Status == "Paid")
+                && (run.Year > affectedFrom.Year || run.Year == affectedFrom.Year && run.Month >= affectedFrom.Month) select link.Id).AnyAsync(ct))
+            throw new InvalidOperationException("Finalized payroll exists after the requested end date. Choose an end date after those payroll periods.");
+        return (row, plan, operation);
+    }
+
+    private static async Task EnsureNoPendingEnrollmentChangeAsync(ZayraDbContext db, Guid tenantId, int employeeId,
+        Guid enrollmentId, Guid? currentRequest, CancellationToken ct)
+    {
+        var pending = await db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EntityName == EntityName
+            && x.RequestedForEmployeeId == employeeId && x.Status == "Pending" && x.Id != currentRequest).ToListAsync(ct);
+        if (pending.Any(x => Read(x).Terms.EnrollmentId == enrollmentId))
+            throw new InvalidOperationException("A pending amendment or end request already exists for this benefit. Decide or withdraw it first.");
     }
 
     public static async Task ValidateDecisionAsync(ZayraDbContext db, ApprovalRequest approval, RequestContext context,
@@ -146,6 +238,36 @@ public static class AdditionalBenefitGrants
             ?? throw new InvalidOperationException("Employee is no longer available in your company scope.");
         if (employee.CompanyId != proposal.CompanyId || employee.GradeId != proposal.GradeId)
             throw new InvalidOperationException("The employee's company or grade changed after submission. Withdraw this request and submit it against the current package.");
+        if (proposal.Operation is "End" or "Cancel")
+        {
+            if (proposal.EndDate is not DateOnly endDate || terms.EnrollmentId is not Guid enrollmentId || proposal.Baseline?.Id != enrollmentId)
+                throw new InvalidOperationException("The end request is missing its original benefit or end date.");
+            var (ending, _, operation) = await ValidateEndAsync(db, approval.TenantId, employee, enrollmentId, endDate,
+                terms.ExpectedUpdatedAtUtc, proposal.Operation, clock ?? new TenantClock(db, TimeProvider.System), ct);
+            await EnsureNoPendingEnrollmentChangeAsync(db, approval.TenantId, employee.Id, ending.Id, approval.Id, ct);
+            var contributions = await db.BenefitContributions.Where(x => x.TenantId == approval.TenantId && x.BenefitEnrollmentId == ending.Id
+                && x.IsActive && (!x.EffectiveTo.HasValue || x.EffectiveTo > endDate)).ToListAsync(ct);
+            var contributionBaseline = contributions.Select(x => new { x.Id, x.EmployeeAmount, x.EmployerAmount, x.Frequency, x.PayrollComponentCode, x.EffectiveFrom, x.EffectiveTo, x.IsActive }).ToList();
+            var enrollmentBaseline = BenefitEnrollmentDto.From(ending);
+            foreach (var contribution in contributions)
+            {
+                if (contribution.EffectiveFrom > endDate || operation == "Cancel") contribution.IsActive = false;
+                else contribution.EffectiveTo = endDate;
+            }
+            if (operation == "Cancel") ending.Status = "Cancelled";
+            else ending.EffectiveTo = endDate;
+            ending.UpdatedBy = context.UserId;
+            // Keep the original approved grant witness, authority and financial terms. The independent
+            // end decision and its baseline remain in ApprovalRequest and the immutable central audit.
+            StageAudit(db, approval, context.UserId, operation == "Cancel" ? "benefits.additional.cancelled" : "benefits.additional.ended", new
+            {
+                requestId = approval.Id, enrollmentId = ending.Id, operation, endDate,
+                baseline = enrollmentBaseline, result = BenefitEnrollmentDto.From(ending), contributionBaseline,
+                authority = new { approval.WorkflowId, approval.CurrentStepOrder, context.UserId },
+            });
+            return;
+        }
+        if (proposal.Operation != "GrantOrAmend") throw new InvalidOperationException("Unknown additional benefit operation.");
         var plan = await ValidateTermsAsync(db, approval.TenantId, employee, terms, clock ?? new TenantClock(db, TimeProvider.System), ct);
         if (plan.Currency != proposal.Currency || plan.Classification != proposal.PlanClassification)
             throw new InvalidOperationException("The benefit plan currency or classification changed after submission. Submit a new request for review.");
@@ -257,6 +379,8 @@ public static class AdditionalBenefitGrants
 
     private static async Task EnsureNoOverlapAsync(ZayraDbContext db, Guid tenantId, AdditionalBenefitGrantRequest terms, Guid? currentRequest, CancellationToken ct)
     {
+        if (terms.EnrollmentId is Guid enrollmentId)
+            await EnsureNoPendingEnrollmentChangeAsync(db, tenantId, terms.EmployeeId, enrollmentId, currentRequest, ct);
         if (await db.BenefitEnrollments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == terms.EmployeeId && x.BenefitPlanId == terms.BenefitPlanId
             && x.Id != terms.EnrollmentId && (x.Status == "Active" || x.Status == "Waived")
             && (!terms.EffectiveTo.HasValue || x.EffectiveFrom <= terms.EffectiveTo) && (!x.EffectiveTo.HasValue || x.EffectiveTo >= terms.EffectiveFrom), ct))
@@ -296,7 +420,8 @@ public static class AdditionalBenefitGrants
     {
         var p = Read(approval);
         return new(approval.Id, approval.Status, p.Terms.EmployeeId, p.EmployeeName, p.Terms.BenefitPlanId, p.PlanName, p.Currency,
-            requesterName, approval.CreatedAtUtc, p.Terms, p.Baseline, approval.Id, appliedEnrollmentId, routing);
+            requesterName, approval.CreatedAtUtc, p.Terms, p.Baseline, approval.Id,
+            approval.Status == "Approved" && (p.Operation is "End" or "Cancel") ? p.Baseline?.Id : appliedEnrollmentId, routing, p.Operation, p.EndDate);
     }
 
     public static string WorkflowDigest(IEnumerable<ApprovalRouteStep> steps) => Digest(JsonSerializer.Serialize(steps.OrderBy(x => x.StepOrder), Json));

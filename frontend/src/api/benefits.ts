@@ -187,6 +187,8 @@ export interface AdditionalBenefitInput extends AdditionalBenefitTerms {
 }
 
 export interface AdditionalBenefitRequest {
+  operation?: 'GrantOrAmend' | 'End' | 'Cancel';
+  endDate?: string | null;
   id: string;
   status: string;
   employeeId: number;
@@ -208,7 +210,7 @@ export interface EmployeeBenefitPackageItem extends BenefitEnrollment {
   planCode: string;
   currency: string;
   classification: BenefitPlan['classification'];
-  effectiveStatus: 'Current' | 'Scheduled' | 'Expired' | 'Waived';
+  effectiveStatus: 'Current' | 'Scheduled' | 'Expired' | 'Waived' | 'Cancelled';
   reviewDate: string | null;
   reviewRequired: boolean;
   reviewReasons: string[];
@@ -341,6 +343,7 @@ const base = '/api/compensation/benefits';
 export const benefitsApi = {
   employeePackage: (employeeId: number) => client.get<EmployeeBenefitPackage>(`${base}/employees/${employeeId}/package`).then(r => r.data),
   requestAdditional: (input: AdditionalBenefitInput) => client.post<AdditionalBenefitRequest>(`${base}/additional-grants`, input).then(r => r.data),
+  requestBenefitEnd: (id: string, input: { endDate: string; reason: string; internalJustification: string; expectedUpdatedAtUtc: string | null }) => client.post<AdditionalBenefitRequest>(`${base}/enrollments/${id}/end-request`, input).then(r => r.data),
   additionalRequest: (id: string) => client.get<AdditionalBenefitRequest>(`${base}/additional-grants/${id}`).then(r => r.data),
   gradeDefaults: (params: { gradeId: string; companyId: string; effectiveFrom: string; probationEndDate?: string; confirmationDate?: string }) =>
     client.get<GradeBenefitDefault[]>(`${base}/grade-defaults`, { params }).then((r) => r.data),

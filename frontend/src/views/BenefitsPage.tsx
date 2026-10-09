@@ -17,7 +17,8 @@ import { useAppToast } from '@/src/components/ui/AppToast';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useReleaseA } from '@/src/lib/releaseA';
 import Link from 'next/link';
-import { AdditionalBenefitForm, type BenefitEmployee } from '@/src/components/benefits/AdditionalBenefitForm';
+import type { BenefitEmployee } from '@/src/components/benefits/AdditionalBenefitForm';
+import { BenefitChecklist } from '@/src/components/benefits/BenefitChecklist';
 import { AdditionalBenefitRequestDetail } from '@/src/components/benefits/AdditionalBenefitRequestDetail';
 import { AdditionalBenefitApprovalSetup } from '@/src/components/benefits/AdditionalBenefitApprovalSetup';
 import { AssignmentLabel, EnrollmentDrawer } from '@/src/components/benefits/BenefitEnrollmentDrawer';
@@ -104,9 +105,9 @@ export function BenefitsPage() {
           <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{releaseA ? 'Plans, employee enrolments and contributions' : 'Grade benefits, employee enrolments, exceptions and contributions'}</p>
         </div>
-        {!loading && !error && plans.length > 0 && (
+        {!loading && !error && (plans.length > 0 || enrollments.length > 0) && (
           <div className="flex flex-wrap gap-2">
-            {canProposeAdditional && <button type="button" className={SECONDARY} disabled={activePlans.length === 0} onClick={() => setAdditionalFor({})}><Plus className="h-3.5 w-3.5" />{t('Add additional benefit')}</button>}
+            {canProposeAdditional && <button type="button" className={SECONDARY} onClick={() => setAdditionalFor({})}><Plus className="h-3.5 w-3.5" />{t('Manage benefits')}</button>}
             {canEnroll && (
               <button type="button" className={SECONDARY} disabled={activePlans.length === 0} onClick={() => setEnrollFor({})}>
                 <UserPlus className="h-3.5 w-3.5" /> Enrol employee
@@ -114,7 +115,7 @@ export function BenefitsPage() {
             )}
             {canManagePlans && (
               <button type="button" className={PRIMARY} onClick={() => setPlanModal({ mode: 'create' })}>
-                <Plus className="h-3.5 w-3.5" /> New plan
+                <Plus className="h-3.5 w-3.5" /> {t('Add benefit plan')}
               </button>
             )}
           </div>
@@ -192,7 +193,7 @@ export function BenefitsPage() {
           onEnrolled={() => { setEnrollFor(null); setTab('enrollments'); void load(); }}
         />
       )}
-      {additionalFor && <AdditionalBenefitForm plans={activePlans} employee={additionalFor.employee} initialPlanId={additionalFor.planId} onClose={() => setAdditionalFor(null)} onRequested={request => { setAdditionalFor(null); setAdditionalRequestId(request.id); void load(); }} />}
+      {additionalFor && <BenefitChecklist plans={activePlans} employee={additionalFor.employee} initialPlanId={additionalFor.planId} onClose={() => setAdditionalFor(null)} onChanged={() => void load()} />}
       {additionalRequestId && <AdditionalBenefitRequestDetail requestId={additionalRequestId} onClose={() => setAdditionalRequestId(null)} />}
       {openEnrollmentId && (
         <EnrollmentDrawer key={openEnrollmentId} enrollmentId={openEnrollmentId} plans={plans} canRecord={canRecordMoney} canApplyException={canApplyException} onChanged={(id) => { setOpenEnrollmentId(id); void load(); }}
@@ -740,7 +741,7 @@ function EnrollModal({ plans, initialPlanId, canApplyException, onAdditional, on
 
         {canGrantException && !check?.eligible && employee && <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-500/20 dark:bg-amber-500/5">
           <p className="text-slate-600 dark:text-slate-300">{t('Additional benefits require a separate request and independent approval.')}</p>
-          <button type="button" className={SECONDARY} onClick={() => onAdditional({ id: employee.id, fullName: employee.fullName }, planId)}>{t('Add additional benefit')}</button>
+          <button type="button" className={SECONDARY} onClick={() => onAdditional({ id: employee.id, fullName: employee.fullName }, planId)}>{t('Manage benefits')}</button>
         </div>}
 
         {check && check.eligible && (

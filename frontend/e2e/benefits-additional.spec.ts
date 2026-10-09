@@ -3,18 +3,20 @@ import { expect, test, type Page } from '@playwright/test';
 const base = '/api/compensation/benefits';
 const companyId = 'company-extra';
 const medical = { id: 'medical', code: 'MED', name: 'Medical Gold', companyId, planType: 'Medical', classification: 'Discretionary', currency: 'SAR', effectiveFrom: '2026-01-01', effectiveTo: null, requiresEnrollment: true, isActive: true };
+const transport = { ...medical, id: 'transport', code: 'TRN', name: 'Transport Allowance', planType: 'Transport' };
 const education = { ...medical, id: 'education', code: 'EDU', name: 'Education Allowance', planType: 'Education' };
 const baseline = { id: 'default-medical', benefitPlanId: medical.id, employeeId: 42, employeeName: 'Alex Morgan', companyId, coverageTier: 'Employee', eligibilityRuleId: 'grade-rule', entitlementTier: 'Gold', maximumBenefitAmount: 25000, requestedBenefitAmount: null, limitPeriod: 'Annual', effectiveFrom: '2026-01-01', effectiveTo: null, status: 'Active', assignmentSource: 'GradeDefault', hasException: false, exceptionReason: null, updatedAtUtc: '2026-10-09T12:00:00Z' };
 const additional = { ...baseline, id: 'extra-education', benefitPlanId: education.id, assignmentSource: 'IndividualAdditional', entitlementTier: 'Education award', maximumBenefitAmount: 15000, effectiveStatus: 'Current', planName: education.name, planCode: education.code, currency: 'SAR', classification: 'Discretionary', reviewDate: '2027-01-01', reviewRequired: true, reviewReasons: ['Review date reached'], approvalRequestId: 'approved-request', grantReason: 'Professional development support.', treatment: 'Reimbursement', plannedEmployerCost: 15000, plannedEmployeeCost: 0, costFrequency: 'Annual' };
 
-async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: boolean; extra?: boolean; readonly?: boolean; manage?: boolean } = {}) {
+async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: boolean; extra?: boolean; readonly?: boolean; manage?: boolean; partialFailure?: boolean } = {}) {
   const errors: string[] = [], submitted: Record<string, unknown>[] = [];
   let directWrites = 0;
+  const endRequests: Record<string, unknown>[] = [];
   let request: Record<string, unknown> | null = null;
-  const plans = [medical, { ...education, effectiveTo: options.fixedTerm ? '2027-12-31' : null }];
+  const plans = [medical, { ...education, effectiveTo: options.fixedTerm ? '2027-12-31' : null }, transport];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
-    if (message.type() === 'error' && !(options.missingRoute && message.text().includes('422'))) errors.push(message.text());
+    if (message.type() === 'error' && !((options.missingRoute && message.text().includes('422')) || (options.partialFailure && message.text().includes('409')))) errors.push(message.text());
   });
   await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'additional-fixture'));
   await page.route('**/api/**', async route => {
@@ -34,8 +36,13 @@ async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: b
       const existing = url.searchParams.get('planId') === medical.id;
       return reply({ benefitPlanId: url.searchParams.get('planId'), currency: 'SAR', employeeId: 42, employeeName: 'Alex Morgan', companyId, gradeId: 'G5', effectiveFrom: url.searchParams.get('effectiveFrom'), eligible: false, alreadyEnrolled: existing || !!options.extra, blockingReason: 'Not a grade benefit.', maximumBenefitAmount: null, checks: ['plan_active', 'company_scope', 'plan_window'].map(key => ({ key, label: key, passed: true, detail: '' })).concat([{ key: 'eligibility_rules', label: 'Grade', passed: false, detail: 'Not a grade benefit.' }]) });
     }
+    if (path === `${base}/enrollments/${additional.id}/end-request` && req.method() === 'POST') {
+      endRequests.push(req.postDataJSON());
+      return reply({ id: 'end-request', approvalRequestId: 'end-request', status: 'Pending', operation: 'End', endDate: req.postDataJSON().endDate, employeeId: 42, employeeName: 'Alex Morgan', benefitPlanId: education.id, planName: education.name, terms: { ...req.postDataJSON(), enrollmentId: additional.id } }, 201);
+    }
     if (path === `${base}/additional-grants` && req.method() === 'POST') {
       submitted.push(req.postDataJSON());
+      if (options.partialFailure && req.postDataJSON().benefitPlanId === transport.id && submitted.filter(item => item.benefitPlanId === transport.id).length === 1) return reply({ message: 'Limit needs correction.' }, 409);
       if (options.missingRoute) return reply({ code: 'approval_route_not_configured', message: 'No approval route is configured.', setupUrl: '/benefits#additional-benefit-approval' }, 422);
       request = { id: 'request-1', approvalRequestId: 'request-1', status: 'Pending', employeeId: 42, employeeName: 'Alex Morgan', benefitPlanId: education.id, planName: education.name, currency: 'SAR', terms: req.postDataJSON(), baseline: options.extra ? additional : null, createdAtUtc: '2026-10-09T12:00:00Z', requestedByName: 'HR Officer', approval: { status: 'Pending', currentApproverName: 'Benefits Approver', currentApproverRole: 'HR Manager', canDecide: false, decisionBlockedReason: 'The requester cannot approve this request.', decisions: [] } };
       return reply(request, 201);
@@ -50,65 +57,58 @@ async function boot(page: Page, options: { fixedTerm?: boolean; missingRoute?: b
     await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible();
     await expect(page).toHaveURL(/\/benefits$/);
   }
-  return { submitted, errors, directWrites: () => directWrites };
+  return { submitted, endRequests, errors, directWrites: () => directWrites };
 }
 
 async function fillAdditional(page: Page) {
-  await page.getByRole('button', { name: 'Add additional benefit', exact: true }).first().click();
-  const dialog = page.getByRole('dialog', { name: 'Add additional benefit', exact: true });
+  await page.getByRole('button', { name: 'Manage benefits', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Manage benefits', exact: true });
   await dialog.getByLabel('Search employee', { exact: true }).fill('Alex');
   await dialog.getByRole('option', { name: /Alex Morgan/ }).click();
-  await dialog.getByLabel('Benefit plan', { exact: true }).selectOption(education.id);
-  await dialog.getByLabel('Entitlement tier', { exact: true }).fill('Education award');
-  await dialog.getByLabel('Individual benefit limit (SAR)', { exact: true }).fill('15000');
-  await dialog.getByLabel('Reason shown to employee', { exact: true }).fill('Professional development support.');
-  await dialog.getByLabel('Internal justification', { exact: false }).fill('Approved retention package for a specialist.');
+  await dialog.getByRole('checkbox', { name: education.name, exact: true }).check();
+  await dialog.getByLabel('Limit (SAR)', { exact: false }).fill('15000');
+  await dialog.getByLabel('Reason for changes', { exact: false }).fill('Approved retention package for a specialist.');
   return dialog;
 }
 
-test('HR proposes an additional benefit with separate terms and an independent approval review', async ({ page }, info) => {
+test('HR manages benefits with inline terms, one reason and an independent approval', async ({ page }, info) => {
   const { submitted, errors, directWrites } = await boot(page);
   const dialog = await fillAdditional(page);
-  await dialog.getByRole('button', { name: 'Review request', exact: true }).click();
-  await expect(dialog.getByRole('heading', { name: 'Review additional benefit' })).toHaveCount(0);
-  await dialog.getByLabel('Review due', { exact: true }).fill('2027-01-01');
-  await dialog.getByLabel('Benefit treatment', { exact: true }).selectOption('Reimbursement');
-  await dialog.getByText('Planned costs (optional)', { exact: true }).click();
-  await dialog.getByLabel('Planned employer cost', { exact: true }).fill('15000');
-  await dialog.getByLabel('Planned employee cost', { exact: true }).fill('0');
-  await dialog.getByLabel('Cost frequency', { exact: true }).selectOption('Annual');
-  await dialog.getByRole('button', { name: 'Review request', exact: true }).click();
-  await expect(dialog.getByTestId('additional-benefit-summary')).toContainText('Grade defaults stay unchanged');
-  await expect(dialog.getByTestId('additional-benefit-summary')).toContainText('SAR 15,000.00');
-  await expect(dialog).toContainText('independent approval');
+  await expect(dialog.getByRole('heading', { name: 'Available benefits', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: 'Keep Medical Gold', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Keep Medical Gold', exact: true })).toBeDisabled();
+  await expect(dialog.getByLabel('Entitlement tier', { exact: true })).not.toBeVisible();
+  await expect(dialog.getByLabel('Reason shown to employee', { exact: true })).not.toBeVisible();
+  await dialog.getByLabel('Review due', { exact: false }).fill('2027-01-01');
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-  await page.screenshot({ path: `/tmp/additional-benefit-review-${info.project.name}.png` });
-  await dialog.getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await page.screenshot({ path: `/tmp/manage-benefits-${info.project.name}.png` });
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('1 benefit requests sent');
+  await expect(dialog.getByRole('checkbox', { name: education.name, exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'View request', exact: true }).click();
   const detail = page.getByRole('dialog', { name: 'Additional benefit request', exact: true });
   await expect(detail.getByTestId('additional-benefit-request-detail')).toContainText('Pending approval');
   await expect(detail).toContainText('Benefits Approver');
   await expect(detail).toContainText('requester cannot approve');
   expect(submitted).toHaveLength(1);
-  expect(submitted[0]).toMatchObject({ employeeId: 42, benefitPlanId: education.id, maximumBenefitAmount: 15000, reviewDate: '2027-01-01', effectiveTo: null, treatment: 'Reimbursement', plannedEmployerCost: 15000, plannedEmployeeCost: 0, costFrequency: 'Annual' });
+  expect(submitted[0]).toMatchObject({ employeeId: 42, benefitPlanId: education.id, entitlementTier: education.name, maximumBenefitAmount: 15000, reviewDate: '2027-01-01', effectiveTo: null, treatment: 'Reimbursement', reason: 'Individual benefit allocation.', internalJustification: 'Approved retention package for a specialist.' });
   expect(directWrites()).toBe(0);
   expect(errors).toEqual([]);
 });
 
-test('a fixed-term plan defaults its end date and cannot offer ongoing coverage', async ({ page }) => {
+test('a fixed-term checklist row fills its plan end date', async ({ page }) => {
   await boot(page, { fixedTerm: true });
   const dialog = await fillAdditional(page);
-  await expect(dialog.getByLabel('Duration', { exact: true })).toHaveValue('end');
   await expect(dialog.getByLabel('Ends', { exact: true })).toHaveValue('2027-12-31');
-  await expect(dialog.getByRole('option', { name: 'Ongoing with a review date', exact: true })).toHaveAttribute('disabled', '');
-  await expect(dialog).toContainText('fixed end date');
+  await expect(dialog.getByLabel('Ends', { exact: true })).toHaveAttribute('max', '2027-12-31');
+  await expect(dialog.getByLabel('Review due', { exact: false })).toHaveCount(0);
 });
 
 test('a missing approval route directs an HR officer to their administrator', async ({ page }) => {
   const { submitted, directWrites } = await boot(page, { missingRoute: true });
   const dialog = await fillAdditional(page);
-  await dialog.getByLabel('Review due', { exact: true }).fill('2027-01-01');
-  await dialog.getByRole('button', { name: 'Review request', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await dialog.getByLabel('Review due', { exact: false }).fill('2027-01-01');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(dialog).toContainText('Contact an administrator');
   await expect(dialog.getByRole('link', { name: 'Configure approval workflow' })).toHaveCount(0);
   expect(submitted).toHaveLength(1);
@@ -118,14 +118,14 @@ test('a missing approval route directs an HR officer to their administrator', as
 test('nested approval setup traps focus and Escape preserves the underlying proposal', async ({ page }) => {
   const { errors, directWrites } = await boot(page, { missingRoute: true, manage: true });
   const proposal = await fillAdditional(page);
-  await proposal.getByLabel('Review due', { exact: true }).fill('2027-01-01');
-  await proposal.getByRole('button', { name: 'Review request', exact: true }).click();
-  await proposal.getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await proposal.getByLabel('Review due', { exact: false }).fill('2027-01-01');
+  await proposal.getByRole('button', { name: 'Save changes', exact: true }).click();
   const configure = proposal.getByRole('link', { name: 'Configure approval workflow', exact: true });
   await configure.click();
   const setup = page.getByRole('dialog', { name: 'Additional benefit approvals', exact: true });
   const save = setup.getByRole('button', { name: 'Save approval route', exact: true });
   await expect(save).toBeEnabled();
+  await expect(setup.getByRole('button', { name: 'Close', exact: true }).first()).toBeFocused();
   await save.focus();
   await page.keyboard.press('Tab');
   await expect(setup.getByRole('button', { name: 'Close', exact: true }).first()).toBeFocused();
@@ -134,7 +134,7 @@ test('nested approval setup traps focus and Escape preserves the underlying prop
   await page.keyboard.press('Escape');
   await expect(setup).toHaveCount(0);
   await expect(proposal).toBeVisible();
-  await expect(proposal.getByTestId('additional-benefit-summary')).toContainText('Professional development support.');
+  await expect(proposal.getByLabel('Reason for changes', { exact: false })).toHaveValue('Approved retention package for a specialist.');
   await expect(proposal.getByRole('button', { name: 'Close', exact: true }).first()).toBeFocused();
   await expect(page).toHaveURL(/\/benefits$/);
   await configure.click();
@@ -245,5 +245,66 @@ test('an unavailable employee Benefits URL keeps Personal and never loads the be
   await expect(profile.getByRole('button', { name: 'Benefits', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('employee-benefits-panel')).toHaveCount(0);
   expect(packageReads).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('multiple benefit changes retain partial success and retry only failed rows', async ({ page }) => {
+  const { submitted, errors } = await boot(page, { partialFailure: true });
+  const dialog = await fillAdditional(page);
+  await dialog.getByRole('region', { name: education.name, exact: true }).getByLabel('Ends', { exact: true }).fill('2027-01-01');
+  await dialog.getByRole('checkbox', { name: transport.name, exact: true }).check();
+  const transportRow = dialog.getByRole('region', { name: transport.name, exact: true });
+  await transportRow.getByLabel('Ends', { exact: true }).fill('2027-01-01');
+  await transportRow.getByLabel('Limit (SAR)', { exact: false }).fill('3000');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('1 benefit requests sent');
+  await expect(transportRow).toContainText('Limit needs correction.');
+  await expect(dialog.getByRole('checkbox', { name: education.name, exact: true })).toBeDisabled();
+  await expect(transportRow.getByLabel('Limit (SAR)', { exact: false })).toBeEnabled();
+  await transportRow.getByLabel('Limit (SAR)', { exact: false }).fill('2500');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('2 benefit requests sent');
+  expect(submitted.map(item => item.benefitPlanId)).toEqual([education.id, transport.id, transport.id]);
+  expect(submitted[2].maximumBenefitAmount).toBe(2500);
+  expect(errors).toEqual([]);
+});
+
+test('unchecking an additional benefit requests its end while grade defaults remain assigned', async ({ page }) => {
+  const { endRequests, directWrites, errors } = await boot(page, { extra: true });
+  await page.getByRole('button', { name: 'Manage benefits', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Manage benefits', exact: true });
+  await dialog.getByLabel('Search employee', { exact: true }).fill('Alex');
+  await dialog.getByRole('option', { name: /Alex Morgan/ }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'Keep Medical Gold', exact: true })).toBeDisabled();
+  await dialog.getByRole('checkbox', { name: 'Keep Education Allowance', exact: true }).uncheck();
+  await dialog.getByLabel('Last covered day', { exact: true }).fill('2026-12-31');
+  await dialog.getByLabel('Reason for changes', { exact: false }).fill('Education allocation ends at year-end.');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toContainText('Removal pending approval. Coverage remains unchanged until approved.');
+  await expect(dialog.getByRole('checkbox', { name: 'Keep Education Allowance', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Keep Education Allowance', exact: true })).toBeDisabled();
+  expect(endRequests).toEqual([{ endDate: '2026-12-31', reason: 'Individual benefit allocation.', internalJustification: 'Education allocation ends at year-end.', expectedUpdatedAtUtc: additional.updatedAtUtc }]);
+  expect(directWrites()).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('Manage benefits keeps assigned additional edits and grade adjustments in context', async ({ page }) => {
+  const { errors } = await boot(page, { extra: true, manage: true });
+  await page.getByRole('button', { name: 'Manage benefits', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Manage benefits', exact: true });
+  await dialog.getByLabel('Search employee', { exact: true }).fill('Alex');
+  await dialog.getByRole('option', { name: /Alex Morgan/ }).click();
+  const edit = dialog.getByRole('button', { name: 'Edit terms', exact: true });
+  await edit.click();
+  await expect(page.getByRole('dialog', { name: 'Amend additional benefit', exact: true }).getByLabel('Individual benefit limit (SAR)', { exact: true })).toHaveValue('15000');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(edit).toBeFocused();
+  const adjust = dialog.getByRole('button', { name: 'Adjust existing benefit', exact: true });
+  await adjust.click();
+  await expect(page.getByRole('dialog', { name: 'Adjust existing benefit', exact: true }).getByRole('form', { name: 'Apply benefit exception' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(adjust).toBeFocused();
   expect(errors).toEqual([]);
 });

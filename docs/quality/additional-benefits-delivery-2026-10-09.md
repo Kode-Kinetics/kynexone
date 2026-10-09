@@ -4,11 +4,12 @@ An authorized HR user can propose an additional catalogue benefit for one employ
 
 ## Product flow
 
-1. Open **Employees → employee → Benefits → Add additional benefit**. The Benefits Administration screen also exposes the action.
-2. Select the plan, coverage/tier, benefit treatment, amount or limit, effective date, and either expiry or review date. Enter an employee-visible reason and a separate confidential justification. Planned employer/employee costs are optional and explicitly separate from actual financial records.
-3. Review the terms and submit. Pending proposals do not change the package.
-4. The configured independent approver reviews the terms in **Approvals**. Multi-step routes apply the entitlement only after the final decision.
-5. Additional benefits display their source and approval link beside grade benefits. Amendments to an additional benefit require a fresh approval; dated successors preserve history. Existing grade-benefit adjustments retain their established HR exception workflow.
+1. During **Add Employee**, choose the company and grade. The Employment and Review steps show the default benefit names, limits, and effective dates. Creation assigns eligible grade benefits automatically, including known future eligibility dates. **Review employee benefits** opens the saved employee package.
+2. Open **People → employee → Benefits → Manage benefits**, or **Benefits → Manage benefits**. Assigned benefits and available catalogue benefits appear together. Grade defaults are identified and retained.
+3. Check one or more available benefits, set their start/end dates and limits, and enter one confidential **Reason for changes**. Ongoing benefits require a review date. Coverage, treatment, planned costs, and the employee-visible message are under optional controls. **Save changes** sends the selected requests; successful rows are locked and failed rows can be corrected without resubmitting successes.
+4. The configured independent approver reviews each proposal in **Approvals**. Multi-step routes apply the entitlement only after the final decision. Pending proposals do not change the package.
+5. Use **Edit terms** to amend an additional benefit or **Adjust existing benefit** for an authorized grade exception. Additional amendments require a fresh approval and retain dated history.
+6. Uncheck an additional benefit and choose its last covered day to request an end; a date before scheduled coverage starts requests cancellation. Removal requires independent approval and retains the original record and history. Mandatory benefits cannot be removed in this flow.
 
 Administrators can configure the default ordered role route through **Benefits → Additional benefit approvals**. Existing department/grade routes take precedence. The focused editor preserves individual/reporting-line routes and does not attempt to rewrite them. Missing routes fail with actionable guidance. Routes with pending requests cannot be edited.
 
@@ -31,6 +32,10 @@ Apply the migration before starting this application version. Configure approval
 
 ## Verification
 
+The original governed-benefit implementation was verified below. The subsequent checklist and removal extension passed **264 backend tests** (including 30 removal cases), **16 persisted API removal checks**, **42 desktop/phone browser checks** against the final production build, localization (8 passed, 1 maintenance-only skip), and a real desktop/mobile journey covering employee creation, two grade defaults, two selected additional benefits, independent approvals, and a later approved end. Both grade rows remained unchanged. No schema changes were introduced by this extension. The extension evidence is in `/tmp/kynex-benefit-checklist-tests/`, `/tmp/kynex-benefit-end-api-evidence.json`, and `/tmp/kynex-benefit-checklist-browser/`.
+
+### Original governed-benefit baseline
+
 - Combined backend suite: **234 passed, 0 failed, 0 skipped**. Includes grade-default/exception regressions, 47 new individual-benefit security cases, approval/routing checks, and schema/bypass/orphan/permission ratchets.
 - Independent persisted API scenarios: **27 passed**, covering two-stage approval with three distinct actors, pending/reject/withdraw states, amendment history, company isolation, duplicates/replays, legacy bypass denial, and absence of financial side effects.
 - PostgreSQL migration applied; readiness returned no pending migrations. EF model drift check passed. Migration visibility gate found **95 files / 95 discoverable migrations**.
@@ -51,7 +56,7 @@ Local verification evidence (synthetic data only):
 - `/tmp/kynex-additional-benefits-final-production-fixtures.log`
 - `/tmp/kynex-additional-benefits-production-build.log`
 
-The local production preview runs at `http://127.0.0.1:5281`. Synthetic employee `9` has two grade defaults and one approved additional transport benefit: `/people?employeeId=9&tab=benefits`. The separate API runs at `127.0.0.1:5218` against the dedicated synthetic PostgreSQL database. No live customer data is involved.
+The local production preview runs at `http://127.0.0.1:5281`. Synthetic employee `12` demonstrates creation defaults plus two individual benefits, including one approved end date: `/people?employeeId=12&tab=benefits`. The separate API runs at `127.0.0.1:5218` against the dedicated synthetic PostgreSQL database. No live customer data is involved.
 
 ## Research basis
 

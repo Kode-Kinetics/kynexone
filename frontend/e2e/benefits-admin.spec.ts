@@ -33,7 +33,7 @@ test.describe('Benefits administration — UI', () => {
 
     // Either the guided first-plan state or the populated list: both must offer plan creation.
     const firstPlan = page.getByRole('button', { name: 'Create your first plan' });
-    const newPlan = page.getByRole('button', { name: 'New plan' });
+    const newPlan = page.getByRole('button', { name: 'Add benefit plan' });
     await expect(firstPlan.or(newPlan)).toBeVisible();
     await firstPlan.or(newPlan).click();
 

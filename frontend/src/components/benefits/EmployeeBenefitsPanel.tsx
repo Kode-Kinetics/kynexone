@@ -8,6 +8,7 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
 import { useReleaseA } from '@/src/lib/releaseA';
 import { AssignmentLabel, EnrollmentDrawer } from './BenefitEnrollmentDrawer';
+import { BenefitChecklist } from './BenefitChecklist';
 import { AdditionalBenefitForm } from './AdditionalBenefitForm';
 import { AdditionalBenefitRequestDetail } from './AdditionalBenefitRequestDetail';
 import { CARD, PRIMARY, SECONDARY, FormError, StatusPill } from './benefitUi';
@@ -74,19 +75,20 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h3 className="font-semibold text-slate-800 dark:text-slate-100">{t('Benefits')}</h3><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Benefits for {employee}', { employee: employeeName })}</p></div>
       <div className="flex flex-wrap gap-2"><button type="button" className={SECONDARY} onClick={() => void load()} disabled={loading}><RefreshCw className="h-3.5 w-3.5" />{t('Refresh')}</button>
-        {canPropose && <button type="button" className={PRIMARY} disabled={loading || !plans.some(plan => plan.isActive)} onClick={() => setAdditionalForm({})}><Plus className="h-3.5 w-3.5" />{t('Add additional benefit')}</button>}
+        {canPropose && <button type="button" className={PRIMARY} disabled={loading} onClick={() => setAdditionalForm({})}><Plus className="h-3.5 w-3.5" />{t('Manage benefits')}</button>}
       </div>
     </div>
     {loading ? <div aria-busy="true" aria-label={t('Loading benefits')} className="h-36 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" />
       : error ? <FormError message={error} />
         : <>
-          {pending.length > 0 && <section className="space-y-2"><h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Pending benefit requests')}</h4>{pending.map(request => <button type="button" key={request.id} className={`${CARD} flex w-full items-center justify-between gap-3 p-3 text-start text-xs`} onClick={() => setRequestId(request.id)}><span className="font-semibold text-slate-800 dark:text-slate-100">{request.planName}</span><StatusPill active={false} label={t('Pending approval')} /></button>)}<p className="text-xs text-slate-500 dark:text-slate-400">{t('Pending requests do not change the employee’s benefits until approved.')}</p></section>}
+          {pending.length > 0 && <section className="space-y-2"><h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Pending benefit requests')}</h4>{pending.map(request => <button type="button" key={request.id} className={`${CARD} flex w-full items-center justify-between gap-3 p-3 text-start text-xs`} onClick={() => setRequestId(request.id)}><span className="font-semibold text-slate-800 dark:text-slate-100">{request.planName}</span><StatusPill active={false} label={t(['End', 'Cancel'].includes(request.operation ?? '') ? 'Removal pending approval' : 'Addition pending approval')} /></button>)}<p className="text-xs text-slate-500 dark:text-slate-400">{t('Pending requests do not change the employee’s benefits until approved.')}</p></section>}
           {current.length ? benefitList(current) : <div className={`${CARD} flex flex-col items-center gap-2 p-7 text-center`}><HeartPulse className="h-7 w-7 text-slate-300" /><p className="text-sm text-slate-600 dark:text-slate-300">{t('No current or upcoming benefits.')}</p></div>}
           {requestHistory.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Benefit request history')}</summary><div className="mt-3 space-y-2">{requestHistory.map(request => <button type="button" key={request.id} onClick={() => setRequestId(request.id)} className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-start text-xs dark:border-white/10"><span className="text-slate-700 dark:text-slate-200">{request.planName}</span><StatusPill active={request.status === 'Approved'} label={request.status} /></button>)}</div></details>}
           {previous.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Past benefits ({count})', { count: previous.length })}</summary><div className="mt-3">{benefitList(previous)}</div></details>}
         </>}
     {openEnrollment && <EnrollmentDrawer key={openEnrollment.id} enrollmentId={openEnrollment.id} startEditing={openEnrollment.adjust} plans={plans} canRecord={canRecord} canApplyException={canRecord && !releaseA} onChanged={id => { setOpenEnrollment({ id }); void load(); }} onClose={() => setOpenEnrollment(null)} />}
-    {additionalForm && <AdditionalBenefitForm plans={plans} employee={{ id: employeeId, fullName: employeeName }} existing={additionalForm.existing} onClose={() => setAdditionalForm(null)} onRequested={request => { setAdditionalForm(null); setRequestId(request.id); void load(); }} />}
+    {additionalForm && !additionalForm.existing && <BenefitChecklist plans={plans} employee={{ id: employeeId, fullName: employeeName }} onClose={() => setAdditionalForm(null)} onChanged={() => void load()} />}
+    {additionalForm?.existing && <AdditionalBenefitForm plans={plans} employee={{ id: employeeId, fullName: employeeName }} existing={additionalForm.existing} onClose={() => setAdditionalForm(null)} onRequested={request => { setAdditionalForm(null); setRequestId(request.id); void load(); }} />}
     {requestId && <AdditionalBenefitRequestDetail requestId={requestId} onClose={() => setRequestId(null)} />}
   </section>;
 }

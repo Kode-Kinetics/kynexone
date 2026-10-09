@@ -109,10 +109,11 @@ test('out-of-grade enrollment opens a separate additional benefit request', asyn
   const dialog = await openIneligibleEnrollment(page);
   await expect(dialog.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
   await expect(dialog.getByRole('checkbox', { name: 'Apply an individual exception' })).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'Add additional benefit', exact: true }).click();
-  const request = page.getByRole('dialog', { name: 'Add additional benefit', exact: true });
-  await expect(request.getByLabel('Reason shown to employee')).toBeVisible();
-  await expect(request.getByLabel('Internal justification')).toBeVisible();
+  await page.route('**/api/compensation/benefits/employees/42/package', route => route.fulfill({ json: { employeeId: 42, employeeName: 'Alex Morgan', companyId: plan.companyId, gradeId: 'other-grade', asOf: '2026-10-09', enrollments: [], additionalRequests: [] } }));
+  await dialog.getByRole('button', { name: 'Manage benefits', exact: true }).click();
+  const request = page.getByRole('dialog', { name: 'Manage benefits', exact: true });
+  await expect(request.getByLabel('Reason for changes')).toBeVisible();
+  await expect(request.getByRole('checkbox', { name: plan.name, exact: true })).toBeChecked();
   await expect(request.getByRole('button', { name: 'Submit for approval' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
@@ -120,7 +121,7 @@ test('out-of-grade enrollment opens a separate additional benefit request', asyn
 test('an individual grant cannot bypass plan company scope', async ({ page }) => {
   await boot(page, true);
   const dialog = await openIneligibleEnrollment(page, false);
-  await expect(dialog.getByRole('button', { name: 'Add additional benefit', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Manage benefits', exact: true })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Enrol', exact: true })).toBeDisabled();
 });
 

@@ -2638,6 +2638,12 @@ export function EmployeesPage() {
             {createdEmployee.access?.reasonCode && skipReasonKey(createdEmployee.access.reasonCode) && (
               <p data-testid="employee-added-reason">{t(skipReasonKey(createdEmployee.access.reasonCode)!, { name: createdEmployee.name })}</p>
             )}
+            {!releaseA && canReadBenefits && <button type="button" className="btn-secondary" onClick={() => {
+              const id = createdEmployee.id;
+              finishCreated(false);
+              setActiveTab('benefits');
+              void openDetail(id, true);
+            }}>{t('Review employee benefits')}</button>}
             {canEditEmployees && <EmployeeCompletionHandoff employeeId={createdEmployee.id} />}
           </div>
         ) : (
@@ -2914,6 +2920,15 @@ export function EmployeesPage() {
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={5} activeStep={formStep}>
             <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
+            {!releaseA && <div className="mt-4"><EmployeeGradeBenefits
+              gradeChosen={!!form.gradeId}
+              companyChosen={!!form.companyId}
+              assumedDate={!form.joiningDate ? new Date().toISOString().slice(0, 10) : undefined}
+              defaults={gradeBenefits}
+              loading={gradeBenefitsLoading}
+              error={gradeBenefitsError}
+              onRetry={() => setGradeBenefitsRefresh(value => value + 1)}
+            /></div>}
             {!fullSetup && <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">
               <p className="text-sm font-semibold">{t('Complete more details now, or save them for later')}</p>
               <div className="mt-3 flex flex-wrap gap-2">

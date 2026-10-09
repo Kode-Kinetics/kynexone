@@ -630,7 +630,7 @@ test('grade benefits preview follows grade and joining date and appears in revie
   await expect(dialog.getByRole('combobox', { name: 'Grade', exact: true })).toBeVisible();
   await dialog.getByRole('combobox', { name: 'Grade', exact: true }).selectOption('grade-wizard');
   await dialog.getByLabel('Joining date', { exact: false }).fill('2026-10-15');
-  const preview = dialog.getByTestId('employee-grade-benefits');
+  const preview = dialog.locator('[data-employee-step="1"]').getByTestId('employee-grade-benefits');
   await expect(preview).toContainText('Medical Gold');
   await expect(preview).toContainText('Assigned by default');
   await expect(preview).toContainText('Requires 12 months service.');
@@ -643,7 +643,10 @@ test('grade benefits preview follows grade and joining date and appears in revie
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
   await expect(dialog.getByText('Default benefits', { exact: true })).toBeVisible();
-  await expect(dialog.locator('[data-employee-step="5"]').getByText('Medical Platinum', { exact: true })).toBeVisible();
+  const reviewedBenefits = dialog.locator('[data-employee-step="5"]').getByTestId('employee-grade-benefits');
+  await expect(reviewedBenefits.getByText('Medical Platinum', { exact: true })).toBeVisible();
+  await expect(reviewedBenefits).toContainText('25,000');
+  await expect(reviewedBenefits).toContainText('Starts on 2026-11-01');
   await expect(dialog.getByText('Child education: Requires 12 months service.', { exact: true })).toBeVisible();
   expect(previewRequests.some(search => search.includes('companyId=company-wizard'))).toBe(true);
   expect(errors).toEqual([]);

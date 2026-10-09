@@ -58,6 +58,24 @@ public class BenefitsController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    [HttpPost("enrollments/{enrollmentId:guid}/end-request")]
+    [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> EndAdditionalBenefit(Guid enrollmentId, [FromBody] AdditionalBenefitEndRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+        try
+        {
+            var router = _approvalRouter ?? HttpContext.RequestServices.GetRequiredService<IApprovalRouter>();
+            var approval = await AdditionalBenefitGrants.SubmitEndAsync(_db, router, tenantId.Value, enrollmentId, req, BenefitContext(), _clock, ct, this.GetEntityScope());
+            return Ok(await AdditionalBenefitGrants.ToDtoAsync(_db, approval, ct));
+        }
+        catch (ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message, setupUrl = "/benefits#additional-benefit-approval" }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpGet("additional-grants/{requestId:guid}")]
     [HasPermission("employees.write", "approvals.read")]
     public async Task<IActionResult> AdditionalGrantDetail(Guid requestId, CancellationToken ct)
