@@ -128,7 +128,7 @@ public class EmployeeCompletionHttpTests(EmployeeDraftCreateHttpFixture fx) : IC
             var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
             var foreignTenant = new Tenant { Name = "Foreign completion", Slug = $"foreign-{Guid.NewGuid():N}", IsActive = true };
             var foreignCompany = new Company { TenantId = foreignTenant.Id, LegalNameEn = "Foreign", CountryCode = "SA", IsActive = false };
-            var excludedCompany = new Company { TenantId = fx.TenantId, LegalNameEn = "Excluded", CountryCode = "SA", IsActive = false };
+            var excludedCompany = new Company { TenantId = fx.TenantId, LegalNameEn = "Excluded", CountryCode = "SA", IsActive = true };
             var foreignEmployee = new Employee { TenantId = foreignTenant.Id, CompanyId = foreignCompany.Id,
                 EmployeeCode = $"FOREIGN-{Guid.NewGuid():N}", EnglishName = "Foreign employee", Status = "Draft" };
             db.Tenants.Add(foreignTenant); db.Companies.AddRange(foreignCompany, excludedCompany); db.Employees.Add(foreignEmployee);
@@ -218,7 +218,7 @@ public class EmployeeCompletionHttpTests(EmployeeDraftCreateHttpFixture fx) : IC
 
     private async Task<int> CreateDraft()
     {
-        using var result = await fx.SendAsync(HttpMethod.Post, "/api/employees", new { englishName = $"Completion {Guid.NewGuid():N}" });
+        using var result = await fx.SendAsync(HttpMethod.Post, "/api/employees", new { englishName = $"Completion {Guid.NewGuid():N}", companyId = fx.CompanyId });
         result.EnsureSuccessStatusCode();
         return (await result.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
     }
