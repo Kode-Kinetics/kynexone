@@ -38,9 +38,16 @@ interface BootOptions {
   readOnly?: boolean;
   route?: string;
   locale?: 'en' | 'ar';
+  policyIntelligence?: boolean;
+  policyEmployee?: boolean;
+  employeeOnly?: boolean;
+  hrLibrary?: boolean;
 }
 
 async function boot(page: Page, options: BootOptions = {}) {
+  let uploadCount = 0;
+  const policyWrites: { path: string; body: unknown }[] = [];
+  let policyDocument = { id: 'policy-fixture', originalName: 'Approved policy.pdf', mimeType: 'application/pdf', fileSizeBytes: 800, status: 'Ready', chunkCount: 2, createdAtUtc: '2026-10-09T12:00:00Z', publicationStatus: 'Draft', contentSha256: 'abcdef0123456789', companyId: null as string | null };
   const previews: CompanyProfile[] = [];
   const applies: ApplyRequest[] = [];
   const errors: string[] = [];
@@ -55,11 +62,24 @@ async function boot(page: Page, options: BootOptions = {}) {
     const path = new URL(request.url()).pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
+    if (options.policyIntelligence && path.startsWith('/api/ai/policy/')) {
+      if (request.method() !== 'GET') policyWrites.push({ path, body: request.headers()['content-type']?.includes('application/json') ? request.postDataJSON() : null });
+      if (path.endsWith('/upload')) { uploadCount++; if (uploadCount > 1) policyDocument = { ...policyDocument, id: 'policy-benefits', originalName: 'Benefits policy.pdf', contentSha256: 'fedcba9876543210' }; return reply(policyDocument); }
+      if (path.endsWith('/text')) return reply({ documentId: policyDocument.id, text: 'Approved annual leave policy: 30 days. Headquarters are in Dammam.', contentSha256: policyDocument.contentSha256 });
+      if (path.endsWith('/publish')) { policyDocument = { ...policyDocument, ...request.postDataJSON(), publicationStatus: 'Published' }; return reply(policyDocument); }
+      if (path.endsWith('/withdraw')) { policyDocument = { ...policyDocument, publicationStatus: 'Withdrawn' }; return reply(policyDocument); }
+      if (path.endsWith('/ask')) return reply({ answer: 'Annual leave is prorated from your joining date.', sources: ['Approved policy.pdf'], isGrounded: true, citations: [{ documentId: policyDocument.id, chunkIndex: 0, source: 'Approved policy.pdf', excerpt: 'Annual leave is prorated from joining.', versionHash: policyDocument.contentSha256 }] });
+      return reply([policyDocument]);
+    }
+    if (options.policyIntelligence && path === '/api/setup-assistant/policy/extract') {
+      policyWrites.push({ path, body: request.postDataJSON() });
+      return reply({ documentId: policyDocument.id, sourceHash: policyDocument.contentSha256, provider: 'Synthetic fixture', proposals: policyDocument.id === 'policy-benefits' ? [{ target: 'configuration', field: 'benefitPlans', value: [{ code: 'MED', name: 'Medical insurance', planType: 'Medical', currency: 'SAR', effectiveFrom: '2026-10-09', requiresEnrollment: true, gradeCodes: [] }], sourceQuote: 'Medical insurance applies to all employees.', sourceStart: 0, sourceLength: 42 }] : [{ target: 'profile', field: 'branchCity', value: 'Dammam', sourceQuote: 'Headquarters are in Dammam.', sourceStart: 40, sourceLength: 25 }, { target: 'configuration', field: 'attendanceMethods', value: ['WebCheckIn', 'BiometricDevice'], sourceQuote: 'Use web or biometric attendance.', sourceStart: 0, sourceLength: 32 }], issues: [{ section: 'Benefits', kind: 'missing', message: 'Confirm benefit eligibility with HR.' }], coverage: [{ section: 'Attendance policy', status: 'Review required' }], message: 'Review each extracted setting.' });
+    }
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: options.mfaReminder ?? false, enforceFromUtc: '2026-10-20T00:00:00Z' });
     if (path === '/api/auth/me') return reply({
       id: 'setup-reviewer', tenantId: 'setup-tenant', tenantSlug: 'setup-fixture', fullName: 'Setup Reviewer',
-      roles: options.readOnly ? ['Auditor'] : ['Admin'],
-      permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...(options.mfaReminder ? ['ai.query'] : []), ...(options.settingsSweep ? ['finance.gl.read', 'payroll.rates.read', 'organization.establishment.read', 'organization.establishment.write'] : [])],
+      roles: options.hrLibrary ? ['HR Manager'] : options.employeeOnly ? ['Employee'] : options.readOnly ? ['Auditor'] : ['Admin'],
+      permissions: options.employeeOnly ? ['organization.read', 'ess.read'] : options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...((options.mfaReminder || (options.policyIntelligence && !options.hrLibrary)) ? ['ai.query'] : []), ...(options.policyEmployee ? ['ess.read'] : []), ...(options.settingsSweep ? ['finance.gl.read', 'payroll.rates.read', 'organization.establishment.read', 'organization.establishment.write'] : [])],
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
@@ -90,7 +110,7 @@ async function boot(page: Page, options: BootOptions = {}) {
   });
   await page.goto(options.route ?? '/setup');
   await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'إعداد الشركة' : 'Company setup', exact: true })).toBeVisible({ timeout: 60_000 });
-  return { previews, applies, errors, unexpectedWrites };
+  return { previews, applies, errors, unexpectedWrites, policyWrites };
 }
 
 async function companyDetails(page: Page) {
@@ -424,6 +444,7 @@ test('collects scoped company policies, custom grades and benefits without activ
   const state = await boot(page);
   await companyDetails(page);
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
   await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy: Professional grade receives 30 days annual leave.');
   await page.getByRole('button', { name: 'Next: AI assistance', exact: true }).click();
   await expect(page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft' })).not.toBeChecked();
@@ -538,6 +559,7 @@ test('surfaces policy setup before company fields and guides upload, AI consent 
   await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
   await expect(entry).toBeFocused();
   await entry.press('Enter');
+  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Next: AI assistance', exact: true })).toBeDisabled();
   const file = page.getByLabel('Load policy text (.txt, up to 12,000 characters)', { exact: true });
   await file.setInputFiles({ name: 'policy.docx', mimeType: 'application/octet-stream', buffer: Buffer.from('unsupported') });
@@ -571,6 +593,7 @@ test('keeps the policy guide visible and usable in Arabic RTL', async ({ page })
   const entry = page.getByRole('button', { name: 'أضف سياسة الموارد البشرية', exact: true });
   await expect(entry).toBeInViewport({ ratio: 1 });
   await entry.click();
+  await page.getByRole('button', { name: 'لصق نص السياسة', exact: true }).click();
   await page.getByLabel('مقتطفات السياسة', { exact: true }).fill('سياسة الإجازات السنوية المعتمدة');
   await page.getByRole('button', { name: 'التالي: المساعدة بالذكاء الاصطناعي', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'اختيار المساعدة بالذكاء الاصطناعي', exact: true })).toBeFocused();
@@ -606,6 +629,7 @@ test('keeps each policy guide screen and its actions together on desktop', async
     await boot(page, { mfaReminder: true });
     await companyDetails(page);
     await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
     await expect(page.getByLabel(/^Legal entity name/)).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).not.toBeVisible();
     await expect(page.getByLabel('Policy excerpts', { exact: true })).toBeInViewport({ ratio: 1 });
@@ -673,10 +697,99 @@ test('restores company fields after applying while the policy guide was open', a
   await boot(page);
   await companyDetails(page);
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
   await page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button', { name: /Review & create/ }).click();
   await generate(page);
   await page.getByRole('button', { name: 'Apply 3 item(s) to workspace', exact: true }).click();
   await page.getByRole('button', { name: 'Start another setup', exact: true }).click();
   await expect(page.getByLabel(/^Legal entity name/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
+});
+
+test('extracts policy settings only after consent and copies only reviewed selections', async ({ page }, info) => {
+  const state = await boot(page, { policyIntelligence: true });
+  await companyDetails(page);
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
+  await page.getByLabel('Policy excerpts', { exact: true }).fill('Old policy A must not be sent with document B.');
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  await page.getByLabel('Upload a document for extraction', { exact: true }).setInputFiles({ name: 'Approved policy.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Synthetic browser upload fixture') });
+  expect(state.policyWrites).toHaveLength(0);
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Extract settings', exact: true })).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
+  await page.getByRole('button', { name: 'Extract settings', exact: true }).click();
+  await expect(page.getByText('Headquarters are in Dammam.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Head office city', exact: true })).not.toBeChecked();
+  await expect(page.getByText('Jeddah', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Use selected suggestions (0)', exact: true })).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'Time recording methods', exact: true }).check();
+  await page.getByRole('button', { name: 'Use selected suggestions (1)', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Selected suggestions copied' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close guide', exact: true }).click();
+  await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Jeddah');
+  await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
+  await page.getByLabel('Upload a document for extraction', { exact: true }).setInputFiles({ name: 'Benefits policy.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Second synthetic browser fixture') });
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
+  await page.getByRole('button', { name: 'Extract settings', exact: true }).click();
+  await page.getByText('Medical insurance · MED', { exact: true }).click();
+  await expect(page.getByText('Requires Enrollment', { exact: true })).toBeVisible();
+  await expect(page.getByText('Yes', { exact: true })).toBeVisible();
+  await evidence(page, info, 'extraction-benefit-settings-review');
+  await page.getByRole('checkbox', { name: 'Benefits', exact: true }).check();
+  await page.getByRole('button', { name: 'Use selected suggestions (1)', exact: true }).click();
+  await page.getByRole('button', { name: 'Close guide', exact: true }).click();
+  await toReview(page); await generate(page);
+  expect(state.previews[0].configuration).toMatchObject({ attendanceMethods: ['WebCheckIn', 'BiometricDevice'], policyDocumentId: 'policy-benefits', policySourceHash: 'fedcba9876543210' });
+  expect(state.previews[0].configuration?.policySourceText).toBeUndefined();
+  expect(state.previews[0].configuration?.policyFieldSources).toEqual([
+    { documentId: 'policy-fixture', contentSha256: 'abcdef0123456789', target: 'configuration', field: 'attendanceMethods', sourceStart: 0, sourceLength: 32 },
+    { documentId: 'policy-benefits', contentSha256: 'fedcba9876543210', target: 'configuration', field: 'benefitPlans', sourceStart: 0, sourceLength: 42 },
+  ]);
+  expect(state.policyWrites.filter(write => write.path.endsWith('/publish'))).toHaveLength(0);
+  expect(state.applies).toHaveLength(0);
+  await contained(page); await evidence(page, info, 'extraction-review-selected-only');
+  expect(state.errors).toEqual([]);
+});
+
+test('publishes a reviewed policy to an explicit company then withdraws it', async ({ page }, info) => {
+  const state = await boot(page, { policyIntelligence: true, hrLibrary: true });
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await page.getByRole('button', { name: 'Review document', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Review document', exact: true });
+  await expect(modal.getByRole('button', { name: 'Publish policy', exact: true })).toBeDisabled();
+  await expect(modal.getByText('Every employee in this company can ask about the whole document.', { exact: false })).toBeVisible();
+  await modal.getByRole('combobox', { name: 'Company', exact: true }).selectOption(company.id);
+  await modal.getByLabel('Effective from', { exact: true }).fill('2026-10-09');
+  await modal.getByRole('button', { name: 'Publish policy', exact: true }).click();
+  expect(state.policyWrites.find(write => write.path.endsWith('/publish'))?.body).toMatchObject({ companyId: company.id, contentSha256: 'abcdef0123456789', effectiveFromUtc: '2026-10-09T00:00:00Z' });
+  await page.getByRole('button', { name: 'Withdraw', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Withdraw policy', exact: true }).getByRole('button', { name: 'Withdraw policy', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Policy withdrawn' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  await contained(page); await evidence(page, info, 'governed-policy-library');
+  expect(state.errors).toEqual([]);
+});
+
+test('Kody company policy mode uses the employee endpoint and shows versioned evidence', async ({ page }, info) => {
+  const state = await boot(page, { policyIntelligence: true, policyEmployee: true, employeeOnly: true });
+  await page.getByRole('button', { name: 'Open Kody the HR Assistant', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'HR operations', exact: true })).toHaveCount(0);
+  await page.getByLabel('Ask about your policy', { exact: true }).fill('How is leave prorated?');
+  await page.getByRole('button', { name: 'Ask Kody', exact: true }).click();
+  await expect(page.getByText('Annual leave is prorated from your joining date.', { exact: true })).toBeVisible();
+  await page.getByText('Approved policy.pdf', { exact: true }).click();
+  await expect(page.getByText('Annual leave is prorated from joining.', { exact: true })).toBeVisible();
+  expect(state.policyWrites.map(write => write.path)).toEqual(['/api/ai/policy/employee/ask']);
+  await evidence(page, info, 'employee-policy-kody-evidence');
+  expect(state.errors).toEqual([]);
+});
+
+test('Arabic document intake is translated and contained', async ({ page }, info) => {
+  await boot(page, { policyIntelligence: true, locale: 'ar' });
+  await page.getByRole('button', { name: 'أضف سياسة الموارد البشرية', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'رفع مستند', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'رفع ومراجعة', exact: true })).toBeVisible();
+  await contained(page); await evidence(page, info, 'arabic-document-intake');
 });

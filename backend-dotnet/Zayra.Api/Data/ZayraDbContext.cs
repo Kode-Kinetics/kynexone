@@ -4463,6 +4463,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.PublicationStatus).HasMaxLength(24).HasDefaultValue("Draft");
+            entity.Property(x => x.ContentSha256).HasMaxLength(64).HasDefaultValue(string.Empty);
+            entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PublicationStatus });
             entity.HasMany(x => x.Chunks).WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
         });
 

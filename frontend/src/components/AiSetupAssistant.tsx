@@ -104,7 +104,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   // draft hides: whatever is selected here is what the generated configuration says.
   const [workPattern, setWorkPattern] = useState('SingleDayShift');
   const [weekendPattern, setWeekendPattern] = useState('CountryDefault');
-  const leaveYearBasis = 'Calendar';
+  const [leaveYearBasis, setLeaveYearBasis] = useState('Calendar');
   const [probationMonths, setProbationMonths] = useState(3);
   const [noticePeriodDays, setNoticePeriodDays] = useState(30);
   const [workforceMix, setWorkforceMix] = useState('Mixed');
@@ -182,6 +182,36 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
       attendance: value, payroll: value, holidays: value, governance: value, localization: value, benefits: value,
     });
   const sectionCount = 11;
+
+  const policyProfile: CompanyProfile = {
+    countryCode: country, industry, companySize: size, currencyCode: currency,
+    legalEntityName, branchCity, operatingModel, payrollModel, approvalModel,
+    strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
+    notes, sections, workPattern, weekendPattern, leaveYearBasis, probationMonths,
+    noticePeriodDays, workforceMix, overtimeHandling, attendanceCapture, payCycle,
+    timeZone, defaultLanguage, configuration,
+  };
+  const acceptProfileSuggestions = (patch: Partial<CompanyProfile>) => {
+    if (patch.countryCode !== undefined) setCountry(patch.countryCode);
+    if (patch.industry !== undefined) setIndustry(patch.industry);
+    if (patch.companySize !== undefined) setSize(patch.companySize);
+    if (patch.currencyCode !== undefined) setCurrency(patch.currencyCode);
+    if (patch.legalEntityName !== undefined) setLegalEntityName(patch.legalEntityName);
+    if (patch.branchCity !== undefined) setBranchCity(patch.branchCity);
+    if (patch.operatingModel !== undefined) setOperatingModel(patch.operatingModel);
+    if (patch.approvalModel !== undefined) setApprovalModel(patch.approvalModel);
+    if (patch.leaveYearBasis !== undefined) setLeaveYearBasis(patch.leaveYearBasis);
+    if (patch.workPattern !== undefined) setWorkPattern(patch.workPattern);
+    if (patch.weekendPattern !== undefined) setWeekendPattern(patch.weekendPattern);
+    if (patch.probationMonths !== undefined) setProbationMonths(patch.probationMonths);
+    if (patch.noticePeriodDays !== undefined) setNoticePeriodDays(patch.noticePeriodDays);
+    if (patch.workforceMix !== undefined) setWorkforceMix(patch.workforceMix);
+    if (patch.overtimeHandling !== undefined) setOvertimeHandling(patch.overtimeHandling);
+    if (patch.attendanceCapture !== undefined) setAttendanceCapture(patch.attendanceCapture);
+    if (patch.payCycle !== undefined) setPayCycle(patch.payCycle);
+    if (patch.timeZone !== undefined) setTimeZone(patch.timeZone);
+    if (patch.defaultLanguage !== undefined) setDefaultLanguage(patch.defaultLanguage);
+  };
 
   const generate = async () => {
     if (!configuration.attendanceMethods?.length || !configuration.overtimeModes?.length) {
@@ -359,7 +389,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
-              <SetupPolicyEditor onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
+              <SetupPolicyEditor profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
               <div className={policyGuideOpen ? 'hidden' : 'grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>

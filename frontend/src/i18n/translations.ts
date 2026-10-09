@@ -6,6 +6,7 @@ import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
+import { policyIntelligence } from './policyIntelligence';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1365,6 +1366,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...setupPolicyConfiguration.en,
+  ...policyIntelligence.en,
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
@@ -2717,6 +2719,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...setupPolicyConfiguration.ar,
+  ...policyIntelligence.ar,
 
   ...releaseA.ar,
 };

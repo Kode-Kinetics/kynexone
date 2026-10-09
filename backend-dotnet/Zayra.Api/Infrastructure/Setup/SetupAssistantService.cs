@@ -131,6 +131,9 @@ public sealed class SetupAssistantService : ISetupAssistantService
         var configuration = profile.Configuration;
         if (configuration is not null)
         {
+            if (configuration.PolicyDocumentId is { } sourceId && configuration.PolicySourceHash is { } sourceHash)
+                draft = draft with { PolicySource = new(sourceId, sourceHash) };
+            draft = draft with { PolicyFieldSources = configuration.PolicyFieldSources };
             if (profile.Sections.Org && configuration.Grades is not null)
                 draft = draft with { Grades = configuration.Grades };
             if (profile.Sections.LeavePolicies && configuration.LeavePolicies is not null)
@@ -400,6 +403,12 @@ public sealed class SetupAssistantService : ISetupAssistantService
         if (!string.IsNullOrWhiteSpace(p.PayCycle) && !string.Equals(p.PayCycle, "Monthly", StringComparison.OrdinalIgnoreCase))
             errors.Add("Only monthly salary amounts are supported by setup. Other pay cycles require a payroll calendar and salary conversion that this flow cannot activate.");
         if (p.Configuration is not { } c) return errors;
+        if (c.PolicyDocumentId.HasValue && !string.IsNullOrWhiteSpace(c.PolicySourceText))
+            errors.Add("Choose either a saved policy document or pasted policy text as the active source, not both.");
+        if (c.PolicyDocumentId.HasValue != !string.IsNullOrWhiteSpace(c.PolicySourceHash))
+            errors.Add("A policy document reference requires both its identifier and content fingerprint.");
+        if ((c.PolicyFieldSources?.Count ?? 0) > 30)
+            errors.Add("A setup draft may reference at most 30 extracted fields.");
         if ((c.PolicySourceText?.Length ?? 0) > 12000)
             errors.Add("Company policy source must be at most 12,000 characters.");
         void Choices(List<string>? values, string label, params string[] allowed)

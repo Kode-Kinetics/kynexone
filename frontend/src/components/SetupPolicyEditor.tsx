@@ -6,6 +6,7 @@ import { useT } from "../hooks/useT";
 import { msg } from "../i18n/translations";
 import type {
   SetupConfiguration,
+  CompanyProfile,
   DraftGrade,
   DraftBenefitPlan,
   DraftLeavePolicy,
@@ -20,6 +21,8 @@ type Props = {
   currency: string;
   releaseA?: boolean;
   onSourceOpenChange?: (open: boolean) => void;
+  profile?: CompanyProfile;
+  onProfileChange?: (patch: Partial<CompanyProfile>) => void;
 };
 const CAPTURE = [
   ["BiometricDevice", msg("Biometric device")],
@@ -169,6 +172,8 @@ export function SetupPolicyEditor({
   currency,
   releaseA,
   onSourceOpenChange,
+  profile,
+  onProfileChange,
 }: Props) {
   const t = useT();
   const manualGradeDraft = useRef<DraftGrade[]>([]);
@@ -196,6 +201,8 @@ export function SetupPolicyEditor({
     return (
       <SetupPolicySource
         value={value}
+        profile={profile}
+        onProfileChange={onProfileChange}
         onChange={onChange}
         onOpenChange={onSourceOpenChange}
       />

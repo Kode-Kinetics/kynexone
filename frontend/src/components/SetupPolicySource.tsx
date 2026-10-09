@@ -4,7 +4,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { FileText } from "lucide-react";
 import { useT } from "../hooks/useT";
 import { msg } from "../i18n/translations";
-import type { SetupConfiguration } from "../api/setupAssistant";
+import { policyDocumentsApi } from "../api/policyDocuments";
+import { useAuth } from "../contexts/AuthContext";
+import { SetupPolicyExtraction } from "./SetupPolicyExtraction";
+import type { CompanyProfile, SetupConfiguration } from "../api/setupAssistant";
 
 const steps = [
   msg("Add policy text"),
@@ -16,12 +19,25 @@ export function SetupPolicySource({
   value,
   onChange,
   onOpenChange,
+  profile,
+  onProfileChange,
 }: {
   value: SetupConfiguration;
   onChange: (value: SetupConfiguration) => void;
   onOpenChange?: (open: boolean) => void;
+  profile?: CompanyProfile;
+  onProfileChange?: (patch: Partial<CompanyProfile>) => void;
 }) {
   const t = useT();
+  const { hasRole, hasPermission } = useAuth();
+  const canUpload = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  const [intake, setIntake] = useState<'document' | 'text'>('document');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [documentName, setDocumentName] = useState('');
+  const uploadRequest = useRef<AbortController | null>(null);
+  const documentPicker = useRef<HTMLInputElement>(null);
+  useEffect(() => () => uploadRequest.current?.abort(), []);
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [fileError, setFileError] = useState("");
@@ -42,6 +58,7 @@ export function SetupPolicySource({
   const update = (patch: Partial<SetupConfiguration>) =>
     onChange({ ...value, ...patch });
   const close = () => {
+    if (uploading) { uploadRequest.current?.abort(); revision.current++; setUploading(false); }
     setOpen(false);
     onOpenChange?.(false);
     requestAnimationFrame(() =>
@@ -55,6 +72,22 @@ export function SetupPolicySource({
     requestAnimationFrame(() =>
       heading.current?.focus({ preventScroll: true }),
     );
+  };
+
+  const uploadDocument = async () => {
+    if (!uploadFile || uploading || !canUpload) return;
+    if (!/\.(pdf|docx|txt)$/i.test(uploadFile.name) || !uploadFile.size || uploadFile.size > 20 * 1024 * 1024) { setFileError(t('Choose a PDF, DOCX or TXT file between 1 byte and 20 MB.')); return; }
+    const controller = new AbortController(); uploadRequest.current = controller;
+    const current = ++revision.current; setUploading(true); setFileError('');
+    try {
+      const doc = await policyDocumentsApi.upload(uploadFile, controller.signal);
+      if (controller.signal.aborted || current !== revision.current) return;
+      if (doc.status !== 'Ready') { setFileError(t('The document is not ready for extraction. Check the policy library and retry.')); return; }
+      if (!doc.contentSha256) { setFileError(t('The policy service needs an update before document extraction is available.')); return; }
+      latest.current.onChange({ ...latest.current.value, policyDocumentId: doc.id, policySourceHash: doc.contentSha256, policySourceText: undefined, usePolicySourceForAi: false });
+      setDocumentName(doc.originalName); setUploadFile(null); show(1);
+    } catch { if (!controller.signal.aborted && current === revision.current) setFileError(t('Document upload failed. Your file is kept; try again.')); }
+    finally { if (!controller.signal.aborted) setUploading(false); }
   };
 
   return (
@@ -79,9 +112,9 @@ export function SetupPolicySource({
                 "Add your approved policy as a reference for setup. We will guide you through the next steps.",
               )}
             </p>
-            {text.trim() && !open && (
+            {(text.trim() || value.policyDocumentId) && !open && (
               <p className="mt-2 text-xs font-medium text-sapphire dark:text-blue-300">
-                {t("Policy text added")}
+                {value.policyDocumentId ? t("Policy document added") : t("Policy text added")}
               </p>
             )}
           </div>
@@ -97,7 +130,7 @@ export function SetupPolicySource({
           >
             {open
               ? t("Close guide")
-              : text.trim()
+              : (text.trim() || value.policyDocumentId)
                 ? t("Review policy text")
                 : t("Add your HR policy")}
           </button>
@@ -144,7 +177,20 @@ export function SetupPolicySource({
           {t(steps[step])}
         </h4>
         <div hidden={step !== 0}>
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+          {profile && onProfileChange && canUpload && <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label={t('Policy source')}>
+            <button type="button" className={intake === 'document' ? 'btn-primary' : 'btn-secondary'} aria-pressed={intake === 'document'} onClick={() => setIntake('document')}>{t('Upload document')}</button>
+            <button type="button" className={intake === 'text' ? 'btn-primary' : 'btn-secondary'} aria-pressed={intake === 'text'} onClick={() => { uploadRequest.current?.abort(); revision.current++; setUploading(false); setIntake('text'); update({ policyDocumentId: undefined, policySourceHash: undefined, usePolicySourceForAi: false }); }}>{t('Paste policy text')}</button>
+          </div>}
+          {intake === 'document' && profile && onProfileChange && canUpload ? <div className="space-y-2 rounded-lg border border-sapphire/20 bg-white p-3 dark:bg-slate-950">
+                <label className="block text-sm font-medium">{t('Upload a document for extraction')}
+                  <input ref={documentPicker} type="file" accept=".pdf,.docx,.txt" disabled={uploading} className="hidden" onChange={event => { setUploadFile(event.target.files?.[0] ?? null); setFileError(''); }} />
+                </label>
+                <div className="flex flex-wrap items-center gap-2"><button type="button" className="btn-secondary" disabled={uploading} onClick={() => documentPicker.current?.click()}>{t('Choose file')}</button><span className="break-words text-xs">{uploadFile?.name || t('No file selected')}</span></div>
+                <p className="text-xs text-slate-600 dark:text-slate-300">{t('PDF, DOCX or TXT, up to 20 MB. Uploads remain private drafts until published.')}</p>
+                <button type="button" className="btn-primary" disabled={!uploadFile || uploading} onClick={() => void uploadDocument()}>{uploading ? t('Uploading…') : t('Upload and review')}</button>
+                {uploading && <button type="button" className="btn-secondary ms-2" onClick={() => { uploadRequest.current?.abort(); revision.current++; setUploading(false); }}>{t('Cancel upload')}</button>}
+                {value.policyDocumentId && <p className="text-xs">{documentName || t('Policy document added')}</p>}
+              </div> : <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
             <div className="min-w-0 space-y-2">
               <div>
                 <label
@@ -155,14 +201,14 @@ export function SetupPolicySource({
                 </label>
                 <textarea
                   id={`${panelId}-text`}
-                  className="input h-44 w-full resize-none"
+                  className="input h-36 w-full resize-none"
                   maxLength={12000}
                   value={text}
                   onChange={(e) => {
                     revision.current++;
                     setReading(false);
                     setFileError("");
-                    update({ policySourceText: e.target.value });
+                    update({ policySourceText: e.target.value, policyDocumentId: undefined, policySourceHash: undefined });
                   }}
                 />
               </div>
@@ -174,9 +220,10 @@ export function SetupPolicySource({
               </p>
             </div>
             <div className="min-w-0 space-y-3">
+
               <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
                 {t(
-                  "Paste relevant policy sections or choose a plain-text (.txt) file, up to 12,000 characters. For PDF or Word documents, copy the relevant text here.",
+                  "Paste relevant policy sections or choose a plain-text (.txt) file, up to 12,000 characters. Use Upload document for PDF or Word extraction.",
                 )}
               </p>
               <label className="block text-sm">
@@ -222,6 +269,7 @@ export function SetupPolicySource({
                       latest.current.onChange({
                         ...latest.current.value,
                         policySourceText: content,
+                        policyDocumentId: undefined, policySourceHash: undefined,
                       });
                     } catch {
                       if (current === revision.current)
@@ -251,10 +299,12 @@ export function SetupPolicySource({
                 )}
               </p>
             </div>
-          </div>
+          </div>}
+          {intake === 'document' && fileError && <p role="alert" className="mt-2 text-sm text-rose-700 dark:text-rose-300">{fileError}</p>}
+          {uploading && <p role="status" className="mt-2 text-sm">{t('Uploading…')}</p>}
         </div>
         <div hidden={step !== 1}>
-          <div className="grid gap-4 xl:grid-cols-2">
+          {value.policyDocumentId && profile && onProfileChange ? <SetupPolicyExtraction value={value} onChange={onChange} profile={profile} onProfileChange={onProfileChange} /> : <div className="grid gap-4 xl:grid-cols-2">
             <div
               role="region"
               aria-label={t("Policy text preview")}
@@ -288,7 +338,7 @@ export function SetupPolicySource({
                 )}
               </p>
             </div>
-          </div>
+          </div>}
         </div>
         <div hidden={step !== 2} className="space-y-4">
           <ol className="grid gap-4 text-sm leading-6 xl:grid-cols-3">
@@ -341,7 +391,7 @@ export function SetupPolicySource({
             <button
               type="button"
               className="btn-primary"
-              disabled={reading || (step === 0 && !text.trim())}
+              disabled={reading || uploading || (step === 0 && !text.trim() && !value.policyDocumentId)}
               onClick={() => show(step + 1)}
             >
               {step === 0

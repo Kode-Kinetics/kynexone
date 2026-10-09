@@ -51,6 +51,14 @@ public class SetupAssistantController : ControllerBase
             return Unauthorized(new { message = "Tenant context is missing." });
         var inputProblems = SetupAssistantService.ValidateConfiguration(profile);
         if (inputProblems.Count > 0) return RefuseConfiguration(inputProblems);
+        if (profile.Configuration?.PolicyDocumentId is { } policyId)
+        {
+            var sourceProblem = await ValidatePolicySourceAsync(tenantId,
+                new(policyId, profile.Configuration.PolicySourceHash ?? ""), ct);
+            if (sourceProblem is not null) return RefuseConfiguration([sourceProblem]);
+        }
+        var fieldSourceProblems = await ValidateFieldSourcesAsync(tenantId, profile.Configuration?.PolicyFieldSources, ct);
+        if (fieldSourceProblems.Count > 0) return RefuseConfiguration(fieldSourceProblems);
         var result = await _assistant.GenerateAsync(new SetupRequester(tenantId, GetUserId(), CallerRole()), profile, ct);
         if (profile.Configuration is not null)
         {
@@ -103,6 +111,11 @@ public class SetupAssistantController : ControllerBase
         req = req with { CountryCode = CountryCodeStandard.NormalizeToIso2(req.CountryCode) ?? (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
         var tenantId = GetTenantId();
         var d = req.Draft;
+        if (d.PolicySource is { } source)
+        {
+            var sourceProblem = await ValidatePolicySourceAsync(tenantId, source, ct);
+            if (sourceProblem is not null) return RefuseConfiguration([sourceProblem]);
+        }
         var reviewedDraftBytes = JsonSerializer.SerializeToUtf8Bytes(d);
         if (reviewedDraftBytes.Length > 131072)
             return RefuseConfiguration(["The reviewed draft exceeds the 128 KiB setup audit limit. Apply smaller sections."]);
@@ -129,6 +142,21 @@ public class SetupAssistantController : ControllerBase
             return floorRefusal;
         // The Setup forms' gates, before anything is written (P1, the same class as the org-structure import).
         var gate = await EvaluateOrgGatesAsync(tenantId, req, ct);
+        gate.Problems.AddRange(await ValidateFieldSourcesAsync(tenantId, d.PolicyFieldSources, ct));
+        if (d.PolicyFieldSources is { Count: > 0 })
+        {
+            var ids = d.PolicyFieldSources.Where(s => s is not null).Select(s => s.DocumentId).Distinct().ToArray();
+            if (await _db.PolicyDocuments.AnyAsync(p => p.TenantId == tenantId && ids.Contains(p.Id)
+                && p.CompanyId != null && p.CompanyId != (gate.Company == null ? null : gate.Company.Id), ct))
+                gate.Problems.Add("An extracted field references a policy belonging to another company.");
+        }
+        if (d.PolicySource is { } sourceReference)
+        {
+            var sourceCompanyId = await _db.PolicyDocuments.Where(p => p.TenantId == tenantId && p.Id == sourceReference.DocumentId)
+                .Select(p => p.CompanyId).SingleAsync(ct);
+            if (sourceCompanyId.HasValue && sourceCompanyId != gate.Company?.Id)
+                gate.Problems.Add("The source policy belongs to a different company. Select a policy for the reviewed legal entity.");
+        }
         gate.Problems.AddRange(await ValidatePolicyReferencesAsync(tenantId, req, gate.Company, preview: false, ct));
         if (gate.Problems.Count > 0)
             return UnprocessableEntity(new
@@ -837,6 +865,43 @@ public class SetupAssistantController : ControllerBase
             && (string.IsNullOrEmpty(rows[0].CountryCode) || CountryCodeStandard.NormalizeToIso2(rows[0].CountryCode) == CountryCodeStandard.NormalizeToIso2(country))
             && (string.IsNullOrEmpty(rows[0].EmploymentType) || string.Equals(rows[0].EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase))
             && string.IsNullOrEmpty(rows[0].ContractType);
+    }
+
+    private async Task<List<string>> ValidateFieldSourcesAsync(Guid tenantId, List<SetupPolicyFieldSource>? sources, CancellationToken ct)
+    {
+        var errors = new List<string>();
+        if (sources is null) return errors;
+        if (sources.Count > 30 || sources.Any(s => s is null)) return ["Extracted source references are invalid."];
+        if (sources.Select(s => s.Target + "." + s.Field).Distinct().Count() != sources.Count)
+            return ["Each extracted field must have one reviewed source reference."];
+        foreach (var group in sources.GroupBy(s => new { s.DocumentId, s.ContentSha256 }))
+        {
+            var problem = await ValidatePolicySourceAsync(tenantId, new(group.Key.DocumentId, group.Key.ContentSha256), ct);
+            if (problem is not null) { errors.Add(problem); continue; }
+            var length = await _db.DocumentChunks.Where(c => c.TenantId == tenantId && c.DocumentId == group.Key.DocumentId)
+                .SumAsync(c => c.Content.Length, ct);
+            foreach (var field in group)
+                if (field.Target is null || field.Field is null || !PolicyExtractionService.IsSupportedField(field.Target, field.Field)
+                    || field.SourceStart < 0 || field.SourceLength is < 1 or > 4000 || (long)field.SourceStart + field.SourceLength > length)
+                    errors.Add("An extracted field source location is invalid. Extract and review the policy again.");
+        }
+        return errors;
+    }
+
+    private async Task<string?> ValidatePolicySourceAsync(Guid tenantId, SetupPolicySourceReference source, CancellationToken ct)
+    {
+        if (source.ContentSha256 is null || !System.Text.RegularExpressions.Regex.IsMatch(source.ContentSha256, "^[A-Fa-f0-9]{64}$"))
+            return "The source policy fingerprint is missing or invalid. Extract and review the policy again.";
+        var doc = await _db.PolicyDocuments.AsNoTracking().FirstOrDefaultAsync(p => p.TenantId == tenantId
+            && p.Id == source.DocumentId && !p.IsDeleted && p.Status == "Ready", ct);
+        var scope = this.GetRequestScope();
+        var allowed = doc is not null && (doc.CompanyId.HasValue
+            ? scope.IsGroupLevel || scope.AuthorizedCompanyIds.Contains(doc.CompanyId.Value)
+            : User.IsInRole("Admin") || doc.UploadedByUserId.HasValue && doc.UploadedByUserId == GetUserId());
+        if (!allowed) return "The source policy is no longer accessible. Select an available policy and review again.";
+        if (!string.Equals(doc!.ContentSha256, source.ContentSha256, StringComparison.OrdinalIgnoreCase))
+            return "The source policy has changed. Extract and review the current version before applying.";
+        return null;
     }
 
     private UnprocessableEntityObjectResult RefuseConfiguration(IEnumerable<string> problems)

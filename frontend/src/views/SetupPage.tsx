@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
@@ -70,11 +71,11 @@ import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
 
-type Tab = 'aiSetup' | 'importOrganization' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
+type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
   | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 type SettingsCategory = 'organization' | 'peoplePay' | 'system';
-type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization'>;
+type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization' | 'policyLibrary'>;
 
 const settingsCategories: { id: SettingsCategory; label: string }[] = [
   { id: 'organization', label: msg('Organization') },
@@ -2263,20 +2264,21 @@ export function SetupPage() {
   const t = useT();
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
+  const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
   const visibleTabs = canWrite ? tabs : tabs.filter((tab) => tab.id === 'companies');
   const tabParam = searchParams?.get('tab');
-  const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || tabParam === 'importOrganization')
+  const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || tabParam === 'importOrganization' || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
       ? (tabParam as SettingsTab)
       : canWrite ? 'aiSetup' : 'companies';
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
   const [lastSettingsTab, setLastSettingsTab] = useState<SettingsTab>(
-    requestedTab === 'aiSetup' || requestedTab === 'importOrganization' ? 'companies' : requestedTab,
+    requestedTab === 'aiSetup' || requestedTab === 'importOrganization' || requestedTab === 'policyLibrary' ? 'companies' : requestedTab,
   );
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
   const focusLevelId = searchParams?.get('level') ?? undefined;
@@ -2287,7 +2289,7 @@ export function SetupPage() {
   // Also follow links and browser navigation after the page has already mounted.
   useEffect(() => {
     setActiveTab(requestedTab);
-    if (requestedTab !== 'aiSetup' && requestedTab !== 'importOrganization') {
+    if (requestedTab !== 'aiSetup' && requestedTab !== 'importOrganization' && requestedTab !== 'policyLibrary') {
       setLastSettingsTab(requestedTab);
     }
   }, [requestedTab]);
@@ -2300,7 +2302,7 @@ export function SetupPage() {
 
   const selectTab = (tab: Tab) => {
     setActiveTab(tab);
-    if (tab !== 'aiSetup' && tab !== 'importOrganization') setLastSettingsTab(tab);
+    if (tab !== 'aiSetup' && tab !== 'importOrganization' && tab !== 'policyLibrary') setLastSettingsTab(tab);
     const params = new URLSearchParams(searchParams?.toString());
     params.set('tab', tab);
     router.replace(`/setup?${params.toString()}`, { scroll: false });
@@ -2308,8 +2310,8 @@ export function SetupPage() {
 
   // Resolve permissions on every render so a permission change cannot leave a
   // formerly available settings panel visible until the synchronization effect.
-  const selectedTab = canWrite ? activeTab : 'companies';
-  const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization';
+  const selectedTab = canWrite ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab) : 'companies';
+  const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const selectedCategory = tabs.find((tab) => tab.id === selectedTab)?.category ?? 'organization';
   const categoryTabs = visibleTabs.filter((tab) => tab.category === selectedCategory);
   const visibleCategories = settingsCategories.filter((category) => visibleTabs.some((tab) => tab.category === category.id));
@@ -2317,6 +2319,7 @@ export function SetupPage() {
     { id: 'aiSetup' as const, label: t('Guided setup'), icon: Sparkles },
     { id: 'importOrganization' as const, label: t('Import organization'), icon: Upload },
     { id: 'settings' as const, label: t('Manage settings'), icon: Settings },
+    ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
   ];
 
   return (
@@ -2326,13 +2329,13 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Company setup')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Build your organization, set your people policies, and get ready to welcome your team.')
+            ? t('Set up your organization and people policies.')
             : t('View your organization’s companies and legal entity details.')}
         </p>
       </header>
 
       {canWrite && (
-        <nav aria-label={t('Setup paths')} className="grid shrink-0 grid-cols-3 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
+        <nav aria-label={t('Setup paths')} className="grid shrink-0 grid-cols-2 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
           {modes.map(({ id, label, icon: Icon }) => {
             const selected = id === 'settings' ? isSettings : selectedTab === id;
             return (
@@ -2369,6 +2372,8 @@ export function SetupPage() {
           </section>
         </>
       )}
+
+      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager /></section>}
 
       {isSettings && (
         <section id="setup-settings" aria-label={t('Manage settings')} className="grid min-w-0 gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-5">

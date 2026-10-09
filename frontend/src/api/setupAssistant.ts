@@ -72,6 +72,9 @@ export interface SetupConfiguration {
   hrConfig?: DraftHrConfig;
   benefitPlans?: DraftBenefitPlan[] | null;
   policySourceText?: string;
+  policyDocumentId?: string;
+  policySourceHash?: string;
+  policyFieldSources?: { documentId: string; contentSha256: string; target: 'configuration' | 'profile'; field: string; sourceStart: number; sourceLength: number }[];
   usePolicySourceForAi?: boolean;
 }
 
@@ -138,7 +141,18 @@ export function normalizeDraft(raw: unknown): SetupDraft {
   };
 }
 
+export interface PolicyExtractionProposal { target: 'configuration' | 'profile'; field: string; value: unknown; sourceQuote: string; sourceStart: number; sourceLength: number; }
+export interface PolicyExtractionResult {
+  documentId: string; sourceHash: string; provider: string;
+  proposals: PolicyExtractionProposal[];
+  issues: { section: string; kind: 'missing' | 'unsupported' | 'review'; message: string }[];
+  coverage: { section: string; status: string }[];
+  message: string;
+}
+
 export const setupAssistantApi = {
+  extractPolicy: (documentId: string, profile: CompanyProfile, signal?: AbortSignal) =>
+    client.post<PolicyExtractionResult>('/api/setup-assistant/policy/extract', { documentId, useAi: true, profile }, { signal }).then(r => r.data),
   preview: (profile: CompanyProfile) =>
     client.post<SetupPreviewResult>('/api/setup-assistant/preview', profile).then(r => ({
       draft: normalizeDraft(r.data?.draft),

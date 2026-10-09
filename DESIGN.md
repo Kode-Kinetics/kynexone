@@ -41,5 +41,7 @@ Keep existing input/button shapes and 12px panels. Do not add a parallel token s
 ## Components
 Native labeled inputs, selects, checkboxes and date fields use the application input/select classes. `SetupPolicySource` owns the prominent policy entry and three-stage intake guide. `SetupPolicyEditor` owns repeatable setup policy authoring. `AiSetupAssistant` owns navigation, stale-draft invalidation, preview and apply. `useT` and `useFormat` remain locale owners. Backend domain services own validation, effective dates and permissions.
 
+`SetupPolicyExtraction` owns before/after proposal review with source passages and unchecked acceptance. `PolicyDocumentManager` owns draft intake, source review and explicit company-wide publication. `PolicyAnswer` is the shared evidence display for HR and employee answers; `EmployeePolicyAssistant` is the narrow employee entry inside Kody. Uploaded drafts and employee-visible documents must never share an ambiguous "Ready" publication label.
+
 ## Do's and Don'ts
 Explain whether a choice creates an active policy, a catalog record or a planning preference. Never present a stored preference as an enforced calculation. Preserve input on validation failure. Company policy text is untrusted source material and reaches the configured AI provider only after explicit opt-in. New strings require Arabic translations and RTL checks.

@@ -97,7 +97,10 @@ public sealed record SetupConfiguration(
     DraftHrConfig? HrConfig = null,
     List<DraftBenefitPlan>? BenefitPlans = null,
     string? PolicySourceText = null,
-    bool UsePolicySourceForAi = false);
+    bool UsePolicySourceForAi = false,
+    Guid? PolicyDocumentId = null,
+    string? PolicySourceHash = null,
+    List<SetupPolicyFieldSource>? PolicyFieldSources = null);
 
 // ── Draft items (mirror the real entities but only the safe, configurable fields) ──
 
@@ -177,6 +180,8 @@ public sealed record SetupDraft(
     DraftLocalization? Localization,
     List<DraftBenefitPlan>? BenefitPlans = null)
 {
+    public SetupPolicySourceReference? PolicySource { get; init; }
+    public List<SetupPolicyFieldSource>? PolicyFieldSources { get; init; }
     public static SetupDraft Empty() =>
         new(new(), new(), new(), new(), new(), new(), new(), new(), null, new(), new(), null, null,
             new(), null, null, null, null);

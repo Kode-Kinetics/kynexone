@@ -429,4 +429,28 @@ public sealed class SetupConfigurationApplyTests(PostgresFixture fixture)
         (await db.OvertimePolicies.SingleAsync(p => p.TenantId == tenant)).DepartmentId.Should().Be(department.Id);
         (await db.AuditLogs.AnyAsync(a => a.TenantId == tenant && a.Action == "setup.assistant_applied")).Should().BeFalse();
     }
+
+    [Fact]
+    public async Task PolicySourceReferencesAreScopedValidatedAndPreservedInApplyAudit()
+    {
+        var (tenant, company) = await Seed();
+        await using var db = fixture.CreateDb();
+        var doc = new Zayra.Api.Domain.Entities.PolicyDocument { TenantId = tenant, CompanyId = company,
+            Status = "Ready", ContentSha256 = new string('A', 64), OriginalName = "Source.txt" };
+        db.PolicyDocuments.Add(doc);
+        db.DocumentChunks.Add(new Zayra.Api.Domain.Entities.DocumentChunk { TenantId = tenant, DocumentId = doc.Id,
+            Content = "Web check-in is used by every employee.", ChunkIndex = 0 });
+        await db.SaveChangesAsync();
+        var draft = SetupDraft.Empty() with { PolicySource = new(doc.Id, doc.ContentSha256),
+            PolicyFieldSources = [new(doc.Id, doc.ContentSha256, "configuration", "attendanceMethods", 0, 12)] };
+        var controller = Controller(db, tenant);
+        (await controller.Apply(Request(draft with { PolicySource = new(doc.Id, new string('B',64)) }), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>();
+        (await controller.Apply(Request(draft with { PolicyFieldSources = [new(doc.Id, doc.ContentSha256, "configuration", "attendanceMethods", 500, 12)] }), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>();
+        (await controller.Apply(Request(draft), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        var audit = await db.AuditLogs.SingleAsync(a => a.TenantId == tenant && a.Action == "setup.assistant_applied");
+        audit.Metadata.Should().Contain(doc.Id.ToString()).And.Contain(doc.ContentSha256).And.Contain("attendanceMethods");
+        (await db.PolicyDocuments.SingleAsync(d => d.Id == doc.Id)).PublicationStatus.Should().Be("Draft", "applying setup never publishes the source");
+    }
 }
