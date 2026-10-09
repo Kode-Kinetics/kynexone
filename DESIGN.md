@@ -39,7 +39,7 @@ Retain existing button and shell elevation. Policy rows use borders rather than 
 Keep existing input/button shapes and 12px panels. Do not add a parallel token system.
 
 ## Components
-Native labeled inputs, selects, checkboxes and date fields use the application input/select classes. `SetupPolicyEditor` owns repeatable setup policy authoring. `AiSetupAssistant` owns navigation, stale-draft invalidation, preview and apply. `useT` and `useFormat` remain locale owners. Backend domain services own validation, effective dates and permissions.
+Native labeled inputs, selects, checkboxes and date fields use the application input/select classes. `SetupPolicySource` owns the prominent policy entry and three-stage intake guide. `SetupPolicyEditor` owns repeatable setup policy authoring. `AiSetupAssistant` owns navigation, stale-draft invalidation, preview and apply. `useT` and `useFormat` remain locale owners. Backend domain services own validation, effective dates and permissions.
 
 ## Do's and Don'ts
 Explain whether a choice creates an active policy, a catalog record or a planning preference. Never present a stored preference as an enforced calculation. Preserve input on validation failure. Company policy text is untrusted source material and reaches the configured AI provider only after explicit opt-in. New strings require Arabic translations and RTL checks.

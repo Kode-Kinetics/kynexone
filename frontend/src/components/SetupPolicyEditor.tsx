@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef } from "react";
+import { SetupPolicySource } from "./SetupPolicySource";
 import { useT } from "../hooks/useT";
 import { msg } from "../i18n/translations";
 import type {
@@ -168,11 +169,7 @@ export function SetupPolicyEditor({
   releaseA,
 }: Props) {
   const t = useT();
-  const [fileError, setFileError] = useState("");
-  const fileRevision = useRef(0);
   const manualGradeDraft = useRef<DraftGrade[]>([]);
-  const latest = useRef({ value, onChange });
-  latest.current = { value, onChange };
   const update = (patch: Partial<SetupConfiguration>) =>
     onChange({ ...value, ...patch });
   const editGrade = (index: number, patch: Partial<DraftGrade>) =>
@@ -194,97 +191,7 @@ export function SetupPolicyEditor({
       ),
     });
   if (area === "source")
-    return (
-      <section
-        className="mt-6 space-y-3 border-t border-slate-200 pt-5 dark:border-white/10"
-        aria-label={t("Existing HR policy")}
-      >
-        <h3 className="text-base font-semibold">
-          {t("Start from your existing HR policy")}
-        </h3>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
-          {t(
-            "Paste approved policy excerpts or load a text file. Confirm the structured settings in the following steps; policy text alone does not activate rules.",
-          )}
-        </p>
-        <label className="block">
-          <span className="mb-1.5 block text-sm font-medium">
-            {t("Policy excerpts")}
-          </span>
-          <textarea
-            className="input min-h-32 w-full resize-y"
-            maxLength={12000}
-            value={value.policySourceText ?? ""}
-            onChange={(e) => {
-              fileRevision.current++;
-              update({ policySourceText: e.target.value });
-            }}
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="mb-1.5 block font-medium">
-            {t("Load policy text (.txt, up to 12,000 characters)")}
-          </span>
-          <input
-            type="file"
-            accept=".txt,text/plain"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              const revision = ++fileRevision.current;
-              setFileError("");
-              if (!file) return;
-              if (
-                !file.name.toLowerCase().endsWith(".txt") ||
-                file.size > 48000
-              ) {
-                setFileError(
-                  t("Choose a plain-text file within the policy text limit."),
-                );
-                return;
-              }
-              try {
-                const text = await file.text();
-                if (revision !== fileRevision.current) return;
-                if (text.length > 12000 || text.includes("\u0000")) {
-                  setFileError(
-                    t("Choose a plain-text file within the policy text limit."),
-                  );
-                  return;
-                }
-                latest.current.onChange({
-                  ...latest.current.value,
-                  policySourceText: text,
-                });
-              } catch {
-                if (revision === fileRevision.current)
-                  setFileError(t("Could not read this policy file."));
-              }
-            }}
-          />
-        </label>
-        {fileError && (
-          <p role="alert" className="text-sm text-red-600">
-            {fileError}
-          </p>
-        )}
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 accent-sapphire"
-            checked={value.usePolicySourceForAi ?? false}
-            onChange={(e) => update({ usePolicySourceForAi: e.target.checked })}
-          />
-          {t(
-            "Use these excerpts with the configured AI provider when generating the draft",
-          )}
-        </label>
-        <p className="text-xs text-slate-500">
-          {t(
-            "Include policy rules only. Remove employee names, salaries and other personal information before using AI.",
-          )}
-        </p>
-      </section>
-    );
+    return <SetupPolicySource value={value} onChange={onChange} />;
   if (area === "work")
     return (
       <div className="space-y-6">
@@ -437,7 +344,12 @@ export function SetupPolicyEditor({
                     className="select w-full"
                     value={p.accrualMethod}
                     onChange={(e) =>
-                      editLeave(i, { accrualMethod: e.target.value, proratePartialMonths: e.target.value === "Monthly" && p.proratePartialMonths })
+                      editLeave(i, {
+                        accrualMethod: e.target.value,
+                        proratePartialMonths:
+                          e.target.value === "Monthly" &&
+                          p.proratePartialMonths,
+                      })
                     }
                   >
                     <option value="Monthly">{t("Monthly accrual")}</option>
@@ -475,7 +387,13 @@ export function SetupPolicyEditor({
                 />
                 {t("Prorate partial months by calendar days employed")}
               </label>
-              {p.accrualMethod === "Yearly" && <p className="text-xs text-slate-500">{t("For annual leave, yearly allocation needs an explicit balance adjustment in Leave Administration.")}</p>}
+              {p.accrualMethod === "Yearly" && (
+                <p className="text-xs text-slate-500">
+                  {t(
+                    "For annual leave, yearly allocation needs an explicit balance adjustment in Leave Administration.",
+                  )}
+                </p>
+              )}
               <p className="text-xs text-slate-500">
                 {t(
                   "Blank eligibility fields apply to everyone in this company. Separate rows define policies for different employee groups.",

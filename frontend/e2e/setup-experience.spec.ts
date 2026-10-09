@@ -125,7 +125,7 @@ test('preserves the selected profile, reviews editable rows, and retains a draft
   const state = await boot(page, { forbidFirstApply: true });
   await expect(page.getByLabel(/^Country/)).toHaveValue('SA');
   await expect(page.getByLabel(/^Currency/)).toHaveValue('SAR');
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await accessible(page, '#setup-aiSetup');
   await companyDetails(page);
   await page.getByLabel(/^Company size/).selectOption('201-500');
@@ -218,7 +218,7 @@ test('requires country and currency when the workspace has not supplied them', a
 
 test('offers import separately from guided setup and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await page.getByRole('button', { name: 'Import organization', exact: true }).click();
   await expect(page.locator('input[type="file"]:visible').first()).toBeVisible();
   await expect(page.getByLabel(/^Industry/)).not.toBeVisible();
@@ -227,7 +227,7 @@ test('offers import separately from guided setup and preserves its organization 
   await evidence(page, info, 'import-entry');
   await page.getByRole('button', { name: 'Guided setup', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
-  await expect(page.locator('input[type="file"]:visible')).toHaveCount(1);
+  await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await page.getByRole('button', { name: 'Manage settings', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Manage settings', exact: true })).toBeVisible();
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
@@ -415,8 +415,12 @@ for (const failure of ['blocked422', 'failed422', 'conflict409'] as const) {
 test('collects scoped company policies, custom grades and benefits without activating them', async ({ page }, info) => {
   const state = await boot(page);
   await companyDetails(page);
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy: Professional grade receives 30 days annual leave.');
+  await page.getByRole('button', { name: 'Next: AI assistance', exact: true }).click();
   await expect(page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft' })).not.toBeChecked();
+  await page.getByRole('button', { name: 'Next: review process', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
   await continueStep(page);
   await page.getByRole('checkbox', { name: 'Configure leave entitlements from company policy', exact: true }).check();
   await page.getByLabel('Policy name', { exact: false }).fill('Professional annual leave');
@@ -511,4 +515,59 @@ test('renders custom grade configuration in Arabic with an accessible mobile lay
   await accessible(page, '#setup-aiSetup');
   await evidence(page, info, 'arabic-custom-grades');
   expect(state.errors).toEqual([]);
+});
+
+test('surfaces policy setup before company fields and guides upload, AI consent and review', async ({ page }, info) => {
+  const state = await boot(page);
+  const entry = page.getByRole('button', { name: 'Add your HR policy', exact: true });
+  await expect(entry).toBeInViewport({ ratio: 1 });
+  const entryBox = await entry.boundingBox();
+  const companyBox = await page.getByLabel(/^Legal entity name/).boundingBox();
+  expect(entryBox!.y).toBeLessThan(companyBox!.y);
+  await evidence(page, info, 'policy-entry-first-screen');
+  await page.getByRole('button', { name: 'How this works', exact: true }).click();
+  await expect(page.getByText('Uploading text does not configure your company.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
+  await expect(entry).toBeFocused();
+  await entry.press('Enter');
+  await expect(page.getByRole('button', { name: 'Next: AI assistance', exact: true })).toBeDisabled();
+  const file = page.getByLabel('Load policy text (.txt, up to 12,000 characters)', { exact: true });
+  await file.setInputFiles({ name: 'policy.docx', mimeType: 'application/octet-stream', buffer: Buffer.from('unsupported') });
+  await expect(page.getByRole('alert').filter({ hasText: 'Choose a plain-text file' })).toBeVisible();
+  await file.setInputFiles({ name: 'policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Approved annual leave policy: 30 days.') });
+  await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved annual leave policy: 30 days.');
+  await page.getByRole('button', { name: 'Next: AI assistance', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Choose AI assistance', exact: true })).toBeFocused();
+  const consent = page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft', exact: true });
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await accessible(page, '#setup-aiSetup');
+  await page.getByRole('button', { name: 'Next: review process', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
+  await expect(page.getByText('Policy text added', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
+  await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved annual leave policy: 30 days.');
+  await page.getByRole('button', { name: 'Close guide', exact: true }).click();
+  expect(state.previews).toHaveLength(0);
+  expect(state.unexpectedWrites).toEqual([]);
+  await companyDetails(page);
+  await toReview(page);
+  await generate(page);
+  expect(state.previews[0].configuration).toMatchObject({ policySourceText: 'Approved annual leave policy: 30 days.', usePolicySourceForAi: true });
+  expect(state.applies).toHaveLength(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('keeps the policy guide visible and usable in Arabic RTL', async ({ page }) => {
+  await boot(page, { locale: 'ar' });
+  const entry = page.getByRole('button', { name: 'أضف سياسة الموارد البشرية', exact: true });
+  await expect(entry).toBeInViewport({ ratio: 1 });
+  await entry.click();
+  await page.getByLabel('مقتطفات السياسة', { exact: true }).fill('سياسة الإجازات السنوية المعتمدة');
+  await page.getByRole('button', { name: 'التالي: المساعدة بالذكاء الاصطناعي', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'اختيار المساعدة بالذكاء الاصطناعي', exact: true })).toBeFocused();
+  await accessible(page, '#setup-aiSetup');
+  await contained(page);
+  await page.getByRole('button', { name: 'التالي: خطوات المراجعة', exact: true }).click();
+  await page.getByRole('button', { name: 'متابعة إعداد الشركة', exact: true }).click();
 });

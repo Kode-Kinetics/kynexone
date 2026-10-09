@@ -330,18 +330,19 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
       <div className="grid lg:grid-cols-[220px_minmax(0,1fr)]">
         <aside className="border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-5">
           <nav aria-label="Company setup steps">
-            <ol className="grid grid-cols-2 gap-1.5 lg:grid-cols-1">
+            <ol className="grid grid-cols-5 gap-1.5 lg:grid-cols-1">
               {SETUP_STEPS.map((item, index) => (
                 <li key={t(item.title)}>
                   <button type="button" onClick={() => goToStep(index)} disabled={loading || applying}
                     aria-current={step === index ? 'step' : undefined}
-                    className={`flex w-full items-start gap-3 rounded-lg px-3 py-3 text-start transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
+                    className={`flex w-full items-center justify-center rounded-lg px-2 py-3 text-start lg:items-start lg:justify-start lg:gap-3 lg:px-3 transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
                     <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${step === index ? 'border-sapphire bg-sapphire text-white' : 'border-slate-300 dark:border-slate-600'}`}>{index + 1}</span>
-                    <span><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 lg:block ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
+                    <span className="sr-only lg:not-sr-only"><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 lg:block ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
                   </button>
                 </li>
               ))}
             </ol>
+            <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200 lg:hidden">{step + 1} / {SETUP_STEPS.length} · {t(SETUP_STEPS[step].title)}</p>
           </nav>
           <div className="mt-8 hidden border-t border-slate-200 pt-5 dark:border-white/10 lg:block">
             <ShieldCheck className="mb-2 h-5 w-5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
@@ -357,6 +358,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
+              <SetupPolicyEditor area="source" value={configuration} onChange={setConfiguration} currency={currency} />
               <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
@@ -420,7 +422,6 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Used for dates and times across your workspace.</span>
                 </label>
               </div>
-              <SetupPolicyEditor area="source" value={configuration} onChange={setConfiguration} currency={currency} />
             </div>
             <div hidden={step !== 1}>
               <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">

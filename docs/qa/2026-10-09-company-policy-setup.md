@@ -5,6 +5,7 @@ This extends the setup experience in PR #220. Review is coordinated across HR po
 ## Implemented scope
 
 - Five guided steps, with a dedicated fourth step for grades and benefits.
+- Prominent policy entry above company fields, with an English/Arabic three-stage tutorial: add text, choose AI assistance, then review/apply guidance. Compact mobile navigation keeps the primary policy action visible on entry.
 - Optional approved policy excerpts/plain-text intake; explicit opt-in before excerpts enter the governed AI request. No document text is an executable instruction.
 - Multiple attendance capture preferences and paid/compensatory overtime choices; custom attendance rules and editable draft overtime limits.
 - Multiple scoped leave policy rows (grade, department, employment type), separate accrual frequency and partial-month proration.
@@ -56,3 +57,13 @@ Production has not been changed. Release requires the API contract and leave mig
 
 - [HRM competitor patterns and GCC policy sources](../research/2026-10-09-flexible-hr-policies-and-gcc-leave.md)
 - [Finance acceptance gates](../research/2026-10-09-finance-policy-acceptance-gates.md)
+
+## Policy guide follow-up
+
+The file is read locally at selection. Generate sends the text with configuration to the setup service; AI sharing requires separate explicit opt-in. This is reference text for suggestions, not automatic extraction into every operational field. The guide states these limits, the .txt/12,000-character limit, manual configuration needs, template fallback and review-before-Apply. Closing/reopening preserves the text and choice. Invalid files preserve prior text; pending reads cannot overwrite newer edits.
+
+Guide validation: production build and all 34 desktop/mobile browser cases passed, including English/Arabic, first-viewport policy visibility, keyboard focus, file validation, preserved text/consent, and no writes before Generate. The i18n gate passed 8 checks with only the intentional baseline-repin test skipped. Browser APIs remain intercepted; this is UI verification, not deployed full-stack acceptance.
+
+The previous remote backend gate failed only the raw-SQL inventory (6,260/6,261 tests passed). The new parameterized, tenant-keyed transaction advisory lock is now documented in that inventory, with a real PostgreSQL simultaneous cross-tenant isolation regression. Local focused ratchet/apply tests passed 17/17; the broader setup/leave/security selection passed 160/160, no skips. These counts overlap. The remote full gate requires a fresh run after push.
+
+The premium static audit scanned the whole repository and reported existing ownership/style findings beyond this task. Its new policy-textarea finding was corrected; native setup control ownership remains explicitly documented in DESIGN.md. This is not a claim that the repository-wide static audit passes.
