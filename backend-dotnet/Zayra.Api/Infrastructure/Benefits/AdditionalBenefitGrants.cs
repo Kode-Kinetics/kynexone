@@ -15,6 +15,7 @@ using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Benefits;
@@ -54,8 +55,22 @@ public static class AdditionalBenefitGrants
         if (principal?.Identity?.IsAuthenticated != true || context.UserId is null
             || principal.FindFirstValue(ClaimTypes.NameIdentifier) != context.UserId.ToString()
             || principal.FindFirstValue("tenant_id") != context.TenantId?.ToString()) return EntityScopeContext.Empty;
-        return EntityScopeContext.FromClaims(principal, strictMode: true)
-            .NarrowTo(http!.HttpContext!.Request.Headers[ZayraDbContext.CompanySelectionHeader].FirstOrDefault());
+        var services = http!.HttpContext!.RequestServices;
+        var resolver = services?.GetService(typeof(IRequestEntityScopeResolver)) as IRequestEntityScopeResolver;
+        if (resolver is null)
+        {
+            // Directly constructed services/tests still use the canonical resolver and request cache.
+            var scopeOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<EntityScopeOptions>))
+                as Microsoft.Extensions.Options.IOptions<EntityScopeOptions>;
+            var jwtOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<JwtOptions>))
+                as Microsoft.Extensions.Options.IOptions<JwtOptions>;
+            resolver = new RequestEntityScopeResolver(http,
+                scopeOptions ?? Microsoft.Extensions.Options.Options.Create(new EntityScopeOptions { StrictMode = true }), jwtOptions);
+        }
+        var resolved = resolver.Resolve();
+        // Benefit decisions require an explicit tenant-bound grant, never a system or legacy fallback.
+        return resolved.TenantId != context.TenantId || resolved.IsSystemScope || resolved.Source == ScopeResolutionSource.LegacyAbsentNonStrict
+            ? EntityScopeContext.Empty : resolved.ToEntityScopeContext();
     }
 
     public static async Task<ApprovalRequest> SubmitAsync(ZayraDbContext db, IApprovalRouter router, Guid tenantId,

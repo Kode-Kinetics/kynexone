@@ -50,3 +50,9 @@ The persisted desktop HR and phone ESS journey passed: a custom company plan and
 The final presentation pass adds catalogue search and frozen payment terms to the additional-benefit approval card, stacks claim cards in the narrow employee panel, and removes the inapplicable legacy empty-deduction message for configured policies. All 66 browser cases passed on that final production preview. The read-only visual refresh verified the actual frozen allowance of 310/month, stacked claim cards, catalogue search and the employee balance, with no page/console errors or horizontal overflow. Screenshots 12–15 are in the same evidence directory.
 
 This is a local preview at http://127.0.0.1:5281/benefits, backed by isolated synthetic QA data. No production deployment was performed.
+
+## Publication gate follow-up
+
+The first PR run exercised 6,456 backend tests and identified four failures outside the earlier focused suite. These were corrected before merge: benefit authorization now uses the shared cached request-scope resolver; immutable audit/benefit checks share one change-tracker scan; the employee-history lint matches the exact `SnapshotJson` property and benefit eligibility uses an explicit restricted serializer; and the approval registry test requires the exact seven implemented producers. No security threshold or allowlist was weakened.
+
+The corrections passed 630 focused regression checks, including all four failing classes and the bulk-save performance guard, plus a repeated 9/9 persisted concurrent-claim and cross-company access proof. The complete GitHub suite remains the merge gate in [PR #221](https://github.com/Kode-Kinetics/kynexone/pull/221).

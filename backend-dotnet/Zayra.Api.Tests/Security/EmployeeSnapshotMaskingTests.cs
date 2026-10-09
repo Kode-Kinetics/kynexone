@@ -1,7 +1,10 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Controllers;
+using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Security;
@@ -194,9 +197,8 @@ public class EmployeeSnapshotMaskingTests
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Migrations{Path.DirectorySeparatorChar}")
                         && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
                         && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-            .SelectMany(f => File.ReadLines(f).Select((line, i) => (File: f, Line: i + 1, Text: line)))
-            .Where(x => x.Text.Contains("SnapshotJson = JsonSerializer.Serialize(")
-                        || x.Text.Contains("SnapshotJson = System.Text.Json.JsonSerializer.Serialize("))
+            .SelectMany(f => RawEmployeeHistorySnapshotAssignments(File.ReadAllText(f))
+                .Select(match => (File: f, Text: match.Value)))
             // EOSB RulesSnapshotJson serializes a non-PII formula projection, not an Employee.
             .Where(x => !x.Text.Contains("RulesSnapshotJson"))
             // LoanEmploymentSnapshot is a typed, restricted financial projection, not Employee.
@@ -218,6 +220,55 @@ public class EmployeeSnapshotMaskingTests
         offenders.Should().BeEmpty(
             "EmployeeHistory.SnapshotJson must be produced by EmployeeSafeSnapshot.Serialize — " +
             "raw JsonSerializer.Serialize(employee) persists unmasked salary/IBAN/Iqama/passport/medical data");
+    }
+
+    // Match the EmployeeHistory property as a complete C# identifier. EligibilitySnapshotJson,
+    // EmploymentSnapshotJson and SourceSnapshotJson are different domain witnesses, whose typed
+    // projections have their own field-allowlist tests. Matching a suffix conflates those contracts.
+    // Whitespace includes line breaks, so splitting an unsafe assignment cannot evade this guard.
+    private static IEnumerable<Match> RawEmployeeHistorySnapshotAssignments(string source) =>
+        Regex.Matches(source,
+            @"(?<![\w])SnapshotJson\s*=\s*(?:global::)?(?:System\s*\.\s*Text\s*\.\s*Json\s*\.\s*)?JsonSerializer\s*\.\s*Serialize\s*\(")
+            .Cast<Match>();
+
+    [Theory]
+    [InlineData("SnapshotJson = JsonSerializer.Serialize(employee);", true)]
+    [InlineData("history.SnapshotJson=JsonSerializer.Serialize(employee);", true)]
+    [InlineData("SnapshotJson = System.Text.Json.JsonSerializer.Serialize(employee);", true)]
+    [InlineData("history.SnapshotJson = global::System.Text.Json.JsonSerializer.Serialize(employee);", true)]
+    [InlineData("SnapshotJson\n =\n JsonSerializer\n .\n Serialize\n (employee);", true)]
+    [InlineData("SnapshotJson = EmployeeSafeSnapshot.Serialize(employee);", false)]
+    [InlineData("EligibilitySnapshotJson = JsonSerializer.Serialize(benefitWitness);", false)]
+    [InlineData("SourceSnapshotJson = JsonSerializer.Serialize(paymentWitness);", false)]
+    public void HistorySnapshotLint_MatchesTheWholePropertyAcrossFormatting(string source, bool unsafeHistoryAssignment)
+        => RawEmployeeHistorySnapshotAssignments(source).Any().Should().Be(unsafeHistoryAssignment);
+
+    [Fact]
+    public void BenefitEligibilityWitness_UsesExplicitFieldsWithoutUnrelatedEmployeeSecrets()
+    {
+        var employee = MakeSensitiveEmployee();
+        employee.GradeId = Guid.NewGuid();
+        var ruleId = Guid.NewGuid();
+        var evaluation = new GradeBenefitDefaults.BenefitEligibilityEvaluation(true, null,
+            ruleId, "Gold", 5000m, "Annual", "School invoice required",
+            [new("grade", "Grade", true, "The selected grade meets the rule.")]);
+
+        var json = BenefitEligibilityWitness.Serialize(new DateTime(2026, 10, 9, 0, 0, 0, DateTimeKind.Utc),
+            employee.GradeId, evaluation, 2500m);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        root.EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(new[] {
+            "evaluatedAtUtc", "GradeId", "matchedRuleId", "tierName", "maximumBenefitAmount",
+            "requestedBenefitAmount", "limitPeriod", "customCriteriaNote", "checks" });
+        root.GetProperty("GradeId").GetGuid().Should().Be(employee.GradeId.Value);
+        root.GetProperty("matchedRuleId").GetGuid().Should().Be(ruleId);
+        root.GetProperty("maximumBenefitAmount").GetDecimal().Should().Be(5000m);
+        root.GetProperty("requestedBenefitAmount").GetDecimal().Should().Be(2500m);
+        root.GetProperty("checks")[0].EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "Key", "Label", "Passed", "Detail" });
+        foreach (var secret in new[] { employee.BankIban, employee.PassportNumber, employee.IdNumber,
+                     employee.MedicalInformation, employee.DisciplinaryRecords, "15750.5" })
+            json.Should().NotContain(secret);
     }
 
     [Fact]

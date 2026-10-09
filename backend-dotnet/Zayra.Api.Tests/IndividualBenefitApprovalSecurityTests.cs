@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
@@ -12,6 +13,7 @@ using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -400,6 +402,66 @@ public class IndividualBenefitApprovalSecurityTests
         if (invalid == "selected-other-company") http.HttpContext.Request.Headers[ZayraDbContext.CompanySelectionHeader] = Guid.NewGuid().ToString();
         var scope = AdditionalBenefitGrants.ResolveScope(context, invalid == "missing-http" ? null : http);
         Assert.False(scope.CanAccessCompany(company));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void GenericApprovalScopeHonoursTheCompanyHeader(bool registeredResolver, bool legacyGrant)
+    {
+        var context = new RequestContext(null, "scope-test", Guid.NewGuid(), Guid.NewGuid(), ["Admin"], ["employees.approve"]);
+        var selected = Guid.NewGuid(); var other = Guid.NewGuid();
+        var http = Http(context, selected);
+        http.HttpContext!.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, context.UserId!.Value.ToString()),
+            new Claim("tenant_id", context.TenantId!.Value.ToString()),
+            legacyGrant ? new Claim("is_group_scope", "true")
+                : new Claim("entity_scope", JsonSerializer.Serialize(new { v = 2, m = "group" })),
+        }, "Test"));
+        http.HttpContext.Request.Headers[ZayraDbContext.CompanySelectionHeader] = selected.ToString();
+        using var services = new ServiceCollection()
+            .AddSingleton<IRequestEntityScopeResolver>(new RequestEntityScopeResolver(http)).BuildServiceProvider();
+        if (registeredResolver) http.HttpContext.RequestServices = services;
+
+        var scope = AdditionalBenefitGrants.ResolveScope(context, http);
+
+        Assert.True(scope.CanAccessCompany(selected));
+        Assert.False(scope.CanAccessCompany(other));
+    }
+
+    [Fact]
+    public void GenericApprovalScopeUsesTheCanonicalCachedDecision()
+    {
+        var context = new RequestContext(null, "scope-test", Guid.NewGuid(), Guid.NewGuid(), ["Admin"], ["employees.approve"]);
+        var selected = Guid.NewGuid(); var other = Guid.NewGuid();
+        var http = Http(context, selected);
+        var resolver = new RequestEntityScopeResolver(http);
+        using var services = new ServiceCollection().AddSingleton<IRequestEntityScopeResolver>(resolver).BuildServiceProvider();
+        http.HttpContext!.RequestServices = services;
+        Assert.True(resolver.Resolve().CanAccessCompany(selected));
+        http.HttpContext.Request.Headers[ZayraDbContext.CompanySelectionHeader] = other.ToString();
+
+        var scope = AdditionalBenefitGrants.ResolveScope(context, http);
+
+        Assert.True(scope.CanAccessCompany(selected));
+        Assert.False(scope.CanAccessCompany(other));
+    }
+
+    [Fact]
+    public void GenericApprovalScopeRefusesAnAbsentGrantInCompatibilityMode()
+    {
+        var context = new RequestContext(null, "scope-test", Guid.NewGuid(), Guid.NewGuid(), ["Admin"], ["employees.approve"]);
+        var company = Guid.NewGuid();
+        var http = Http(context, company);
+        ((ClaimsIdentity)http.HttpContext!.User.Identity!).RemoveClaim(http.HttpContext.User.FindFirst("entity_scope")!);
+        var resolver = new RequestEntityScopeResolver(http);
+        using var services = new ServiceCollection().AddSingleton<IRequestEntityScopeResolver>(resolver).BuildServiceProvider();
+        http.HttpContext.RequestServices = services;
+        Assert.True(resolver.Resolve().LegacyCompatibilityUsed);
+
+        Assert.False(AdditionalBenefitGrants.ResolveScope(context, http).CanAccessCompany(company));
     }
 
     private static async Task DeniedDecision(ZayraDbContext db, Fixture f, ApprovalRequest approval, RequestContext context)

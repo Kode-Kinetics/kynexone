@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Approvals;
@@ -517,18 +518,8 @@ public class BenefitsController : ControllerBase
             MaximumBenefitAmount = evaluation.MaximumBenefitAmount,
             RequestedBenefitAmount = req.RequestedBenefitAmount,
             LimitPeriod = evaluation.LimitPeriod ?? string.Empty,
-            EligibilitySnapshotJson = JsonSerializer.Serialize(new
-            {
-                evaluatedAtUtc = DateTime.UtcNow,
-                employee.GradeId,
-                matchedRuleId = evaluation.MatchedRuleId,
-                tierName = evaluation.TierName,
-                maximumBenefitAmount = evaluation.MaximumBenefitAmount,
-                requestedBenefitAmount = req.RequestedBenefitAmount,
-                limitPeriod = evaluation.LimitPeriod,
-                customCriteriaNote = evaluation.CustomCriteriaNote,
-                checks = evaluation.Checks,
-            }),
+            EligibilitySnapshotJson = BenefitEligibilityWitness.Serialize(
+                DateTime.UtcNow, employee.GradeId, evaluation, req.RequestedBenefitAmount),
             EffectiveFrom = req.EffectiveFrom,
             EffectiveTo = req.EffectiveTo ?? plan.EffectiveTo,
             Status = "Active",
@@ -959,6 +950,28 @@ public record BenefitPayrollDeductionLinkDto(Guid Id, Guid BenefitEnrollmentId, 
 
 public record BenefitPlanUpdateRequest(string Name, string? PlanType, string? Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool RequiresEnrollment = true, bool IsActive = true, string Classification = BenefitPlanClassifications.Discretionary, BenefitPaymentPolicy? PaymentPolicy = null, int? ExpectedPolicyVersion = null);
 public record BenefitEligibilityCheckItem(string Key, string Label, bool Passed, string Detail);
+/// <summary>
+/// Restricted eligibility evidence, not an Employee history snapshot. Only grade, resolved benefit
+/// terms and decision checks are persisted; this serializer deliberately cannot accept an Employee.
+/// Explicit JSON names retain the existing enrollment witness contract.
+/// </summary>
+public sealed record BenefitEligibilityWitness(
+    [property: JsonPropertyName("evaluatedAtUtc")] DateTime EvaluatedAtUtc,
+    Guid? GradeId,
+    [property: JsonPropertyName("matchedRuleId")] Guid? MatchedRuleId,
+    [property: JsonPropertyName("tierName")] string? TierName,
+    [property: JsonPropertyName("maximumBenefitAmount")] decimal? MaximumBenefitAmount,
+    [property: JsonPropertyName("requestedBenefitAmount")] decimal? RequestedBenefitAmount,
+    [property: JsonPropertyName("limitPeriod")] string? LimitPeriod,
+    [property: JsonPropertyName("customCriteriaNote")] string? CustomCriteriaNote,
+    [property: JsonPropertyName("checks")] IReadOnlyList<BenefitEligibilityCheckItem> Checks)
+{
+    public static string Serialize(DateTime evaluatedAtUtc, Guid? gradeId,
+        GradeBenefitDefaults.BenefitEligibilityEvaluation evaluation, decimal? requestedBenefitAmount) =>
+        JsonSerializer.Serialize(new BenefitEligibilityWitness(evaluatedAtUtc, gradeId,
+            evaluation.MatchedRuleId, evaluation.TierName, evaluation.MaximumBenefitAmount,
+            requestedBenefitAmount, evaluation.LimitPeriod, evaluation.CustomCriteriaNote, evaluation.Checks));
+}
 public record BenefitEligibilityCheckDto(
     Guid BenefitPlanId, string Currency, int EmployeeId, string EmployeeName, Guid? CompanyId, string? CompanyName,
     Guid? GradeId, string? GradeName, DateOnly EffectiveFrom, bool Eligible, string? BlockingReason,

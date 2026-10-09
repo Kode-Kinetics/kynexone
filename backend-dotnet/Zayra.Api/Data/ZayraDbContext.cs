@@ -162,7 +162,6 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
-        EnforceBenefitApprovalWitness();
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
@@ -225,26 +224,29 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         return await SealPayrollAuditChainAndSaveAsync(cancellationToken);
     }
 
-    private void EnforceBenefitApprovalWitness()
+    // Share the audit guard's already-detected entry walk. Calling Entries<T>() for each
+    // witness type would re-scan every tracked row on every unrelated save.
+    private static void EnforceBenefitApprovalWitness(EntityEntry entry)
     {
-        foreach (var entry in ChangeTracker.Entries<BenefitEnrollment>().Where(x => x.State == EntityState.Modified))
-            if (entry.Property(x => x.PaymentPolicySnapshotJson).IsModified)
-                throw new InvalidOperationException("Agreed benefit payment policy is immutable. Create a dated successor for an authorized change.");
-        foreach (var entry in ChangeTracker.Entries<PayrollAdjustment>().Where(x => x.State is EntityState.Modified or EntityState.Deleted))
+        if (entry.State is not (EntityState.Modified or EntityState.Deleted)) return;
+        if (entry.Entity is BenefitEnrollment && entry.State == EntityState.Modified
+            && entry.Property(nameof(BenefitEnrollment.PaymentPolicySnapshotJson)).IsModified)
+            throw new InvalidOperationException("Agreed benefit payment policy is immutable. Create a dated successor for an authorized change.");
+        if (entry.Entity is PayrollAdjustment)
         {
             var source = entry.OriginalValues.GetValue<string>(nameof(PayrollAdjustment.SourceType));
-            if (source is not ("BenefitRecurring" or "BenefitClaim")) continue;
+            if (source is not ("BenefitRecurring" or "BenefitClaim")) return;
             if (entry.State == EntityState.Deleted || new[] { nameof(PayrollAdjustment.TenantId), nameof(PayrollAdjustment.EmployeeId),
                     nameof(PayrollAdjustment.SourceType), nameof(PayrollAdjustment.SourceId), nameof(PayrollAdjustment.SourceSnapshotJson),
                     nameof(PayrollAdjustment.Amount), nameof(PayrollAdjustment.AdjustmentType), nameof(PayrollAdjustment.Reason) }
                 .Any(name => entry.Property(name).IsModified))
                 throw new InvalidOperationException("Benefit payment authority is immutable; preserve its source and payroll history.");
         }
-        foreach (var entry in ChangeTracker.Entries<ApprovalRequest>().Where(x => x.State is EntityState.Modified or EntityState.Deleted))
+        if (entry.Entity is ApprovalRequest)
         {
             if (!string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)),
                 Infrastructure.Benefits.AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)), "BenefitClaim", StringComparison.OrdinalIgnoreCase)) continue;
+                && !string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)), "BenefitClaim", StringComparison.OrdinalIgnoreCase)) return;
             if (entry.State == EntityState.Deleted || new[] { nameof(ApprovalRequest.Payload), nameof(ApprovalRequest.PayloadSha256),
                 nameof(ApprovalRequest.EntityName), nameof(ApprovalRequest.EntityId), nameof(ApprovalRequest.RequestedForEmployeeId),
                 nameof(ApprovalRequest.RequestedByUserId), nameof(ApprovalRequest.CompanyId), nameof(ApprovalRequest.WorkflowId) }
@@ -256,7 +258,6 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
-        EnforceBenefitApprovalWitness();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
@@ -488,22 +489,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
     private void EnforceAuditLogAppendOnly()
     {
-        var auditMutation = ChangeTracker.Entries<AuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (auditMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
-
-        // POD-A3: the payroll audit trail gets the SAME immutability as the central AuditLog. Its
-        // per-tenant hash chain is the evidentiary control; this ChangeTracker guard is the first,
-        // in-process line of defence (a matching BEFORE UPDATE/DELETE Postgres trigger — added by
-        // the AddPayrollAuditHashChain migration — is the second, and it also stops set-based SQL
-        // that never touches the ChangeTracker). The one legitimate mutation — the boot backfill
-        // sealing legacy rows — runs via ExecuteUpdate (no ChangeTracker entries), so it is not
-        // caught here, and the trigger permits it only while entry_hash is still empty.
-        var payrollMutation = ChangeTracker.Entries<PayrollAuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (payrollMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+        // One DetectChanges pass covers audit rows and financial witnesses, even for large
+        // saves unrelated to benefits. PostgreSQL triggers remain the set-based SQL defence.
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State is not (EntityState.Modified or EntityState.Deleted)) continue;
+            if (entry.Entity is AuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
+            if (entry.Entity is PayrollAuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+            EnforceBenefitApprovalWitness(entry);
+        }
     }
 
     /// <summary>
