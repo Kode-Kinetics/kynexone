@@ -219,7 +219,7 @@ public class AccessController : ControllerBase
             var callerScope = this.GetEntityScope();
             var createsAdministrator = request.Roles.Any(role =>
                 string.Equals(role?.Trim(), "Admin", StringComparison.OrdinalIgnoreCase));
-            if (request.IsGroupScope && !callerScope.IsGroupLevel) return Forbid();
+            if (request.IsGroupScope && !this.HasGroupEntityScope()) return Forbid();
             if (request.IsGroupScope && request.CompanyId.HasValue)
                 return BadRequest(new { message = "Choose either group-wide access or one company, not both." });
             // An administrator without an explicit scope is a privilege-escalation ambiguity. Keep

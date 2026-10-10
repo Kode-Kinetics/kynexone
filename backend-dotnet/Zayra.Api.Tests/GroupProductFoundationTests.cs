@@ -138,6 +138,28 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     }
 
     [Fact]
+    public async Task GroupScopeAdministrator_CompanySelectionDoesNotRevokeSharedCatalogAuthority()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var selected = new Company { TenantId = tenantId, LegalNameEn = "SELECTED", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(selected);
+        await db.SaveChangesAsync();
+        var controller = new GradesController(
+            new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new NullAudit()), db)
+        {
+            ControllerContext = new ControllerContext { HttpContext = HttpCtx(GroupPrincipal(tenantId), selected.Id.ToString()) },
+        };
+
+        var result = await controller.Create(
+            new Application.Organization.GradeRequest("G-GROUP", "Shared group grade", "Staff", 1, Currency: "SAR"),
+            CancellationToken.None);
+
+        result.Result.Should().BeOfType<CreatedAtActionResult>();
+        (await db.Grades.IgnoreQueryFilters().AnyAsync(grade => grade.TenantId == tenantId && grade.Code == "G-GROUP")).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task CompanyScopedAdministrator_CannotMutateTenantWideStatutoryRules()
     {
         await using var db = _fx.CreateDb();
@@ -247,6 +269,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "Admin"),
             new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         }, "Test"));
 

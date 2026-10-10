@@ -90,7 +90,7 @@ public class CompaniesController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
-            if (!this.GetEntityScope().IsGroupLevel)
+            if (!this.HasGroupEntityScope())
                 return StatusCode(StatusCodes.Status403Forbidden, new
                 {
                     error = "group_scope_required",
@@ -206,7 +206,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
     }
 
@@ -218,7 +218,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         return await RunCommitAsync(tenantId.Value, req.Csv, ct);
     }
 

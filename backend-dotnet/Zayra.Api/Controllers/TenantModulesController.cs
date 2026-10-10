@@ -67,7 +67,7 @@ public class TenantModulesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -99,7 +99,7 @@ public class TenantModulesController : ControllerBase
         [FromBody] SetTenantModuleRequest req,
         CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 

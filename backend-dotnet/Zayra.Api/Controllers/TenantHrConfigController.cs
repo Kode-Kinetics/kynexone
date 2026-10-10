@@ -50,7 +50,7 @@ public class TenantHrConfigController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> Upsert([FromBody] TenantHrConfigRequest req, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 

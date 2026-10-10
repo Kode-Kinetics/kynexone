@@ -123,7 +123,7 @@ public class StatutoryRulesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
 
         if (string.IsNullOrWhiteSpace(req.CountryCode) ||
             string.IsNullOrWhiteSpace(req.RuleKey)     ||
@@ -207,7 +207,7 @@ public class StatutoryRulesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         if (string.IsNullOrWhiteSpace(req.Description))
             return BadRequest("A reason (Description) is required to supersede a statutory override.");
 
@@ -266,7 +266,7 @@ public class StatutoryRulesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
 
         var rule = await _db.StatutoryRules
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);

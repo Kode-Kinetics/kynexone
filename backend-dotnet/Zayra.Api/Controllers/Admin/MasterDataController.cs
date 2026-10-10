@@ -36,7 +36,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> CreateType([FromBody] MasterDataTypeRequest req, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         if (await _db.MasterDataTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
@@ -58,7 +58,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateType(Guid id, [FromBody] MasterDataTypeRequest req, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var t = await _db.MasterDataTypes.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
@@ -76,7 +76,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.delete")]
     public async Task<IActionResult> DeleteType(Guid id, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var t = await _db.MasterDataTypes.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (t == null) return NotFound();
@@ -112,7 +112,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> CreateValue(Guid typeId, [FromBody] MasterDataValueRequest req, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         if (!await _db.MasterDataTypes.AnyAsync(x => x.Id == typeId && x.TenantId == tid && !x.IsDeleted, ct))
@@ -135,7 +135,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateValue(Guid id, [FromBody] MasterDataValueRequest req, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
@@ -152,7 +152,7 @@ public class MasterDataController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> DeleteValue(Guid id, CancellationToken ct)
     {
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
