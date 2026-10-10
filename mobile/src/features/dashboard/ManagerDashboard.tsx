@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
+import { isSessionExpiredError } from '@/api/client';
 import { AttendanceCard } from '@/features/dashboard/EmployeeDashboard';
 import { getDeviceInfo } from '@/utils/device';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
@@ -31,6 +32,10 @@ import type { GeoLocation, ManagerDashboard, PunchType, TodayAttendance } from '
 
 interface Props {
   navigation: any;
+}
+
+function isMissingEssReadPermission(error: unknown): boolean {
+  return error instanceof Error && error.message === 'ESS read permission is required.';
 }
 
 export default function ManagerDashboardScreen({ navigation }: Props) {
@@ -56,7 +61,9 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
     try {
       setAttendance(await attendanceApi.getTodayAttendance());
     } catch (error) {
-      console.error('[ManagerDashboard] Personal attendance:', error);
+      if (!isMissingEssReadPermission(error) && !isSessionExpiredError(error)) {
+        console.error('[ManagerDashboard] Personal attendance:', error);
+      }
     } finally {
       setAttendanceLoading(false);
     }
@@ -71,8 +78,14 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
       ]);
       setDashboard(managerDashboard);
     } catch (error) {
-      console.error('[ManagerDashboard]', error);
-      setLoadError('We couldn’t load your manager workspace. Check your connection and try again.');
+      if (isSessionExpiredError(error)) {
+        return;
+      } else if (isMissingEssReadPermission(error)) {
+        setLoadError('Your account needs ESS read permission to load the manager workspace. Contact an administrator.');
+      } else {
+        console.error('[ManagerDashboard]', error);
+        setLoadError('We couldn’t load your manager workspace. Check your connection and try again.');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -225,9 +238,9 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
           <View style={styles.deckSection}>
             <SectionHeader
               title="Manager command center"
-              subtitle="Swipe between team, approvals and actions"
+              subtitle="Jump directly to what needs attention"
             />
-            <SwipeDeck minHeight={344}>
+            <SwipeDeck minHeight={344} labels={['Team', 'Approvals', 'Actions']}>
               <GlassSurface
                 elevated={false}
                 radius={theme.radius.xl}

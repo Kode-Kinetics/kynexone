@@ -263,7 +263,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   handleSessionExpired: () => {
-    void clearAllAuthData();
     set({
       user: null,
       tenantId: null,

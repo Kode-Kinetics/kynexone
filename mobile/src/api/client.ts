@@ -15,11 +15,34 @@ import { createIsolatedPublicAuthClient } from './publicAuthClient';
 // We lazily import authStore to avoid circular deps
 let _onSessionExpired: (() => void) | null = null;
 
+export class SessionExpiredError extends Error {
+  constructor() {
+    super('Your session has expired. Please sign in again.');
+    this.name = 'SessionExpiredError';
+  }
+}
+
+export function isSessionExpiredError(error: unknown): error is SessionExpiredError {
+  return error instanceof SessionExpiredError;
+}
+
 export function setSessionExpiredHandler(handler: () => void) {
   _onSessionExpired = handler;
 }
 
 let refreshPromise: Promise<string> | null = null;
+let expirationPromise: Promise<void> | null = null;
+
+function expireSession(): Promise<void> {
+  if (!expirationPromise) {
+    expirationPromise = clearAllAuthData()
+      .then(() => _onSessionExpired?.())
+      .finally(() => {
+        expirationPromise = null;
+      });
+  }
+  return expirationPromise;
+}
 
 /**
  * Anonymous auth traffic must never inherit an old mobile session. This client
@@ -145,10 +168,9 @@ export function createApiClient(tenantId: string): AxiosInstance {
           const newToken = await getOrStartRefresh();
           originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           return client(originalRequest);
-        } catch (refreshError) {
-          await clearAllAuthData();
-          _onSessionExpired?.();
-          return Promise.reject(refreshError);
+        } catch {
+          await expireSession();
+          return Promise.reject(new SessionExpiredError());
         }
       }
 

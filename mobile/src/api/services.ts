@@ -1381,7 +1381,22 @@ export const teamApi = {
         })
       );
     } catch (e: any) {
-      if (e?.response?.status !== 404) throw e;
+      // Manager/HR accounts can have scoped employee access without the ESS
+      // read permission required by /ess/team. Use the scoped fallback for
+      // older backends and for that specific permission split.
+      const status = e?.response?.status;
+      const message = e?.response?.data?.message ?? e?.message;
+      const missingEssReadPermission =
+        message === 'ESS read permission is required.';
+      const missingEmployeeRecord =
+        typeof message === 'string' && message.startsWith('No employee record found for your account.');
+      if (
+        status !== 404 &&
+        !missingEssReadPermission &&
+        !missingEmployeeRecord
+      ) {
+        throw e;
+      }
     }
     const employeeId = await getCurrentEmployeeId();
     if (!employeeId) return [];

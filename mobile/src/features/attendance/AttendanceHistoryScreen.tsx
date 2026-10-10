@@ -10,6 +10,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { parseISO } from 'date-fns';
 import { attendanceApi } from '@/api/services';
+import { isSessionExpiredError } from '@/api/client';
 import { formatTime, formatWorkHours } from '@/utils/date';
 import { navigateTo } from '@/navigation/routes';
 import { useAuthStore } from '@/auth/authStore';
@@ -30,6 +31,9 @@ interface Props {
   navigation: any;
 }
 
+const missingEmployeeRecordMessage =
+  'Your login is not linked to an employee record. Please contact HR.';
+
 export default function AttendanceHistoryScreen({ navigation }: Props) {
   const { user } = useAuthStore();
   const { theme } = useTheme();
@@ -49,7 +53,12 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
     try {
       setRecords(await attendanceApi.getMonthlyAttendance(year, month));
     } catch (requestError: any) {
-      console.error('[AttendanceHistory]', requestError);
+      if (
+        requestError?.message !== missingEmployeeRecordMessage &&
+        !isSessionExpiredError(requestError)
+      ) {
+        console.error('[AttendanceHistory]', requestError);
+      }
       setRecords([]);
       setError(requestError?.message ?? 'Could not load attendance.');
     } finally {

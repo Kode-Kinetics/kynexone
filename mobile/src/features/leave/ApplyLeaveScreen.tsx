@@ -186,8 +186,8 @@ export default function ApplyLeaveScreen({ navigation }: Props) {
         />
 
         <View style={styles.deckSection}>
-          <SectionHeader title="Leave request" subtitle="Swipe through the three steps" />
-          <SwipeDeck minHeight={545}>
+          <SectionHeader title="Leave request" subtitle="Choose a step or continue in order" />
+          <SwipeDeck minHeight={545} labels={['Type', 'Duration', 'Details']} showControls>
             <View style={styles.formPage}>
               <SectionHeader title="1 · Leave type" subtitle="Choose a balance to use" />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeRail}>

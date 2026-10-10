@@ -18,6 +18,7 @@ import * as Location from 'expo-location';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
 import { attendanceApi, dashboardApi } from '@/api/services';
+import { isSessionExpiredError } from '@/api/client';
 import { getDeviceInfo } from '@/utils/device';
 import { daysUntil, formatTime } from '@/utils/date';
 import { formatRiyadhBusinessDate } from '@/utils/businessDate';
@@ -62,8 +63,10 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
     try {
       setDashboard(await dashboardApi.getEmployeeDashboard());
     } catch (error) {
-      console.error('[Dashboard] Load error:', error);
-      setLoadError('We couldn’t load your dashboard. Check your connection and try again.');
+      if (!isSessionExpiredError(error)) {
+        console.error('[Dashboard] Load error:', error);
+        setLoadError('We couldn’t load your dashboard. Check your connection and try again.');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -203,9 +206,9 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
             <View style={styles.deckSection}>
               <SectionHeader
                 title="Your workspace"
-                subtitle="Swipe between actions, balances and updates"
+                subtitle="Jump directly to what you need"
               />
-              <SwipeDeck minHeight={322}>
+              <SwipeDeck minHeight={322} labels={['Actions', 'Time off', 'Updates']}>
                 <GlassSurface
                   elevated={false}
                   radius={theme.radius.xl}
