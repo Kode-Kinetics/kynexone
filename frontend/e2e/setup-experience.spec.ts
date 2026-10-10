@@ -109,7 +109,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     return reply(paged([]));
   });
   await page.goto(options.route ?? '/setup');
-  await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'إعداد الشركة' : 'Company setup', exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'الإعداد والإدارة' : 'Setup & Administration', exact: true })).toBeVisible({ timeout: 60_000 });
   return { previews, applies, errors, unexpectedWrites, policyWrites };
 }
 
@@ -244,7 +244,7 @@ test('requires country and currency when the workspace has not supplied them', a
   expect(state.errors).toEqual([]);
 });
 
-test('offers import separately from guided setup and preserves its organization entry point', async ({ page }, info) => {
+test('offers import separately from AI Setup Studio and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await page.getByRole('button', { name: 'Import organization', exact: true }).click();
@@ -253,44 +253,32 @@ test('offers import separately from guided setup and preserves its organization 
   await accessible(page, '#setup-importOrganization');
   await contained(page);
   await evidence(page, info, 'import-entry');
-  await page.getByRole('button', { name: 'Guided setup', exact: true }).click();
+  await page.getByRole('button', { name: 'AI Setup Studio', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Manage settings', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Manage settings', exact: true })).toBeVisible();
+  const setupSections = page.getByRole('navigation', { name: 'Setup sections', exact: true });
+  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Master Data', 'Numbering', 'System Settings', 'GCC Settings', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
+    await expect(setupSections.getByRole('button', { name: label, exact: true })).toBeVisible();
+  }
+  await setupSections.getByRole('button', { name: 'Companies', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Companies', exact: true })).toBeVisible();
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   await expect(page).toHaveURL(/tab=companies/);
-  const desktop = (page.viewportSize()?.width ?? 0) >= 1024;
-  const areas = page.getByRole('navigation', { name: 'Settings area', exact: true });
-  if (desktop) {
-    await expect(areas.getByRole('button', { name: /Organization/ })).toBeVisible();
-    await expect(areas.getByRole('button', { name: /People & pay/ })).toBeVisible();
-    await expect(areas.getByRole('button', { name: /System/ })).toBeVisible();
-  } else {
-    await expect(page.getByRole('combobox', { name: 'Settings area', exact: true })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Setting', exact: true })).toBeVisible();
-  }
   await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
   await expect(page.getByText('Legal entities, registration details and operating currencies.', { exact: true })).toBeVisible();
-  const chooseArea = async (name: string, value: string) => {
-    if (desktop) await areas.getByRole('button', { name: new RegExp(name) }).click();
-    else await page.getByRole('combobox', { name: 'Settings area', exact: true }).selectOption(value);
-  };
-  await chooseArea('People & pay', 'peoplePay');
-  if (desktop) await page.getByRole('navigation', { name: 'People & pay settings', exact: true }).getByRole('button', { name: 'Grades & salary bands', exact: true }).click();
-  else await page.getByRole('combobox', { name: 'Setting', exact: true }).selectOption('grades');
-  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
-  await chooseArea('System', 'system');
-  await expect(page.getByRole('heading', { name: 'Master data', exact: true })).toBeVisible();
-  await chooseArea('People & pay', 'peoplePay');
-  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await setupSections.getByRole('button', { name: 'Master Data', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Master Data', exact: true })).toBeVisible();
+  await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'Master data', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Master Data', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=masterData/);
   await page.goForward();
-  await expect(page.getByRole('heading', { name: 'Grades & salary bands', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
   expect(state.previews).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
@@ -310,10 +298,10 @@ test('renders the setup shell and organization import path in Arabic RTL', async
   expect(state.unexpectedWrites).toEqual([]);
 });
 
-test('a read-only organization viewer cannot enter guided setup through a write-tab deep link', async ({ page }) => {
+test('a read-only organization viewer cannot enter AI Setup Studio through a write-tab deep link', async ({ page }) => {
   const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Guided setup', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'AI Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
@@ -329,7 +317,7 @@ test('requires an explicit legal entity and uses an existing company’s country
   await page.getByLabel(/^Industry/).fill('Healthcare');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByLabel(/^Legal entity name/)).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Guided setup', exact: true }).getByRole('alert')).toContainText('legal entity name');
+  await expect(page.getByRole('region', { name: 'AI Setup Studio', exact: true }).getByRole('alert')).toContainText('legal entity name');
   expect(state.previews).toHaveLength(0);
   await page.getByLabel(/^Country/).selectOption('AE');
   await page.getByLabel(/^Currency/).selectOption('AED');
@@ -685,7 +673,7 @@ test('keeps each policy guide screen and its actions together on desktop', async
   }
 });
 
-test('keeps the default guided setup steps compact on desktop', async ({ page }, info) => {
+test('keeps the default AI Setup Studio steps compact on desktop', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
   for (const width of [1728, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -715,9 +703,8 @@ test('checks import and every settings entry screen for contained navigation', a
   await evidence(page, info, 'compact-import-entry');
   for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
     await page.goto(`/setup?tab=${tab}`);
-    await expect(page.locator('#setup-settings')).toBeVisible();
-    if (info.project.name === 'desktop') await expect(page.getByRole('navigation', { name: 'Settings area', exact: true })).toBeInViewport({ ratio: 1 });
-    else await expect(page.getByRole('combobox', { name: 'Settings area', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('#setup-setting-content')).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();
     if (info.project.name === 'mobile' && tab === 'companies') {
       const add = page.getByRole('button', { name: 'Add Company', exact: true });
       await add.scrollIntoViewIfNeeded();

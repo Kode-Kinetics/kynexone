@@ -77,30 +77,30 @@ type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' 
 type SettingsCategory = 'organization' | 'peoplePay' | 'system';
 type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization' | 'policyLibrary'>;
 
-const settingsCategories: { id: SettingsCategory; label: string; description: string }[] = [
-  { id: 'organization', label: msg('Organization'), description: msg('Companies, workplaces, teams and financial ownership.') },
-  { id: 'peoplePay', label: msg('People & pay'), description: msg('Jobs, grades, financial years and regional employment rules.') },
-  { id: 'system', label: msg('System'), description: msg('Shared reference data, numbering, notifications and audit history.') },
-];
-
 const tabs: { id: SettingsTab; label: string; description: string; icon: React.ElementType; category: SettingsCategory }[] = [
   { id: 'companies', label: msg('Companies'), description: msg('Legal entities, registration details and operating currencies.'), icon: Building2, category: 'organization' },
   { id: 'branches', label: msg('Branches'), description: msg('Company branches and their operating locations.'), icon: GitBranch, category: 'organization' },
   { id: 'departments', label: msg('Departments'), description: msg('Reporting departments and their cost-center ownership.'), icon: Layers, category: 'organization' },
   { id: 'costCenters', label: msg('Cost centers'), description: msg('Financial ownership codes used across payroll and reporting.'), icon: Landmark, category: 'organization' },
-  { id: 'establishment', label: msg('Staffing & budgets'), description: msg('Approved headcount, staffing levels and budget controls.'), icon: Landmark, category: 'organization' },
+  { id: 'establishment', label: msg('Cost Centres & Budget'), description: msg('Approved headcount, staffing levels and budget controls.'), icon: Landmark, category: 'organization' },
   { id: 'locations', label: msg('Locations'), description: msg('Work sites, addresses and attendance geofences.'), icon: MapPin, category: 'organization' },
-  { id: 'designations', label: msg('Job titles'), description: msg('Standard job titles and grade eligibility.'), icon: Tag, category: 'peoplePay' },
-  { id: 'grades', label: msg('Grades & salary bands'), description: msg('Career levels and the salary range for each grade.'), icon: Award, category: 'peoplePay' },
-  { id: 'fiscalYears', label: msg('Fiscal years'), description: msg('Financial-year periods used by budgets and reporting.'), icon: Calendar, category: 'peoplePay' },
+  { id: 'designations', label: msg('Designations'), description: msg('Standard job titles and grade eligibility.'), icon: Tag, category: 'peoplePay' },
+  { id: 'grades', label: msg('Grades'), description: msg('Career levels and the salary range for each grade.'), icon: Award, category: 'peoplePay' },
+  { id: 'fiscalYears', label: msg('Fiscal Years'), description: msg('Financial-year periods used by budgets and reporting.'), icon: Calendar, category: 'peoplePay' },
   { id: 'glMapping', label: msg('GL & rates'), description: msg('Payroll posting accounts, company rates and statutory rates.'), icon: Landmark, category: 'peoplePay' },
-  { id: 'gccSettings', label: msg('GCC compliance'), description: msg('Country-specific employment and statutory defaults.'), icon: Globe, category: 'peoplePay' },
-  { id: 'masterData', label: msg('Master data'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
+  { id: 'gccSettings', label: msg('GCC Settings'), description: msg('Country-specific employment and statutory defaults.'), icon: Globe, category: 'peoplePay' },
+  { id: 'masterData', label: msg('Master Data'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
   { id: 'numberingRules', label: msg('Numbering'), description: msg('Prefixes and sequences for generated record numbers.'), icon: Hash, category: 'system' },
-  { id: 'systemSettings', label: msg('System settings'), description: msg('Workspace-wide operational defaults.'), icon: Settings, category: 'system' },
+  { id: 'systemSettings', label: msg('System Settings'), description: msg('Workspace-wide operational defaults.'), icon: Settings, category: 'system' },
   { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), icon: Bell, category: 'system' },
   { id: 'emailConfig', label: msg('Email / SMTP'), description: msg('Outbound email delivery and connection testing.'), icon: Settings, category: 'system' },
-  { id: 'adminAuditLogs', label: msg('Audit logs'), description: msg('Review recorded administrative changes and actors.'), icon: ClipboardList, category: 'system' },
+  { id: 'adminAuditLogs', label: msg('Audit Logs'), description: msg('Review recorded administrative changes and actors.'), icon: ClipboardList, category: 'system' },
+];
+
+const directSettingsOrder: SettingsTab[] = [
+  'establishment', 'companies', 'branches', 'departments', 'designations', 'grades',
+  'masterData', 'numberingRules', 'systemSettings', 'gccSettings', 'fiscalYears',
+  'locations', 'glMapping', 'notificationTemplates', 'emailConfig', 'adminAuditLogs',
 ];
 
 // Small read-only field for the statutory pack profile panel.
@@ -2277,18 +2277,6 @@ export function SetupPage() {
       ? (tabParam as SettingsTab)
       : canWrite ? 'aiSetup' : 'companies';
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
-  const [lastSettingsTab, setLastSettingsTab] = useState<SettingsTab>(
-    requestedTab === 'aiSetup' || requestedTab === 'importOrganization' || requestedTab === 'policyLibrary' ? 'companies' : requestedTab,
-  );
-  const [lastSettingsByCategory, setLastSettingsByCategory] = useState<Record<SettingsCategory, SettingsTab>>(() => {
-    const initial = requestedTab === 'aiSetup' || requestedTab === 'importOrganization' || requestedTab === 'policyLibrary' ? 'companies' : requestedTab;
-    const initialCategory = tabs.find((tab) => tab.id === initial)?.category;
-    return {
-      organization: initialCategory === 'organization' ? initial : 'companies',
-      peoplePay: initialCategory === 'peoplePay' ? initial : 'designations',
-      system: initialCategory === 'system' ? initial : 'masterData',
-    };
-  });
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
   const focusLevelId = searchParams?.get('level') ?? undefined;
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
@@ -2298,11 +2286,6 @@ export function SetupPage() {
   // Also follow links and browser navigation after the page has already mounted.
   useEffect(() => {
     setActiveTab(requestedTab);
-    if (requestedTab !== 'aiSetup' && requestedTab !== 'importOrganization' && requestedTab !== 'policyLibrary') {
-      setLastSettingsTab(requestedTab);
-      const category = tabs.find((tab) => tab.id === requestedTab)?.category;
-      if (category) setLastSettingsByCategory((previous) => ({ ...previous, [category]: requestedTab }));
-    }
   }, [requestedTab]);
 
   useEffect(() => {
@@ -2313,11 +2296,6 @@ export function SetupPage() {
 
   const selectTab = (tab: Tab) => {
     setActiveTab(tab);
-    if (tab !== 'aiSetup' && tab !== 'importOrganization' && tab !== 'policyLibrary') {
-      setLastSettingsTab(tab);
-      const category = tabs.find((item) => item.id === tab)?.category;
-      if (category) setLastSettingsByCategory((previous) => ({ ...previous, [category]: tab }));
-    }
     const params = new URLSearchParams(searchParams?.toString());
     params.set('tab', tab);
     router.push(`/setup?${params.toString()}`, { scroll: false });
@@ -2327,68 +2305,56 @@ export function SetupPage() {
   // formerly available settings panel visible until the synchronization effect.
   const selectedTab = canWrite ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab) : 'companies';
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
-  const selectedCategory = tabs.find((tab) => tab.id === selectedTab)?.category ?? 'organization';
-  const categoryTabs = visibleTabs.filter((tab) => tab.category === selectedCategory);
-  const visibleCategories = settingsCategories.filter((category) => visibleTabs.some((tab) => tab.category === category.id));
-  const selectedCategoryMeta = settingsCategories.find((category) => category.id === selectedCategory) ?? settingsCategories[0];
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
   const SelectedSettingIcon = selectedSetting.icon;
-  const selectSettingsCategory = (category: SettingsCategory) => {
-    const remembered = lastSettingsByCategory[category];
-    const nextTab = visibleTabs.find((tab) => tab.id === remembered && tab.category === category)
-      ?? visibleTabs.find((tab) => tab.category === category);
-    if (nextTab) selectTab(nextTab.id);
-  };
-  const modes = [
-    { id: 'aiSetup' as const, label: t('Guided setup'), icon: Sparkles },
+  const navigationTabs = canWrite ? [
+    { id: 'aiSetup' as const, label: t('AI Setup Studio'), icon: Sparkles },
     { id: 'importOrganization' as const, label: t('Import organization'), icon: Upload },
-    { id: 'settings' as const, label: t('Manage settings'), icon: Settings },
+    ...directSettingsOrder.map((id) => {
+      const tab = tabs.find((item) => item.id === id)!;
+      return { id: tab.id, label: t(tab.label), icon: tab.icon };
+    }),
     ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
-  ];
+  ] : [{ id: 'companies' as const, label: t('Companies'), icon: Building2 }];
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between xl:gap-6">
       <header className="min-w-0">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Company setup')}</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Set up your organization and people policies.')
+            ? t('Configure every setup area directly, or use AI Setup Studio to prepare a reviewed starter configuration.')
             : t('View your organization’s companies and legal entity details.')}
         </p>
       </header>
 
-      {canWrite && (
-        <nav aria-label={t('Setup paths')} className="grid shrink-0 grid-cols-2 gap-1 border-b border-slate-200 dark:border-white/10 sm:flex">
-          {modes.map(({ id, label, icon: Icon }) => {
-            const selected = id === 'settings' ? isSettings : selectedTab === id;
+      <nav aria-label={t('Setup sections')} className="flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
+          {navigationTabs.map(({ id, label, icon: Icon }) => {
+            const selected = selectedTab === id;
             return (
               <button
                 key={id}
                 type="button"
                 aria-pressed={selected}
-                aria-controls={id === 'settings' ? 'setup-settings' : `setup-${id}`}
-                onClick={() => selectTab(id === 'settings' ? lastSettingsTab : id)}
-                className={`flex min-w-0 flex-col items-center justify-center gap-2 border-b-2 px-2 py-2 text-center text-xs font-semibold transition-colors sm:flex-row sm:px-4 sm:text-sm ${
+                aria-controls={id === 'aiSetup' || id === 'importOrganization' || id === 'policyLibrary' ? `setup-${id}` : 'setup-setting-content'}
+                onClick={() => selectTab(id)}
+                className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   selected
-                    ? 'border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent'
-                    : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-950 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:text-white'
+                    ? 'bg-sapphire text-white shadow-sm dark:bg-cyanAccent dark:text-slate-950'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-950 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.10] dark:hover:text-white'
                 }`}
               >
-                <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                 {label}
               </button>
             );
           })}
-        </nav>
-      )}
-
-      </div>
+      </nav>
 
       {/* Keep drafts and uploaded files intact when users explore another path. */}
       {canWrite && (
         <>
-          <section id="setup-aiSetup" aria-label={t('Guided setup')} hidden={selectedTab !== 'aiSetup'}>
+          <section id="setup-aiSetup" aria-label={t('AI Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
             <AiSetupAssistant companies={companies} />
           </section>
           <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={selectedTab !== 'importOrganization'}>
@@ -2400,74 +2366,8 @@ export function SetupPage() {
       {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager /></section>}
 
       {isSettings && (
-        <section id="setup-settings" aria-label={t('Manage settings')} className="min-w-0 space-y-4">
-          <div className="border-b border-slate-200 pb-4 dark:border-white/10">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">{t('Choose what to configure')}</h2>
-                <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Select an area, then open the setting you need.')}</p>
-              </div>
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{t('{count} settings available', { count: visibleTabs.length })}</p>
-            </div>
-
-            <nav aria-label={t('Settings area')} className={`mt-3 hidden gap-1 lg:grid rounded-xl bg-slate-100 p-1 dark:bg-white/[0.05] ${visibleCategories.length === 1 ? 'grid-cols-1' : 'grid-cols-3'}`}>
-              {visibleCategories.map((category) => {
-                const count = visibleTabs.filter((tab) => tab.category === category.id).length;
-                const selected = category.id === selectedCategory;
-                return (
-                  <button
-                    key={category.id}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => selectSettingsCategory(category.id)}
-                    className={`min-w-0 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${selected
-                      ? 'bg-white text-sapphire shadow-sm dark:bg-slate-900 dark:text-cyanAccent'
-                      : 'text-slate-600 hover:bg-white/70 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-white'}`}
-                  >
-                    <span className="block truncate">{t(category.label)}</span>
-                    <span className="mt-0.5 block text-xs font-normal opacity-70">{t('{count} settings', { count })}</span>
-                  </button>
-                );
-              })}
-            </nav>
-
-            <div className="mt-3 grid grid-cols-2 gap-3 lg:hidden">
-              <div className="min-w-0">
-                <label htmlFor="setup-settings-category" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Settings area')}</label>
-                <select id="setup-settings-category" value={selectedCategory} onChange={(event) => selectSettingsCategory(event.target.value as SettingsCategory)} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100">
-                  {visibleCategories.map((category) => <option key={category.id} value={category.id}>{t(category.label)}</option>)}
-                </select>
-              </div>
-              <div className="min-w-0">
-                <label htmlFor="setup-settings-page" className="mb-1.5 block text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Setting')}</label>
-                <select id="setup-settings-page" value={selectedTab} onChange={(event) => selectTab(event.target.value as SettingsTab)} className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/15 dark:bg-[#0d1225] dark:text-slate-100">
-                  {categoryTabs.map((tab) => <option key={tab.id} value={tab.id}>{t(tab.label)}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <p className="max-w-2xl text-sm text-slate-600 dark:text-slate-300">{t(selectedCategoryMeta.description)}</p>
-              <nav aria-label={t('{area} settings', { area: t(selectedCategoryMeta.label) })} className="hidden flex-wrap gap-2 lg:flex lg:justify-end">
-                {categoryTabs.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-pressed={selectedTab === id}
-                    onClick={() => selectTab(id)}
-                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-start text-sm font-medium transition-colors ${selectedTab === id
-                      ? 'border-sapphire bg-sapphire text-white dark:border-cyanAccent dark:bg-cyanAccent dark:text-slate-950'
-                      : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-950 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200 dark:hover:border-white/30 dark:hover:text-white'}`}
-                  >
-                    <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-                    {t(label)}
-                  </button>
-                ))}
-              </nav>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-3">
+        <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
+          <div className="flex items-start gap-3 border-b border-slate-200 pb-3 dark:border-white/10">
             <SelectedSettingIcon aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
             <div>
               <h2 className="text-lg font-semibold text-slate-950 dark:text-white">{t(selectedSetting.label)}</h2>
