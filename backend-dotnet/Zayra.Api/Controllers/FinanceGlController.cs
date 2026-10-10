@@ -52,6 +52,12 @@ public class FinanceGlController : ControllerBase
     public const int ImportMaxBytes = 2 * 1024 * 1024;
     public const int ImportMaxRows = 5000;
     private static readonly string[] CsvHeaders = { "Code", "Name", "Type", "IsActive" };
+    /// <summary>Optional chart CSV column: the account string the client's ERP expects. A file
+    /// without it leaves every account's ERP code unchanged; an empty cell clears it.</summary>
+    public const string ExternalCodeHeader = "ExternalCode";
+    private static readonly string[] ExportHeaders = { "Code", "Name", "Type", "IsActive", ExternalCodeHeader };
+    public const int ExternalCodeMaxLength = 60;
+    private static readonly Regex ExternalCodePattern = new(@"^[A-Za-z0-9.\-_/ ]{0,60}$", RegexOptions.CultureInvariant);
 
     // ── Chart of accounts ────────────────────────────────────────────────────
 
@@ -82,14 +88,16 @@ public class FinanceGlController : ControllerBase
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Code and Name are required." });
         if (CodeProblem(code) is { } codeErr) return BadRequest(new { code = "GL_ACCOUNT_CODE_INVALID", message = codeErr });
         if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
+        if (ExternalCodeProblem(req.ExternalCode) is { } extErr) return BadRequest(new { code = "GL_EXTERNAL_CODE_INVALID", message = extErr });
         // IgnoreQueryFilters is intentional: the scope was authorised above (ScopeError); the WHERE
         // re-applies exact tenant+company scope so the uniqueness check sees the correct scope's rows.
         if (await _db.GlAccounts.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tid && a.CompanyId == companyId && a.Code == code, ct))
             return BadRequest(new { message = $"Account code '{code}' already exists in this scope." });
-        var acct = new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = req.Name.Trim(), AccountType = type, IsActive = req.IsActive };
+        var acct = new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = req.Name.Trim(), AccountType = type, IsActive = req.IsActive,
+            ExternalCode = NormalizeExternalCode(req.ExternalCode) };
         _db.GlAccounts.Add(acct);
         await WriteAudit("finance.gl.account.created", "GlAccount", acct.Id.ToString(), companyId,
-            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, acct.IsActive, companyId }, ct);
+            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, acct.IsActive, externalCode = acct.ExternalCode, companyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, companyId));
     }
@@ -107,6 +115,7 @@ public class FinanceGlController : ControllerBase
         // Residual Phase-1 guard graduated to server: blank name must 400, not 500 on Trim().
         if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Name is required." });
         if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
+        if (ExternalCodeProblem(req.ExternalCode) is { } extErr) return BadRequest(new { code = "GL_EXTERNAL_CODE_INVALID", message = extErr });
 
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var acct = await _db.GlAccounts.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.TenantId == tid && a.Id == id, ct);
@@ -118,10 +127,12 @@ public class FinanceGlController : ControllerBase
         if (await AccountChangeProblemAsync(tid.Value, acct, newCode, newName, type, req.IsActive, ct) is { } problem)
             return problem;
 
-        var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive };
+        var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode };
         acct.Code = newCode; acct.Name = newName; acct.AccountType = type; acct.IsActive = req.IsActive; acct.UpdatedAtUtc = DateTime.UtcNow;
+        // null = leave the ERP code as it is; "" (or whitespace) = clear it.
+        if (req.ExternalCode is not null) acct.ExternalCode = NormalizeExternalCode(req.ExternalCode);
         await WriteAudit("finance.gl.account.updated", "GlAccount", acct.Id.ToString(), acct.CompanyId,
-            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive }, companyId = acct.CompanyId }, ct);
+            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode }, companyId = acct.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, acct.CompanyId));
     }
@@ -147,7 +158,7 @@ public class FinanceGlController : ControllerBase
         return NoContent();
     }
 
-    /// <summary>The chart of accounts for one scope as CSV (Code, Name, Type, IsActive).</summary>
+    /// <summary>The chart of accounts for one scope as CSV (Code, Name, Type, IsActive, ExternalCode).</summary>
     [HttpGet("accounts/export")]
     public async Task<IActionResult> ExportAccounts([FromQuery] Guid? companyId, CancellationToken ct)
     {
@@ -155,13 +166,14 @@ public class FinanceGlController : ControllerBase
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } err) return err;
         var rows = await ScopeAccounts(tid.Value, companyId).AsNoTracking().OrderBy(a => a.Code).ToListAsync(ct);
-        var csv = Csv.Build(CsvHeaders, rows.Select(a => (IReadOnlyList<object?>)new object?[] { a.Code, a.Name, a.AccountType, a.IsActive ? "true" : "false" }));
+        var csv = Csv.Build(ExportHeaders, rows.Select(a => (IReadOnlyList<object?>)new object?[] { a.Code, a.Name, a.AccountType, a.IsActive ? "true" : "false", a.ExternalCode ?? "" }));
         var suffix = companyId is null ? "group" : companyId.Value.ToString("N")[..8];
         return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"chart_of_accounts_{suffix}_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     /// <summary>
-    /// Imports a chart of accounts for one scope from CSV (Code, Name, Type, IsActive). ALL OR NOTHING:
+    /// Imports a chart of accounts for one scope from CSV (Code, Name, Type, IsActive, optional
+    /// ExternalCode — a file without that column leaves ERP codes unchanged). ALL OR NOTHING:
     /// every row is validated first against the same rules as the single-account endpoints (code
     /// format, account type, posted-label immutability, in-use deactivation); any error writes nothing.
     /// <paramref name="dryRun"/> defaults to true so a file is always previewed before it is applied.
@@ -194,6 +206,7 @@ public class FinanceGlController : ControllerBase
             return BadRequest(new { message = $"The file is missing the column(s) {string.Join(", ", missing)}. Expected: {string.Join(",", CsvHeaders)}." });
         if (rows.Count > ImportMaxRows)
             return BadRequest(new { message = $"The file has {rows.Count} rows; the limit is {ImportMaxRows}." });
+        var hasExternalCode = headers.Contains(ExternalCodeHeader, StringComparer.OrdinalIgnoreCase);
 
         // IgnoreQueryFilters-free: ScopeAccounts pins tenant + exact scope.
         var existing = await ScopeAccounts(tid.Value, companyId).ToListAsync(ct);
@@ -201,7 +214,7 @@ public class FinanceGlController : ControllerBase
         var errors = new List<object>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var creates = new List<GlAccount>();
-        var updates = new List<(GlAccount Account, object Before, string Name, string Type, bool Active)>();
+        var updates = new List<(GlAccount Account, object Before, string Name, string Type, bool Active, string? External)>();
         var unchanged = 0;
 
         for (var i = 0; i < rows.Count; i++)
@@ -212,6 +225,10 @@ public class FinanceGlController : ControllerBase
             var name = r.GetValueOrDefault("Name", "").Trim();
             var typeRaw = r.GetValueOrDefault("Type", "").Trim();
             var activeRaw = r.GetValueOrDefault("IsActive", "").Trim();
+            // The export prefixes a cell that starts with '-' with an apostrophe (formula-injection
+            // guard), and an apostrophe is never a legal ERP-code character, so it is dropped here.
+            var externalRaw = hasExternalCode ? r.GetValueOrDefault(ExternalCodeHeader, "").Trim() : null;
+            if (externalRaw is not null && externalRaw.StartsWith('\'')) externalRaw = externalRaw[1..].Trim();
             void Fail(string message) => errors.Add(new { row = rowNum, code, message });
 
             if (CodeProblem(code) is { } codeErr) { Fail(codeErr); continue; }
@@ -222,15 +239,19 @@ public class FinanceGlController : ControllerBase
             if (activeRaw.Length == 0 || activeRaw.Equals("true", StringComparison.OrdinalIgnoreCase) || activeRaw == "1" || activeRaw.Equals("yes", StringComparison.OrdinalIgnoreCase)) active = true;
             else if (activeRaw.Equals("false", StringComparison.OrdinalIgnoreCase) || activeRaw == "0" || activeRaw.Equals("no", StringComparison.OrdinalIgnoreCase)) active = false;
             else { Fail($"IsActive '{activeRaw}' must be true or false."); continue; }
+            if (ExternalCodeProblem(externalRaw) is { } extErr) { Fail(extErr); continue; }
 
             if (!byCode.TryGetValue(code, out var acct))
             {
-                creates.Add(new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = name, AccountType = type, IsActive = active });
+                creates.Add(new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = name, AccountType = type, IsActive = active,
+                    ExternalCode = NormalizeExternalCode(externalRaw) });
                 continue;
             }
-            if (acct.Name == name && string.Equals(acct.AccountType, type, StringComparison.Ordinal) && acct.IsActive == active) { unchanged++; continue; }
+            var external = externalRaw is null ? acct.ExternalCode : NormalizeExternalCode(externalRaw);
+            if (acct.Name == name && string.Equals(acct.AccountType, type, StringComparison.Ordinal) && acct.IsActive == active
+                && string.Equals(acct.ExternalCode, external, StringComparison.Ordinal)) { unchanged++; continue; }
             if (await AccountChangeProblemMessageAsync(tid.Value, acct, acct.Code, name, type, active, ct) is { } problem) { Fail(problem); continue; }
-            updates.Add((acct, new { acct.Code, acct.Name, acct.AccountType, acct.IsActive }, name, type, active));
+            updates.Add((acct, new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode }, name, type, active, external));
         }
 
         var body = new { dryRun = isDryRun, created = creates.Count, updated = updates.Count, unchanged, errors };
@@ -238,15 +259,15 @@ public class FinanceGlController : ControllerBase
         if (isDryRun) return Ok(body);
 
         foreach (var a in creates) _db.GlAccounts.Add(a);
-        foreach (var (a, _, name, type, active) in updates)
+        foreach (var (a, _, name, type, active, external) in updates)
         {
-            a.Name = name; a.AccountType = type; a.IsActive = active; a.UpdatedAtUtc = DateTime.UtcNow;
+            a.Name = name; a.AccountType = type; a.IsActive = active; a.ExternalCode = external; a.UpdatedAtUtc = DateTime.UtcNow;
         }
         await WriteAudit("finance.gl.account.imported", "GlAccount", companyId?.ToString() ?? "tenant-default", companyId,
             new
             {
-                companyId, fileName = file.FileName, created = creates.Select(a => new { a.Code, a.Name, a.AccountType, a.IsActive }),
-                updated = updates.Select(u => new { before = u.Before, after = new { u.Account.Code, Name = u.Name, AccountType = u.Type, IsActive = u.Active } }),
+                companyId, fileName = file.FileName, created = creates.Select(a => new { a.Code, a.Name, a.AccountType, a.IsActive, a.ExternalCode }),
+                updated = updates.Select(u => new { before = u.Before, after = new { u.Account.Code, Name = u.Name, AccountType = u.Type, IsActive = u.Active, ExternalCode = u.External } }),
                 unchanged,
             }, ct);
         await _db.SaveChangesAsync(ct);
@@ -708,6 +729,19 @@ public class FinanceGlController : ControllerBase
             : $"Code '{code}' may only use letters, digits, '.' and '-', up to 30 characters.";
     }
 
+    /// <summary>Null when the ERP code is acceptable (null and blank included: blank means "none").</summary>
+    public static string? ExternalCodeProblem(string? external)
+    {
+        if (external is null) return null;
+        var v = external.Trim();
+        return ExternalCodePattern.IsMatch(v) ? null
+            : $"ERP account code '{v}' may only use letters, digits, spaces and . - _ /, up to {ExternalCodeMaxLength} characters.";
+    }
+
+    /// <summary>Trimmed ERP code; blank becomes null so "no ERP code" has one representation.</summary>
+    public static string? NormalizeExternalCode(string? external) =>
+        string.IsNullOrWhiteSpace(external) ? null : external.Trim();
+
     private static string Label(GlAccount a) => $"{a.Code} - {a.Name}";
 
     /// <summary>Accounts that a driver may post to. System drivers: exactly what the catalog declares.
@@ -963,7 +997,7 @@ public class FinanceGlController : ControllerBase
         await Task.CompletedTask;
     }
 
-    private static object ToDto(GlAccount a, Guid? _) => new { a.Id, a.CompanyId, a.Code, a.Name, a.AccountType, a.IsActive };
+    private static object ToDto(GlAccount a, Guid? _) => new { a.Id, a.CompanyId, a.Code, a.Name, a.AccountType, a.IsActive, a.ExternalCode };
 
     private static object ToDriverDto(GlDriver d, Guid? viewCompanyId) => new
     {
@@ -975,7 +1009,9 @@ public class FinanceGlController : ControllerBase
 }
 
 public record GlPeriodActionRequest(string? Reason = null);
-public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true);
+/// <param name="ExternalCode">The account code in the client's ERP. Create: optional. Update: null leaves it
+/// unchanged, "" clears it.</param>
+public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null);
 public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null);
 public record GlDriverRequest(
     string Key, string Label, string Category, string PostingSide, string DefaultCode, string DefaultName,

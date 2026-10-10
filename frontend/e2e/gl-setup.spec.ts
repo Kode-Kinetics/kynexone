@@ -486,3 +486,46 @@ test('the GL tab has no serious or critical accessibility violations', async ({ 
     expect(await serious(), name).toEqual([]);
   }
 });
+
+test('chart of accounts: the ERP account code is shown, set on add, and changed or cleared on edit', async ({ page }) => {
+  const state = await boot(page, { groupMode: true });
+  // The server now reports an ERP code on 5001; registered after boot, so it wins for GET only.
+  await page.route((url) => url.pathname === '/api/finance/gl/accounts', (route) => (route.request().method() === 'GET'
+    ? route.fulfill({ json: groupAccounts.map((a) => (a.code === '5001' ? { ...a, externalCode: '01-000-6100' } : a)) })
+    : route.fallback()));
+  await page.reload();
+  const chart = page.getByRole('region', { name: 'Chart of Accounts', exact: true });
+  await expect(chart.getByRole('columnheader', { name: 'ERP account code', exact: true })).toBeVisible();
+  const row = (name: string) => chart.getByRole('row').filter({ hasText: name });
+  await expect(row('Basic Salary Expense').getByRole('cell', { name: '01-000-6100', exact: true })).toBeVisible();
+  await expect(row('Housing Allowance Expense')).toContainText('No ERP account code');
+
+  // Add: the ERP code is optional and sent trimmed.
+  await expect(chart.getByText('The account code in your ERP if it differs from this one. Journal exports use it.')).toBeVisible();
+  await chart.getByLabel(/^Code/).fill('5006'); // required fields are named "Code *" / "Name *"
+  await chart.getByLabel(/^Name/).fill('Transport Allowance Expense');
+  await chart.getByLabel('ERP account code', { exact: true }).fill(' 6300-TRN ');
+  await chart.getByRole('button', { name: 'Add account', exact: true }).click();
+  await expect.poll(() => state.writes.filter((w) => w.method === 'POST' && w.path === '/api/finance/gl/accounts').map((w) => w.body))
+    .toEqual([{ code: '5006', name: 'Transport Allowance Expense', accountType: 'Expense', isActive: true, externalCode: '6300-TRN' }]);
+
+  // Edit: the field starts from the server value; emptying it sends '' (clear), a value replaces it.
+  const puts = () => state.writes.filter((w) => w.method === 'PUT').map((w) => ({ path: w.path, externalCode: (w.body as { externalCode?: unknown }).externalCode }));
+  await row('Basic Salary Expense').getByRole('button', { name: 'Edit', exact: true }).click();
+  let dialog = page.getByRole('dialog', { name: 'Edit account 5001' });
+  await expect(dialog.getByText('The account code in your ERP if it differs from this one. Journal exports use it.')).toBeVisible();
+  await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('01-000-6100');
+  await dialog.getByLabel('ERP account code', { exact: true }).fill('');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await row('Housing Allowance Expense').getByRole('button', { name: 'Edit', exact: true }).click();
+  dialog = page.getByRole('dialog', { name: 'Edit account 5002' });
+  await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('');
+  await dialog.getByLabel('ERP account code', { exact: true }).fill('6200/HOU');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(puts).toEqual([
+    { path: '/api/finance/gl/accounts/acc-5001', externalCode: '' },
+    { path: '/api/finance/gl/accounts/acc-5002', externalCode: '6200/HOU' },
+  ]);
+  expect(state.errors).toEqual([]);
+});
