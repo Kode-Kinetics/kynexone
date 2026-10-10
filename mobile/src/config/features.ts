@@ -27,6 +27,15 @@ export const FEATURES = {
    * token behind LocalAuthentication), but it is not built yet.
    */
   BIOMETRIC_LOGIN: false,
+  /**
+   * The AI assistant. OFF: POST /api/ess/ai/ask ignores the question and answers with one fixed
+   * English template (EmployeeSelfServiceController AskAi), so the app must not present it as an
+   * assistant. While false the access policy withholds the `aiAssistant` surface, which hides the
+   * route, the More entry and any Home tile that checks the surface. auth/accessPolicy.ts mirrors
+   * this value in SURFACE_FLAGS (import-free for node --test); tests/accessPolicy.test.ts keeps the
+   * two equal. Switch on only when the endpoint really answers the question.
+   */
+  AI_ASSISTANT: false,
 } as const;
 
 export class FeatureUnavailableError extends Error {

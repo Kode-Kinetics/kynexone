@@ -23,7 +23,7 @@ import {
   publicResetInput,
 } from '@/auth/publicAuthInput';
 import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode } from '@/auth/welcomeCode';
-import { mapEmployeeProfile } from './profileMapper';
+import { mapEmployeeProfile, type EmployeeProfileRecord } from './profileMapper';
 import { mapDashboardExtras, type EmployeeHomeExtras } from './homeMappers';
 import { holidaysApi } from './holidays';
 import { fetchAllPages } from './paging';
@@ -83,7 +83,6 @@ import type {
   Payslip,
   PayslipDetail,
   PayslipLine,
-  EmployeeProfile,
   EmployeeDocument,
   HRRequest,
   HRRequestComment,
@@ -1352,9 +1351,22 @@ export const payslipApi = {
 
 // ---- Profile ----
 export const profileApi = {
-  async getProfile(): Promise<EmployeeProfile> {
-    const profile = await apiGet<any>('/ess/profile');
-    return mapEmployeeProfile(profile);
+  /**
+   * GET /ess/profile, plus the employing company's country from /auth/me (companies[].countryCode)
+   * so the screen shows that jurisdiction's identity documents. Country stays unknown when /auth/me
+   * fails or the session spans companies in different countries.
+   */
+  async getProfile(): Promise<EmployeeProfileRecord> {
+    const [profile, me] = await Promise.all([
+      apiGet<any>('/ess/profile'),
+      apiGet<any>('/auth/me').catch(() => null),
+    ]);
+    const companies: any[] = Array.isArray(me?.companies) ? me.companies : [];
+    const countries = new Set(companies.map((c) => String(c?.countryCode ?? '').trim().toUpperCase()).filter(Boolean));
+    return {
+      ...mapEmployeeProfile(profile),
+      companyCountry: countries.size === 1 ? [...countries][0] : undefined,
+    };
   },
 
   async requestProfileUpdate(changes: Record<string, string | undefined>): Promise<void> {

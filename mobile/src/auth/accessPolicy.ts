@@ -66,7 +66,21 @@ export type MobileSurface =
   | 'aiAssistant'
   | 'overtime'
   | 'settings'
+  | 'letters'
+  | 'loans'
   | 'account';
+
+/**
+ * Product switches that can withhold a surface the permissions would otherwise allow. Mirrors
+ * config/features.ts (this file stays import-free so node --test can load it); the access-policy
+ * test fails if the two drift apart.
+ */
+export const SURFACE_FLAGS = {
+  /** FEATURES.AI_ASSISTANT — the /ess/ai/ask endpoint returns a fixed template, so the assistant is hidden. */
+  aiAssistant: false,
+} as const;
+
+export type SurfaceFlags = { readonly aiAssistant: boolean };
 
 export interface MobileAccessPolicy {
   mode: AccessMode;
@@ -87,6 +101,8 @@ const ESS_READ_SURFACES: readonly MobileSurface[] = [
   'aiAssistant',
   'overtime',
   'settings',
+  // HR letters: GET/POST /api/ess/document-requests — the caller's own requests only.
+  'letters',
 ];
 
 const MANAGER_MODES: readonly AccessMode[] = [
@@ -100,7 +116,10 @@ const MANAGER_MODES: readonly AccessMode[] = [
  * The access mode is a ceiling, never a permission grant. A surface is exposed
  * only when both the mode and the caller's effective permission permit it.
  */
-export function deriveMobileAccess(user: AuthUser | null | undefined): MobileAccessPolicy {
+export function deriveMobileAccess(
+  user: AuthUser | null | undefined,
+  flags: SurfaceFlags = SURFACE_FLAGS,
+): MobileAccessPolicy {
   const mode = normalizeAccessMode(user?.accessMode);
   const surfaces = new Set<MobileSurface>(['account']);
   const readOnly = mode === 'ReadOnlyAuditor' || mode === 'NoLogin';
@@ -139,6 +158,12 @@ export function deriveMobileAccess(user: AuthUser | null | undefined): MobileAcc
   const allowsEss = ['FullPortal', 'ESSOnly', 'ManagerPortal', 'HRPortal', 'PayrollPortal',
     'FinancePortal', 'SupervisorPortal', 'Mobile'].includes(mode);
   if (allowsEss && essRead) ESS_READ_SURFACES.forEach((surface) => surfaces.add(surface));
+  if (!flags.aiAssistant) surfaces.delete('aiAssistant');
+  // My loans: the API gate is loans.self (owner-only) or the loan-book permissions; the screen is
+  // the caller's own loans, so it also needs the ESS link to an employee record.
+  if (allowsEss && essRead && hasEffectivePermission(user, 'loans.self', 'loans.read', 'loans.write')) {
+    surfaces.add('loans');
+  }
   if (allowsEss && essWrite) surfaces.add('attendanceCorrection');
   if (allowsEss && attendanceRead) surfaces.add('attendance');
 
