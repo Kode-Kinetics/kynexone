@@ -51,7 +51,7 @@ import {
   type VerificationCacheEntry,
   type WithdrawalResult,
 } from '@/features/attendance/selfieAttendance';
-import { companyWallTimeToUtcIso } from '@/features/attendance/companyTime';
+import { COMPANY_TIME_ZONE, companyWallTimeToUtcIso } from '@/features/attendance/companyTime';
 import type {
   AuthUser,
   AuthTokens,
@@ -114,12 +114,17 @@ export function localDateTimeToUtcIso(date: string, time: string): string {
   return local.toISOString();
 }
 
-/** HH:mm in the device's local time for a UTC ISO timestamp. */
+/** HH:mm on the company clock (Asia/Riyadh) for a UTC ISO timestamp, whatever zone the phone is in. */
 function utcIsoToLocalHHmm(value?: string | null): string {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: COMPANY_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(d);
 }
 
 function mapRole(roles?: string[]): AuthUser['role'] {
