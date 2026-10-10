@@ -203,10 +203,13 @@ public class GlPhase2Tests
         // SETTLEMENT_PAYABLE 2320). None of them can steal an existing component: the three earnings are
         // Exact-matched on codes no prior component uses, and the deduction only fires for a Settlement
         // source — which the two catch-all assertions at the end of this test continue to prove.
-        drivers.Should().HaveCount(30);
-        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2,
+        //
+        // GL-posting fixes add ONE Balancing driver: ROUNDING (5199), resolved only by explicit key for the
+        // Lock journal's sub-unit rounding line, so it can never steal a component either.
+        drivers.Should().HaveCount(31);
+        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2 + 1,
             "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts + POD-D's EOSB_PROVISION " +
-            "and SETTLEMENT_PAYABLE are the only Balancing drivers");
+            "and SETTLEMENT_PAYABLE + ROUNDING are the only Balancing drivers");
 
         // POD-D routing goldens — a settlement's expense lines must never collapse onto EARN:OTHER,
         // which would bury end-of-service cost inside general payroll expense on the P&L.
