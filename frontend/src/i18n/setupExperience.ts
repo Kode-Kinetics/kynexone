@@ -1,4 +1,6 @@
 const ar: Record<string, string> = {
+  'Showing {shown} of {total} findings.': 'عرض {shown} من أصل {total} ملاحظة.',
+  'Download all findings': 'تنزيل جميع الملاحظات',
   'Organization': 'المنظمة',
   'People & pay': 'الأفراد والرواتب',
   'System': 'النظام',

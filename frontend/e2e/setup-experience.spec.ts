@@ -415,6 +415,7 @@ type ImportFailure = 'blocked422' | 'failed422' | 'conflict409';
 
 async function mockImport(page: Page, options: {
   validationWait?: Promise<void>;
+  validationResult?: MigrationImportBatchDto;
   commitWait?: Promise<void>;
   failure?: ImportFailure;
 } = {}) {
@@ -427,7 +428,7 @@ async function mockImport(page: Page, options: {
       validations.push(route.request().postDataJSON() as OrgStructureImportRequest);
       const sequence = validations.length;
       if (sequence === 1) await options.validationWait;
-      return reply(importBatch(sequence));
+      return reply(options.validationResult ?? importBatch(sequence));
     }
     if (path.endsWith('/commit')) {
       const id = path.split('/').at(-2)!;
@@ -456,6 +457,37 @@ async function uploadPackage(page: Page, name: string, content: string) {
   await page.getByLabel('Upload an organization package', { exact: true }).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(content) });
   await expect(page.getByText(name, { exact: true })).toBeVisible();
 }
+
+test('large import findings stay bounded and the full report can be downloaded', async ({ page }) => {
+  const state = await boot(page);
+  const batch = importBatch(1, 'DryRunBlocked');
+  batch.errorRows = 10000;
+  batch.result = {
+    ...batch.result!, errors: 10000, hasBlockingErrors: true,
+    rows: Array.from({ length: 10000 }, (_, index) => ({
+      rowNumber: index + 2, entityCode: `positions:P${index}`, status: 'Error',
+      errors: [`Invalid position ${index}`], warnings: [],
+    })),
+  };
+  await mockImport(page, { validationResult: batch });
+  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  await uploadPackage(page, 'organization.txt', packageA);
+  await page.getByRole('button', { name: 'Validate files', exact: true }).click();
+  await expect(page.getByText('Showing 50 of 10,000 findings.', { exact: true })).toBeVisible();
+  await expect(page.locator('p').filter({ hasText: /Invalid position/ })).toHaveCount(50);
+  await expect(page.getByRole('button', { name: 'Apply import', exact: true })).toBeDisabled();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download all findings', exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('organization-import-issues.txt');
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+  const report = Buffer.concat(chunks).toString('utf8');
+  expect(report.match(/Invalid position/g)).toHaveLength(10000);
+  expect(report).toContain('Invalid position 9999');
+  expect(state.errors).toEqual([]);
+});
 
 test('locks import operations during validation and commits only the replacement package', async ({ page }, info) => {
   const state = await boot(page);

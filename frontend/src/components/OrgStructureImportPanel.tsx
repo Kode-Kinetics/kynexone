@@ -408,21 +408,43 @@ function Impact({ label, value, format }: { label: string; value: number; format
 }
 
 function FindingGroup({ title, icon, groups, tone, t }: { title: string; icon: React.ReactNode; groups: Record<string, string[]>; tone: 'danger' | 'warning'; t: Translator }) {
-  const entries = Object.entries(groups);
+  const entries = Object.entries(groups).filter(([, findings]) => findings.length > 0);
   if (entries.length === 0) return null;
+  const total = entries.reduce((count, [, findings]) => count + findings.length, 0);
+  // Bound DOM work across the whole group, not per section. The full report stays available
+  // for correcting large packages without expanding thousands of paragraphs in the browser.
+  const limit = 50;
+  let remaining = limit;
+  const visible = entries.flatMap(([section, findings]) => {
+    const preview = findings.slice(0, remaining);
+    remaining -= preview.length;
+    return preview.length ? [{ section, findings: preview }] : [];
+  });
+  const downloadFindings = () => downloadText(
+    entries.map(([section, findings]) => `${sectionLabel(section, t)}\n${findings.join('\n')}`).join('\n\n'),
+    `organization-import-${tone === 'danger' ? 'issues' : 'warnings'}.txt`,
+  );
   const text = tone === 'danger' ? 'text-red-700 dark:text-red-200' : 'text-amber-700 dark:text-amber-200';
   const bg = tone === 'danger' ? 'bg-red-50 dark:bg-red-500/10' : 'bg-amber-50 dark:bg-amber-500/10';
   return (
     <div className={`mt-4 rounded-lg p-4 text-sm leading-6 ${bg}`}>
       <p className={`flex items-center gap-2 font-semibold ${text}`}>{icon}{title}</p>
       <div className="mt-2 max-h-56 space-y-2 overflow-auto pe-1">
-        {entries.map(([section, findings]) => (
+        {visible.map(({ section, findings }) => (
           <div key={section}>
             <p className="font-semibold text-slate-800 dark:text-white">{sectionLabel(section, t)}</p>
             {findings.map((finding, idx) => <p key={`${section}-${idx}`} className={`break-words ${text}`}>{finding}</p>)}
           </div>
         ))}
       </div>
+      {total > limit && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-current/10 pt-3">
+          <p>{t('Showing {shown} of {total} findings.', { shown: limit, total })}</p>
+          <button type="button" className="btn-secondary" onClick={downloadFindings}>
+            <Download className="h-4 w-4" aria-hidden="true" />{t('Download all findings')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
