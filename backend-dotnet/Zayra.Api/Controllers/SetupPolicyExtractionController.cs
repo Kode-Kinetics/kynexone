@@ -15,7 +15,7 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/setup-assistant/policy")]
-[Authorize(Roles = "Admin,HR Manager")]
+[Authorize]
 [HasPermission("organization.write")]
 public sealed class SetupPolicyExtractionController(IPolicyDocumentService documents,
     PolicyExtractionService extraction, ZayraDbContext db) : ControllerBase
@@ -24,7 +24,7 @@ public sealed class SetupPolicyExtractionController(IPolicyDocumentService docum
     public async Task<IActionResult> Extract([FromBody] PolicyExtractionRequest request, CancellationToken ct)
     {
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId)) return Unauthorized();
-        if (!User.HasClaim("permission", "organization.write")) return Forbid();
+        if (!User.HasPermission("organization.write")) return Forbid();
         if (!request.UseAi) return BadRequest(new { message = "Choose AI assistance before sending policy content to the configured provider." });
         if (request.Profile is null || request.Profile.Sections is null) return BadRequest(new { message = "Company context is required." });
         var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;

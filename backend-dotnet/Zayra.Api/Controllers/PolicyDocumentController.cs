@@ -33,11 +33,10 @@ public class PolicyDocumentController : ControllerBase
     }
 
     [HttpPost("documents/upload")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [HasPermission("organization.write")]
     public async Task<ActionResult<PolicyDocumentDto>> Upload(IFormFile file, CancellationToken ct)
     {
-        if (!IsHrReader() || !HasPermission("organization.write")) return Forbid();
+        if (!HasPermission("organization.write")) return Forbid();
         if (file is null || file.Length == 0)
             return BadRequest(new { message = "No file provided." });
         if (file.Length > 20 * 1024 * 1024)
@@ -53,13 +52,12 @@ public class PolicyDocumentController : ControllerBase
     }
 
     [HttpDelete("documents/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
     [HasPermission("organization.write")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
-        if (!CanPublish() || !HasPermission("organization.write")) return Forbid();
+        if (!HasPermission("organization.write")) return Forbid();
         if (await _svc.FindAsync(tid.Value, id, ReadScope(), ct) is null) return NotFound();
         if (_db is not null && await _db.PolicyDocuments.AnyAsync(d => d.TenantId == tid && d.Id == id && (d.PublishedAtUtc != null || d.PublicationStatus == "Published"), ct))
             return Conflict(new { message = "Published policy versions are retained for audit. Withdraw the document to remove employee access." });
@@ -89,13 +87,12 @@ public class PolicyDocumentController : ControllerBase
     }
 
     [HttpPost("documents/{id:guid}/publish")]
-    [Authorize(Roles = "Admin,HR Manager")]
     [HasPermission("organization.write")]
     public async Task<IActionResult> Publish(Guid id, [FromBody] PublishPolicyRequest request, CancellationToken ct)
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
-        if (!CanPublish() || !HasPermission("organization.write")) return Forbid();
+        if (!HasPermission("organization.write")) return Forbid();
         if (_db is null || _audit is null) return StatusCode(503);
         if (request.CompanyId == Guid.Empty || string.IsNullOrWhiteSpace(request.ContentSha256))
             return BadRequest(new { message = "Choose a company and confirm the reviewed document version." });
@@ -133,13 +130,12 @@ public class PolicyDocumentController : ControllerBase
     }
 
     [HttpPost("documents/{id:guid}/withdraw")]
-    [Authorize(Roles = "Admin,HR Manager")]
     [HasPermission("organization.write")]
     public async Task<IActionResult> Withdraw(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
         if (tid is null) return Unauthorized();
-        if (!CanPublish() || !HasPermission("organization.write")) return Forbid();
+        if (!HasPermission("organization.write")) return Forbid();
         if (_db is null || _audit is null) return StatusCode(503);
         if (await _svc.TextAsync(tid.Value, id, ReadScope(), ct) is null) return NotFound();
         var doc = await _db.PolicyDocuments.FirstOrDefaultAsync(d => d.Id == id && d.TenantId == tid && !d.IsDeleted, ct);
@@ -198,8 +194,8 @@ public class PolicyDocumentController : ControllerBase
 
     private IActionResult ChangedPolicy() => Conflict(new { message = "The policy changed while you were reviewing it. Reload and review the current version." });
 
-    private bool IsHrReader() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer");
-    private bool CanPublish() => User.IsInRole("Admin") || User.IsInRole("HR Manager");
+    private bool IsHrReader() => User.IsInRole("Admin") || User.IsInRole("HR Director") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer")
+        || HasPermission("organization.write");
     private PolicyReadScope ReadScope()
     {
         var scope = this.GetRequestScope();
@@ -224,11 +220,11 @@ public class PolicyDocumentController : ControllerBase
     /// key is refused, and a custom role holding <c>ai.query</c> could ask the assistant but not see
     /// which documents it was answering from.</para>
     ///
-    /// <para>The role-name disjuncts are unchanged, deliberately: HR Manager and HR Officer reach this
-    /// today by role name and their seeded bundles do not hold <c>ai.query</c>.</para>
+    /// <para>Policy authors also need to inspect their own draft corpus before publication, so an
+    /// explicit <c>organization.write</c> grant carries read access without depending on a role name.</para>
     /// </summary>
     private bool CanUsePolicyAssistant() =>
-        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") ||
+        IsHrReader() ||
         HasPermission(AssistantPermission);
 
     /// <summary>"Query the AI HR assistant".</summary>

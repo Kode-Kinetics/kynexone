@@ -157,10 +157,10 @@ public class AccessManagementService : IAccessManagementService
             {
                 // The grant is part of this transaction. Validate its target under the same lock so
                 // an inactive, deleted or cross-tenant company can never receive an administrator.
-                var companyExists = await _db.Companies.IgnoreQueryFilters()
+                var companyExists = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                        "Validate the requested administrator company inside the locked tenant transaction.")
                     .TagWith(RowLockingInterceptor.ForShareTag)
                     .AnyAsync(x => x.Id == request.CompanyId.Value
-                        && x.TenantId == tenantId
                         && x.IsActive
                         && !x.IsDeleted, ct);
                 if (!companyExists) throw new InvalidOperationException("Choose an active company in this workspace.");

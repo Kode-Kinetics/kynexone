@@ -8,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
 
@@ -229,10 +230,12 @@ public class AccessController : ControllerBase
                 return BadRequest(new { message = "Choose the company this administrator will support, or explicitly grant group-wide access." });
             if (request.CompanyId.HasValue)
             {
-                var targetExists = await _db.Companies.IgnoreQueryFilters().AsNoTracking().AnyAsync(c =>
-                    c.TenantId == tenantId && c.Id == request.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken);
-                if (!targetExists) return BadRequest(new { message = "Choose an active company in this workspace." });
                 if (!callerScope.CanAccessCompany(request.CompanyId.Value)) return Forbid();
+                var targetExists = await ScopedBypass.TenantWide(_db.Companies, tenantId.Value,
+                        "Validate the authorised administrator target across the tenant company catalog.")
+                    .AsNoTracking()
+                    .AnyAsync(c => c.Id == request.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken);
+                if (!targetExists) return BadRequest(new { message = "Choose an active company in this workspace." });
             }
 
             // Enforce user limit

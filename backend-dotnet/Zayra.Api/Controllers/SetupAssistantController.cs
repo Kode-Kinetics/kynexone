@@ -13,6 +13,7 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
@@ -51,10 +52,12 @@ public class SetupAssistantController : ControllerBase
             return Unauthorized(new { message = "Tenant context is missing." });
         if (profile.CompanyId.HasValue)
         {
-            var target = await _db.Companies.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(c =>
-                c.TenantId == tenantId && c.Id == profile.CompanyId.Value && !c.IsDeleted, ct);
+            if (!this.GetEntityScope().CanAccessCompany(profile.CompanyId.Value)) return Forbid();
+            var target = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                    "Resolve the authorised Setup Studio target across the tenant company catalog.")
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == profile.CompanyId.Value && !c.IsDeleted, ct);
             if (target is null) return RefuseConfiguration(["The selected company no longer exists in this workspace."]);
-            if (!this.GetEntityScope().CanAccessCompany(target.Id)) return Forbid();
             if (!target.IsActive || target.ApprovalStatus != CompanyApprovalStatuses.Active)
                 return RefuseConfiguration([$"Company '{target.LegalNameEn}' is not active. Finish its approval before opening Setup Studio."]);
             if (!string.Equals(target.LegalNameEn.Trim(), profile.LegalEntityName?.Trim(), StringComparison.OrdinalIgnoreCase)
@@ -1188,21 +1191,27 @@ public class SetupAssistantController : ControllerBase
         var legalName = (req.LegalEntityName ?? string.Empty).Trim();
         if (req.CompanyId.HasValue)
         {
-            company = await _db.Companies.IgnoreQueryFilters().FirstOrDefaultAsync(x =>
-                x.TenantId == tenantId && x.Id == req.CompanyId.Value && !x.IsDeleted, ct);
-            if (company is null)
-                problems.Add("The selected company no longer exists in this workspace.");
+            if (!scope.CanAccessCompany(req.CompanyId.Value))
+            {
+                problems.Add("The selected company is outside your company scope.");
+            }
             else
             {
-                if (!company.IsActive || company.ApprovalStatus != CompanyApprovalStatuses.Active)
-                    problems.Add($"Company '{company.LegalNameEn}' is not active. Finish its approval before opening Setup Studio.");
-                if (!scope.CanAccessCompany(company.Id))
-                    problems.Add($"Company '{company.LegalNameEn}' is outside your company scope.");
-                if (legalName.Length > 0 && !string.Equals(company.LegalNameEn.Trim(), legalName, StringComparison.OrdinalIgnoreCase))
-                    problems.Add("The reviewed company name does not match the selected company. Refresh Setup Studio and review the draft again.");
-                if (CountryCodeStandard.NormalizeToIso2(company.CountryCode) != CountryCodeStandard.NormalizeToIso2(req.CountryCode)
-                    || !string.Equals(company.DefaultCurrency, req.CurrencyCode, StringComparison.OrdinalIgnoreCase))
-                    problems.Add("The reviewed country and currency must match the selected company.");
+                company = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                        "Resolve the authorised Setup Studio apply target across the tenant company catalog.")
+                    .FirstOrDefaultAsync(x => x.Id == req.CompanyId.Value && !x.IsDeleted, ct);
+                if (company is null)
+                    problems.Add("The selected company no longer exists in this workspace.");
+                else
+                {
+                    if (!company.IsActive || company.ApprovalStatus != CompanyApprovalStatuses.Active)
+                        problems.Add($"Company '{company.LegalNameEn}' is not active. Finish its approval before opening Setup Studio.");
+                    if (legalName.Length > 0 && !string.Equals(company.LegalNameEn.Trim(), legalName, StringComparison.OrdinalIgnoreCase))
+                        problems.Add("The reviewed company name does not match the selected company. Refresh Setup Studio and review the draft again.");
+                    if (CountryCodeStandard.NormalizeToIso2(company.CountryCode) != CountryCodeStandard.NormalizeToIso2(req.CountryCode)
+                        || !string.Equals(company.DefaultCurrency, req.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+                        problems.Add("The reviewed country and currency must match the selected company.");
+                }
             }
         }
         else if (legalName.Length > 0)

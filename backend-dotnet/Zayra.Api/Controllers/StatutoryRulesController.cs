@@ -313,7 +313,11 @@ public class StatutoryRulesController : ControllerBase
     // Reference-data actor: authenticated statutory administrator/read role. Preserve the
     // explicit platform-or-current-tenant boundary while bypassing the nullable-tenant filter.
     private IQueryable<StatutoryRule> VisibleRules(Guid tenantId)
-        => _db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == null || r.TenantId == tenantId);
+    {
+        // IgnoreQueryFilters is intentional: statutory reads combine platform defaults with the
+        // authenticated tenant's overrides; the predicate immediately excludes every other tenant.
+        return _db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == null || r.TenantId == tenantId);
+    }
 
     private Task<bool> OverlapsAsync(Guid tenantId, string country, string jurisdiction, string key,
         DateTime from, DateTime? to, Guid? excluding, CancellationToken ct)
