@@ -6350,6 +6350,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("email_domain");
 
+                    b.Property<string>("ErpCompanyCode")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("erp_company_code");
+
                     b.Property<string>("GosiEmployerId")
                         .IsRequired()
                         .HasColumnType("text")
@@ -13194,6 +13199,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
+                    b.Property<string>("ExternalCode")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("external_code");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -13401,6 +13411,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("confirmed_by_user_id");
 
+                    b.Property<int>("ConfirmedJournalCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("confirmed_journal_count");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -13461,9 +13475,29 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("format_key");
 
+                    b.Property<string>("FormatOptionsJson")
+                        .IsRequired()
+                        .HasColumnType("json")
+                        .HasColumnName("format_options_json");
+
+                    b.Property<int>("FormatVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("format_version");
+
                     b.Property<bool>("IncludeUnattributed")
                         .HasColumnType("boolean")
                         .HasColumnName("include_unattributed");
+
+                    b.Property<string>("JournalConfirmationsJson")
+                        .IsRequired()
+                        .HasColumnType("json")
+                        .HasColumnName("journal_confirmations_json");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("kind");
 
                     b.Property<int>("LineCount")
                         .HasColumnType("integer")
@@ -13489,6 +13523,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("rejection_reason");
 
+                    b.Property<Guid?>("ReplacesExportId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaces_export_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(24)
@@ -13512,6 +13550,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("total_debits");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ConfirmedJournalCount");
 
                     b.HasIndex("TenantId", "PayrollRunId");
 
@@ -13551,6 +13591,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("decimal(18,4)")
                         .HasColumnName("amount");
 
+                    b.Property<string>("CompanyCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("company_code");
+
                     b.Property<string>("Currency")
                         .IsRequired()
                         .HasMaxLength(8)
@@ -13568,6 +13614,11 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)")
                         .HasColumnName("event_type");
+
+                    b.Property<string>("ExternalAccountCode")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("external_account_code");
 
                     b.Property<Guid>("FinanceGlEntryId")
                         .HasColumnType("uuid")
@@ -13606,6 +13657,10 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)")
                         .HasColumnName("side");
+
+                    b.Property<Guid?>("SourceCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_company_id");
 
                     b.Property<Guid>("SourceEntityId")
                         .HasColumnType("uuid")

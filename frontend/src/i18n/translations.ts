@@ -6,6 +6,7 @@ import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
 import { glSetup } from './glSetup';
+import { glErp } from './glErp';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
@@ -1387,6 +1388,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...glSetup.en,
+  ...glErp.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -2760,6 +2762,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
+  ...glErp.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

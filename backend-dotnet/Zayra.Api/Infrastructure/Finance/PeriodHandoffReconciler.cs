@@ -80,7 +80,7 @@ public sealed class PeriodHandoffReconciler
         var exports = await exportQ.OrderByDescending(x => x.ExportedAtUtc).ToListAsync(ct);
 
         var liveExportIds = exports
-            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed)
+            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed or GlJournalExportStatuses.PartiallyConfirmed)
             .Select(x => x.Id).ToList();
         var coveredEntryIds = liveExportIds.Count == 0
             ? new List<Guid>()
@@ -92,7 +92,7 @@ public sealed class PeriodHandoffReconciler
 
         var newSince = JournalExportBuilder.NewSinceExport(selection.Entries, coveredEntryIds);
         var exportedTotal = JournalAmount.Round(exports
-            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed)
+            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed or GlJournalExportStatuses.PartiallyConfirmed)
             .Sum(x => x.TotalDebits));
 
         if (exports.Count == 0) blockers.Add("never_exported");

@@ -460,6 +460,22 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFor
     Zayra.Api.Infrastructure.Finance.QuickBooksIifJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
     Zayra.Api.Infrastructure.Finance.OracleGlInterfaceCsvFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.OracleFusionFbdiJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.SapS4GeneralJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.D365GeneralJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.OdooAccountMoveFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.NetSuiteJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.XeroManualJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.ZohoBooksJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.QuickBooksOnlineJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
     Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,

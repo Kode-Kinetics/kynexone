@@ -14,6 +14,9 @@ public class GlAccount : ITenantOwned, ICompanyScoped
     public string Code { get; set; } = string.Empty;       // e.g. "5001"
     public string Name { get; set; } = string.Empty;       // e.g. "Basic Salary Expense"
     public string AccountType { get; set; } = "Expense";    // Asset | Liability | Expense | Equity | Revenue
+    /// <summary>The account string the client's ERP expects (e.g. "6100", "01-000-6100-00"). Journal
+    /// exports send this instead of <see cref="Code"/> when set.</summary>
+    public string? ExternalCode { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
