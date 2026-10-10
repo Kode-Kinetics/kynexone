@@ -1120,9 +1120,9 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
-    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr('The new company could not be loaded. Return to Setup Studio and try again.'); return; }
-    if (companyAdministratorFlow && (!createsAdministrator || requiredAdminRoleBlocked)) { setErr('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.'); return; }
-    if (accessScope === 'company' && !companyId) { setErr('Choose the company this user will support.'); return; }
+    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Setup Studio and try again.')); return; }
+    if (companyAdministratorFlow && (!createsAdministrator || requiredAdminRoleBlocked)) { setErr(t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')); return; }
+    if (accessScope === 'company' && !companyId) { setErr(t('Choose the company this user will support.')); return; }
     if (policyLoading) return;
     if (passwordCheck && !passwordCheck.valid) { setErr('Please meet all password requirements below.'); return; }
     if (Array.from(password).length < 10) { setErr('Password must be at least 10 characters.'); return; }
@@ -1160,25 +1160,25 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
         className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4"
       >
         <div>
-          <h3 id={dialogTitleId} className="text-base font-semibold text-slate-800 dark:text-slate-200">{companyAdministratorFlow ? 'Create company administrator' : 'Create User'}</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{companyAdministratorFlow ? 'Add the administrator for this company, then continue to Setup Studio.' : 'Choose access before assigning roles. Company access is the safe default.'}</p>
+          <h3 id={dialogTitleId} className="text-base font-semibold text-slate-800 dark:text-slate-200">{t(companyAdministratorFlow ? 'Create company administrator' : 'Create User')}</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Setup Studio.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
         </div>
         <FormField label="Full Name" htmlFor={fullNameId}><input id={fullNameId} className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
         <FormField label="Email" htmlFor={emailId}><input id={emailId} type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
         <fieldset className="space-y-2">
-          <legend className="text-xs font-medium text-slate-600 dark:text-slate-400">Access scope</legend>
+          <legend className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('Access scope')}</legend>
           <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${accessScope === 'company' ? 'border-violet-400 bg-violet-50/70 dark:border-violet-500 dark:bg-violet-500/10' : 'border-slate-200 dark:border-slate-700'}`}>
             <input type="radio" name="new-user-scope" value="company" checked={accessScope === 'company'} onChange={() => setAccessScope('company')} className="mt-1 accent-violet-600" />
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium text-slate-800 dark:text-slate-100">One company</span>
-              <span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">Access stays within the selected legal entity.</span>
+              <span className="block text-sm font-medium text-slate-800 dark:text-slate-100">{t('One company')}</span>
+              <span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">{t('Access stays within the selected legal entity.')}</span>
               {accessScope === 'company' && (
                 <>
-                  <select aria-label="Company" className={inp('mt-2')} value={companyId} onChange={event => setCompanyId(event.target.value)} disabled={companyAdministratorFlow}>
-                    <option value="">Choose a company…</option>
+                  <select aria-label={t('Company')} className={inp('mt-2')} value={companyId} onChange={event => setCompanyId(event.target.value)} disabled={companyAdministratorFlow}>
+                    <option value="">{t('Choose a company…')}</option>
                     {companyOptions.filter(company => company.isActive).map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
                   </select>
-                  {companyAdministratorFlow && <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Locked to the company you just created.</span>}
+                  {companyAdministratorFlow && <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{t('Locked to the company you just created.')}</span>}
                 </>
               )}
             </span>
@@ -1186,7 +1186,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
           {canGrantGroupAccess && !companyAdministratorFlow && (
             <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${accessScope === 'group' ? 'border-amber-400 bg-amber-50/70 dark:border-amber-500 dark:bg-amber-500/10' : 'border-slate-200 dark:border-slate-700'}`}>
               <input type="radio" name="new-user-scope" value="group" checked={accessScope === 'group'} onChange={() => setAccessScope('group')} className="mt-1 accent-amber-600" />
-              <span><span className="block text-sm font-medium text-slate-800 dark:text-slate-100">Entire group</span><span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">Access includes every current and future company. Use only for central group administrators.</span></span>
+              <span><span className="block text-sm font-medium text-slate-800 dark:text-slate-100">{t('Entire group')}</span><span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">{t('Access includes every current and future company. Use only for central group administrators.')}</span></span>
             </label>
           )}
         </fieldset>
@@ -1253,7 +1253,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
                     onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
                   <span className="min-w-0">
                     {r.name}
-                    {requiredByCompanyFlow && !blocked && <span className="block text-xs text-slate-500 dark:text-slate-400">Required for this company administrator</span>}
+                    {requiredByCompanyFlow && !blocked && <span className="block text-xs text-slate-500 dark:text-slate-400">{t('Required for this company administrator')}</span>}
                     {blocked && <span className="block text-xs text-amber-700 dark:text-amber-400">{t('Above your access')}</span>}
                   </span>
                 </label>
@@ -1264,18 +1264,20 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
         {createsAdministrator && (
           <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             {accessScope === 'group'
-              ? 'This person will be a group administrator across all companies.'
-              : `This person will administer ${selectedCompany?.name ?? 'the selected company'} only.`}
+              ? t('This person will be a group administrator across all companies.')
+              : selectedCompany
+                ? t('This person will administer {company} only.', { company: selectedCompany.name })
+                : t('This person will administer the selected company only.')}
           </p>
         )}
         {companyAdministratorFlow && requiredAdminRoleBlocked && (
-          <ErrMsg msg="You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step." />
+          <ErrMsg msg={t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')} />
         )}
         {err && <ErrMsg msg={err} />}
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Cancel</button>
           <button onClick={submit} disabled={loading || policyLoading || (companyAdministratorFlow && (companyId !== requestedCompanyId || !createsAdministrator || requiredAdminRoleBlocked))} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
-            {loading ? 'Creating…' : companyAdministratorFlow ? 'Create administrator and continue' : 'Create'}
+            {t(loading ? 'Creating…' : companyAdministratorFlow ? 'Create administrator and continue' : 'Create')}
           </button>
         </div>
       </div>
