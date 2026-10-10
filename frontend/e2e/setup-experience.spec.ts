@@ -244,7 +244,7 @@ test('requires country and currency when the workspace has not supplied them', a
   expect(state.errors).toEqual([]);
 });
 
-test('offers import separately from AI Setup Studio and preserves its organization entry point', async ({ page }, info) => {
+test('offers import separately from Setup Studio and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await page.getByRole('button', { name: 'Import organization', exact: true }).click();
@@ -253,7 +253,7 @@ test('offers import separately from AI Setup Studio and preserves its organizati
   await accessible(page, '#setup-importOrganization');
   await contained(page);
   await evidence(page, info, 'import-entry');
-  await page.getByRole('button', { name: 'AI Setup Studio', exact: true }).click();
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   const setupSections = page.getByRole('navigation', { name: 'Setup sections', exact: true });
@@ -298,10 +298,10 @@ test('renders the setup shell and organization import path in Arabic RTL', async
   expect(state.unexpectedWrites).toEqual([]);
 });
 
-test('a read-only organization viewer cannot enter AI Setup Studio through a write-tab deep link', async ({ page }) => {
+test('a read-only organization viewer cannot enter Setup Studio through a write-tab deep link', async ({ page }) => {
   const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'AI Setup Studio', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
@@ -317,7 +317,7 @@ test('requires an explicit legal entity and uses an existing company’s country
   await page.getByLabel(/^Industry/).fill('Healthcare');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByLabel(/^Legal entity name/)).toBeVisible();
-  await expect(page.getByRole('region', { name: 'AI Setup Studio', exact: true }).getByRole('alert')).toContainText('legal entity name');
+  await expect(page.getByRole('region', { name: 'Setup Studio', exact: true }).getByRole('alert')).toContainText('legal entity name');
   expect(state.previews).toHaveLength(0);
   await page.getByLabel(/^Country/).selectOption('AE');
   await page.getByLabel(/^Currency/).selectOption('AED');
@@ -673,7 +673,7 @@ test('keeps each policy guide screen and its actions together on desktop', async
   }
 });
 
-test('keeps the default AI Setup Studio steps compact on desktop', async ({ page }, info) => {
+test('keeps the default Setup Studio steps compact on desktop', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
   for (const width of [1728, 1440]) {
     await page.setViewportSize({ width, height: 900 });

@@ -2308,7 +2308,7 @@ export function SetupPage() {
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
   const SelectedSettingIcon = selectedSetting.icon;
   const navigationTabs = canWrite ? [
-    { id: 'aiSetup' as const, label: t('AI Setup Studio'), icon: Sparkles },
+    { id: 'aiSetup' as const, label: t('Setup Studio'), icon: Sparkles },
     { id: 'importOrganization' as const, label: t('Import organization'), icon: Upload },
     ...directSettingsOrder.map((id) => {
       const tab = tabs.find((item) => item.id === id)!;
@@ -2323,7 +2323,7 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Configure every setup area directly, or use AI Setup Studio to prepare a reviewed starter configuration.')
+            ? t('Configure every setup area directly, or use Setup Studio to prepare a reviewed starter configuration.')
             : t('View your organization’s companies and legal entity details.')}
         </p>
       </header>
@@ -2354,7 +2354,7 @@ export function SetupPage() {
       {/* Keep drafts and uploaded files intact when users explore another path. */}
       {canWrite && (
         <>
-          <section id="setup-aiSetup" aria-label={t('AI Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
+          <section id="setup-aiSetup" aria-label={t('Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
             <AiSetupAssistant companies={companies} />
           </section>
           <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={selectedTab !== 'importOrganization'}>
