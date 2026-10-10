@@ -7,6 +7,7 @@ import {
   type CompanyBalance, type JournalExportDetail, type JournalExportFormat, type JournalExportManifest,
   type JournalExportScope, type JournalExportSummary, type JournalOutcome,
 } from '../../api/financeErp';
+import { useCompany } from '../../contexts/CompanyContext';
 import { usePayrollCompanies } from '../../hooks/usePayrollCompanies';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
@@ -62,6 +63,9 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const t = useT();
   const f = useFormat();
   const { companies } = usePayrollCompanies();
+  // Only a group-scoped user may export (or list) "all companies"; the API forbids it to anyone else, so a
+  // company-scoped user starts on their own company and never sees the group option.
+  const { isGroupScope } = useCompany();
   const [formats, setFormats] = useState<JournalExportFormat[] | null>(null);
   const [formatsError, setFormatsError] = useState('');
   const [period, setPeriod] = useState(defaultPeriod ?? thisMonth());
@@ -76,6 +80,12 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => { if (defaultPeriod) setPeriod(defaultPeriod); }, [defaultPeriod]);
+  useEffect(() => {
+    if (isGroupScope || companies.length === 0) return;
+    if (!companies.some(c => c.id === companyId)) setCompanyId(companies[0].id);
+  }, [isGroupScope, companies, companyId]);
+  /** A company-scoped user has no valid scope until their company is known: nothing is asked of the API before. */
+  const scopeReady = isGroupScope || companyId !== '';
 
   useEffect(() => {
     financeErpApi.formats()
@@ -86,10 +96,11 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const loadHistory = useCallback(() => {
     setHistory(null);
     setHistoryError('');
+    if (!scopeReady) return;
     financeErpApi.list({ period, companyId: companyId || null })
       .then(setHistory)
       .catch(err => setHistoryError(apiErrorReason(err, t('Export history could not be loaded.'))));
-  }, [period, companyId, t]);
+  }, [period, companyId, scopeReady, t]);
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const format = useMemo(() => formats?.find(x => x.key === formatKey) ?? null, [formats, formatKey]);
@@ -136,7 +147,8 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
         <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
           {t('Company')}
           <select className="select mt-1 w-full" value={companyId} onChange={e => setCompanyId(e.target.value)}>
-            <option value="">{t('All companies (one journal per company)')}</option>
+            {isGroupScope && <option value="">{t('All companies (one journal per company)')}</option>}
+            {!isGroupScope && companies.length === 0 && <option value="">{t('Loading companies…')}</option>}
             {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </label>
@@ -157,14 +169,21 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
             <p className="mb-1 font-semibold text-amber-700 dark:text-amber-300">{t('Template layout: import one test file into your ERP test company before using it for real postings.')}</p>
           )}
           <p>{format.disclaimer}</p>
+          {format.singleCompany && companyId === '' && (
+            <p className="mt-1 font-semibold text-amber-700 dark:text-amber-300" data-testid="journal-export-single-company">
+              {t('This format holds one company per file: choose a company above.')}
+            </p>
+          )}
           {format.options.length > 0 && (
-            <details className="mt-2">
-              <summary className="cursor-pointer font-medium">{t('ERP settings for this format (optional)')}</summary>
+            <details className="mt-2" open={format.options.some(o => o.required)}>
+              <summary className="cursor-pointer font-medium">
+                {format.options.some(o => o.required) ? t('ERP settings for this format') : t('ERP settings for this format (optional)')}
+              </summary>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 {format.options.map(o => (
                   <label key={o.key} className="text-xs">
-                    {o.label}
-                    <input className="input mt-1 w-full" maxLength={o.maxLength} placeholder={o.defaultValue}
+                    {o.required ? t('{label} (required)', { label: o.label }) : o.label}
+                    <input className="input mt-1 w-full" maxLength={o.maxLength} placeholder={o.defaultValue} required={o.required}
                       value={options[o.key] ?? ''} onChange={e => setOptions(prev => ({ ...prev, [o.key]: e.target.value }))} />
                     <span className="mt-0.5 block text-[11px] text-slate-400">{o.description}</span>
                   </label>
@@ -176,10 +195,10 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
       )}
 
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn-secondary text-xs" disabled={!!busy || !period} onClick={() => run('preview')}>
+        <button type="button" className="btn-secondary text-xs" disabled={!!busy || !period || !scopeReady} onClick={() => run('preview')}>
           {busy === 'preview' ? t('Checking…') : t('Check balances')}
         </button>
-        <button type="button" className="btn-primary text-xs" disabled={!!busy || !period || !formats} onClick={() => run('create')}>
+        <button type="button" className="btn-primary text-xs" disabled={!!busy || !period || !formats || !scopeReady} onClick={() => run('create')}>
           {busy === 'create' ? t('Creating file…') : t('Create export file')}
         </button>
       </div>
@@ -247,6 +266,9 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
                     </button>
                   </span>
                 </div>
+                {row.status === 'Superseded' && row.supersedeReason && (
+                  <p className="mt-1 text-xs text-slate-500">{row.supersedeReason}</p>
+                )}
                 {openId === row.id && <ExportOutcome id={row.id} onChanged={loadHistory} />}
               </li>
             ))}

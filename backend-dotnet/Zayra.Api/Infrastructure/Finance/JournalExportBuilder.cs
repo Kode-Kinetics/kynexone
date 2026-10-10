@@ -53,6 +53,10 @@ public sealed class JournalExportSelection
 /// confirmed export a Replacement is allowed to re-send.</summary>
 public sealed record ConfirmedExclusion(Guid? ExceptExportId = null);
 
+/// <summary>One ledger row the ERP already confirmed: through which export, which journal (null = the whole file
+/// was confirmed) and under which ERP document number.</summary>
+public sealed record ConfirmedHit(Guid EntryId, Guid ExportId, string? DocumentRef, string? ErpDocumentNumber);
+
 public static class JournalExportErrors
 {
     public const string TieOutFailed = "export_tie_out_failed";
@@ -68,6 +72,12 @@ public static class JournalExportErrors
     public const string ReplacementTargetInvalid = "replacement_target_invalid";
     public const string InvalidOption = "invalid_format_option";
     public const string ConcurrentExport = "concurrent_export";
+    public const string OptionRequired = "format_option_required";
+    public const string SingleCompanyFormat = "single_company_format";
+    public const string CompanyCodeShared = "company_code_shared";
+    public const string PriorPartlyRecorded = "prior_export_partly_recorded";
+    public const string GroupExportLive = "group_export_live";
+    public const string RowsAlreadyConfirmed = "rows_already_confirmed";
 }
 
 /// <summary>Rounded DR/CR of one company inside an export — every company must balance on its own.</summary>
@@ -226,50 +236,79 @@ public static class JournalExportBuilder
     /// <summary>
     /// The ledger rows among <paramref name="candidateIds"/> that the client's ERP has CONFIRMED, from any
     /// export of any format or scope (a row booked by the ERP is booked, whichever file carried it):
-    /// every line of a <c>Confirmed</c> export, plus the lines of individually confirmed journals inside a
-    /// partially confirmed one. Rejected journals and unconfirmed exports never count.
+    /// every line of a <c>Confirmed</c> export, plus the lines of individually confirmed journals inside an
+    /// export with per-journal outcomes (whatever its status, Superseded included). Rejected journals and
+    /// unconfirmed exports never count.
     /// </summary>
     public static async Task<(HashSet<Guid> EntryIds, IReadOnlyList<Guid> ExportIds)> ConfirmedEntryIdsAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> candidateIds, Guid? exceptExportId, CancellationToken ct)
     {
+        var hits = await ConfirmedHitsAsync(db, tenantId, candidateIds,
+            exceptExportId is { } x ? new[] { x } : Array.Empty<Guid>(), ct);
+        return (hits.Select(h => h.EntryId).ToHashSet(), hits.Select(h => h.ExportId).Distinct().OrderBy(i => i).ToList());
+    }
+
+    /// <summary>Every (ledger row, confirming export, journal, ERP document number) among
+    /// <paramref name="candidateIds"/>, ignoring the exports in <paramref name="exceptExportIds"/>. The detail behind
+    /// <see cref="ConfirmedEntryIdsAsync"/>, used to tell a checker WHICH export already holds the rows.</summary>
+    public static async Task<List<ConfirmedHit>> ConfirmedHitsAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> candidateIds, IReadOnlyCollection<Guid> exceptExportIds,
+        CancellationToken ct)
+    {
+        var result = new List<ConfirmedHit>();
+        if (candidateIds.Count == 0) return result;
+        var except = exceptExportIds.ToList();
         var exports = ScopedBypass.TenantWide(db.GlJournalExports,
             tenantId, "double-post guard: an ERP-confirmed row is in the client's books whichever legal entity's export carried it");
         var lines = ScopedBypass.TenantWide(db.GlJournalExportLines,
             tenantId, "double-post guard: frozen lines of ERP-confirmed exports, matched only against rows already in the caller's selection");
 
-        var fullyConfirmed = exports.AsNoTracking()
-            .Where(x => x.Status == GlJournalExportStatuses.Confirmed && x.Id != exceptExportId)
-            .Select(x => x.Id);
-        var hits = await lines.AsNoTracking()
-            .Where(l => candidateIds.Contains(l.FinanceGlEntryId) && fullyConfirmed.Contains(l.GlJournalExportId))
-            .Select(l => new { l.FinanceGlEntryId, l.GlJournalExportId })
+        var fullyConfirmed = await exports.AsNoTracking()
+            .Where(x => x.Status == GlJournalExportStatuses.Confirmed && x.ConfirmedJournalCount == 0 && !except.Contains(x.Id))
+            .Select(x => new { x.Id, x.ErpDocumentNumber })
             .ToListAsync(ct);
-        var entryIds = hits.Select(h => h.FinanceGlEntryId).ToHashSet();
-        var exportIds = hits.Select(h => h.GlJournalExportId).ToHashSet();
+        if (fullyConfirmed.Count > 0)
+        {
+            var ids = fullyConfirmed.Select(x => x.Id).ToList();
+            var numbers = fullyConfirmed.ToDictionary(x => x.Id, x => x.ErpDocumentNumber);
+            var hits = await lines.AsNoTracking()
+                .Where(l => candidateIds.Contains(l.FinanceGlEntryId) && ids.Contains(l.GlJournalExportId))
+                .Select(l => new { l.FinanceGlEntryId, l.GlJournalExportId })
+                .Distinct()
+                .ToListAsync(ct);
+            result.AddRange(hits.Select(h => new ConfirmedHit(h.FinanceGlEntryId, h.GlJournalExportId, null, numbers[h.GlJournalExportId])));
+        }
 
+        // Per-journal outcomes: an export confirmed journal by journal keeps ConfirmedJournalCount > 0 whatever its
+        // status, so only its CONFIRMED journals count — never its rejected or still-pending ones.
         var partial = await exports.AsNoTracking()
-            .Where(x => x.ConfirmedJournalCount > 0 && x.Status != GlJournalExportStatuses.Confirmed && x.Id != exceptExportId)
+            .Where(x => x.ConfirmedJournalCount > 0 && !except.Contains(x.Id))
             .Select(x => new { x.Id, x.JournalConfirmationsJson })
             .ToListAsync(ct);
         foreach (var p in partial)
         {
-            var keys = ParseConfirmations(p.JournalConfirmationsJson)
-                .Where(c => c.Status == GlJournalExportStatuses.Confirmed)
-                .SelectMany(c => c.JournalRefs.Select(r => c.CompanyCode + "|" + r))
-                .ToHashSet(StringComparer.Ordinal);
-            if (keys.Count == 0) continue;
+            var byKey = new Dictionary<string, GlJournalConfirmation>(StringComparer.Ordinal);
+            foreach (var c in ParseConfirmations(p.JournalConfirmationsJson).Where(c => c.Status == GlJournalExportStatuses.Confirmed))
+                foreach (var r in c.JournalRefs) byKey[c.CompanyCode + "|" + r] = c;
+            if (byKey.Count == 0) continue;
             var partLines = await lines.AsNoTracking()
                 .Where(l => l.GlJournalExportId == p.Id && candidateIds.Contains(l.FinanceGlEntryId))
                 .Select(l => new { l.FinanceGlEntryId, l.CompanyCode, l.JournalRef })
                 .ToListAsync(ct);
-            foreach (var l in partLines.Where(l => keys.Contains(l.CompanyCode + "|" + l.JournalRef)))
-            {
-                entryIds.Add(l.FinanceGlEntryId);
-                exportIds.Add(p.Id);
-            }
+            foreach (var l in partLines)
+                if (byKey.TryGetValue(l.CompanyCode + "|" + l.JournalRef, out var c))
+                    result.Add(new ConfirmedHit(l.FinanceGlEntryId, p.Id, c.DocumentRef, c.ErpDocumentNumber));
         }
-        return (entryIds, exportIds.OrderBy(i => i).ToList());
+        return result.DistinctBy(h => (h.EntryId, h.ExportId)).ToList();
     }
+
+    /// <summary>The (company code, journal ref) keys of an export's journals the ERP REJECTED — their rows are
+    /// owed again, so nothing may count them as handed over.</summary>
+    public static HashSet<string> RejectedJournalKeys(string? journalConfirmationsJson) =>
+        ParseConfirmations(journalConfirmationsJson)
+            .Where(c => c.Status == GlJournalExportStatuses.Rejected)
+            .SelectMany(c => c.JournalRefs.Select(r => c.CompanyCode + "|" + r))
+            .ToHashSet(StringComparer.Ordinal);
 
     public static List<GlJournalConfirmation> ParseConfirmations(string? json)
     {
@@ -421,10 +460,11 @@ public static class JournalExportBuilder
 
         // Per legal entity: an ERP books each company's journal into that company's ledger, so a file that
         // balances in total while company A is short what company B is long is two unbalanced journals.
-        var byCompany = lines.GroupBy(l => l.CompanyCode)
-            .OrderBy(g => g.Key, StringComparer.Ordinal)
-            .Select(g => new CompanyBalance(g.Key, g.Select(l => l.CompanyId).FirstOrDefault(id => id is not null),
-                g.Sum(l => JournalAmount.Round(l.Debit)), g.Sum(l => JournalAmount.Round(l.Credit)), g.Count()))
+        // Grouped by legal entity (JournalLegalEntities.Of), labelled by code: two companies that share a code
+        // string must each balance, never offset each other.
+        var byCompany = JournalLegalEntities.Of(lines)
+            .Select(g => new CompanyBalance(g.CompanyCode, g.CompanyId,
+                g.Lines.Sum(l => JournalAmount.Round(l.Debit)), g.Lines.Sum(l => JournalAmount.Round(l.Credit)), g.Lines.Count))
             .ToList();
 
         string? failure = null;

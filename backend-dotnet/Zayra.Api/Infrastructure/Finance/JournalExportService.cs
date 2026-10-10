@@ -181,6 +181,25 @@ public sealed class JournalExportService
                     + $"{JournalExportBuilder.UnattributedCompanyCode} as their own journal: assign them in your ERP, "
                     + "or export per company.");
         }
+        // Two legal entities resolving to ONE code would be read by the ERP as one company. The setup screen refuses a
+        // duplicate ERP code, but a code can still equal another company's registration-number fallback: refuse here,
+        // before anything is built, and name both companies.
+        var present = selection.Entries.Select(e => e.CompanyId).Where(id => id is not null).Select(id => id!.Value)
+            .Concat(company is not null ? new[] { company.Id } : Array.Empty<Guid>())
+            .Distinct().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+        var shared = present.GroupBy(c => JournalExportBuilder.CompanyCodeOf(c), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(g => g.Count() > 1);
+        if (shared is not null)
+            return (null, new JournalExportRefusal(422, new
+            {
+                error = JournalExportErrors.CompanyCodeShared,
+                message = $"{string.Join(" and ", shared.Select(c => c.LegalNameEn).OrderBy(n => n, StringComparer.Ordinal))} both "
+                        + $"use the ERP company code '{shared.Key}', so your ERP could not tell their journals apart. Give each "
+                        + "company its own ERP company code in Company setup, then export again.",
+                companyCode = shared.Key,
+                companies = shared.Select(c => new { companyId = c.Id, name = c.LegalNameEn }).ToList(),
+            }));
+
         string CodeOf(FinanceGlEntry e) =>
             e.CompanyId is { } id && byId.TryGetValue(id, out var c) ? JournalExportBuilder.CompanyCodeOf(c)
             : e.CompanyId is { } unknown ? unknown.ToString("N")[..8].ToUpperInvariant()
@@ -225,6 +244,17 @@ public sealed class JournalExportService
                     companyCode = b.CompanyCode, companyId = b.CompanyId, debits = b.Debits, credits = b.Credits,
                     delta = b.Delta, balanced = b.Balanced, lines = b.Lines,
                 }).ToList(),
+            }));
+
+        // QuickBooks, Xero, Zoho and D365 book one legal entity per file/import: a multi-company file would put every
+        // company's payroll into one ledger. Refused rather than left to a disclaimer.
+        if (formatter.SingleEntity && JournalLegalEntities.Of(lines) is { Count: > 1 } entities)
+            return (null, new JournalExportRefusal(422, new
+            {
+                error = JournalExportErrors.SingleCompanyFormat,
+                message = "This format holds one company per file; export each company separately.",
+                format = formatter.Key,
+                companies = entities.Select(e => new { companyCode = e.CompanyCode, companyId = e.CompanyId }).ToList(),
             }));
 
         var codes = lines.Select(l => l.CompanyCode).Distinct(StringComparer.Ordinal).ToList();
@@ -274,9 +304,8 @@ public sealed class JournalExportService
         IJournalExportFormatter formatter, IReadOnlyDictionary<string, string>? requested)
     {
         var result = new SortedDictionary<string, string>(StringComparer.Ordinal);
-        if (requested is null || requested.Count == 0) return (result, null);
         var specs = formatter.Options.ToDictionary(o => o.Key, StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, raw) in requested)
+        foreach (var (key, raw) in requested ?? new Dictionary<string, string>())
         {
             var value = (raw ?? string.Empty).Trim();
             if (!specs.TryGetValue(key, out var spec))
@@ -287,6 +316,16 @@ public sealed class JournalExportService
                 return (result, OptionRefusal(formatter, $"{spec.Label} must be a number."));
             if (value.Length > 0) result[spec.Key] = value;
         }
+        // Checked before anything is built or persisted: a file the ERP refuses must never be stamped Exported or
+        // supersede the previous one.
+        if (formatter.Options.FirstOrDefault(o => o.Required && !result.ContainsKey(o.Key)) is { } missing)
+            return (result, new JournalExportRefusal(422, new
+            {
+                error = JournalExportErrors.OptionRequired,
+                option = missing.Key,
+                message = $"Enter the {missing.Label} for {formatter.DisplayName}: {missing.Description}",
+                allowed = formatter.Options.Select(o => new { o.Key, o.Label, o.DefaultValue, o.MaxLength, o.Required }).ToList(),
+            }));
         return (result, null);
     }
 
@@ -366,7 +405,7 @@ public sealed class JournalExportService
                 ExternalAccountCode = l.ExternalAccountCode,
             });
 
-        SupersedePriors(export.Id, priorLive);
+        SupersedePriors(export, priorLive);
 
         return export;
     }
@@ -374,13 +413,26 @@ public sealed class JournalExportService
     /// <summary>Exports produced from now on. 0/1 = the frozen v1 layouts (see JournalExportFormattersV1).</summary>
     public const int CurrentFormatVersion = 2;
 
-    /// <summary>An earlier export of the same scope+format that the ERP never confirmed is history now.
-    /// A CONFIRMED one is left alone: it is the evidence the ERP holds that journal.</summary>
-    public static void SupersedePriors(Guid newExportId, IReadOnlyList<GlJournalExport> priorLive)
+    /// <summary>An earlier export of the same scope+format that the ERP never answered for is history now. A
+    /// CONFIRMED one is left alone (it is the evidence the ERP holds that journal), and so is one with ANY per-journal
+    /// outcome recorded: part of it is evidence too, and the caller refuses the new export until the rest is recorded
+    /// (<see cref="HasJournalOutcomes"/>). The superseded row says by which export and why.</summary>
+    public static void SupersedePriors(GlJournalExport replacement, IReadOnlyList<GlJournalExport> priorLive)
     {
-        foreach (var prior in priorLive.Where(p => p.Id != newExportId && p.Status == GlJournalExportStatuses.Exported))
+        foreach (var prior in priorLive.Where(p => p.Id != replacement.Id && p.Status == GlJournalExportStatuses.Exported
+                                                  && !HasJournalOutcomes(p)))
+        {
             prior.Status = GlJournalExportStatuses.Superseded;
+            prior.SupersededByExportId = replacement.Id;
+            prior.SupersedeReason = ErpFile.Clip(
+                $"Replaced by a newer {replacement.Kind.ToLowerInvariant()} file of the same month, format and currency "
+                + $"({replacement.FileName}) before your ERP's result was recorded.", 300);
+        }
     }
+
+    /// <summary>True once any journal of the export has an ERP outcome (confirmed or rejected).</summary>
+    public static bool HasJournalOutcomes(GlJournalExport e) =>
+        e.ConfirmedJournalCount > 0 || JournalExportBuilder.ParseConfirmations(e.JournalConfirmationsJson).Count > 0;
 
     // ── Regenerate from the frozen line set ───────────────────────────────────────────────────────
 

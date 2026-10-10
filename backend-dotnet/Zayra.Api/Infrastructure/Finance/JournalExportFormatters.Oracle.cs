@@ -10,7 +10,7 @@ internal static class OracleOptions
     public static readonly IReadOnlyList<JournalExportOptionSpec> Specs = new[]
     {
         new JournalExportOptionSpec("ledgerId", "Ledger ID", string.Empty,
-            "Your ledger's numeric LEDGER_ID. Journal Import refuses rows without one.", 15),
+            "Your ledger's numeric LEDGER_ID. Journal Import refuses rows without one.", 15, Required: true),
         new JournalExportOptionSpec("sourceName", "Journal source", DefaultSource,
             "USER_JE_SOURCE_NAME — must exist as a journal source in your instance."),
         new JournalExportOptionSpec("categoryName", "Journal category", string.Empty,

@@ -118,6 +118,14 @@ public class GlJournalExport : ITenantOwned
     /// the double-post probe can find partially confirmed exports without parsing every JSON body.</summary>
     public int ConfirmedJournalCount { get; set; }
 
+    /// <summary>The export that took over this one's scope when it became <c>Superseded</c>. Null for an export
+    /// that is still live, and for the raced duplicates the AddErpCodesAndLiveExportIndex migration retired (it
+    /// records the kept export's id in <see cref="SupersedeReason"/> instead, because it ran before any new export).</summary>
+    public Guid? SupersededByExportId { get; set; }
+    /// <summary>Plain-language reason this export stopped being live, written in the same save that superseded it.
+    /// Evidence on the row itself, so a finance reviewer sees why without reading the audit log.</summary>
+    public string? SupersedeReason { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

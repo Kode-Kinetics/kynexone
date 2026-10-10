@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { JournalExportFormat, JournalExportManifest, JournalExportSummary, JournalExportJournal } from '../src/api/financeErp';
+import type { GlPeriod, JournalExportFormat, JournalExportManifest, JournalExportSummary, JournalExportJournal } from '../src/api/financeErp';
 
 /**
  * ERP journal hand-off on the Payroll → GL Journal tab, against synthetic, intercepted API responses.
@@ -38,8 +38,16 @@ function manifest(exportId: string | null, kind: JournalExportManifest['kind'] =
   };
 }
 
+const periods: GlPeriod[] = [
+  { id: 'p1', companyId: 'co-a', period: '2026-09', status: 'Open', closedAtUtc: '2026-10-01T08:00:00Z', closedByName: 'Finance Lead', closedReason: null, reopenedAtUtc: '2026-10-02T08:00:00Z', reopenedByName: 'Controller', reopenReason: 'Late correction' },
+  { id: 'p2', companyId: 'co-b', period: '2026-08', status: 'Closed', closedAtUtc: '2026-09-02T08:00:00Z', closedByName: 'Finance Lead', closedReason: null, reopenedAtUtc: null, reopenedByName: null, reopenReason: null },
+  { id: 'p3', companyId: null, period: '2026-07', status: 'Closed', closedAtUtc: '2026-08-05T08:00:00Z', closedByName: 'Group CFO', closedReason: null, reopenedAtUtc: null, reopenedByName: null, reopenReason: null },
+];
+
 interface State {
   doublePost: boolean;
+  periodCalls: { method: string; path: string; search: string; body: unknown }[];
+  listCalls: string[];
   history: JournalExportSummary[];
   journals: JournalExportJournal[];
   confirms: unknown[];
@@ -48,9 +56,21 @@ interface State {
   errors: string[];
 }
 
-async function boot(page: Page, options: { doublePost?: boolean; locale?: 'en' | 'ar' } = {}): Promise<State> {
+interface BootOptions {
+  doublePost?: boolean;
+  locale?: 'en' | 'ar';
+  /** false = a finance user whose access is limited to company A (the API forbids them "all companies"). */
+  groupScope?: boolean;
+  /** 'periods' opens Setup → GL & rates → Accounting periods instead of the payroll GL Journal tab. */
+  screen?: 'journal' | 'periods';
+}
+
+async function boot(page: Page, options: BootOptions = {}): Promise<State> {
+  const groupScope = options.groupScope ?? true;
+  const visibleCompanies = groupScope ? [companyA, companyB] : [companyA];
   const state: State = {
     doublePost: options.doublePost ?? false, history: [], confirms: [], rejects: [], creates: [], errors: [],
+    periodCalls: [], listCalls: [],
     journals: [
       { journalRef: '2026-07-Payroll-11111111-Accrual', companyCode: 'SA01', composite: false, lineCount: 2, debits: 10000, credits: 10000, accountingDate: '2026-07-31', description: 'July salaries', status: 'Pending', erpDocumentNumber: null, erpPostedAtUtc: null, reason: null, decidedByName: null },
       { journalRef: '2026-07-Loan-66666666-Disbursement', companyCode: '1010-555', composite: false, lineCount: 2, debits: 2500, credits: 2500, accountingDate: '2026-07-31', description: 'Loan LN-1', status: 'Pending', erpDocumentNumber: null, erpPostedAtUtc: null, reason: null, decidedByName: null },
@@ -72,15 +92,22 @@ async function boot(page: Page, options: { doublePost?: boolean; locale?: 'en' |
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/auth/me') return reply({
       id: 'gl-reviewer', tenantId: 'gl-tenant', tenantSlug: 'gl-fixture', fullName: 'Finance Reviewer',
-      roles: ['Admin'], permissions: ['payroll.read', 'finance.gl.read', 'finance.gl.manage', 'finance.erp.confirm', 'dashboard.read'],
-      accountType: 'Group', isGroupScope: true,
-      companies: [companyA, companyB].map(c => ({ id: c.id, name: c.name, code: c.id, countryCode: 'SA', isActive: true })),
+      roles: ['Admin'],
+      permissions: ['payroll.read', 'finance.gl.read', 'finance.gl.manage', 'finance.erp.confirm', 'finance.gl.period.reopen', 'dashboard.read',
+        ...(options.screen === 'periods' ? ['organization.write', 'organization.read'] : [])],
+      accountType: 'Group', isGroupScope: groupScope,
+      companies: visibleCompanies.map(c => ({ id: c.id, name: c.name, code: c.id, countryCode: 'SA', isActive: true })),
     });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/features/modules' || path === '/api/notifications') return reply([]);
-    if (path === '/api/companies') return reply(paged([companyA, companyB]));
-    if (path === '/api/payroll/companies') return reply([companyA, companyB]);
+    if (path === '/api/companies') return reply(paged(visibleCompanies.map(c => ({ ...c, legalNameEn: c.name, legalNameAr: '', countryCode: 'SA', isActive: true }))));
+    if (path === '/api/payroll/companies') return reply(visibleCompanies);
+    if (path === '/api/finance/gl/periods') return reply(periods);
+    if (path.startsWith('/api/finance/gl/periods/')) {
+      state.periodCalls.push({ method: request.method(), path, search: url.search, body: request.postDataJSON() });
+      return reply(periods[0]);
+    }
 
     const gl = '/api/finance/gl/journal-exports';
     if (path === `${gl}/formats`) return reply(formats);
@@ -101,7 +128,7 @@ async function boot(page: Page, options: { doublePost?: boolean; locale?: 'en' |
       }];
       return reply(created, 201);
     }
-    if (path === gl) return reply(state.history);
+    if (path === gl) { state.listCalls.push(url.search); return reply(state.history); }
     if (path === `${gl}/exp-1/download`) return route.fulfill({
       status: 200, contentType: 'text/csv',
       headers: { 'content-disposition': 'attachment; filename="journal-GROUP-2026-07-SAR-generic-csv-5F0C2A9E.csv"' },
@@ -132,6 +159,12 @@ async function boot(page: Page, options: { doublePost?: boolean; locale?: 'en' |
     return reply(paged([]));
   });
 
+  if (options.screen === 'periods') {
+    await page.goto('/setup?tab=glMapping');
+    await page.getByRole('tab', { name: 'Accounting periods' }).click();
+    await expect(page.getByRole('heading', { name: 'Accounting periods' })).toBeVisible({ timeout: 60_000 });
+    return state;
+  }
   await page.goto('/payroll');
   await page.getByRole('tab', { name: /GL Journal/ }).click();
   const heading = options.locale === 'ar' ? 'إرسال القيد إلى نظام تخطيط الموارد' : 'Send journal to your ERP';
@@ -217,4 +250,62 @@ test('shows the double-post refusal in plain words and creates nothing', async (
 test('renders the panel in Arabic', async ({ page }) => {
   await boot(page, { locale: 'ar' });
   await expect(page.getByRole('button', { name: 'إنشاء ملف التصدير' })).toBeVisible();
+});
+
+test('a company-scoped finance user starts on their own company and is never offered "all companies"', async ({ page }) => {
+  const state = await boot(page, { groupScope: false });
+  const company = page.getByLabel('Company');
+  await expect(company).toHaveValue('co-a');
+  await expect(company.locator('option')).toHaveText(['Alpha KSA']);
+  await expect(page.getByText('No export files for this month yet.')).toBeVisible();
+  expect(state.listCalls.length).toBeGreaterThan(0);
+  expect(state.listCalls.every(q => q.includes('companyId=co-a')), 'history is never asked for the whole group').toBe(true);
+
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Create export file' }).click();
+  await expect(page.getByTestId('journal-export-manifest').getByText(/File created:/)).toBeVisible();
+  expect(state.creates[0]).toContain('companyId=co-a');
+  expect(state.errors).toEqual([]);
+});
+
+test('group view: each period row is closed or reopened in its own company, and a group-wide close is explicit', async ({ page }, info) => {
+  const state = await boot(page, { screen: 'periods' });
+  const rows = page.getByTestId('gl-periods');
+  await expect(rows.getByTestId('gl-period-company')).toHaveText(['Alpha KSA', 'Beta Services', 'All companies']);
+
+  // Company A's reopened September: "Close month" closes company A only — never the whole group.
+  await page.getByTestId('gl-period-2026-09-co-a').getByRole('button', { name: 'Close month' }).click();
+  await expect.poll(() => state.periodCalls.length).toBe(1);
+  expect(state.periodCalls[0]).toMatchObject({ method: 'POST', path: '/api/finance/gl/periods/2026-09/close', search: '?companyId=co-a' });
+
+  // Company B's closed August reopens in company B's scope.
+  const august = page.getByTestId('gl-period-2026-08-co-b');
+  await august.getByRole('button', { name: 'Reopen month' }).click();
+  await august.getByLabel('Why reopen this month? (required)').fill('Late loan posting');
+  await august.getByRole('button', { name: 'Confirm reopen' }).click();
+  await expect.poll(() => state.periodCalls.length).toBe(2);
+  expect(state.periodCalls[1]).toMatchObject({ path: '/api/finance/gl/periods/2026-08/reopen', search: '?companyId=co-b', body: { reason: 'Late loan posting' } });
+
+  // A new close for every company names the companies it blocks, and is sent only after confirmation.
+  await page.getByLabel('Month to close').fill('2026-10');
+  await expect(page.getByTestId('gl-period-close-target')).toHaveValue('');
+  await page.getByRole('button', { name: 'Close for all companies' }).first().click();
+  const confirm = page.getByTestId('gl-period-group-close-confirm');
+  await expect(confirm).toContainText('Close 2026-10 for all companies?');
+  await expect(confirm).toContainText('Alpha KSA, Beta Services');
+  expect(state.periodCalls).toHaveLength(2);
+  const shot = info.outputPath('gl-periods-group-close-confirm.png');
+  await page.screenshot({ path: shot, fullPage: true });
+  await info.attach('gl-periods-group-close-confirm', { path: shot, contentType: 'image/png' });
+  await confirm.getByRole('button', { name: 'Close for all companies' }).click();
+  await expect.poll(() => state.periodCalls.length).toBe(3);
+  expect(state.periodCalls[2]).toMatchObject({ path: '/api/finance/gl/periods/2026-10/close', search: '' });
+
+  // Choosing one company closes just that company, with no group confirmation.
+  await page.getByLabel('Month to close').fill('2026-11');
+  await page.getByTestId('gl-period-close-target').selectOption('co-b');
+  await page.getByRole('button', { name: 'Close month', exact: true }).first().click();
+  await expect.poll(() => state.periodCalls.length).toBe(4);
+  expect(state.periodCalls[3]).toMatchObject({ path: '/api/finance/gl/periods/2026-11/close', search: '?companyId=co-b' });
+  expect(state.errors).toEqual([]);
 });

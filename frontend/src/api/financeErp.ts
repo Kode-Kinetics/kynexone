@@ -22,6 +22,8 @@ export interface JournalExportOption {
   defaultValue: string;
   description: string;
   maxLength: number;
+  /** The ERP refuses the file without it (Oracle's Ledger ID): the server refuses the export until it is set. */
+  required?: boolean;
 }
 
 export interface JournalExportFormat {
@@ -33,6 +35,8 @@ export interface JournalExportFormat {
   /** "Verified" = pinned to a documented spec; "Template" = validate in the ERP's test instance first. */
   status: 'Verified' | 'Template';
   options: JournalExportOption[];
+  /** One legal entity per file (QuickBooks, Xero, Zoho, D365): a group export of several companies is refused. */
+  singleCompany?: boolean;
 }
 
 export interface JournalExportScope {
@@ -108,6 +112,9 @@ export interface JournalExportSummary {
   replacesExportId: string | null;
   formatVersion: number;
   confirmedJournalCount: number;
+  /** Set when this file stopped being live: the export that took over its scope, and why in plain words. */
+  supersededByExportId?: string | null;
+  supersedeReason?: string | null;
 }
 
 export interface JournalExportJournal {

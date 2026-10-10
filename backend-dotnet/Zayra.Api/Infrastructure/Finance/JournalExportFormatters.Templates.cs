@@ -48,19 +48,25 @@ public sealed class SapS4GeneralJournalFormatter : IJournalExportFormatter
 
 /// <summary>
 /// Microsoft Dynamics 365 Finance &amp; Operations — General journal (LedgerJournalLineEntity-style) CSV for a
-/// Data management import project. One JOURNALBATCHNUMBER per company (a journal belongs to one legal entity:
-/// import each batch into its company), one VOUCHER per balanced journal. No field has room for the EntryId;
+/// Data management import project, one VOUCHER per balanced journal. No field has room for the EntryId;
 /// LINENUMBER restarts per batch.
+///
+/// <para>SINGLE ENTITY. The general journal entity is company-specific: a data project imports into the legal
+/// entity it runs in. Routing rows to several legal entities would need a mapped DataAreaId whose values are the
+/// D365 legal-entity ids, and our COMPANYCODE (the client's free-text ERP code) is not guaranteed to be one — so a
+/// multi-company file would book every company into the project's entity. One company per file is enforced.</para>
 /// </summary>
 public sealed class D365GeneralJournalFormatter : IJournalExportFormatter
 {
     public string Key => "d365-fo-general-journal";
+    public bool SingleEntity => true;
     public string DisplayName => "Dynamics 365 Finance general journal (CSV)" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "Data management import of general journal lines. Each JOURNALBATCHNUMBER holds one company — import it into "
       + "that legal entity. ACCOUNTDISPLAYVALUE is the external code when mapped (include your financial dimensions "
       + "there, e.g. 6100-001-DEPT). Journal name defaults to GenJrn. Dates are ISO yyyy-MM-dd: set the source data "
-      + "format accordingly. COMPANYCODE is informational (which legal entity the batch belongs to): leave it unmapped.";
+      + "format accordingly. COMPANYCODE is informational: leave it unmapped. A data project imports into one legal entity, so "
+      + "one file holds one company: export each company separately.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
     public IReadOnlyList<JournalExportOptionSpec> Options { get; } = new[]
@@ -174,6 +180,7 @@ public sealed class NetSuiteJournalFormatter : IJournalExportFormatter
 public sealed class XeroManualJournalFormatter : IJournalExportFormatter
 {
     public string Key => "xero-manual-journal";
+    public bool SingleEntity => true;
     public string DisplayName => "Xero manual journal import CSV" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "Xero imports manual journals in your organisation's base currency only, and one Xero organisation is one "
@@ -200,6 +207,7 @@ public sealed class XeroManualJournalFormatter : IJournalExportFormatter
 public sealed class ZohoBooksJournalFormatter : IJournalExportFormatter
 {
     public string Key => "zoho-books-journal";
+    public bool SingleEntity => true;
     public string DisplayName => "Zoho Books manual journal import CSV" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "Map the columns in Zoho Books' journal import. Account is matched on the account name or code — set the GL "
