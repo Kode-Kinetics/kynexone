@@ -35,7 +35,7 @@ import {
   secretFromProvisioningUri,
   type MfaPrompt,
 } from '@/auth/mfaFlow';
-import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
+import { riyadhBusinessDate } from '@/utils/businessDate';
 import { zonedWallTimeToUtcIso } from '@/features/overtime/overtimeLogic';
 import {
   buildLocationFields,
@@ -52,6 +52,23 @@ import {
   type WithdrawalResult,
 } from '@/features/attendance/selfieAttendance';
 import { COMPANY_TIME_ZONE, companyWallTimeToUtcIso } from '@/features/attendance/companyTime';
+import {
+  balanceFacts,
+  mapLeaveFacts,
+  mapOvertimeApproval,
+  mapWorkflowApproval,
+  mergeInbox,
+  myDecisionsFrom,
+  overtimeOutcome,
+  workflowOutcome,
+  type BalanceFacts,
+  type DecisionOutcome,
+  type InboxItem,
+  type LeaveFacts,
+  type MyDecision,
+} from '@/features/approvals/approvalModel';
+import { overlapping, teamTodayCounts, type OutEntry, type TeamDay, type TeamMemberToday } from '@/features/approvals/teamModel';
+import { teamCalendarApi } from './teamCalendar';
 import type {
   AuthUser,
   AuthTokens,
@@ -77,7 +94,6 @@ import type {
   AIAskResponse,
   EmployeeDashboard,
   ManagerDashboard,
-  TeamMember,
   PaginatedResponse,
   Holiday,
 } from '@/types';
@@ -351,7 +367,8 @@ function mapApprovalItem(item: any): ApprovalItem {
     type: mapApprovalType(item.entityName ?? item.module),
     title,
     requestedBy: item.requestedByName ?? requester ?? 'Requester',
-    requestedAt: item.createdAtUtc ?? new Date().toISOString(),
+    // Never "just now" when the server sent no date: an empty string renders as no date.
+    requestedAt: item.createdAtUtc ?? '',
     urgency: item.isOverdue ? 'HIGH' : String(item.priority ?? '').toLowerCase() === 'high' ? 'HIGH' : 'MEDIUM',
     summary: item.description ?? item.entityName ?? '',
     details,
@@ -804,39 +821,33 @@ export const dashboardApi = {
     };
   },
 
+  /**
+   * Manager summary built from the SAME sources and definitions as the Approvals and Team screens
+   * (features/approvals/approvalModel + teamModel), so every number on Home reconciles with the list
+   * it opens. /dashboard/overview is not used: its approval count came from a different query than
+   * the queue, and its team figures are tenant-wide.
+   */
   async getManagerDashboard(): Promise<ManagerDashboard> {
-    const monthPrefix = riyadhBusinessMonth();
-    const [overview, team, overtime] = await Promise.all([
-      apiGet<any>('/dashboard/overview'),
-      teamApi.getTeamMembers(),
-      // Every request this month, page by page (one page of 200 left the rest out of the total).
-      // The API orders by work date, newest first, so paging stops once a page reaches last month.
-      fetchAllPages<any>(
-        (page, pageSize) => apiGet<BackendPaged<any>>(`/overtime/requests?page=${page}&pageSize=${pageSize}`),
-        { enough: (rows) => String(rows[rows.length - 1]?.workDate ?? '') < monthPrefix }
-      ).catch(() => null),
-    ]);
-    // Team counts come from the manager's own scoped team, not /dashboard/summary,
-    // which reports tenant-wide headcount.
-    const count = (s: string) => team.filter((m) => m.todayStatus === s).length;
-    const otMinutes = itemsOf(overtime)
-      .filter((r) => String(r.workDate ?? '').startsWith(monthPrefix) && !/reject/i.test(r.status ?? ''))
-      .reduce((sum, r) => sum + Number(r.requestedMinutes ?? 0), 0);
+    const [inbox, team] = await Promise.all([approvalsApi.getInbox(), teamApi.getTeamToday()]);
+    const counts = teamTodayCounts(team.members, team.day);
+    const pendingByType: Partial<Record<ApprovalItem['type'], number>> = {};
+    for (const item of inbox.items) {
+      const key = mapApprovalType(item.kind === 'RECRUITMENT' ? 'REQUISITION' : item.kind);
+      pendingByType[key] = (pendingByType[key] ?? 0) + 1;
+    }
     return {
       teamSummary: {
-        total: team.length,
-        present: count('PRESENT') + count('LATE'),
-        absent: count('ABSENT'),
-        onLeave: count('ON_LEAVE'),
-        lateToday: count('LATE'),
+        total: counts.total,
+        present: counts.present,
+        absent: counts.absent,
+        onLeave: counts.onLeave,
+        lateToday: counts.late,
       },
-      pendingApprovalsCount: Number(overview.pendingApprovals ?? 0),
-      pendingByType: (overview.approvalQueue ?? []).reduce((acc: Record<string, number>, item: any) => {
-        const key = mapApprovalType(item.module ?? item.entityName);
-        acc[key] = (acc[key] ?? 0) + 1;
-        return acc;
-      }, {}) as ManagerDashboard['pendingByType'],
-      overtimeAlert: otMinutes > 0 ? { thisMonth: Math.round((otMinutes / 60) * 10) / 10, lastMonth: 0 } : undefined,
+      pendingApprovalsCount: inbox.items.length,
+      pendingByType: pendingByType as ManagerDashboard['pendingByType'],
+      // Overtime hours are no longer summed here: the old figure mixed pending and approved hours
+      // and opened the pending queue. Pending overtime is counted in the approvals inbox instead.
+      overtimeAlert: undefined,
     };
   },
 
@@ -1553,6 +1564,115 @@ export const approvalsApi = {
     const item = await apiGet<any>(`/approval-requests/${taskId}`);
     return mapApprovalItem(item);
   },
+
+  /**
+   * Everything waiting for this manager, in one exception-first list (approvalModel.mergeInbox):
+   *   - workflow approvals where the caller is the current approver (server-scoped), every page;
+   *   - overtime at the manager stage (PendingManager) for the caller's scoped team, every page —
+   *     OvertimeController has its own approval path, so these are never in /approval-requests.
+   * If one source fails the other is still shown and `unavailable` names the missing one, so a
+   * partial list is never presented as complete.
+   */
+  async getInbox(): Promise<{ items: InboxItem[]; unavailable: ('workflow' | 'overtime')[] }> {
+    const self = Number(await getCurrentEmployeeId());
+    const selfId = Number.isFinite(self) && self > 0 ? self : null;
+    const [workflow, overtime] = await Promise.allSettled([
+      fetchAllPages<any>((page, pageSize) =>
+        apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
+      ),
+      fetchAllPages<any>((page, pageSize) =>
+        apiGet<BackendPaged<any>>(`/overtime/requests?status=PendingManager&page=${page}&pageSize=${pageSize}`)
+      ),
+    ]);
+    if (workflow.status === 'rejected' && overtime.status === 'rejected') throw workflow.reason;
+    const unavailable: ('workflow' | 'overtime')[] = [];
+    const workflowItems = workflow.status === 'fulfilled' ? workflow.value.map(mapWorkflowApproval) : [];
+    if (workflow.status === 'rejected') unavailable.push('workflow');
+    let overtimeItems: InboxItem[] = [];
+    if (overtime.status === 'fulfilled') {
+      overtimeItems = overtime.value
+        .map((row) => mapOvertimeApproval(row, selfId))
+        .filter((x): x is InboxItem => x !== null);
+    } else if (overtime.reason?.response?.status !== 403) {
+      // 403 = this login has no overtime approval rights: nothing is missing, there is nothing to show.
+      unavailable.push('overtime');
+    }
+    return { items: mergeInbox(workflowItems, overtimeItems), unavailable };
+  },
+
+  /**
+   * Requests on the caller's team that the caller decided (GET /approval-requests?queue=team, one
+   * status at a time — the queue accepts a single status), reduced to rows carrying a decision by
+   * this user. /approval-requests without a queue returns only rows waiting for the caller, so
+   * history read from it was always empty.
+   */
+  async getMyDecisions(myUserId: string): Promise<MyDecision[]> {
+    const statuses = ['Approved', 'Rejected', 'Pending', 'ReturnedToRequester'];
+    const pages = await Promise.all(
+      statuses.map((status) =>
+        fetchAllPages<any>((page, pageSize) =>
+          apiGet<BackendPaged<any>>(`/approval-requests?queue=team&status=${status}&page=${page}&pageSize=${pageSize}`)
+        )
+      )
+    );
+    return myDecisionsFrom(pages.flat(), myUserId);
+  },
+
+  /**
+   * What a manager needs before deciding a leave request: the request itself, the requester's
+   * balance for that leave type, and approved leave by others on the same dates. Balance and
+   * overlap are best-effort: when either cannot be read it is null and the sheet says so.
+   */
+  /** GET /api/leave/requests/{id} — dates, days and reason for a leave approval card. */
+  async getLeaveFacts(leaveRequestId: string): Promise<LeaveFacts | null> {
+    return mapLeaveFacts(await apiGet<any>(`/leave/requests/${leaveRequestId}`));
+  },
+
+  async getLeaveContext(leaveRequestId: string): Promise<{
+    leave: LeaveFacts;
+    balance: BalanceFacts | null;
+    balanceUnavailable: boolean;
+    overlap: OutEntry[] | null;
+  }> {
+    const leave = await approvalsApi.getLeaveFacts(leaveRequestId);
+    if (!leave) throw new Error('Leave request not found.');
+    const [balances, calendar] = await Promise.allSettled([
+      leave.employeeId
+        ? apiGet<BackendPaged<any>>(`/leave/balances?employeeId=${leave.employeeId}`)
+        : Promise.reject(new Error('No employee')),
+      leave.startDate && leave.endDate
+        ? teamCalendarApi.getTeamLeave(leave.startDate, leave.endDate)
+        : Promise.reject(new Error('No dates')),
+    ]);
+    const balance = balances.status === 'fulfilled' ? balanceFacts(itemsOf(balances.value), leave) : null;
+    return {
+      leave,
+      balance,
+      balanceUnavailable: balances.status === 'rejected',
+      overlap:
+        calendar.status === 'fulfilled' && leave.startDate && leave.endDate
+          ? overlapping(calendar.value, leave.startDate, leave.endDate, leave.employeeId)
+          : null,
+    };
+  },
+
+  /** Approve or reject one inbox item through its own source's endpoint; returns the TRUE resulting state. */
+  async decide(item: InboxItem, decision: 'approve' | 'reject', comment?: string): Promise<DecisionOutcome> {
+    const notes = comment?.trim() || undefined;
+    if (item.source === 'overtime') {
+      // OvertimeDecisionRequest(int ApprovedMinutes, string? Notes): a manager approves the hours as requested.
+      const r = await apiPost<any>(`/overtime/requests/${item.id}/${decision}`, {
+        approvedMinutes: decision === 'approve' ? item.overtime?.minutes ?? 0 : 0,
+        notes,
+      });
+      return overtimeOutcome(r);
+    }
+    const r = await apiPost<any>(`/approval-requests/${item.id}/decisions`, {
+      decision: decision === 'approve' ? 'Approve' : 'Reject',
+      comments: notes,
+    });
+    return workflowOutcome(r);
+  },
 };
 
 // ---- Notifications ----
@@ -1633,16 +1753,49 @@ export const aiApi = {
 // ---- Team (Manager/Supervisor) ----
 export const teamApi = {
   /**
+   * Direct reports with today's status, plus what is known about today itself: whether it is a
+   * public holiday in the tenant's calendar (so nobody is counted absent on it). The holiday check
+   * is best-effort; when it fails `holidayKnown` is false and no one is counted as off for it.
+   */
+  async getTeamToday(): Promise<{
+    members: TeamMemberToday[];
+    day: TeamDay;
+    holiday: { nameEn: string | null; nameAr: string | null } | null;
+    holidayKnown: boolean;
+    businessDate: string;
+  }> {
+    const businessDate = riyadhBusinessDate();
+    const [members, holiday] = await Promise.all([
+      teamApi.getTeamMembers(),
+      teamCalendarApi.getPublicHoliday(businessDate).then(
+        (h) => ({ ok: true as const, h }),
+        () => ({ ok: false as const, h: null })
+      ),
+    ]);
+    return {
+      members,
+      day: { publicHoliday: holiday.h !== null },
+      holiday: holiday.h,
+      holidayKnown: holiday.ok,
+      businessDate,
+    };
+  },
+
+  /**
    * GET /ess/team (W2-D S8): the caller's direct reports with today's status,
    * resolved server-side from the daily record, then today's raw punches, then
    * approved leave. Falls back to the scoped /employees + /attendance/daily
    * derivation on an older backend (404).
    */
-  async getTeamMembers(): Promise<TeamMember[]> {
+  async getTeamMembers(): Promise<TeamMemberToday[]> {
     try {
       const team = await apiGet<any[]>('/ess/team');
       return team.map(
-        (m): TeamMember => ({
+        (m): TeamMemberToday => ({
+          // The server's own words ("Not clocked in", "Late", …): teamModel buckets these, so a
+          // report with no punch yet is "not clocked in", not "absent", before the day is processed.
+          rawStatus: m.todayStatus ?? '',
+          currentlyActive: m.currentlyActive === true,
           employeeId: String(m.employeeId),
           fullName: m.fullName ?? 'Employee',
           jobTitle: m.jobTitle ?? '',
@@ -1670,9 +1823,11 @@ export const teamApi = {
     const byEmployee = new Map(itemsOf(attendance).map((a: any) => [a.employeeId, a]));
     return itemsOf(employees)
       .filter((e: any) => e.managerEmployeeId === employeeId && e.id !== employeeId)
-      .map((e: any): TeamMember => {
+      .map((e: any): TeamMemberToday => {
         const a = byEmployee.get(e.id);
         return {
+          rawStatus: a ? (a.missingPunch ? 'Missing punch' : String(a.status ?? '')) : 'Not clocked in',
+          currentlyActive: Boolean(a?.firstInUtc && !a?.lastOutUtc),
           employeeId: String(e.id),
           fullName: e.fullName ?? 'Employee',
           jobTitle: e.designation ?? '',

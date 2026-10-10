@@ -1,626 +1,898 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
+import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { approvalsApi } from '@/api/services';
-import { formatDate } from '@/utils/date';
+import { useAuthStore } from '@/auth/authStore';
+import { hasEffectivePermission } from '@/auth/accessPolicy';
 import { useTheme } from '@/theme/ThemeProvider';
+import { useFormat } from '@/utils/format';
+import { haptics } from '@/utils/haptics';
 import {
-  GlassIconButton,
-  GlassSurface,
+  BottomSheet,
   LiquidBackdrop,
   LiquidButton,
   MotionPressable,
   ScreenHero,
-  SectionHeader,
+  SegmentedControl,
+  SkeletonCard,
+  StateCard,
+  StatusPill,
+  Surface,
 } from '@/components/ui';
-import type { ApprovalItem, ApprovalItemType } from '@/types';
-import { useAuthStore } from '@/auth/authStore';
-import { hasEffectivePermission } from '@/auth/accessPolicy';
+import {
+  summarizeInbox,
+  type ApprovalKind,
+  type BalanceFacts,
+  type DecisionOutcome,
+  type InboxItem,
+  type LeaveFacts,
+  type MyDecision,
+} from './approvalModel';
+import type { OutEntry } from './teamModel';
+import { KIND_ICON, useManagerText } from './useManagerText';
 
 interface Props {
   navigation: any;
-  route?: { params?: { filterType?: ApprovalItemType } };
+  route?: { params?: { filterType?: ApprovalKind } };
 }
 
-type ApprovalTab = 'PENDING' | 'HISTORY';
-type ApprovalAction = 'APPROVE' | 'REJECT' | 'SEND_BACK';
-type DecisionFeedback = { action: ApprovalAction; title: string };
+type Tab = 'waiting' | 'decided';
+type Feedback = { tone: 'success' | 'danger' | 'info'; text: string };
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
-export default function ApprovalsScreen({ navigation, route }: Props) {
+/** Decision errors in plain words. Server wording is English-only, so Arabic gets the translated generic line. */
+function decisionErrorText(error: any, t: Translate, language: string): { text: string; refresh: boolean } {
+  const status = error?.response?.status;
+  if (status === 409) return { text: t('manager.approvals.errors.conflict'), refresh: true };
+  if (status === 403) return { text: t('manager.approvals.errors.forbidden'), refresh: false };
+  if (!error?.response) return { text: t('manager.approvals.errors.network'), refresh: false };
+  const message = error?.response?.data?.message;
+  if (typeof message === 'string' && message.trim() && !language.startsWith('ar')) {
+    return { text: t('manager.approvals.errors.server', { message: message.trim() }), refresh: false };
+  }
+  return { text: t('manager.approvals.errors.generic'), refresh: false };
+}
+
+export default function ApprovalsScreen({ route }: Props) {
   const { theme } = useTheme();
+  const { t, i18n } = useTranslation();
+  const text = useManagerText();
   const user = useAuthStore((state) => state.user);
-  const canDecide = user?.accessMode !== 'ReadOnlyAuditor'
-    && hasEffectivePermission(user, 'approvals.decide');
-  const [tab, setTab] = useState<ApprovalTab>('PENDING');
-  const [items, setItems] = useState<ApprovalItem[]>([]);
+  const auditor = user?.accessMode === 'ReadOnlyAuditor';
+  const canDecideAny = !auditor && hasEffectivePermission(user, 'approvals.decide');
+
+  const [tab, setTab] = useState<Tab>('waiting');
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [unavailable, setUnavailable] = useState<('workflow' | 'overtime')[]>([]);
+  const [leaveFacts, setLeaveFacts] = useState<Record<string, LeaveFacts | null>>({});
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [filterType, setFilterType] = useState<ApprovalItemType | 'ALL'>(
-    route?.params?.filterType ?? 'ALL',
-  );
-  const [modalVisible, setModalVisible] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<ApprovalItem | null>(null);
-  const [modalAction, setModalAction] = useState<ApprovalAction>('APPROVE');
-  const [comment, setComment] = useState('');
-  const [actionLoading, setActionLoading] = useState(false);
-  const [decisionFeedback, setDecisionFeedback] = useState<DecisionFeedback | null>(null);
+  const [filter, setFilter] = useState<ApprovalKind | 'ALL'>(route?.params?.filterType ?? 'ALL');
+  const [selected, setSelected] = useState<InboxItem | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const loadedOnce = useRef(false);
 
-  const typeConfig = useMemo<Record<string, {
-    label: string;
-    icon: React.ComponentProps<typeof Ionicons>['name'];
-    color: string;
-  }>>(() => ({
-    LEAVE: { label: 'Leave', icon: 'airplane-outline', color: theme.colors.primary },
-    OVERTIME: { label: 'Overtime', icon: 'time-outline', color: theme.colors.violet },
-    ATTENDANCE_CORRECTION: { label: 'Attendance', icon: 'create-outline', color: theme.colors.warning },
-    RECRUITMENT_REQUISITION: { label: 'Recruitment', icon: 'briefcase-outline', color: theme.colors.success },
-    HR_REQUEST: { label: 'HR request', icon: 'help-circle-outline', color: theme.colors.cyan },
-    LOAN: { label: 'Loan', icon: 'card-outline', color: '#EC4899' },
-    ADVANCE: { label: 'Advance', icon: 'cash-outline', color: '#EC4899' },
-    PAYROLL: { label: 'Payroll', icon: 'document-text-outline', color: theme.colors.success },
-    APPRAISAL: { label: 'Appraisal', icon: 'star-outline', color: theme.colors.warning },
-  }), [theme]);
+  const [history, setHistory] = useState<MyDecision[] | null>(null);
+  const [historyFailed, setHistoryFailed] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  const load = useCallback(async (silent = false) => {
+  useEffect(() => {
+    if (route?.params?.filterType) {
+      setFilter(route.params.filterType);
+      setTab('waiting');
+    }
+  }, [route?.params?.filterType]);
+
+  const loadInbox = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
-    setLoadError(null);
     try {
-      if (tab === 'PENDING') {
-        setItems(await approvalsApi.getPendingApprovals());
-      } else {
-        const history = await approvalsApi.getApprovalHistory();
-        setItems(history.data);
-      }
-    } catch (error: any) {
-      setLoadError(error?.response?.data?.message ?? 'Could not load approvals.');
+      const inbox = await approvalsApi.getInbox();
+      setItems(inbox.items);
+      setUnavailable(inbox.unavailable);
+      setLoadFailed(false);
+      loadedOnce.current = true;
+      // Dates and days for leave cards (real request data; a card without them simply omits the line).
+      const leaveIds = inbox.items
+        .filter((i) => i.kind === 'LEAVE' && i.entityId)
+        .map((i) => i.entityId as string)
+        .slice(0, 25);
+      const settled = await Promise.allSettled(leaveIds.map((id) => approvalsApi.getLeaveFacts(id)));
+      setLeaveFacts((current) => {
+        const next = { ...current };
+        settled.forEach((r, i) => {
+          if (r.status === 'fulfilled') next[leaveIds[i]] = r.value;
+        });
+        return next;
+      });
+    } catch {
+      setLoadFailed(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [tab]);
+  }, []);
+
+  const userId = user?.id;
+  const loadHistory = useCallback(async () => {
+    if (!userId) return;
+    setHistoryLoading(true);
+    try {
+      setHistory(await approvalsApi.getMyDecisions(userId));
+      setHistoryFailed(false);
+    } catch {
+      setHistoryFailed(true);
+    } finally {
+      setHistoryLoading(false);
+      setRefreshing(false);
+    }
+  }, [userId]);
+
+  // Fresh on every visit: a decision made elsewhere (web, another approver) must not linger here.
+  useFocusEffect(
+    useCallback(() => {
+      void loadInbox(loadedOnce.current);
+    }, [loadInbox]),
+  );
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (tab === 'decided' && history === null && !historyLoading && !historyFailed) void loadHistory();
+  }, [history, historyFailed, historyLoading, loadHistory, tab]);
 
-  const filteredItems = useMemo(
-    () => filterType === 'ALL' ? items : items.filter((item) => item.type === filterType),
-    [filterType, items],
+  const summary = useMemo(() => summarizeInbox(items), [items]);
+  const kinds = useMemo(
+    () => (Object.keys(summary.byKind) as ApprovalKind[]).sort((a, b) => (summary.byKind[b] ?? 0) - (summary.byKind[a] ?? 0)),
+    [summary.byKind],
   );
+  const visible = filter === 'ALL' ? items : items.filter((i) => i.kind === filter);
 
-  const pendingByType = useMemo(() => items.reduce<Record<string, number>>((counts, item) => {
-    counts[item.type] = (counts[item.type] ?? 0) + 1;
-    return counts;
-  }, {}), [items]);
+  const onDecided = useCallback((item: InboxItem, outcome: DecisionOutcome) => {
+    haptics.success();
+    setSelected(null);
+    setItems((current) => current.filter((i) => i.key !== item.key));
+    setFeedback({ tone: outcome.kind === 'rejected' ? 'info' : 'success', text: text.outcome(outcome, item) });
+    setHistory(null); // the decided list changed
+    setHistoryFailed(false);
+    void loadInbox(true);
+  }, [loadInbox, text]);
 
-  const openAction = (item: ApprovalItem, action: ApprovalAction) => {
-    if (!canDecide) return;
-    if (action === 'APPROVE' && !item.canApprove) return;
-    if (action === 'REJECT' && !item.canReject) return;
-    if (action === 'SEND_BACK' && !item.canSendBack) return;
-    setSelectedItem(item);
-    setModalAction(action);
-    setComment('');
-    setModalVisible(true);
+  const onConflict = useCallback((message: string) => {
+    setSelected(null);
+    setFeedback({ tone: 'danger', text: message });
+    void loadInbox(true);
+  }, [loadInbox]);
+
+  const refresh = () => {
+    setRefreshing(true);
+    if (tab === 'waiting') void loadInbox(true);
+    else void loadHistory();
   };
 
-  const submitAction = async () => {
-    if (!selectedItem) return;
-    if ((modalAction === 'REJECT' || modalAction === 'SEND_BACK') && !comment.trim()) {
-      Alert.alert('Reason required', 'Add a clear reason before continuing.');
-      return;
-    }
+  const header = (
+    <>
+      <ScreenHero
+        title={t('manager.approvals.title')}
+        subtitle={
+          loading && !items.length
+            ? undefined
+            : summary.total
+              ? t('manager.approvals.subtitleWaiting', { n: summary.total })
+              : t('manager.approvals.subtitleClear')
+        }
+      />
+      <View style={styles.section}>
+        <SegmentedControl<Tab>
+          segments={[
+            { key: 'waiting', label: t('manager.approvals.tabWaiting', { n: summary.total }) },
+            { key: 'decided', label: t('manager.approvals.tabDecided') },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+      </View>
 
-    setActionLoading(true);
-    try {
-      if (modalAction === 'APPROVE') {
-        await approvalsApi.approve(selectedItem.taskId, comment.trim() || undefined);
-      } else if (modalAction === 'REJECT') {
-        await approvalsApi.reject(selectedItem.taskId, comment.trim());
-      } else {
-        await approvalsApi.sendBack(selectedItem.taskId, comment.trim());
-      }
-      setModalVisible(false);
-      setDecisionFeedback({ action: modalAction, title: selectedItem.title });
-      await load(true);
-    } catch (error: any) {
-      Alert.alert('Action failed', error?.response?.data?.message ?? 'Please try again.');
-    } finally {
-      setActionLoading(false);
-    }
-  };
+      {!canDecideAny ? (
+        <Surface style={styles.section} level={0} contentStyle={styles.notice}>
+          <Ionicons accessible={false} name="eye-outline" size={20} color={theme.colors.textSecondary} />
+          <View style={styles.flex}>
+            <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.approvals.readOnlyTitle')}</Text>
+            <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>
+              {auditor ? t('manager.approvals.readOnlyAudit') : t('manager.approvals.readOnlyRole')}
+            </Text>
+          </View>
+        </Surface>
+      ) : null}
 
-  const availableTypes = useMemo(
-    () => ['ALL', ...Object.keys(typeConfig).filter((type) => pendingByType[type] || filterType === type)] as (ApprovalItemType | 'ALL')[],
-    [filterType, pendingByType, typeConfig],
+      {feedback ? (
+        <View style={styles.section}>
+          <FeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} />
+        </View>
+      ) : null}
+
+      {tab === 'waiting' && unavailable.length ? (
+        <View style={styles.section}>
+          {unavailable.map((source) => (
+            <Text
+              key={source}
+              accessibilityLiveRegion="polite"
+              style={[theme.typography.footnote, styles.partial, { color: theme.colors.status.warning.fg }]}
+            >
+              {source === 'overtime' ? t('manager.approvals.partialOvertime') : t('manager.approvals.partialWorkflow')}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+
+      {tab === 'waiting' && kinds.length > 1 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} style={styles.chipRail}>
+          {(['ALL', ...kinds] as (ApprovalKind | 'ALL')[]).map((k) => {
+            const on = filter === k;
+            const label = k === 'ALL' ? t('manager.approvals.filterAll') : text.kind(k);
+            const count = k === 'ALL' ? summary.total : summary.byKind[k] ?? 0;
+            return (
+              <MotionPressable
+                key={k}
+                haptic="selection"
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                onPress={() => setFilter(k)}
+                contentStyle={[
+                  styles.chip,
+                  {
+                    backgroundColor: on ? theme.colors.primaryFill : theme.colors.card,
+                    borderColor: on ? theme.colors.primaryFill : theme.colors.hairline,
+                  },
+                ]}
+              >
+                <Text style={[theme.typography.footnote, styles.chipText, { color: on ? theme.colors.onFill : theme.colors.textSecondary }]}>
+                  {t('manager.approvals.filterCount', { label, n: count })}
+                </Text>
+              </MotionPressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
+    </>
   );
+
+  if (tab === 'decided') {
+    return (
+      <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
+        <LiquidBackdrop subtle />
+        <FlatList
+          data={history ?? []}
+          keyExtractor={(d) => d.key}
+          renderItem={({ item }) => <HistoryRow decision={item} />}
+          ItemSeparatorComponent={Gap}
+          ListHeaderComponent={header}
+          ListEmptyComponent={
+            <View style={styles.section}>
+              {historyFailed ? (
+                <StateCard
+                  variant="error"
+                  title={t('manager.approvals.history.errorTitle')}
+                  onRetry={() => {
+                    setHistoryFailed(false);
+                    void loadHistory();
+                  }}
+                />
+              ) : historyLoading || history === null ? (
+                <View style={styles.stack}>
+                  <SkeletonCard lines={2} />
+                  <SkeletonCard lines={2} />
+                </View>
+              ) : (
+                <StateCard variant="empty" title={t('manager.approvals.history.emptyTitle')} body={t('manager.approvals.history.emptyBody')} />
+              )}
+            </View>
+          }
+          ListFooterComponent={
+            <Text style={[theme.typography.footnote, styles.footnote, { color: theme.colors.textMuted }]}>
+              {t('manager.approvals.history.overtimeNote')}
+            </Text>
+          }
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.accent} />}
+          showsVerticalScrollIndicator={false}
+        />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
       <FlatList
-        data={!loading && !loadError ? filteredItems : []}
-        keyExtractor={(item) => item.id}
+        data={loading && !items.length ? [] : visible}
+        keyExtractor={(i) => i.key}
         renderItem={({ item }) => (
-          <View style={styles.listItem}>
-            <ApprovalCard
-              item={item}
-              pending={tab === 'PENDING' && canDecide}
-              meta={typeConfig[item.type] ?? {
-                label: item.type,
-                icon: 'document-outline',
-                color: theme.colors.textMuted,
-              }}
-              onApprove={() => openAction(item, 'APPROVE')}
-              onReject={() => openAction(item, 'REJECT')}
-              onSendBack={() => openAction(item, 'SEND_BACK')}
-            />
-          </View>
+          <ApprovalCard
+            item={item}
+            leave={item.entityId ? leaveFacts[item.entityId] ?? null : null}
+            canDecide={canDecideAny && item.canDecide}
+            onOpen={() => setSelected(item)}
+          />
         )}
-        ItemSeparatorComponent={() => <View style={styles.listGap} />}
-        contentContainerStyle={styles.content}
-        refreshing={refreshing}
-        onRefresh={() => {
-          setRefreshing(true);
-          void load(true);
-        }}
-        showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <>
-            <ScreenHero
-              eyebrow="Manager workspace"
-              title="Approval center"
-              subtitle={tab === 'PENDING' ? items.length + ' pending decision' + (items.length === 1 ? '' : 's') : 'Completed workflow decisions'}
-              actions={
-                navigation.canGoBack() ? (
-                  <GlassIconButton icon="arrow-back" label="Go back" onPress={() => navigation.goBack()} />
-                ) : undefined
-              }
-            />
-
-            <View style={styles.section}>
-              <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.tabContainer}>
-                {(['PENDING', 'HISTORY'] as const).map((nextTab) => {
-                  const selected = tab === nextTab;
-                  return (
-                    <MotionPressable
-                      key={nextTab}
-                      onPress={() => setTab(nextTab)}
-                      haptic="selection"
-                      style={styles.tabShell}
-                      contentStyle={[
-                        styles.tabButton,
-                        { backgroundColor: selected ? theme.colors.primary + '1F' : 'transparent' },
-                      ]}
-                      accessibilityRole="tab"
-                      accessibilityState={{ selected }}
-                    >
-                      <Ionicons
-                        name={nextTab === 'PENDING' ? 'hourglass-outline' : 'time-outline'}
-                        size={18}
-                        color={selected ? theme.colors.primary : theme.colors.textMuted}
-                      />
-                      <Text
-                        style={[
-                          theme.typography.bodyStrong,
-                          { color: selected ? theme.colors.primary : theme.colors.textSecondary },
-                        ]}
-                      >
-                        {nextTab === 'PENDING' ? 'Pending' : 'History'}
-                      </Text>
-                      {nextTab === 'PENDING' && items.length > 0 ? (
-                        <View style={[styles.tabCount, { backgroundColor: theme.colors.primary }]}>
-                          <Text style={styles.tabCountText}>{items.length}</Text>
-                        </View>
-                      ) : null}
-                    </MotionPressable>
-                  );
-                })}
-              </GlassSurface>
-            </View>
-
-            <View style={styles.filterSection}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRail}>
-                {availableTypes.map((type) => {
-                  const selected = filterType === type;
-                  const meta = type === 'ALL'
-                    ? { label: 'All', icon: 'apps-outline' as const, color: theme.colors.primary }
-                    : typeConfig[type] ?? { label: type, icon: 'document-outline' as const, color: theme.colors.textMuted };
-                  const count = type === 'ALL' ? items.length : pendingByType[type] ?? 0;
-                  return (
-                    <MotionPressable
-                      key={type}
-                      onPress={() => setFilterType(type)}
-                      haptic="selection"
-                      contentStyle={[
-                        styles.filterChip,
-                        {
-                          backgroundColor: selected ? meta.color + '20' : theme.colors.surface,
-                          borderColor: selected ? meta.color : theme.colors.border,
-                        },
-                      ]}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
-                    >
-                      <Ionicons name={meta.icon} size={15} color={selected ? meta.color : theme.colors.textMuted} />
-                      <Text
-                        style={[
-                          theme.typography.caption,
-                          { color: selected ? meta.color : theme.colors.textSecondary, fontWeight: selected ? '700' : '500' },
-                        ]}
-                      >
-                        {meta.label}{count ? ' · ' + count : ''}
-                      </Text>
-                    </MotionPressable>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
-            <View style={styles.section}>
-              {decisionFeedback ? <DecisionOutcome feedback={decisionFeedback} /> : null}
-              <SectionHeader
-                title={tab === 'PENDING' ? 'Decisions waiting' : 'Decision history'}
-                subtitle={filteredItems.length + ' item' + (filteredItems.length === 1 ? '' : 's')}
-              />
-            </View>
-          </>
-        }
+        ItemSeparatorComponent={Gap}
+        ListHeaderComponent={header}
         ListEmptyComponent={
           <View style={styles.section}>
             {loading ? (
-              <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-                <ActivityIndicator color={theme.colors.primary} />
-                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading approval workflow…</Text>
-              </GlassSurface>
-            ) : loadError ? (
-              <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-                <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
-                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Approvals unavailable</Text>
-                <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
-                <LiquidButton label="Try again" onPress={() => void load()} />
-              </GlassSurface>
+              <View style={styles.stack}>
+                <SkeletonCard lines={3} />
+                <SkeletonCard lines={3} />
+              </View>
+            ) : loadFailed ? (
+              <StateCard variant="error" title={t('manager.approvals.loadErrorTitle')} onRetry={() => void loadInbox()} />
+            ) : items.length && filter !== 'ALL' ? (
+              <StateCard
+                variant="empty"
+                title={t('manager.approvals.filteredEmpty')}
+                body={t('manager.approvals.emptyBody')}
+                action={{ label: t('manager.approvals.showAll'), onPress: () => setFilter('ALL') }}
+              />
             ) : (
-              <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
-                <View style={[styles.emptyIcon, { backgroundColor: theme.colors.success + '18' }]}>
-                  <Ionicons name="checkmark-done-circle-outline" size={32} color={theme.colors.success} />
-                </View>
-                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
-                  {tab === 'PENDING' ? 'You are all caught up' : 'No decisions yet'}
-                </Text>
-                <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
-                  {tab === 'PENDING'
-                    ? 'New requests that require your authority will appear here.'
-                    : 'Completed approvals and rejections will be recorded here.'}
-                </Text>
-              </GlassSurface>
+              <StateCard variant="empty" title={t('manager.approvals.emptyTitle')} body={t('manager.approvals.emptyBody')} />
             )}
           </View>
         }
-        ListFooterComponent={<View style={styles.bottomSpacer} />}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.accent} />}
+        showsVerticalScrollIndicator={false}
       />
-
-      <DecisionModal
-        visible={modalVisible}
-        action={modalAction}
-        item={selectedItem}
-        comment={comment}
-        loading={actionLoading}
-        onCommentChange={setComment}
-        onClose={() => setModalVisible(false)}
-        onSubmit={() => void submitAction()}
+      <DecisionSheet
+        item={selected}
+        leave={selected?.entityId ? leaveFacts[selected.entityId] ?? null : null}
+        canDecide={Boolean(selected && canDecideAny && selected.canDecide)}
+        language={i18n.language}
+        onClose={() => setSelected(null)}
+        onDecided={onDecided}
+        onConflict={onConflict}
       />
     </View>
   );
 }
 
-function DecisionOutcome({ feedback }: { feedback: DecisionFeedback }) {
-  const { theme, reduceMotion } = useTheme();
-  const progress = useSharedValue(0);
-  useEffect(() => {
-    progress.value = reduceMotion ? 1 : withSpring(1, { damping: 18, stiffness: 260 });
-  }, [progress, reduceMotion, feedback]);
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: progress.value,
-    transform: [{ scale: reduceMotion ? 1 : 0.94 + (progress.value * 0.06) }],
-  }));
-  const approved = feedback.action === 'APPROVE';
-  const sentBack = feedback.action === 'SEND_BACK';
-  const color = approved ? theme.colors.success : sentBack ? theme.colors.warning : theme.colors.danger;
-  const verb = approved ? 'Approved' : sentBack ? 'Sent back' : 'Rejected';
-  const explanation = approved
-    ? 'It moved forward and the requester will be notified.'
-    : sentBack
-      ? 'It returned to the requester for changes.'
-      : 'It left your pending queue and the requester will be notified.';
+function Gap() {
+  return <View style={styles.gap} />;
+}
 
+function FeedbackBanner({ feedback, onDismiss }: { feedback: Feedback; onDismiss: () => void }) {
+  const { theme } = useTheme();
+  const { t } = useTranslation();
+  const tone = theme.colors.status[feedback.tone];
   return (
-    <Animated.View
-      accessible
-      accessibilityLiveRegion="polite"
-      style={[styles.decisionOutcome, { backgroundColor: `${color}18`, borderColor: `${color}40` }, animatedStyle]}
-    >
-      <Ionicons name={approved ? 'checkmark-circle' : sentBack ? 'return-down-back' : 'close-circle'} size={22} color={color} />
-      <View style={styles.decisionOutcomeCopy}>
-        <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
-          {verb}: {feedback.title}
-        </Text>
-        <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>{explanation}</Text>
-      </View>
-    </Animated.View>
+    <Surface tintColor={tone.tint} contentStyle={styles.banner}>
+      <Ionicons
+        accessible={false}
+        name={feedback.tone === 'danger' ? 'alert-circle' : feedback.tone === 'info' ? 'information-circle' : 'checkmark-circle'}
+        size={22}
+        color={tone.fg}
+      />
+      <Text
+        accessibilityLiveRegion="polite"
+        accessibilityRole="alert"
+        style={[theme.typography.subheadline, styles.flex, { color: theme.colors.text }]}
+      >
+        {feedback.text}
+      </Text>
+      <MotionPressable
+        accessibilityRole="button"
+        accessibilityLabel={t('manager.approvals.outcome.dismiss')}
+        onPress={onDismiss}
+        hitSlop={8}
+        contentStyle={styles.iconButton}
+      >
+        <Ionicons accessible={false} name="close" size={18} color={theme.colors.textMuted} />
+      </MotionPressable>
+    </Surface>
   );
+}
+
+/** The one line that says what is being decided: dates/days for leave, date/time/hours for overtime. */
+function useWhatLine(item: InboxItem, leave: LeaveFacts | null): string | null {
+  const f = useFormat();
+  const text = useManagerText();
+  const { t } = useTranslation();
+  if (item.overtime) {
+    const parts = [
+      item.overtime.workDate ? f.date(item.overtime.workDate, 'medium') : null,
+      item.overtime.startUtc && item.overtime.endUtc
+        ? t('manager.range', { from: f.time(item.overtime.startUtc), to: f.time(item.overtime.endUtc) })
+        : null,
+      item.overtime.minutes !== null ? text.duration(item.overtime.minutes) : null,
+    ].filter(Boolean);
+    return parts.length ? parts.join(' · ') : null;
+  }
+  if (leave?.startDate) {
+    return [text.dateRange(leave.startDate, leave.endDate), leave.totalDays !== null ? text.days(leave.totalDays) : null]
+      .filter(Boolean)
+      .join(' · ');
+  }
+  return item.changeSummary;
 }
 
 function ApprovalCard({
   item,
-  pending,
-  meta,
-  onApprove,
-  onReject,
-  onSendBack,
+  leave,
+  canDecide,
+  onOpen,
 }: {
-  item: ApprovalItem;
-  pending: boolean;
-  meta: { label: string; icon: React.ComponentProps<typeof Ionicons>['name']; color: string };
-  onApprove: () => void;
-  onReject: () => void;
-  onSendBack: () => void;
+  item: InboxItem;
+  leave: LeaveFacts | null;
+  canDecide: boolean;
+  onOpen: () => void;
 }) {
   const { theme } = useTheme();
-  const urgency = getUrgency(item.urgency, theme);
+  const { t } = useTranslation();
+  const f = useFormat();
+  const text = useManagerText();
+  const what = useWhatLine(item, leave);
+  const kindLabel = item.subject ?? text.kind(item.kind);
+  const meta = [
+    item.submittedAt ? t('manager.approvals.card.submitted', { when: f.relative(item.submittedAt) }) : null,
+    item.stepOrder !== null ? t('manager.approvals.card.step', { step: f.number(item.stepOrder) }) : null,
+  ].filter(Boolean).join(' · ');
+  const reason = item.overtime?.reason ?? leave?.reason ?? null;
+  const cta = canDecide ? t('manager.approvals.card.review') : t('manager.approvals.card.view');
 
   return (
-    <GlassSurface radius={theme.radius.xl} contentStyle={styles.approvalCard}>
-      <View style={styles.cardHeader}>
-        <View style={[styles.typeIcon, { backgroundColor: `${meta.color}18` }]}>
-          <Ionicons name={meta.icon} size={21} color={meta.color} />
-        </View>
-        <View style={styles.cardHeading}>
-          <Text style={[theme.typography.micro, { color: meta.color, textTransform: 'uppercase', letterSpacing: 0.6 }]}>
-            {meta.label}
-          </Text>
-          <Text numberOfLines={2} style={[theme.typography.h3, { color: theme.colors.text, marginTop: 3 }]}>
-            {item.title}
-          </Text>
-        </View>
-        <View style={[styles.urgencyPill, { backgroundColor: `${urgency.color}18` }]}>
-          <Text style={[theme.typography.micro, { color: urgency.color }]}>{urgency.label}</Text>
-        </View>
-      </View>
-
-      <Text style={[theme.typography.body, styles.summary, { color: theme.colors.textSecondary }]}>
-        {item.summary}
-      </Text>
-
-      <View style={styles.requesterRow}>
-        <View style={[styles.requesterAvatar, { backgroundColor: `${theme.colors.primary}18` }]}>
-          <Ionicons name="person-outline" size={16} color={theme.colors.primary} />
-        </View>
-        <View style={styles.requesterCopy}>
-          <Text style={[theme.typography.caption, { color: theme.colors.text }]}>{item.requestedBy}</Text>
-          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>
-            Requested {formatDate(item.requestedAt, 'relative')}
-          </Text>
-        </View>
-      </View>
-
-      {Object.entries(item.details).length ? (
-        <View style={[styles.detailsPanel, { backgroundColor: theme.colors.surfaceSoft }]}>
-          {Object.entries(item.details).slice(0, 4).map(([key, value], index, rows) => (
-            <View
-              key={key}
-              style={[
-                styles.detailRow,
-                index < rows.length - 1 && {
-                  borderBottomColor: theme.colors.divider,
-                  borderBottomWidth: StyleSheet.hairlineWidth,
-                },
-              ]}
-            >
-              <Text style={[theme.typography.micro, styles.detailLabel, { color: theme.colors.textMuted }]}>
-                {key.replace(/([A-Z])/g, ' $1').trim()}
-              </Text>
-              <Text style={[theme.typography.caption, { color: theme.colors.text, textAlign: 'right', flex: 1 }]}>
-                {String(value)}
-              </Text>
+    <View style={styles.cardShell}>
+      <MotionPressable
+        accessibilityRole="button"
+        accessibilityLabel={[kindLabel, text.requester(item), what, meta].filter(Boolean).join('. ')}
+        accessibilityHint={cta}
+        onPress={onOpen}
+      >
+        <Surface level={1} contentStyle={styles.card}>
+          <View style={styles.cardTop}>
+            <View style={[styles.kindIcon, { backgroundColor: theme.colors.surfaceInset }]}>
+              <Ionicons accessible={false} name={KIND_ICON[item.kind]} size={18} color={theme.colors.accent} />
             </View>
-          ))}
-        </View>
-      ) : null}
-
-      {pending ? (
-        <View style={[styles.actions, { borderTopColor: theme.colors.divider }]}>
-          {item.canSendBack ? (
-            <MotionPressable onPress={onSendBack} haptic="selection" contentStyle={styles.returnButton}>
-              <Ionicons name="return-up-back-outline" size={16} color={theme.colors.textSecondary} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, fontWeight: '700' }]}>Return</Text>
-            </MotionPressable>
-          ) : <View />}
-          <View style={styles.actionRight}>
-            {item.canReject ? (
-              <MotionPressable
-                onPress={onReject}
-                haptic="medium"
-                contentStyle={[styles.rejectButton, { borderColor: theme.colors.danger }]}
-              >
-                <Text style={[theme.typography.caption, { color: theme.colors.danger, fontWeight: '700' }]}>Reject</Text>
-              </MotionPressable>
-            ) : null}
-            {item.canApprove ? (
-              <MotionPressable
-                onPress={onApprove}
-                haptic="medium"
-                contentStyle={[styles.approveButton, { backgroundColor: theme.colors.success }]}
-              >
-                <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                <Text style={[theme.typography.caption, { color: '#FFFFFF', fontWeight: '700' }]}>Approve</Text>
-              </MotionPressable>
+            <Text numberOfLines={1} style={[theme.typography.footnote, styles.flex, { color: theme.colors.textSecondary }]}>
+              {kindLabel}
+            </Text>
+            {item.isOverdue ? (
+              <StatusPill
+                tone="danger"
+                icon="alert-circle"
+                label={item.dueAt
+                  ? t('manager.approvals.card.overdue', { date: f.date(item.dueAt, 'dayMonth') })
+                  : t('manager.approvals.card.overdueNoDate')}
+              />
+            ) : item.dueAt ? (
+              <StatusPill tone="neutral" label={t('manager.approvals.card.due', { date: f.date(item.dueAt, 'dayMonth') })} />
             ) : null}
           </View>
-        </View>
-      ) : null}
-    </GlassSurface>
+          <Text style={[theme.typography.title3, { color: theme.colors.text }]}>{text.requester(item)}</Text>
+          {what ? <Text style={[theme.typography.callout, { color: theme.colors.text }]}>{what}</Text> : null}
+          {reason ? (
+            <Text numberOfLines={2} style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>
+              {reason}
+            </Text>
+          ) : null}
+          {meta ? <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{meta}</Text> : null}
+          {!item.canDecide ? (
+            <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t('manager.approvals.card.blocked')}</Text>
+          ) : null}
+          <View style={[styles.cardAction, { borderTopColor: theme.colors.hairline }]}>
+            <Text style={[theme.typography.headline, styles.flex, { color: theme.colors.accent }]}>{cta}</Text>
+            <Ionicons accessible={false} name="chevron-up" size={18} color={theme.colors.accent} />
+          </View>
+        </Surface>
+      </MotionPressable>
+    </View>
   );
 }
 
-function DecisionModal({
-  visible,
-  action,
+function FactRow({ label, value, sub }: { label: string; value: string; sub?: string | null }) {
+  const { theme } = useTheme();
+  return (
+    <View accessible style={[styles.fact, { borderBottomColor: theme.colors.hairline }]}>
+      <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{label}</Text>
+      <Text style={[theme.typography.callout, { color: theme.colors.text }]}>{value}</Text>
+      {sub ? <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{sub}</Text> : null}
+    </View>
+  );
+}
+
+type LeaveContext = {
+  leave: LeaveFacts;
+  balance: BalanceFacts | null;
+  balanceUnavailable: boolean;
+  overlap: OutEntry[] | null;
+};
+
+function DecisionSheet({
   item,
-  comment,
-  loading,
-  onCommentChange,
+  leave: leaveFromCard,
+  canDecide,
+  language,
   onClose,
-  onSubmit,
+  onDecided,
+  onConflict,
 }: {
-  visible: boolean;
-  action: ApprovalAction;
-  item: ApprovalItem | null;
-  comment: string;
-  loading: boolean;
-  onCommentChange: (value: string) => void;
+  item: InboxItem | null;
+  leave: LeaveFacts | null;
+  canDecide: boolean;
+  language: string;
   onClose: () => void;
-  onSubmit: () => void;
+  onDecided: (item: InboxItem, outcome: DecisionOutcome) => void;
+  onConflict: (message: string) => void;
 }) {
   const { theme } = useTheme();
-  const config = action === 'APPROVE'
-    ? { title: 'Confirm approval', label: 'Approve request', icon: 'checkmark-circle-outline' as const, color: theme.colors.success }
-    : action === 'REJECT'
-      ? { title: 'Reject request', label: 'Reject request', icon: 'close-circle-outline' as const, color: theme.colors.danger }
-      : { title: 'Return request', label: 'Return for changes', icon: 'return-up-back-outline' as const, color: theme.colors.warning };
+  const { t } = useTranslation();
+  const tx = t as unknown as Translate;
+  const f = useFormat();
+  const text = useManagerText();
+  const inputRef = useRef<TextInput>(null);
+  const [comment, setComment] = useState('');
+  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reasonMissing, setReasonMissing] = useState(false);
+  const [context, setContext] = useState<LeaveContext | null>(null);
+  const [contextState, setContextState] = useState<'idle' | 'loading' | 'failed'>('idle');
+
+  const loadContext = useCallback(async (target: InboxItem) => {
+    if (target.kind !== 'LEAVE' || !target.entityId) return;
+    setContextState('loading');
+    try {
+      setContext(await approvalsApi.getLeaveContext(target.entityId));
+      setContextState('idle');
+    } catch {
+      setContextState('failed');
+    }
+  }, []);
+
+  useEffect(() => {
+    setComment('');
+    setError(null);
+    setReasonMissing(false);
+    setBusy(null);
+    setContext(null);
+    setContextState('idle');
+    if (item) void loadContext(item);
+  }, [item, loadContext]);
+
+  const decide = async (decision: 'approve' | 'reject') => {
+    if (!item || busy) return;
+    if (decision === 'reject' && !comment.trim()) {
+      setReasonMissing(true);
+      haptics.error();
+      inputRef.current?.focus();
+      return;
+    }
+    setBusy(decision);
+    setError(null);
+    try {
+      const outcome = await approvalsApi.decide(item, decision, comment);
+      onDecided(item, outcome);
+    } catch (e: any) {
+      haptics.error();
+      const mapped = decisionErrorText(e, tx, language);
+      if (mapped.refresh) onConflict(mapped.text);
+      else setError(mapped.text);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const leave = context?.leave ?? leaveFromCard;
+  const name = item ? text.requester(item) : '';
+  const verb = (v: string) => tx(`manager.approvals.verb.${v}`);
+
+  const balanceValue = (c: LeaveContext): string => {
+    if (c.balance) {
+      return c.balance.afterApproval !== null
+        ? t('manager.approvals.sheet.balanceAfter', { days: text.days(c.balance.afterApproval) })
+        : t('manager.approvals.sheet.balanceNow', { days: text.days(c.balance.available) });
+    }
+    return c.balanceUnavailable ? t('manager.approvals.sheet.balanceUnknown') : t('manager.approvals.sheet.balanceNone');
+  };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.modalBackdrop, { backgroundColor: theme.colors.overlay }]}>
-        <GlassSurface
-          radius={theme.radius.xxl}
-          style={styles.modalSheet}
-          contentStyle={styles.modalContent}
-          tintColor={theme.isDark ? 'rgba(10,26,52,0.94)' : 'rgba(255,255,255,0.94)'}
-        >
-          <View style={[styles.modalHandle, { backgroundColor: theme.colors.border }]} />
-          <View style={[styles.modalIcon, { backgroundColor: `${config.color}18` }]}>
-            <Ionicons name={config.icon} size={26} color={config.color} />
-          </View>
-          <Text style={[theme.typography.h2, { color: theme.colors.text, marginTop: 13 }]}>{config.title}</Text>
-          <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 5 }]}>
-            {item?.title ?? 'Selected workflow item'}
-          </Text>
+    <BottomSheet
+      visible={item !== null}
+      onClose={onClose}
+      title={name}
+      subtitle={item ? item.subject ?? text.kind(item.kind) : undefined}
+      actions={
+        item ? (
+          canDecide ? (
+            <>
+              {error ? (
+                <Text
+                  accessibilityLiveRegion="assertive"
+                  accessibilityRole="alert"
+                  style={[theme.typography.footnote, { color: theme.colors.status.danger.fg }]}
+                >
+                  {error}
+                </Text>
+              ) : null}
+              <View style={styles.actionRow}>
+                <LiquidButton
+                  label={t('manager.approvals.sheet.reject')}
+                  icon="close"
+                  variant="secondary"
+                  onPress={() => void decide('reject')}
+                  loading={busy === 'reject'}
+                  disabled={busy !== null}
+                  style={styles.flex}
+                />
+                <LiquidButton
+                  label={t('manager.approvals.sheet.approve')}
+                  icon="checkmark"
+                  variant="success"
+                  onPress={() => void decide('approve')}
+                  loading={busy === 'approve'}
+                  disabled={busy !== null}
+                  style={styles.flex}
+                />
+              </View>
+            </>
+          ) : (
+            <Text style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>
+              {item.blockedReason && !language.startsWith('ar') ? item.blockedReason : t('manager.approvals.sheet.blockedBody')}
+            </Text>
+          )
+        ) : undefined
+      }
+    >
+      {item ? (
+        <>
+          {item.isOverdue ? (
+            <StatusPill
+              tone="danger"
+              icon="alert-circle"
+              label={item.dueAt
+                ? t('manager.approvals.card.overdue', { date: f.date(item.dueAt, 'medium') })
+                : t('manager.approvals.card.overdueNoDate')}
+            />
+          ) : null}
 
-          <Text style={[theme.typography.caption, styles.commentLabel, { color: theme.colors.textSecondary }]}>
-            {action === 'APPROVE' ? 'Comment (optional)' : 'Reason (required)'}
-          </Text>
-          <TextInput
-            value={comment}
-            onChangeText={onCommentChange}
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-            placeholder={action === 'APPROVE' ? 'Add context for the audit trail' : 'Explain the decision clearly'}
-            placeholderTextColor={theme.colors.textMuted}
-            selectionColor={theme.colors.primary}
-            style={[
-              theme.typography.body,
-              styles.commentInput,
-              { color: theme.colors.text, backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border },
-            ]}
-          />
+          {item.overtime ? (
+            <View>
+              {item.overtime.workDate ? (
+                <FactRow
+                  label={t('manager.approvals.sheet.date')}
+                  value={f.date(item.overtime.workDate, 'full')}
+                  sub={f.hijri(item.overtime.workDate) || null}
+                />
+              ) : null}
+              {item.overtime.startUtc && item.overtime.endUtc ? (
+                <FactRow
+                  label={t('manager.approvals.sheet.time')}
+                  value={t('manager.range', { from: f.time(item.overtime.startUtc), to: f.time(item.overtime.endUtc) })}
+                />
+              ) : null}
+              {item.overtime.minutes !== null ? (
+                <FactRow label={t('manager.approvals.sheet.hours')} value={text.duration(item.overtime.minutes)} />
+              ) : null}
+              {item.overtime.reason ? <FactRow label={t('manager.approvals.sheet.reason')} value={item.overtime.reason} /> : null}
+              <FactRow label={t('manager.approvals.sheet.pay')} value={t('manager.approvals.sheet.payNote')} />
+              <FactRow label={t('manager.approvals.sheet.flow')} value={t('manager.approvals.sheet.flowOvertime')} />
+            </View>
+          ) : null}
 
-          <View style={styles.modalActions}>
-            <MotionPressable
-              onPress={onClose}
-              haptic="selection"
-              style={styles.modalSecondaryShell}
-              contentStyle={[styles.modalSecondary, { borderColor: theme.colors.border }]}
-            >
-              <Text style={[theme.typography.bodyStrong, { color: theme.colors.textSecondary }]}>Cancel</Text>
-            </MotionPressable>
-            <LiquidButton
-              label={config.label}
-              icon={config.icon}
-              onPress={onSubmit}
-              loading={loading}
-              disabled={loading}
-              variant={action === 'REJECT' ? 'danger' : action === 'APPROVE' ? 'success' : 'primary'}
-              style={styles.modalPrimary}
+          {item.kind === 'LEAVE' ? (
+            contextState === 'loading' && !leave ? (
+              <SkeletonCard lines={4} />
+            ) : (
+              <View>
+                {leave?.leaveTypeName ? (
+                  <FactRow
+                    label={t('manager.approvals.sheet.type')}
+                    value={leave.leaveTypeName}
+                    sub={leave.isEmergency ? t('manager.approvals.sheet.emergency') : null}
+                  />
+                ) : null}
+                {leave?.startDate ? (
+                  <FactRow
+                    label={t('manager.approvals.sheet.dates')}
+                    value={text.dateRange(leave.startDate, leave.endDate)}
+                    sub={f.hijri(leave.startDate) || null}
+                  />
+                ) : null}
+                {leave && leave.totalDays !== null ? (
+                  <FactRow
+                    label={t('manager.approvals.sheet.duration')}
+                    value={text.days(leave.totalDays)}
+                    sub={leave.dayType
+                      ? /half/i.test(leave.dayType) ? t('manager.approvals.sheet.dayHalf') : t('manager.approvals.sheet.dayFull')
+                      : null}
+                  />
+                ) : null}
+                {leave?.reason ? <FactRow label={t('manager.approvals.sheet.reason')} value={leave.reason} /> : null}
+                {context ? (
+                  <FactRow
+                    label={t('manager.approvals.sheet.balance')}
+                    value={balanceValue(context)}
+                    sub={context.balance && context.balance.afterApproval !== null ? t('manager.approvals.sheet.balanceNote') : null}
+                  />
+                ) : null}
+                {context ? (
+                  <View accessible style={[styles.fact, { borderBottomColor: theme.colors.hairline }]}>
+                    <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('manager.approvals.sheet.overlap')}</Text>
+                    {context.overlap === null ? (
+                      <Text style={[theme.typography.callout, { color: theme.colors.textMuted }]}>{t('manager.approvals.sheet.overlapUnknown')}</Text>
+                    ) : context.overlap.length === 0 ? (
+                      <Text style={[theme.typography.callout, { color: theme.colors.text }]}>{t('manager.approvals.sheet.overlapNone')}</Text>
+                    ) : (
+                      context.overlap.map((o) => (
+                        <Text key={`${o.employeeId}-${o.startDate}`} style={[theme.typography.callout, { color: theme.colors.status.warning.fg }]}>
+                          {t('manager.approvals.sheet.overlapEntry', { name: o.employeeName, dates: text.dateRange(o.startDate, o.endDate) })}
+                          {o.approved ? '' : ` (${t('manager.approvals.sheet.notApprovedYet')})`}
+                        </Text>
+                      ))
+                    )}
+                  </View>
+                ) : null}
+                {contextState === 'failed' ? (
+                  <View style={styles.inlineRetry}>
+                    <Text style={[theme.typography.footnote, styles.flex, { color: theme.colors.status.warning.fg }]}>
+                      {t('manager.approvals.sheet.contextError')}
+                    </Text>
+                    <LiquidButton label={t('kit.retry')} variant="secondary" size="compact" onPress={() => void loadContext(item)} />
+                  </View>
+                ) : null}
+              </View>
+            )
+          ) : null}
+
+          {!item.overtime && item.kind !== 'LEAVE' && item.changeSummary ? (
+            <FactRow label={t('manager.approvals.sheet.changes')} value={item.changeSummary} />
+          ) : null}
+
+          <View>
+            {item.submittedAt ? <FactRow label={t('manager.approvals.sheet.submitted')} value={f.dateTime(item.submittedAt)} /> : null}
+            {item.dueAt && !item.isOverdue ? <FactRow label={t('manager.approvals.sheet.due')} value={f.dateTime(item.dueAt)} /> : null}
+            {item.source === 'workflow' ? (
+              <FactRow
+                label={t('manager.approvals.sheet.flow')}
+                value={item.stepOrder !== null
+                  ? t('manager.approvals.sheet.flowStep', { step: f.number(item.stepOrder) })
+                  : t('manager.approvals.sheet.flowNoStep')}
+              />
+            ) : null}
+            {item.priorDecisions.length ? (
+              <View accessible style={[styles.fact, { borderBottomColor: theme.colors.hairline }]}>
+                <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('manager.approvals.sheet.prior')}</Text>
+                {item.priorDecisions.map((d, i) => (
+                  <Text key={i} style={[theme.typography.callout, { color: theme.colors.text }]}>
+                    {d.stepOrder !== null
+                      ? t('manager.approvals.sheet.priorEntry', { step: f.number(d.stepOrder), decision: verb(d.decision), date: f.dateTime(d.decidedAt) })
+                      : t('manager.approvals.sheet.priorEntryNoStep', { decision: verb(d.decision), date: f.dateTime(d.decidedAt) })}
+                    {d.comments ? ` — ${d.comments}` : ''}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+            <FactRow
+              label={t('manager.approvals.sheet.source')}
+              value={item.source === 'overtime' ? t('manager.approvals.source.overtime') : t('manager.approvals.source.workflow')}
             />
           </View>
-        </GlassSurface>
-      </View>
-    </Modal>
+
+          {canDecide ? (
+            <View style={styles.commentBlock}>
+              <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.approvals.sheet.commentLabel')}</Text>
+              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('manager.approvals.sheet.commentHint')}</Text>
+              <TextInput
+                ref={inputRef}
+                value={comment}
+                onChangeText={(value) => {
+                  setComment(value);
+                  if (value.trim()) setReasonMissing(false);
+                }}
+                multiline
+                maxLength={1000}
+                textAlignVertical="top"
+                accessibilityLabel={t('manager.approvals.sheet.commentLabel')}
+                accessibilityHint={t('manager.approvals.sheet.commentHint')}
+                placeholder={t('manager.approvals.sheet.commentPlaceholder', { name })}
+                placeholderTextColor={theme.colors.textMuted}
+                selectionColor={theme.colors.accent}
+                style={[
+                  theme.typography.callout,
+                  styles.input,
+                  {
+                    color: theme.colors.text,
+                    backgroundColor: theme.colors.surfaceInset,
+                    borderColor: reasonMissing ? theme.colors.status.danger.fg : theme.colors.hairline,
+                  },
+                ]}
+              />
+              {reasonMissing ? (
+                <Text accessibilityLiveRegion="assertive" style={[theme.typography.footnote, { color: theme.colors.status.danger.fg }]}>
+                  {t('manager.approvals.sheet.reasonRequired', { name })}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </>
+      ) : null}
+    </BottomSheet>
   );
 }
 
-function getUrgency(urgency: ApprovalItem['urgency'], theme: ReturnType<typeof useTheme>['theme']) {
-  if (urgency === 'HIGH') return { label: 'High', color: theme.colors.danger };
-  if (urgency === 'MEDIUM') return { label: 'Medium', color: theme.colors.warning };
-  return { label: 'Low', color: theme.colors.success };
+function HistoryRow({ decision }: { decision: MyDecision }) {
+  const { theme } = useTheme();
+  const { t } = useTranslation();
+  const f = useFormat();
+  const text = useManagerText();
+  const date = f.dateTime(decision.decidedAt);
+  const mine = {
+    approved: t('manager.approvals.history.youApproved', { date }),
+    rejected: t('manager.approvals.history.youRejected', { date }),
+    returned: t('manager.approvals.history.youReturned', { date }),
+    other: t('manager.approvals.history.youDecided', { date }),
+  }[decision.myDecision];
+  const next = text.target(decision.nowWith);
+  const state = decision.state === 'approved'
+    ? { tone: 'success' as const, label: t('manager.approvals.history.stateApproved') }
+    : decision.state === 'rejected'
+      ? { tone: 'danger' as const, label: t('manager.approvals.history.stateRejected') }
+      : decision.state === 'returned'
+        ? { tone: 'warning' as const, label: t('manager.approvals.history.stateReturned') }
+        : decision.state === 'pending'
+          ? { tone: 'info' as const, label: next ? t('manager.approvals.history.statePendingWith', { next }) : t('manager.approvals.history.statePending') }
+          : { tone: 'neutral' as const, label: t('manager.approvals.history.stateOther') };
+
+  return (
+    <View style={styles.cardShell}>
+      <Surface contentStyle={styles.card}>
+        <View style={styles.cardTop}>
+          <View style={[styles.kindIcon, { backgroundColor: theme.colors.surfaceInset }]}>
+            <Ionicons accessible={false} name={KIND_ICON[decision.kind]} size={18} color={theme.colors.accent} />
+          </View>
+          <Text numberOfLines={1} style={[theme.typography.footnote, styles.flex, { color: theme.colors.textSecondary }]}>
+            {decision.subject ?? text.kind(decision.kind)}
+          </Text>
+          <StatusPill tone={state.tone} label={state.label} />
+        </View>
+        <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{decision.requesterName ?? t('manager.someone')}</Text>
+        <Text style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>{mine}</Text>
+        {decision.comments ? (
+          <Text style={[theme.typography.subheadline, { color: theme.colors.text }]}>“{decision.comments}”</Text>
+        ) : null}
+      </Surface>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { paddingBottom: 36 },
-  section: { paddingHorizontal: 16, marginTop: 16 },
-  listItem: { paddingHorizontal: 16 },
-  listGap: { height: 10 },
-  filterSection: { marginTop: 11 },
-  tabContainer: { flexDirection: 'row', padding: 5 },
-  tabShell: { flex: 1 },
-  tabButton: { minHeight: 48, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  tabCount: { minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  tabCountText: { color: '#FFFFFF', fontSize: 11, lineHeight: 15, fontWeight: '800' },
-  filterRail: { paddingHorizontal: 16, gap: 8 },
-  filterChip: { minHeight: 44, borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
-  stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
-  decisionOutcome: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, marginBottom: 14 },
-  decisionOutcomeCopy: { flex: 1, gap: 2 },
-  emptyCard: { minHeight: 230, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
-  emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
-  emptyText: { textAlign: 'center', maxWidth: 290 },
-  list: { gap: 11 },
-  approvalCard: { padding: 16 },
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 11 },
-  typeIcon: { width: 44, height: 44, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  cardHeading: { flex: 1, minWidth: 0 },
-  urgencyPill: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999 },
-  summary: { marginTop: 13 },
-  requesterRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 13 },
-  requesterAvatar: { width: 34, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  requesterCopy: { flex: 1 },
-  detailsPanel: { marginTop: 13, borderRadius: 16, paddingHorizontal: 12 },
-  detailRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
-  detailLabel: { textTransform: 'uppercase', letterSpacing: 0.45, maxWidth: '43%' },
-  actions: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 15, paddingTop: 13 },
-  returnButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderRadius: 13 },
-  actionRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rejectButton: { minHeight: 44, minWidth: 76, borderRadius: 14, borderWidth: 1.2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
-  approveButton: { minHeight: 44, minWidth: 94, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 13 },
-  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
-  modalSheet: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
-  modalContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 30 },
-  modalHandle: { width: 44, height: 5, borderRadius: 999, alignSelf: 'center' },
-  modalIcon: { width: 56, height: 56, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginTop: 17 },
-  commentLabel: { marginTop: 21, marginBottom: 7, fontWeight: '700' },
-  commentInput: { minHeight: 112, borderRadius: 17, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, paddingVertical: 12 },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 17 },
-  modalSecondaryShell: { flex: 1 },
-  modalSecondary: { minHeight: 56, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
-  modalPrimary: { flex: 1 },
-  bottomSpacer: { height: 12 },
+  flex: { flex: 1 },
+  content: { paddingBottom: 24 },
+  section: { paddingHorizontal: 16, marginBottom: 12 },
+  stack: { gap: 10 },
+  gap: { height: 10 },
+  notice: { flexDirection: 'row', gap: 12, padding: 14, alignItems: 'flex-start' },
+  partial: { marginBottom: 4 },
+  banner: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingStart: 14, paddingEnd: 4 },
+  iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  chipRail: { marginBottom: 12, flexGrow: 0 },
+  chips: { paddingHorizontal: 16, gap: 8 },
+  chip: { minHeight: 44, borderRadius: 22, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, justifyContent: 'center' },
+  chipText: { fontWeight: '600' },
+  cardShell: { paddingHorizontal: 16 },
+  card: { padding: 16, gap: 6 },
+  cardTop: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  kindIcon: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  cardAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    marginTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 6,
+  },
+  fact: { paddingVertical: 10, gap: 2, borderBottomWidth: StyleSheet.hairlineWidth },
+  inlineRetry: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: 10 },
+  commentBlock: { gap: 6, paddingTop: 4 },
+  input: { minHeight: 96, borderRadius: 14, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, textAlign: 'auto' },
+  actionRow: { flexDirection: 'row', gap: 10 },
+  footnote: { paddingHorizontal: 20, paddingTop: 14 },
 });
