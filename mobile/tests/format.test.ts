@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFormatter, parseDateInput, toZonedWallClock } from '../src/utils/formatCore.ts';
+import { createFormatter, parseDateInput, toDigits, toZonedWallClock } from '../src/utils/formatCore.ts';
 
 const en = createFormatter({ language: 'en' });
 const ar = createFormatter({ language: 'ar' });
@@ -73,4 +73,12 @@ test('toZonedWallClock carries the Riyadh wall clock into local fields', () => {
   assert.equal(wall.getDate(), 11);
   assert.equal(wall.getHours(), 1);
   assert.equal(wall.getMinutes(), 15);
+});
+
+test('digits are consistent even when the engine ignores the -u-nu- extension', () => {
+  assert.equal(toDigits('١٠٬٨٠٠٫٠٠ ر.س', false), '10,800.00 ر.س');
+  assert.equal(toDigits('۲۰۲۶', false), '2026');
+  assert.equal(toDigits('2026', true), '٢٠٢٦');
+  assert.doesNotMatch(ar.money(10800), /[٠-٩]/);
+  assert.doesNotMatch(ar.date('2026-10-10T09:00:00Z'), /[٠-٩]/);
 });

@@ -66,6 +66,18 @@ export function useRequestTypeLabel() {
   };
 }
 
+/** Letter tickets are titled "<LetterType> request" by the server (EmployeeSelfServiceController); show the letter's name instead. */
+const LETTER_SUBJECT = /^(SalaryCertificate|SalaryTransferLetter|EmploymentVerification|ExperienceCertificate|AppointmentLetter) request$/;
+
+export function useRequestSubject() {
+  const { t } = useTranslation();
+  const tx = t as unknown as (k: string) => string;
+  return (subject: string) => {
+    const m = LETTER_SUBJECT.exec(subject.trim());
+    return m ? tx(`account.letters.types.${m[1]}`) : subject;
+  };
+}
+
 export function useRequestStatus() {
   const { t } = useTranslation();
   const tx = t as unknown as (k: string) => string;
@@ -82,6 +94,7 @@ export default function HRRequestsScreen() {
   const { t } = useTranslation();
   const f = useFormat();
   const typeLabel = useRequestTypeLabel();
+  const subjectLabel = useRequestSubject();
   const statusOf = useRequestStatus();
   const [requests, setRequests] = useState<HRRequest[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -213,12 +226,12 @@ export default function HRRequestsScreen() {
                   <MotionPressable
                     key={r.id}
                     accessibilityRole="button"
-                    accessibilityLabel={`${r.subject}. ${typeLabel(r.requestType)}. ${status.label}`}
+                    accessibilityLabel={`${subjectLabel(r.subject)}. ${typeLabel(r.requestType)}. ${status.label}`}
                     onPress={() => navigation.navigate('HRRequestDetail', { id: r.id })}
                   >
                     <View style={[styles.row, i < requests.length - 1 && { borderBottomColor: theme.colors.hairline, borderBottomWidth: StyleSheet.hairlineWidth }]}>
                       <View style={styles.flex}>
-                        <Text numberOfLines={2} style={[theme.typography.headline, { color: theme.colors.text }]}>{r.subject}</Text>
+                        <Text numberOfLines={2} style={[theme.typography.headline, { color: theme.colors.text }]}>{subjectLabel(r.subject)}</Text>
                         <Text numberOfLines={1} style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>
                           {[typeLabel(r.requestType), r.createdAt ? t('manager.hr.created', { date: f.date(r.createdAt, 'medium') }) : null].filter(Boolean).join(' · ')}
                         </Text>

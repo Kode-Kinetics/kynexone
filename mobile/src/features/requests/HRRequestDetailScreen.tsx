@@ -19,7 +19,7 @@ import {
   StickyFooter,
   Surface,
 } from '@/components/ui';
-import { useRequestStatus, useRequestTypeLabel } from './HRRequestsScreen';
+import { useRequestStatus, useRequestSubject, useRequestTypeLabel } from './HRRequestsScreen';
 
 const STEPS: HRRequest['status'][] = ['Open', 'InProgress', 'Resolved', 'Closed'];
 
@@ -40,6 +40,7 @@ export default function HRRequestDetailScreen() {
   const { t } = useTranslation();
   const f = useFormat();
   const typeLabel = useRequestTypeLabel();
+  const subjectLabel = useRequestSubject();
   const statusOf = useRequestStatus();
   const { user } = useAuthStore();
   const { id } = route.params as { id: string };
@@ -128,7 +129,7 @@ export default function HRRequestDetailScreen() {
       >
         <ScreenHero
           eyebrow={request.ticketNumber ? t('manager.hr.detail.requestNo', { number: request.ticketNumber }) : typeLabel(request.requestType)}
-          title={request.subject}
+          title={subjectLabel(request.subject)}
         />
         <View style={styles.content}>
           <View style={styles.pills}>

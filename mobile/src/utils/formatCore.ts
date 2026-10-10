@@ -173,7 +173,35 @@ export function createFormatter(options: FormatterOptions) {
     return y && m && d ? `${y}-${m}-${d}` : null;
   }
 
-  return { language, locale, timeZone, date, time, dateTime, hijri, money, number, businessDate };
+  // Hermes on iOS ignores the -u-nu- locale extension and prints ar-SA in Arabic-Indic digits, while
+  // counts rendered with String() stay Latin — one screen then mixes ١١ and 11. Enforce the choice.
+  const digits = <A extends unknown[]>(fn: (...args: A) => string) => (...args: A) => toDigits(fn(...args), arabicDigits);
+
+  return {
+    language,
+    locale,
+    timeZone,
+    date: digits(date),
+    time: digits(time),
+    dateTime: digits(dateTime),
+    hijri: digits(hijri),
+    money: digits(money),
+    number: digits(number),
+    businessDate,
+  };
+}
+
+const ARABIC_INDIC = /[٠-٩۰-۹٫٬]/g;
+
+/** Converts Arabic-Indic digits and separators to Latin (or the reverse when `arabic` is set). */
+export function toDigits(text: string, arabic: boolean): string {
+  if (arabic) return text.replace(/[0-9]/g, (d) => String.fromCharCode(0x0660 + Number(d)));
+  return text.replace(ARABIC_INDIC, (c) => {
+    const code = c.charCodeAt(0);
+    if (code === 0x066b) return '.';
+    if (code === 0x066c) return ',';
+    return String(code >= 0x06f0 ? code - 0x06f0 : code - 0x0660);
+  });
 }
 
 export type Formatter = ReturnType<typeof createFormatter>;
