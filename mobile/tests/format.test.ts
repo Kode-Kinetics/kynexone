@@ -44,6 +44,13 @@ test('SAR money formats in English and Arabic', () => {
   assert.match(arabic, /[٠-٩]/);
 });
 
+test('money never relies on the platform currency glyph', () => {
+  // iOS 27 CLDR renders SAR as U+20C1, which older fonts cannot draw.
+  assert.equal(en.money(-2408.25), 'SAR\u00A0-2,408.25');
+  assert.ok(!ar.money(10800).includes('\u20C1'));
+  assert.equal(en.money(1000, 'AED', { decimals: 0 }), 'AED\u00A01,000');
+});
+
 test('missing or invalid values render as a dash, never a guess', () => {
   assert.equal(en.money(null), '—');
   assert.equal(en.money(Number.NaN), '—');

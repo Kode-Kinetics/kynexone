@@ -140,12 +140,15 @@ export function createFormatter(options: FormatterOptions) {
   function money(amount: number | null | undefined, currency = 'SAR', opts: { decimals?: number } = {}): string {
     if (amount === null || amount === undefined || !Number.isFinite(amount)) return EMPTY_VALUE;
     const digits = opts.decimals ?? 2;
-    return new Intl.NumberFormat(numberLocale, {
-      style: 'currency',
-      currency,
+    // The label is composed here, not left to Intl: newer CLDR data (iOS 27) renders SAR as the
+    // new Riyal sign U+20C1, which older iOS and Android fonts show as an empty box.
+    const figure = new Intl.NumberFormat(numberLocale, {
       minimumFractionDigits: digits,
       maximumFractionDigits: digits,
     }).format(amount);
+    const code = currency.toUpperCase();
+    if (language === 'ar') return `${figure} ${code === 'SAR' ? 'ر.س' : code}`;
+    return `${code} ${figure}`;
   }
 
   function number(value: number | null | undefined, opts: Intl.NumberFormatOptions = {}): string {

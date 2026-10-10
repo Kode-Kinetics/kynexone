@@ -254,8 +254,8 @@ async function shotsTour() {
   const user = useAuthStore.getState().user;
   const manager = isManagerUser(user);
   const routes: AppRoute[] = manager
-    ? ['Home', 'Approvals', 'Team', 'AttendanceHistory', 'ApplyLeave', 'Payslips', 'Notifications', 'HRRequests', 'Documents', 'Profile', 'Settings']
-    : ['Home', 'AttendanceHistory', 'ApplyLeave', 'Overtime', 'Payslips', 'Notifications', 'HRRequests', 'Documents', 'Profile', 'Settings'];
+    ? ['Home', 'Approvals', 'Team', 'AttendanceHistory', 'ApplyLeave', 'Payslips', 'Notifications', 'HRRequests', 'Letters', 'Loans', 'Documents', 'Profile', 'Settings']
+    : ['Home', 'AttendanceHistory', 'ApplyLeave', 'Overtime', 'Payslips', 'Notifications', 'HRRequests', 'Letters', 'Loans', 'Documents', 'Profile', 'Settings'];
   for (const route of routes) await show(route, route, manager);
   const slips = await payslipApi.getPayslips().catch(() => []);
   if (slips[0]) await show('PayslipDetail', 'PayslipDetail', manager, { id: slips[0].id });
