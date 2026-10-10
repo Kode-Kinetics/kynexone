@@ -116,6 +116,12 @@ public static class StatutoryValueUnits
         // names around them, and their admissible range is whatever MHRSD published.
         if (k.StartsWith("nitaqat.curve.", StringComparison.Ordinal)) return Unconstrained();
 
+        // A closed word list (ot.hourly_base ∈ {basic, wage}). Any other spelling is refused: the
+        // overtime calculator reads everything but "wage" as basic, so "full" or "gross" would
+        // silently pay overtime on basic — about 30% less in KSA.
+        if (EnumeratedValues(k) is not null)
+            return new Spec(Unit.Text, null, null, 0, "one of: " + string.Join(", ", EnumeratedValues(k)!));
+
         if (k.EndsWith("_rate", StringComparison.Ordinal) || k.EndsWith("_ratio", StringComparison.Ordinal))
         {
             var isContribution = ContributionRateFamilies.Any(f => k.StartsWith(f, StringComparison.Ordinal));
@@ -156,6 +162,24 @@ public static class StatutoryValueUnits
     private static Spec Unconstrained() => new(Unit.Unconstrained, null, null, 28, string.Empty);
 
     /// <summary>
+    /// Word-valued statutory keys and their ONLY admissible values, ordered from the least to the most
+    /// generous to the employee (the order <see cref="StatutoryOverridePolicy"/> uses as a floor).
+    /// Null for every other key.
+    /// </summary>
+    public static IReadOnlyList<string>? EnumeratedValues(string? ruleKey)
+    {
+        var k = (ruleKey ?? string.Empty).Trim().ToLowerInvariant();
+        return k switch
+        {
+            // basic = overtime hour priced on basic salary; wage = on the full wage (KSA Art. 107).
+            "ot.hourly_base" => HourlyBaseValues,
+            _ => null,
+        };
+    }
+
+    private static readonly string[] HourlyBaseValues = { "basic", "wage" };
+
+    /// <summary>
     /// Validates a raw statutory value on its way into storage. Returns an error message to refuse
     /// the write, or <c>null</c> to accept it.
     ///
@@ -167,6 +191,13 @@ public static class StatutoryValueUnits
     {
         var key = (ruleKey ?? string.Empty).Trim();
         var spec = SpecFor(key);
+        if (EnumeratedValues(key) is { } allowed)
+        {
+            var word = (rawValue ?? string.Empty).Trim();
+            return allowed.Contains(word, StringComparer.OrdinalIgnoreCase)
+                ? null
+                : $"'{key}' must be {spec.Form}. Received '{word}'. Nothing was saved.";
+        }
         if (!spec.IsNumeric) return null;
 
         var raw = (rawValue ?? string.Empty).Trim();

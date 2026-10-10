@@ -82,6 +82,9 @@ public static class StatutoryOverridePolicy
     {
         if (string.IsNullOrWhiteSpace(ruleKey)) return null;
         var k = ruleKey.Trim().ToLowerInvariant();
+        // A word-valued key is a floor over its ordered list: ot.hourly_base may move basic → wage
+        // (more overtime pay), never wage → basic.
+        if (StatutoryValueUnits.EnumeratedValues(k) is not null) return Directions.Floor;
         var spec = StatutoryValueUnits.SpecFor(k);
         if (!spec.IsNumeric) return null;
 
@@ -99,40 +102,120 @@ public static class StatutoryOverridePolicy
         return Directions.Either;
     }
 
+    // ── Plausibility bounds ─────────────────────────────────────────────────────────────────
+    //
+    // A one-way floor/ceiling is wrong for a DIVISOR: ot.standard_monthly_hours divides the monthly
+    // wage into the hourly rate that prices BOTH overtime (paid to the employee) and late/short-hours
+    // deductions (charged to the employee). Lowering it is "more generous" for overtime and harsher
+    // for deductions, and an absurd value breaks both: 0.5 truncates to 0 and pays no overtime; 8
+    // (hours per DAY typed as hours per month) charges about 30× the statutory hourly wage per hour
+    // late. So it also has a lower bound.
+    //
+    // ot.standard_monthly_hours ≥ 60% of the platform value (144 h on KSA's 240). The shortest
+    // full-time schedule the GCC labour laws set is the Ramadan day for Muslim workers — KSA Labour
+    // Law Art. 98: 6 hours a day, 36 a week, ≈156 h a month — and a 35-hour office week is ≈152 h.
+    // 60% of 240 admits every real schedule down to that, and refuses the unit mistakes that matter
+    // (hours per day "8", hours per week "40"/"48", "0.5"). With no platform value seeded, 120 h.
+    //
+    // lop.monthly_day_divisor ≥ 20 and lop.standard_work_minutes_per_day ≥ 240 whatever the platform
+    // says (they are floors, so where a platform value exists — 30 and 480 in KSA — that is the real
+    // bound). No GCC practice divides a month by fewer working days than ~21; below 20 one absent day
+    // costs more than 5% of the month. Below 4 hours a "working day" turns one late hour into a
+    // quarter-day deduction. Zero is never admissible for either: it is a division by zero.
+    private const decimal MonthlyHoursPlatformFraction = 0.6m;
+    private const decimal MonthlyHoursAbsoluteMin = 120m;
+    private const decimal LopDayDivisorMin = 20m;
+    private const decimal LopMinutesPerDayMin = 240m;
+
+    /// <summary>The smallest value a key may take regardless of direction, or null when unbounded.</summary>
+    public static decimal? PlausibleMinimum(string? ruleKey, decimal? platformValue)
+    {
+        var k = (ruleKey ?? "").Trim().ToLowerInvariant();
+        if (k == OvertimeStatutoryContextResolver.RuleStandardMonthlyHours)
+            return platformValue is > 0m ? Math.Max(MonthlyHoursAbsoluteMin, decimal.Round(platformValue.Value * MonthlyHoursPlatformFraction, 2)) : MonthlyHoursAbsoluteMin;
+        if (k == LopMonthlyDayDivisor) return LopDayDivisorMin;
+        if (k == LopStandardWorkMinutesPerDay) return LopMinutesPerDayMin;
+        return null;
+    }
+
     /// <summary>
     /// Refuses a value that weakens a statutory floor or loosens a ceiling. Returns the 422 body, or
-    /// null to allow. A missing platform value (nothing seeded for that date) cannot bound anything.
+    /// null to allow. A missing platform value (nothing seeded for that date) cannot bound anything
+    /// except the plausibility minimum.
+    /// <paramref name="platformText"/> is the raw platform value; it is what bounds a word-valued key
+    /// (<c>ot.hourly_base</c>), whose platform value has no decimal form.
     /// </summary>
-    public static object? DirectionRefusal(string? ruleKey, string? value, decimal? platformValue)
+    public static object? DirectionRefusal(string? ruleKey, string? value, decimal? platformValue, string? platformText = null)
     {
         var direction = DirectionFor(ruleKey);
-        if (direction is null or Directions.Either || platformValue is null) return null;
+        if (direction is null) return null;
+
+        if (StatutoryValueUnits.EnumeratedValues(ruleKey) is { } ordered)
+            return EnumeratedRefusal(ruleKey!, value, platformText, ordered);
+
         if (!decimal.TryParse((value ?? "").Trim(), NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
                 CultureInfo.InvariantCulture, out var v)) return null; // the unit gate owns parse errors
 
+        if (PlausibleMinimum(ruleKey, platformValue) is { } min && v < min)
+        {
+            var minText = min.ToString("0.######", CultureInfo.InvariantCulture);
+            return new
+            {
+                code = FloorCode, platformValue, minimum = min,
+                message = $"'{ruleKey}' cannot be below {minText}: it divides the monthly wage, so a smaller value " +
+                          $"would overcharge every deduction it prices (or pay nothing). Enter {minText} or higher. Nothing was saved.",
+            };
+        }
+
+        if (direction == Directions.Either || platformValue is null) return null;
         var p = platformValue.Value;
-        var platformText = p.ToString("0.######", CultureInfo.InvariantCulture);
+        var platformDisplay = p.ToString("0.######", CultureInfo.InvariantCulture);
         if (direction == Directions.Floor && v < p)
             return new
             {
                 code = FloorCode, platformValue = p,
-                message = $"'{ruleKey}' is a legal minimum of {platformText}. A company may pay more generously than the law, " +
-                          $"never less: enter {platformText} or higher. Nothing was saved.",
+                message = $"'{ruleKey}' is a legal minimum of {platformDisplay}. A company may pay more generously than the law, " +
+                          $"never less: enter {platformDisplay} or higher. Nothing was saved.",
             };
         if (direction == Directions.Ceiling && v > p)
             return new
             {
                 code = FloorCode, platformValue = p,
-                message = $"'{ruleKey}' is a legal maximum of {platformText}. A company may set it lower, never higher: " +
-                          $"enter {platformText} or less. Nothing was saved.",
+                message = $"'{ruleKey}' is a legal maximum of {platformDisplay}. A company may set it lower, never higher: " +
+                          $"enter {platformDisplay} or less. Nothing was saved.",
+            };
+        return null;
+    }
+
+    /// <summary>
+    /// A word-valued floor: the value must be on the list, and not earlier in it than the platform
+    /// value. KSA's platform 'wage' therefore admits only 'wage'; a 'basic' platform admits both.
+    /// </summary>
+    private static object? EnumeratedRefusal(string ruleKey, string? value, string? platformText, IReadOnlyList<string> ordered)
+    {
+        int Rank(string? s) => ordered.ToList().FindIndex(o => string.Equals(o, (s ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+        var rank = Rank(value);
+        if (rank < 0)
+            return new
+            {
+                code = StatutoryValueUnits.UnitRefusalCode, platformValue = platformText,
+                message = $"'{ruleKey}' must be one of: {string.Join(", ", ordered)}. Received '{value?.Trim()}'. Nothing was saved.",
+            };
+        var platformRank = Rank(platformText);
+        if (platformRank >= 0 && rank < platformRank)
+            return new
+            {
+                code = FloorCode, platformValue = platformText,
+                message = $"'{ruleKey}' is '{platformText!.Trim()}' by law here. Changing it to '{value!.Trim()}' would pay every " +
+                          $"overtime hour on less than the law requires, so it is refused. Nothing was saved.",
             };
         return null;
     }
 
     /// <summary>True when the stored value violates its direction against the platform value. Used at
-    /// read time so an override saved before the floor check existed is never paid.</summary>
-    public static bool ViolatesDirection(string? ruleKey, string? value, decimal? platformValue)
-        => DirectionRefusal(ruleKey, value, platformValue) is not null;
+    /// read time so a value saved before the floor check existed is never paid.</summary>
+    public static bool ViolatesDirection(string? ruleKey, string? value, decimal? platformValue, string? platformText = null)
+        => DirectionRefusal(ruleKey, value, platformValue, platformText) is not null;
 
     /// <summary>How the UI should present a value: percent | multiplier | days | hours | amount | text.</summary>
     public static string DisplayUnitFor(string? ruleKey)

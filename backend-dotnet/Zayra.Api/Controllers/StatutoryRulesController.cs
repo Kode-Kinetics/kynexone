@@ -172,8 +172,9 @@ public class StatutoryRulesController : ControllerBase
             return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "An override already covers this period. Supersede the current version instead." });
 
         // A statutory floor may only be raised, a ceiling only lowered (StatutoryOverridePolicy).
-        var platform = await PlatformValueAsync(cc, jur, key, req.EffectiveFrom, ct);
-        if (StatutoryOverridePolicy.DirectionRefusal(key, value, platform) is { } floor)
+        var platformText = await PlatformRawAsync(cc, jur, key, req.EffectiveFrom, ct);
+        var platform = ParsePlatform(platformText);
+        if (StatutoryOverridePolicy.DirectionRefusal(key, value, platform, platformText) is { } floor)
             return UnprocessableEntity(floor);
         if (await PendingRequestFor(tenantId.Value, cc, jur, key, ct) is not null)
             return Conflict(new { code = "STATUTORY_CHANGE_PENDING", message = "A change to this rule is already waiting for approval. Approve, decline or withdraw it first." });
@@ -238,8 +239,9 @@ public class StatutoryRulesController : ControllerBase
                 req.EffectiveFrom, req.EffectiveTo, prior.Id, ct))
             return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "Another override already covers the requested period." });
 
-        var platformAtStart = await PlatformValueAsync(prior.CountryCode, prior.Jurisdiction, prior.RuleKey, req.EffectiveFrom, ct);
-        if (StatutoryOverridePolicy.DirectionRefusal(prior.RuleKey, nextValue, platformAtStart) is { } floor)
+        var platformTextAtStart = await PlatformRawAsync(prior.CountryCode, prior.Jurisdiction, prior.RuleKey, req.EffectiveFrom, ct);
+        var platformAtStart = ParsePlatform(platformTextAtStart);
+        if (StatutoryOverridePolicy.DirectionRefusal(prior.RuleKey, nextValue, platformAtStart, platformTextAtStart) is { } floor)
             return UnprocessableEntity(floor);
         if (await PendingRequestFor(tenantId.Value, prior.CountryCode, prior.Jurisdiction, prior.RuleKey, ct) is not null)
             return Conflict(new { code = "STATUTORY_CHANGE_PENDING", message = "A change to this rule is already waiting for approval. Approve, decline or withdraw it first." });
@@ -319,16 +321,18 @@ public class StatutoryRulesController : ControllerBase
         return null;
     }
 
-    private async Task<decimal?> PlatformValueAsync(string cc, string jur, string key, DateTime on, CancellationToken ct)
-    {
-        var raw = await VisibleRules(Guid.Empty).AsNoTracking()
+    /// <summary>The platform value on the date, as stored: a word-valued key (ot.hourly_base) is bounded
+    /// by its text, every numeric key by <see cref="ParsePlatform"/> of it.</summary>
+    private Task<string?> PlatformRawAsync(string cc, string jur, string key, DateTime on, CancellationToken ct)
+        => VisibleRules(Guid.Empty).AsNoTracking()
             .Where(r => r.TenantId == null && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key
                      && r.EffectiveFrom <= on && (r.EffectiveTo == null || r.EffectiveTo > on))
             .OrderByDescending(r => r.EffectiveFrom)
             .Select(r => r.RuleValue)
             .FirstOrDefaultAsync(ct);
-        return decimal.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
-    }
+
+    private static decimal? ParsePlatform(string? raw)
+        => decimal.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
 
     /// <summary>The tenant-level request (CompanyId = null) already waiting for this rule, if any.</summary>
     private Task<CompanyStatutoryOverride?> PendingRequestFor(Guid tenantId, string cc, string jur, string key, CancellationToken ct)
