@@ -24,6 +24,8 @@ import {
 } from '@/auth/publicAuthInput';
 import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode } from '@/auth/welcomeCode';
 import { mapEmployeeProfile } from './profileMapper';
+import { mapDashboardExtras, type EmployeeHomeExtras } from './homeMappers';
+import { holidaysApi } from './holidays';
 import { fetchAllPages } from './paging';
 import {
   classifyLoginResponse,
@@ -48,6 +50,7 @@ import {
   type VerificationCacheEntry,
   type WithdrawalResult,
 } from '@/features/attendance/selfieAttendance';
+import { companyWallTimeToUtcIso } from '@/features/attendance/companyTime';
 import type {
   AuthUser,
   AuthTokens,
@@ -756,7 +759,12 @@ async function resolveTodayAttendance(dailyRecord: any | null | undefined): Prom
 
 // ---- Dashboard ----
 export const dashboardApi = {
-  async getEmployeeDashboard(): Promise<EmployeeDashboard> {
+  /**
+   * GET /ess/dashboard. Also carries what the shared type leaves out (announcements, today's
+   * processed status and worked minutes — see mapDashboardExtras). Unread notifications here are
+   * the dashboard's top five; Home replaces the count with the full unread list when it loads.
+   */
+  async getEmployeeDashboard(): Promise<EmployeeDashboard & EmployeeHomeExtras> {
     const data = await apiGet<any>('/ess/dashboard');
     const todayAttendance = await resolveTodayAttendance(data.attendanceToday).catch(
       () => fallbackTodayAttendance
@@ -776,7 +784,9 @@ export const dashboardApi = {
       pendingRequestsCount: Number(data.pendingRequests ?? 0),
       expiringDocuments: (data.documentAlerts ?? []).map(mapDocument),
       unreadNotifications: (data.notifications ?? []).filter((n: any) => !n.isRead).length,
+      // Loaded separately (holidaysApi) so a missing calendar never fails the dashboard.
       upcomingHolidays: [],
+      ...mapDashboardExtras(data),
     };
   },
 
@@ -816,9 +826,15 @@ export const dashboardApi = {
     };
   },
 
-  async getHolidays(_year: number): Promise<Holiday[]> {
-    // Holidays live under /leave/holidays/calendars/{id}/holidays; no screen uses this yet.
-    return [];
+  /** The tenant's public holidays in a calendar year (GET /leave/holidays/range). */
+  async getHolidays(year: number): Promise<Holiday[]> {
+    const rows = await holidaysApi.getRange(`${year}-01-01`, `${year}-12-31`);
+    return rows.map((h) => ({
+      date: h.date,
+      name: h.nameEn,
+      nameAr: h.nameAr,
+      type: /relig|islam|eid/i.test(h.type ?? '') ? 'RELIGIOUS' : /company/i.test(h.type ?? '') ? 'COMPANY' : 'PUBLIC',
+    }));
   },
 };
 
@@ -974,7 +990,9 @@ export const attendanceApi = {
       .map(
         (record: any): AttendanceDay => ({
           date: record.workDate,
-          status: record.missingPunch ? 'MISSING_PUNCH' : mapStatus(record.status),
+          // Missing punch = one punch without the other. No punches at all keeps the server's verdict
+          // (Absent, Rest day, On leave…), which the processor also flags as missingPunch.
+          status: record.missingPunch && !!record.firstInUtc !== !!record.lastOutUtc ? 'MISSING_PUNCH' : mapStatus(record.status),
           clockIn: record.firstInUtc ?? undefined,
           clockOut: record.lastOutUtc ?? undefined,
           workHours: Number(record.totalWorkedMinutes ?? 0) / 60,
@@ -986,6 +1004,7 @@ export const attendanceApi = {
       .sort((a, b) => b.date.localeCompare(a.date));
   },
 
+  /** Requested times are company wall-clock times (Asia/Riyadh), not the phone's zone. */
   async submitRegularization(payload: {
     date: string;
     requestedClockIn?: string;
@@ -996,10 +1015,10 @@ export const attendanceApi = {
       workDate: payload.date,
       requestType: 'MissingPunch',
       requestedInUtc: payload.requestedClockIn
-        ? localDateTimeToUtcIso(payload.date, payload.requestedClockIn)
+        ? companyWallTimeToUtcIso(payload.date, payload.requestedClockIn)
         : undefined,
       requestedOutUtc: payload.requestedClockOut
-        ? localDateTimeToUtcIso(payload.date, payload.requestedClockOut)
+        ? companyWallTimeToUtcIso(payload.date, payload.requestedClockOut)
         : undefined,
       reason: payload.reason,
     });
