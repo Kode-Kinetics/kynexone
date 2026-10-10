@@ -331,6 +331,24 @@ test('"Where does it post?" lists problems first and the health banner links to 
   await expect(page.locator('#gl-route-LOAN_RECEIVABLE')).toBeFocused();
 });
 
+test('switching scope never draws the previous scope\'s rows under the new one', async ({ page }) => {
+  // Found live: switching group → company rendered the group chart once as the company's own rows
+  // plus the inherited copy, and React logged ~1,000 duplicate-key warnings for it.
+  const duplicateKeys: string[] = [];
+  page.on('console', (m) => { if (m.text().includes('two children with the same key')) duplicateKeys.push(m.text()); });
+  await boot(page, { groupMode: true });
+  const chart = page.getByRole('region', { name: 'Chart of Accounts', exact: true });
+  await expect(chart.getByRole('row').filter({ hasText: 'Basic Salary Expense' })).toHaveCount(1);
+  await page.getByLabel('Configuration scope').selectOption('co-sa');
+  await expect(chart.getByRole('row').filter({ hasText: 'Riyadh Site Allowance' })).toContainText('Company');
+  await expect(chart.getByRole('row').filter({ hasText: 'Basic Salary Expense' })).toHaveCount(1);
+  await page.getByLabel('Configuration scope').selectOption('');
+  await expect(chart.getByRole('row').filter({ hasText: 'Riyadh Site Allowance' })).toHaveCount(0);
+  await page.getByLabel('Configuration scope').selectOption('co-sa');
+  await expect(chart.getByRole('row').filter({ hasText: 'Riyadh Site Allowance' })).toHaveCount(1);
+  expect(duplicateKeys).toEqual([]);
+});
+
 test('a company-scoped user still sees the group accounts the company inherits', async ({ page }) => {
   const state = await boot(page);
   await expect(page.getByLabel('Configuration scope')).toHaveValue('co-sa');
