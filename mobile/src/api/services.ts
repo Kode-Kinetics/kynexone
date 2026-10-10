@@ -34,6 +34,7 @@ import {
   type MfaPrompt,
 } from '@/auth/mfaFlow';
 import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
+import { zonedWallTimeToUtcIso } from '@/features/overtime/overtimeLogic';
 import {
   buildLocationFields,
   buildPunchBody,
@@ -266,11 +267,8 @@ function mapPayslip(raw: any, currency?: string): Payslip {
     id: String(raw.id ?? ''),
     month,
     year,
-    periodLabel:
-      raw.periodLabel ||
-      (hasPeriod
-        ? new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-        : 'Payslip'),
+    // The screen formats the month in the UI language from year/month; this is only the server's label.
+    periodLabel: raw.periodLabel || '',
     periodStart: hasPeriod ? localIsoDate(new Date(year, month - 1, 1)) : raw.paidFromDate ?? undefined,
     periodEnd: raw.paidToDate ?? undefined,
     grossSalary,
@@ -294,21 +292,20 @@ function mapPayslip(raw: any, currency?: string): Payslip {
 function payslipLines(raw: any): { earnings: PayslipLine[]; deductions: PayslipLine[] } {
   const num = (v: unknown) => Number(v ?? 0) || 0;
   const earnings: PayslipLine[] = [
-    { code: 'BASIC', description: 'Basic Salary', amount: num(raw.basicSalary), type: 'Earning' as const },
-    { code: 'HOUSING', description: 'Housing Allowance', amount: num(raw.housingAllowance), type: 'Earning' as const },
-    { code: 'TRANSPORT', description: 'Transport Allowance', amount: num(raw.transportAllowance), type: 'Earning' as const },
-    { code: 'OTHER', description: 'Other Allowances', amount: num(raw.otherAllowances), type: 'Earning' as const },
-    { code: 'ARREARS', description: 'Arrears', amount: num(raw.arrearsAmount), type: 'Earning' as const },
+    { code: 'BASIC', description: 'Basic salary', descriptionAr: 'الراتب الأساسي', amount: num(raw.basicSalary), type: 'Earning' as const },
+    { code: 'HOUSING', description: 'Housing allowance', descriptionAr: 'بدل السكن', amount: num(raw.housingAllowance), type: 'Earning' as const },
+    { code: 'TRANSPORT', description: 'Transport allowance', descriptionAr: 'بدل النقل', amount: num(raw.transportAllowance), type: 'Earning' as const },
+    { code: 'OTHER', description: 'Other allowances', descriptionAr: 'بدلات أخرى', amount: num(raw.otherAllowances), type: 'Earning' as const },
+    { code: 'ARREARS', description: 'Arrears', descriptionAr: 'فروقات مستحقة', amount: num(raw.arrearsAmount), type: 'Earning' as const },
   ].filter((l) => l.amount !== 0);
 
-  const total = num(raw.deductions);
+  // Only the columns the slip itself carries. Whatever they do not explain stays unexplained: the
+  // screen flags it as "not itemised" rather than inventing an "Other deductions" line by subtraction.
   const statutory = num(raw.employeeStatutoryTotal);
   const loans = num(raw.loanDeductions);
-  const other = Math.round((total - statutory - loans) * 100) / 100;
   const deductions: PayslipLine[] = [
-    { code: 'STATUTORY', description: 'Statutory (GOSI)', amount: statutory, type: 'Deduction' as const },
-    { code: 'LOAN', description: 'Loan / Advance Recovery', amount: loans, type: 'Deduction' as const },
-    { code: 'OTHER_DED', description: 'Other Deductions', amount: other > 0 ? other : 0, type: 'Deduction' as const },
+    { code: 'STATUTORY', description: 'Statutory (GOSI)', descriptionAr: 'التأمينات الاجتماعية (GOSI)', amount: statutory, type: 'Deduction' as const },
+    { code: 'LOAN', description: 'Loan / advance recovery', descriptionAr: 'استرداد قرض / سلفة', amount: loans, type: 'Deduction' as const },
   ].filter((l) => l.amount !== 0);
 
   return {
@@ -406,19 +403,31 @@ function mapOvertimeStatus(status?: string): OvertimeRequest['status'] {
   return 'Pending'; // PendingManager, PendingHR, Submitted…
 }
 
-function mapOvertimeRequest(raw: any): OvertimeRequest {
+/** An overtime request with the raw instants and status, so screens format times on the company clock. */
+export interface OvertimeRecord extends OvertimeRequest {
+  startUtc: string;
+  endUtc: string;
+  rawStatus: string;
+  decidedAt: string | null;
+}
+
+function mapOvertimeRequest(raw: any): OvertimeRecord {
   const minutes = Number(raw.requestedMinutes ?? 0);
   return {
     id: String(raw.id ?? ''),
     date: raw.workDate ?? '',
     startTime: utcIsoToLocalHHmm(raw.startTimeUtc),
     endTime: utcIsoToLocalHHmm(raw.endTimeUtc),
+    startUtc: raw.startTimeUtc ?? '',
+    endUtc: raw.endTimeUtc ?? '',
     totalHours: minutes / 60,
     durationMinutes: minutes,
     approvedMinutes: Number(raw.approvedMinutes ?? 0),
     reason: raw.reason ?? '',
     status: mapOvertimeStatus(raw.status),
+    rawStatus: String(raw.status ?? ''),
     submittedAt: raw.createdAtUtc ?? '',
+    decidedAt: raw.decidedAtUtc ?? null,
     approvalTimeline: [],
   };
 }
@@ -1064,7 +1073,8 @@ export const leaveApi = {
       employeeId,
       leaveTypeId: payload.leaveTypeId,
       startDate: payload.startDate,
-      endDate: payload.endDate,
+      // A half day is one date; the server refuses a half day over a range.
+      endDate: payload.isHalfDay ? payload.startDate : payload.endDate,
       dayType: payload.isHalfDay ? 'Half' : 'Full',
       reason: payload.reason,
       isEmergency: false,
@@ -1090,31 +1100,63 @@ export const leaveApi = {
 };
 
 // ---- Overtime ----
+/** The limits of the tenant's overtime policy, as the server applies them (OvertimePolicyLimits). */
+export interface OvertimePolicyInfo {
+  id: string;
+  minimumMinutes: number;
+  maximumMinutesPerDay: number;
+  monthlyCapMinutes: number;
+  roundingRule: string;
+}
+
+/** What payroll calculated for an approved request (OvertimeController /calculations). */
+export interface OvertimePay {
+  overtimeRequestId: string;
+  approvedMinutes: number;
+  multiplier: number;
+  amount: number;
+  currency: string;
+}
+
 export const overtimeApi = {
   /**
-   * Backend DTO (OvertimeController.cs, develop):
+   * Backend DTO (OvertimeController.cs):
    *   OvertimeRequestCreate(int EmployeeId, Guid? OvertimePolicyId, Guid? OvertimeTypeId,
    *                         DateOnly WorkDate, DateTime StartTimeUtc, DateTime EndTimeUtc,
    *                         string? Source, string? Reason)
-   * projectCode / costCenter / attachment / comp-off do not exist server-side.
+   * Times are wall-clock on the company calendar (`timeZone`, default the device zone for old
+   * callers). Crossing midnight must be asked for with `endsNextDay`; an end at or before the start
+   * is refused here instead of being silently pushed into the next day.
    */
   async submitOTRequest(payload: {
     date: string;
     startTime: string;
     endTime: string;
     reason: string;
+    endsNextDay?: boolean;
+    timeZone?: string;
     overtimeTypeId?: string;
-  }): Promise<OvertimeRequest> {
+  }): Promise<OvertimeRecord> {
     const employeeId = await requireEmployeeId();
-    const start = new Date(localDateTimeToUtcIso(payload.date, payload.startTime));
-    let end = new Date(localDateTimeToUtcIso(payload.date, payload.endTime));
-    // 22:00 → 02:00 is an overnight block, not a negative one.
-    if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+    const nextDay = Boolean(payload.endsNextDay);
+    let startIso: string;
+    let endIso: string;
+    if (payload.timeZone) {
+      startIso = zonedWallTimeToUtcIso(payload.date, payload.startTime, payload.timeZone);
+      endIso = zonedWallTimeToUtcIso(payload.date, payload.endTime, payload.timeZone, nextDay ? 1 : 0);
+    } else {
+      startIso = localDateTimeToUtcIso(payload.date, payload.startTime);
+      const end = new Date(localDateTimeToUtcIso(payload.date, payload.endTime));
+      endIso = new Date(end.getTime() + (nextDay ? 86_400_000 : 0)).toISOString();
+    }
+    if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
+      throw new Error('The end time must be after the start time.');
+    }
     const result = await apiPost<any>('/overtime/requests', {
       employeeId,
       workDate: payload.date,
-      startTimeUtc: start.toISOString(),
-      endTimeUtc: end.toISOString(),
+      startTimeUtc: startIso,
+      endTimeUtc: endIso,
       reason: payload.reason,
       overtimeTypeId: payload.overtimeTypeId || undefined,
       source: 'Mobile',
@@ -1127,12 +1169,47 @@ export const overtimeApi = {
    * Every page of the employee's history: this used to read one page of 50 and show it as the
    * whole history, so the 51st request and everything older simply was not there.
    */
-  async getMyOTRequests(): Promise<OvertimeRequest[]> {
+  async getMyOTRequests(): Promise<OvertimeRecord[]> {
     const employeeId = await requireEmployeeId();
     const rows = await fetchAllPages<any>((page, pageSize) =>
       apiGet<BackendPaged<any>>(`/overtime/requests?employeeId=${employeeId}&page=${page}&pageSize=${pageSize}`)
     );
     return rows.map(mapOvertimeRequest);
+  },
+
+  /**
+   * GET /overtime/policies. The server applies the FIRST active policy when a request names none, and
+   * that order is not defined — so limits are returned only when exactly one policy is active.
+   * null means "unknown": the form then checks only the 12-hour ceiling.
+   */
+  async getPolicyLimits(): Promise<OvertimePolicyInfo | null> {
+    const policies = await apiGet<any[]>('/overtime/policies');
+    const active = (policies ?? []).filter((p) => p.isActive !== false && !p.isDeleted);
+    if (active.length !== 1) return null;
+    const p = active[0];
+    return {
+      id: String(p.id),
+      minimumMinutes: Number(p.minimumMinutes ?? 0),
+      maximumMinutesPerDay: Number(p.maximumMinutesPerDay ?? 0),
+      monthlyCapMinutes: Number(p.monthlyCapMinutes ?? 0),
+      roundingRule: String(p.roundingRule ?? ''),
+    };
+  },
+
+  /**
+   * GET /overtime/calculations?employeeId={self} — pay worked out for approved requests. The endpoint
+   * is not pageable: it returns the newest 100. An older request simply shows no pay line (never a guess).
+   */
+  async getMyPay(): Promise<OvertimePay[]> {
+    const employeeId = await requireEmployeeId();
+    const rows = await apiGet<any[]>(`/overtime/calculations?employeeId=${employeeId}`);
+    return (rows ?? []).map((r) => ({
+      overtimeRequestId: String(r.overtimeRequestId ?? ''),
+      approvedMinutes: Number(r.approvedMinutes ?? 0),
+      multiplier: Number(r.multiplier ?? 0),
+      amount: Number(r.amount ?? 0),
+      currency: String(r.currency ?? ''),
+    }));
   },
 };
 
@@ -1147,6 +1224,14 @@ async function authHeaders(): Promise<Record<string, string>> {
 }
 
 // ---- Payslips ----
+/** A payslip as the detail screen shows it. */
+export interface PayslipView extends PayslipDetail {
+  /** Employer contributions (GOSI employer share, hazard) — paid on top of pay, not deducted from it. */
+  employerLines: PayslipLine[];
+  /** The server's own check that the lines add up to the totals; null when it did not say. */
+  reconciled: boolean | null;
+}
+
 async function payslipCurrency(): Promise<string | undefined> {
   try {
     const dashboard = await apiGet<any>('/ess/dashboard');
@@ -1167,23 +1252,28 @@ export const payslipApi = {
   /**
    * GET /ess/payslips/{id} (W2-D S6): the slip's real component lines, built the
    * way the PDF builds them, with header totals computed from those lines.
+   * Lines carry nameAr; employer contributions (paid on top, never deducted) are kept apart.
    * Falls back to the list row's columns on an older backend (404).
    */
-  async getPayslipDetail(id: string): Promise<PayslipDetail> {
+  async getPayslipDetail(id: string): Promise<PayslipView> {
     try {
       const d = await apiGet<any>(`/ess/payslips/${id}`);
       const lines: any[] = d.lines ?? [];
-      const toLine = (l: any, i: number, prefix: string): PayslipLine => ({
+      const toLine = (l: any, i: number, prefix: string, type: PayslipLine['type']): PayslipLine => ({
         id: `${prefix}${i}`,
         code: String(l.name ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_'),
         description: l.name ?? '',
+        descriptionAr: l.nameAr || undefined,
         componentName: l.name ?? '',
         amount: Number(l.amount ?? 0),
-        type: l.type === 'Deduction' ? 'Deduction' : 'Earning',
+        type,
       });
-      const earnings = lines.filter((l) => l.type === 'Earning').map((l, i) => toLine(l, i, 'e'));
-      const deductions = lines.filter((l) => l.type === 'Deduction').map((l, i) => toLine(l, i, 'd'));
-      const base = mapPayslip({ ...d, status: 'Final' });
+      const earnings = lines.filter((l) => l.type === 'Earning').map((l, i) => toLine(l, i, 'e', 'Earning'));
+      const deductions = lines.filter((l) => l.type === 'Deduction').map((l, i) => toLine(l, i, 'd', 'Deduction'));
+      const employerLines = lines
+        .filter((l) => l.type === 'EmployerContribution')
+        .map((l, i) => toLine(l, i, 'c', 'Deduction'));
+      const base = mapPayslip({ ...d, status: d.status ?? 'Final' });
       return {
         ...base,
         grossSalary: Number(d.grossSalary ?? 0),
@@ -1194,6 +1284,8 @@ export const payslipApi = {
         earnings,
         deductions,
         details: [...earnings, ...deductions],
+        employerLines,
+        reconciled: typeof d.reconciled === 'boolean' ? d.reconciled : null,
         ytdGross: d.ytdGross ?? undefined,
         ytdNet: d.ytdNet ?? undefined,
       };
@@ -1202,13 +1294,15 @@ export const payslipApi = {
     }
     const [slips, currency] = await Promise.all([apiGet<any[]>('/ess/payslips'), payslipCurrency()]);
     const raw = slips.find((item) => String(item.id) === id);
-    if (!raw) throw new Error('This payslip is no longer available.');
+    if (!raw) throw Object.assign(new Error('payslip_not_found'), { response: { status: 404 } });
     const { earnings, deductions } = payslipLines(raw);
     return {
       ...mapPayslip(raw, currency),
       earnings,
       deductions,
       details: [...earnings, ...deductions],
+      employerLines: [],
+      reconciled: null,
       loanDeductions: Number(raw.loanDeductions ?? 0) || undefined,
       ytdGross: raw.ytdGross ?? undefined,
       ytdNet: raw.ytdNet ?? undefined,
