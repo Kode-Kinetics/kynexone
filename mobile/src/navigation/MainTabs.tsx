@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
@@ -39,6 +39,9 @@ import SettingsScreen from '@/features/settings/SettingsScreen';
 import SelfieConsentScreen from '@/features/attendance/SelfieConsentScreen';
 import SessionScreen from '@/features/settings/SessionScreen';
 import ChangePasswordScreen from '@/features/auth/ChangePasswordScreen';
+import LettersScreen from '@/features/letters/LettersScreen';
+import LoansScreen from '@/features/loans/LoansScreen';
+import { loansApi } from '@/api/loans';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -123,6 +126,8 @@ function MoreStack() {
       {surfaces.has('overtime') && <Stack.Screen name="Overtime" component={OvertimeScreen} />}
       {surfaces.has('payslips') && <Stack.Screen name="PayslipsList" component={PayslipsScreen} />}
       {surfaces.has('payslips') && <Stack.Screen name="PayslipDetail" component={PayslipDetailScreen} />}
+      {surfaces.has('letters') && <Stack.Screen name="Letters" component={LettersScreen} />}
+      {surfaces.has('loans') && <Stack.Screen name="Loans" component={LoansScreen} />}
       <Stack.Screen name="Account" component={SessionScreen} />
     </Stack.Navigator>
   );
@@ -131,13 +136,14 @@ function MoreStack() {
 type MoreItemKey =
   | 'applyLeave' | 'payslips' | 'profile' | 'documents' | 'hrRequests'
   | 'notifications' | 'aiAssistant' | 'overtime' | 'settings' | 'account';
+/** Lane C items, labelled from account.more.* (accountStrings.ts). */
+type AccountItemKey = 'letters' | 'loans';
 
-interface MoreItem {
+type MoreItem = {
   surface: MobileSurface;
   icon: React.ComponentProps<typeof Ionicons>['name'];
-  key: MoreItemKey;
   screen: string;
-}
+} & ({ key: MoreItemKey; account?: false } | { key: AccountItemKey; account: true });
 
 // Every tile is gated by the same access policy that registers its route.
 const MORE_ITEMS: MoreItem[] = [
@@ -145,13 +151,34 @@ const MORE_ITEMS: MoreItem[] = [
   { surface: 'payslips', icon: 'wallet-outline', key: 'payslips', screen: 'PayslipsList' },
   { surface: 'profile', icon: 'person-circle-outline', key: 'profile', screen: 'Profile' },
   { surface: 'documents', icon: 'folder-open-outline', key: 'documents', screen: 'Documents' },
+  { surface: 'letters', icon: 'document-text-outline', key: 'letters', screen: 'Letters', account: true },
   { surface: 'hrRequests', icon: 'chatbox-ellipses-outline', key: 'hrRequests', screen: 'HRRequests' },
   { surface: 'notifications', icon: 'notifications-outline', key: 'notifications', screen: 'Notifications' },
+  // Shown only while FEATURES.AI_ASSISTANT is on: the access policy withholds the surface otherwise.
   { surface: 'aiAssistant', icon: 'sparkles-outline', key: 'aiAssistant', screen: 'AIAssistant' },
   { surface: 'overtime', icon: 'time-outline', key: 'overtime', screen: 'Overtime' },
+  { surface: 'loans', icon: 'cash-outline', key: 'loans', screen: 'Loans', account: true },
   { surface: 'settings', icon: 'settings-outline', key: 'settings', screen: 'Settings' },
   { surface: 'account', icon: 'id-card-outline', key: 'account', screen: 'Account' },
 ];
+
+/**
+ * Whether to list My loans: the permission says the person may have loans, and the company's Loans
+ * module must be on (a switched-off module answers every loans call 403 feature_not_enabled).
+ * Unknown (offline) keeps the entry; the screen itself then says why it cannot load.
+ */
+function useLoansModule(permitted: boolean): boolean {
+  const [enabled, setEnabled] = useState(true);
+  useFocusEffect(useCallback(() => {
+    if (!permitted) return undefined;
+    let active = true;
+    loansApi.moduleEnabled()
+      .then((on) => { if (active) setEnabled(on); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [permitted]));
+  return permitted && enabled;
+}
 
 function MoreHomeScreen() {
   const { user, logout } = useAuthStore();
@@ -160,7 +187,8 @@ function MoreHomeScreen() {
   const { t, i18n } = useTranslation();
   const [loggingOut, setLoggingOut] = useState(false);
   const surfaces = deriveMobileAccess(user).surfaces;
-  const items = MORE_ITEMS.filter((item) => surfaces.has(item.surface));
+  const loansModuleOn = useLoansModule(surfaces.has('loans'));
+  const items = MORE_ITEMS.filter((item) => surfaces.has(item.surface) && (item.surface !== 'loans' || loansModuleOn));
   const danger = theme.colors.status.danger;
 
   const displayName = (i18n.language?.startsWith('ar') ? user?.fullNameAr : undefined)
@@ -196,8 +224,8 @@ function MoreHomeScreen() {
 
         <View style={styles.moreGrid}>
           {items.map((item) => {
-            const label = t(`more.items.${item.key}`);
-            const description = t(`more.items.${item.key}Sub`);
+            const label = item.account ? t(`account.more.${item.key}`) : t(`more.items.${item.key}`);
+            const description = item.account ? t(`account.more.${item.key}Sub`) : t(`more.items.${item.key}Sub`);
             return (
               <MotionPressable
                 key={item.screen}

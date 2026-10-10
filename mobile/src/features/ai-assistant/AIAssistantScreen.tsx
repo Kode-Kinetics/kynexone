@@ -11,94 +11,73 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
+import { useTranslation } from 'react-i18next';
 import { aiApi } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { isManagerUser } from '@/navigation/routes';
 import { useTheme } from '@/theme/ThemeProvider';
+import { useFormat } from '@/utils/format';
 import {
-  GlassSurface,
+  DirectionalIcon,
   LiquidBackdrop,
   MotionPressable,
   ScreenHero,
   SectionHeader,
+  Surface,
 } from '@/components/ui';
 import type { AIMessage } from '@/types';
 
-const employeeSuggestions = [
-  { icon: 'calendar-outline' as const, question: 'How many leave days do I have?' },
-  { icon: 'stats-chart-outline' as const, question: 'What is my attendance this month?' },
-  { icon: 'wallet-outline' as const, question: 'When was my last payslip?' },
-  { icon: 'document-text-outline' as const, question: 'Which documents are expiring soon?' },
-  { icon: 'chatbubble-ellipses-outline' as const, question: 'Where is my HR request?' },
-  { icon: 'book-outline' as const, question: 'What is the leave policy?' },
-];
+// Reachable only while FEATURES.AI_ASSISTANT is on (the access policy withholds the surface
+// otherwise). It makes no claim about what the answers are grounded in: that is the backend's to prove.
 
-const managerSuggestions = [
-  { icon: 'people-outline' as const, question: 'Who is absent today in my team?' },
-  { icon: 'checkmark-done-outline' as const, question: 'Which approvals are pending?' },
-  { icon: 'time-outline' as const, question: 'Show overtime trend for my team' },
-  { icon: 'warning-outline' as const, question: 'Which employees have frequent late attendance?' },
-  { icon: 'analytics-outline' as const, question: "Summarize this month's team attendance" },
-];
+const EMPLOYEE_SUGGESTIONS = [
+  { icon: 'calendar-outline', key: 'leaveDays' },
+  { icon: 'stats-chart-outline', key: 'attendanceMonth' },
+  { icon: 'wallet-outline', key: 'lastPayslip' },
+  { icon: 'document-text-outline', key: 'expiringDocs' },
+] as const;
+
+const MANAGER_SUGGESTIONS = [
+  { icon: 'people-outline', key: 'absentToday' },
+  { icon: 'checkmark-done-outline', key: 'pendingApprovals' },
+  { icon: 'time-outline', key: 'teamOvertime' },
+] as const;
 
 export default function AIAssistantScreen() {
   const { user } = useAuthStore();
+  const { t } = useTranslation();
   const { theme, reduceMotion } = useTheme();
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  const manager = isManagerUser(user);
-  const suggestions = manager ? managerSuggestions : employeeSuggestions;
+  const suggestions = isManagerUser(user) ? MANAGER_SUGGESTIONS : EMPLOYEE_SUGGESTIONS;
 
   const send = useCallback(async (text: string) => {
     const question = text.trim();
     if (!question || loading) return;
-
-    const userMessage: AIMessage = {
-      id: `${Date.now()}-user`,
-      role: 'user',
-      content: question,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((current) => [...current, userMessage]);
+    setMessages((current) => [...current, {
+      id: `${Date.now()}-user`, role: 'user', content: question, timestamp: new Date().toISOString(),
+    }]);
     setInput('');
     setLoading(true);
-
     try {
       const response = await aiApi.ask({ question });
-      setMessages((current) => [
-        ...current,
-        {
-          id: `${Date.now()}-assistant`,
-          role: 'assistant',
-          content: response.answer,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } catch (error: any) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: `${Date.now()}-error`,
-          role: 'assistant',
-          content: error?.response?.data?.message
-            || "I couldn't complete that request. Please try again or contact HR for time-sensitive guidance.",
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      setMessages((current) => [...current, {
+        id: `${Date.now()}-assistant`, role: 'assistant', content: response.answer, timestamp: new Date().toISOString(),
+      }]);
+    } catch {
+      setMessages((current) => [...current, {
+        id: `${Date.now()}-error`, role: 'assistant', content: t('account.ai.failed'), timestamp: new Date().toISOString(),
+      }]);
     } finally {
       setLoading(false);
     }
-  }, [loading]);
+  }, [loading, t]);
 
   useEffect(() => {
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToEnd({ animated: !reduceMotion });
-    });
+    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: !reduceMotion }));
   }, [loading, messages, reduceMotion]);
-
-  const firstName = (user?.fullName ?? user?.name ?? 'there').split(' ')[0];
 
   return (
     <KeyboardAvoidingView
@@ -107,145 +86,86 @@ export default function AIAssistantScreen() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
     >
       <LiquidBackdrop subtle />
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <ScreenHero
-          eyebrow="Private workforce assistant"
-          title="KynexOne AI"
-          subtitle="Grounded in your own authorized HR data"
-          actions={
-            <GlassSurface elevated={false} radius={999} contentStyle={styles.onlineBadge}>
-              <View style={[styles.onlineDot, { backgroundColor: theme.colors.success }]} />
-              <Text style={[theme.typography.micro, { color: theme.colors.success }]}>Available</Text>
-            </GlassSurface>
-          }
-        />
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <ScreenHero eyebrow={t('account.ai.eyebrow')} title={t('account.ai.title')} subtitle={t('account.ai.subtitle')} />
 
         {messages.length === 0 ? (
           <>
             <View style={styles.section}>
-              <GlassSurface
-                radius={theme.radius.xxl}
-                tintColor={theme.isDark ? 'rgba(35,78,167,0.30)' : 'rgba(255,255,255,0.52)'}
-                contentStyle={styles.welcomeCard}
-              >
-                <View style={[styles.aiMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
-                  <Ionicons name="sparkles" size={28} color={theme.colors.primary} />
-                </View>
-                <Text style={[theme.typography.h2, styles.welcomeTitle, { color: theme.colors.text }]}>
-                  Hi {firstName}, what can I help with?
-                </Text>
-                <Text style={[theme.typography.body, styles.welcomeBody, { color: theme.colors.textSecondary }]}>
-                  Ask about leave, attendance, payslips, documents, approvals and the workforce information your account is permitted to view.
-                </Text>
-                <View style={[styles.safetyNote, { backgroundColor: `${theme.colors.warning}12` }]}>
-                  <Ionicons name="shield-checkmark-outline" size={18} color={theme.colors.warning} />
-                  <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, flex: 1 }]}>
-                    Responses are advisory. Confirm contractual, payroll or legal decisions with your authorized HR team.
-                  </Text>
-                </View>
-              </GlassSurface>
+              <Surface tintColor={theme.colors.status.warning.tint} contentStyle={styles.note}>
+                <Ionicons accessible={false} name="information-circle-outline" size={20} color={theme.colors.status.warning.fg} />
+                <Text style={[theme.typography.footnote, styles.flex, { color: theme.colors.text }]}>{t('account.ai.advisory')}</Text>
+              </Surface>
             </View>
-
             <View style={styles.section}>
-              <SectionHeader
-                title={manager ? 'Manager prompts' : 'Suggested questions'}
-                subtitle="Start with a common workforce question"
-              />
-              <View style={styles.suggestionGrid}>
-                {suggestions.map((suggestion) => (
-                  <MotionPressable
-                    key={suggestion.question}
-                    onPress={() => void send(suggestion.question)}
-                    haptic="selection"
-                    style={styles.suggestionShell}
-                    contentStyle={styles.rounded}
-                    accessibilityRole="button"
-                    accessibilityLabel={suggestion.question}
-                  >
-                    <GlassSurface
-                      elevated={false}
-                      radius={theme.radius.xl}
-                      style={styles.suggestionSurface}
-                      contentStyle={styles.suggestionCard}
+              <SectionHeader title={t('account.ai.suggested')} />
+              <Surface contentStyle={styles.list}>
+                {suggestions.map((s, index) => {
+                  const question = t(`account.ai.questions.${s.key}`);
+                  return (
+                    <MotionPressable
+                      key={s.key}
+                      onPress={() => void send(question)}
+                      accessibilityRole="button"
+                      accessibilityLabel={question}
+                      contentStyle={[
+                        styles.suggestion,
+                        index < suggestions.length - 1 && { borderBottomColor: theme.colors.hairline, borderBottomWidth: StyleSheet.hairlineWidth },
+                      ]}
                     >
-                      <View style={[styles.suggestionIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
-                        <Ionicons name={suggestion.icon} size={21} color={theme.colors.primary} />
-                      </View>
-                      <Text style={[theme.typography.bodyStrong, styles.suggestionText, { color: theme.colors.text }]}>
-                        {suggestion.question}
-                      </Text>
-                      <Ionicons name="arrow-up-outline" size={15} color={theme.colors.textMuted} style={styles.suggestionArrow} />
-                    </GlassSurface>
-                  </MotionPressable>
-                ))}
-              </View>
+                      <Ionicons accessible={false} name={s.icon} size={20} color={theme.colors.accent} />
+                      <Text style={[theme.typography.callout, styles.flex, { color: theme.colors.text }]}>{question}</Text>
+                      <DirectionalIcon name="chevron" size={16} color={theme.colors.textMuted} />
+                    </MotionPressable>
+                  );
+                })}
+              </Surface>
             </View>
           </>
         ) : (
-          <View style={styles.section}>
-            <View style={styles.chatList}>
-              {messages.map((message) => (
-                <ChatBubble key={message.id} message={message} reduceMotion={reduceMotion} />
-              ))}
-              {loading ? <TypingIndicator reduceMotion={reduceMotion} /> : null}
-            </View>
+          <View style={[styles.section, styles.chat]}>
+            {messages.map((message) => <ChatBubble key={message.id} message={message} reduceMotion={reduceMotion} />)}
+            {loading ? (
+              <Animated.View
+                entering={reduceMotion ? undefined : FadeIn.duration(140)}
+                exiting={reduceMotion ? undefined : FadeOut.duration(120)}
+                accessibilityRole="progressbar"
+                accessibilityLabel={t('account.ai.thinking')}
+                accessibilityLiveRegion="polite"
+                style={styles.thinking}
+              >
+                <ActivityIndicator size="small" color={theme.colors.accent} />
+                <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('account.ai.thinking')}</Text>
+              </Animated.View>
+            ) : null}
           </View>
         )}
-        <View style={styles.chatBottomSpacer} />
       </ScrollView>
 
-      <View style={[styles.composerSafeArea, { backgroundColor: theme.colors.canvas }]}> 
-        <GlassSurface
-          radius={theme.radius.xxl}
-          style={styles.composerSurface}
-          contentStyle={styles.composer}
-          tintColor={theme.isDark ? 'rgba(12,28,57,0.92)' : 'rgba(255,255,255,0.88)'}
-        >
+      <View style={[styles.composerArea, { backgroundColor: theme.colors.chromeSolid, borderTopColor: theme.colors.hairline }]}>
+        <View style={[styles.composer, { backgroundColor: theme.colors.surfaceInset }]}>
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Ask about HR, payroll or attendance…"
+            placeholder={t('account.ai.placeholder')}
             placeholderTextColor={theme.colors.textMuted}
-            selectionColor={theme.colors.primary}
+            selectionColor={theme.colors.accent}
             multiline
             maxLength={800}
             style={[theme.typography.body, styles.input, { color: theme.colors.text }]}
-            returnKeyType="send"
-            onSubmitEditing={() => void send(input)}
-            accessibilityLabel="Message to KynexOne AI"
+            accessibilityLabel={t('account.ai.inputLabel')}
           />
           <MotionPressable
             onPress={() => void send(input)}
             disabled={loading || !input.trim()}
-            haptic="medium"
-            contentStyle={[
-              styles.sendButton,
-              {
-                backgroundColor: input.trim() && !loading
-                  ? theme.colors.primary
-                  : theme.colors.surfaceMuted,
-              },
-            ]}
-            accessibilityLabel="Send message"
+            haptic="commit"
             accessibilityRole="button"
-            accessibilityState={{ busy: loading, disabled: loading || !input.trim() }}
+            accessibilityLabel={t('account.ai.send')}
+            contentStyle={[styles.send, { backgroundColor: input.trim() && !loading ? theme.colors.primaryFill : theme.colors.card }]}
           >
-            {loading ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <Ionicons
-                name="arrow-up"
-                size={21}
-                color={input.trim() ? '#FFFFFF' : theme.colors.textMuted}
-              />
-            )}
+            <Ionicons accessible={false} name="arrow-up" size={21} color={input.trim() && !loading ? theme.colors.onFill : theme.colors.textMuted} />
           </MotionPressable>
-        </GlassSurface>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -253,72 +173,23 @@ export default function AIAssistantScreen() {
 
 function ChatBubble({ message, reduceMotion }: { message: AIMessage; reduceMotion: boolean }) {
   const { theme } = useTheme();
-  const userMessage = message.role === 'user';
-
+  const { t } = useTranslation();
+  const f = useFormat();
+  const mine = message.role === 'user';
   return (
     <Animated.View
       entering={reduceMotion ? undefined : FadeInDown.duration(200)}
-      style={[styles.messageWrap, { alignItems: userMessage ? 'flex-end' : 'flex-start' }]}
+      style={[styles.bubbleWrap, { alignItems: mine ? 'flex-end' : 'flex-start' }]}
     >
-      {!userMessage ? (
-        <View style={styles.assistantLabel}>
-          <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
-            <Ionicons name="sparkles" size={14} color={theme.colors.primary} />
-          </View>
-          <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>KynexOne AI</Text>
-        </View>
-      ) : null}
-      {userMessage ? (
-        <View style={[styles.userBubble, { backgroundColor: theme.colors.primary }]}> 
-          <Text style={[theme.typography.body, { color: '#FFFFFF' }]}>{message.content}</Text>
-        </View>
-      ) : (
-        <GlassSurface
-          accessibilityLiveRegion="polite"
-          accessibilityLabel={`KynexOne AI: ${message.content}`}
-          elevated={false}
-          radius={20}
-          style={styles.assistantBubble}
-          contentStyle={styles.assistantBubbleContent}
-        >
-          <Text style={[theme.typography.body, { color: theme.colors.text }]}>{message.content}</Text>
-        </GlassSurface>
-      )}
-      <Text style={[theme.typography.micro, styles.timestamp, { color: theme.colors.textMuted }]}>
-        {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </Text>
-    </Animated.View>
-  );
-}
-
-function TypingIndicator({ reduceMotion }: { reduceMotion: boolean }) {
-  const { theme } = useTheme();
-  return (
-    <Animated.View
-      entering={reduceMotion ? undefined : FadeIn.duration(140)}
-      exiting={reduceMotion ? undefined : FadeOut.duration(120)}
-      accessibilityRole="progressbar"
-      accessibilityLabel="KynexOne AI is preparing a response"
-      accessibilityLiveRegion="polite"
-      style={styles.typingWrap}
-    >
-      <View style={styles.assistantLabel}>
-        <View style={[styles.assistantMark, { backgroundColor: `${theme.colors.primary}1F` }]}>
-          <Ionicons name="sparkles" size={14} color={theme.colors.primary} />
-        </View>
-        <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>Thinking securely…</Text>
+      <View
+        accessible
+        accessibilityLabel={mine ? message.content : t('account.ai.answerA11y', { text: message.content })}
+        accessibilityLiveRegion={mine ? 'none' : 'polite'}
+        style={[styles.bubble, { backgroundColor: mine ? theme.colors.primaryFill : theme.colors.card, borderColor: theme.colors.hairline }]}
+      >
+        <Text style={[theme.typography.body, { color: mine ? theme.colors.onFill : theme.colors.text }]}>{message.content}</Text>
       </View>
-      <GlassSurface elevated={false} radius={20} style={styles.typingBubble} contentStyle={styles.typingContent}>
-        {[0, 1, 2].map((index) => (
-          <View
-            key={index}
-            style={[
-              styles.typingDot,
-              { backgroundColor: theme.colors.primary, opacity: 0.45 + index * 0.2 },
-            ]}
-          />
-        ))}
-      </GlassSurface>
+      <Text style={[theme.typography.caption, styles.time, { color: theme.colors.textMuted }]}>{f.time(message.timestamp)}</Text>
     </Animated.View>
   );
 }
@@ -326,38 +197,18 @@ function TypingIndicator({ reduceMotion }: { reduceMotion: boolean }) {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { flexGrow: 1, paddingBottom: 12 },
-  onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 7 },
-  onlineDot: { width: 7, height: 7, borderRadius: 4 },
-  section: { paddingHorizontal: 16, marginTop: 16 },
-  welcomeCard: { alignItems: 'center', padding: 22 },
-  aiMark: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  welcomeTitle: { textAlign: 'center', marginTop: 16 },
-  welcomeBody: { textAlign: 'center', maxWidth: 330, marginTop: 8 },
-  safetyNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 16, padding: 12, marginTop: 18 },
-  suggestionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  suggestionShell: { width: '48%', minHeight: 150 },
-  rounded: { flex: 1, borderRadius: 24 },
-  suggestionSurface: { flex: 1 },
-  suggestionCard: { flex: 1, padding: 15 },
-  suggestionIcon: { width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  suggestionText: { marginTop: 13, paddingRight: 14 },
-  suggestionArrow: { position: 'absolute', top: 14, right: 14, transform: [{ rotate: '45deg' }] },
-  chatList: { gap: 11 },
-  messageWrap: { width: '100%' },
-  assistantLabel: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 5 },
-  assistantMark: { width: 25, height: 25, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  userBubble: { maxWidth: '84%', borderRadius: 20, borderBottomRightRadius: 6, paddingHorizontal: 14, paddingVertical: 11 },
-  assistantBubble: { maxWidth: '88%' },
-  assistantBubbleContent: { paddingHorizontal: 14, paddingVertical: 12 },
-  timestamp: { marginTop: 4, marginHorizontal: 4 },
-  typingWrap: { alignItems: 'flex-start' },
-  typingBubble: { width: 72, height: 46 },
-  typingContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
-  typingDot: { width: 7, height: 7, borderRadius: 4 },
-  chatBottomSpacer: { height: 8 },
-  composerSafeArea: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
-  composerSurface: { minHeight: 62 },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingLeft: 15, paddingRight: 8, paddingVertical: 8 },
+  section: { paddingHorizontal: 16, marginTop: 12 },
+  flex: { flex: 1, minWidth: 0 },
+  note: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 14 },
+  list: { paddingHorizontal: 14 },
+  suggestion: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, paddingVertical: 10 },
+  chat: { gap: 12 },
+  thinking: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bubbleWrap: { width: '100%' },
+  bubble: { maxWidth: '86%', borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, paddingVertical: 11 },
+  time: { marginTop: 4, marginHorizontal: 4 },
+  composerArea: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, borderTopWidth: StyleSheet.hairlineWidth },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, borderRadius: 22, paddingStart: 14, paddingEnd: 6, paddingVertical: 6 },
   input: { flex: 1, minHeight: 44, maxHeight: 118, paddingTop: 11, paddingBottom: 10 },
-  sendButton: { width: 46, height: 46, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
 });
