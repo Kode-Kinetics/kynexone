@@ -1,35 +1,36 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import {
   ActivityIndicator,
   StyleProp,
   StyleSheet,
   Text,
-  View,
   ViewStyle,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, {
-  cancelAnimation,
-  Easing,
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
 import { MotionPressable } from './MotionPressable';
+import { DirectionalIcon, type DirectionalIconName } from './DirectionalIcon';
 import { useTheme } from '@/theme/ThemeProvider';
 
-interface Props {
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+const DIRECTIONAL: readonly string[] = ['forward', 'back', 'chevron', 'chevronBack', 'forwardCircle'];
+
+export interface LiquidButtonProps {
   label: string;
   onPress: () => void;
-  icon?: React.ComponentProps<typeof Ionicons>['name'];
+  /** Leading icon. */
+  icon?: IoniconName;
+  /**
+   * Opt-in trailing icon. Use 'forward' (mirrored in Arabic) only when the button moves the user
+   * to a next step — never on Approve / Reject / Save.
+   */
+  trailingIcon?: DirectionalIconName | IoniconName;
   loading?: boolean;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
-  variant?: 'primary' | 'success' | 'danger';
+  /** primary / success / danger: solid fills with white text. secondary: quiet outlined button. */
+  variant?: 'primary' | 'success' | 'danger' | 'secondary';
+  size?: 'regular' | 'compact';
+  accessibilityHint?: string;
   testID?: string;
 }
 
@@ -37,117 +38,83 @@ export function LiquidButton({
   label,
   onPress,
   icon,
+  trailingIcon,
   loading,
   disabled,
   style,
   variant = 'primary',
+  size = 'regular',
+  accessibilityHint,
   testID,
-}: Props) {
-  const { theme, reduceMotion } = useTheme();
-  const activity = useSharedValue(0);
-  const colors = variant === 'success'
-    ? theme.gradients.success
+}: LiquidButtonProps) {
+  const { theme } = useTheme();
+  const secondary = variant === 'secondary';
+  const fill = variant === 'success'
+    ? theme.colors.status.success.fill
     : variant === 'danger'
-      ? theme.gradients.danger
-      : theme.gradients.primary;
-
-  useEffect(() => {
-    cancelAnimation(activity);
-    activity.value = 0;
-    if (loading && !reduceMotion) {
-      activity.value = withRepeat(
-        withSequence(
-          withTiming(1, { duration: 650, easing: Easing.inOut(Easing.quad) }),
-          withTiming(0, { duration: 650, easing: Easing.inOut(Easing.quad) }),
-        ),
-        -1,
-        false,
-      );
-    }
-  }, [activity, loading, reduceMotion]);
-
-  const loadingMotion = useAnimatedStyle(() => ({
-    transform: [
-      { translateY: interpolate(activity.value, [0, 1], [0, -1.5]) },
-      { scale: interpolate(activity.value, [0, 1], [1, 1.008]) },
-    ],
-  }));
+      ? theme.colors.status.danger.fill
+      : secondary
+        ? theme.colors.card
+        : theme.colors.primaryFill;
+  const fg = secondary ? theme.colors.accent : theme.colors.onFill;
+  const radius = theme.radius.md;
 
   return (
-    <Animated.View style={[style, loadingMotion]}>
     <MotionPressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: Boolean(disabled || loading), busy: Boolean(loading) }}
       testID={testID}
       onPress={onPress}
       disabled={disabled || loading}
-      haptic="medium"
-      dimensional
-      style={[styles.shell, theme.shadows.soft]}
-      contentStyle={styles.pressable}
+      haptic="commit"
+      style={style}
+      contentStyle={[
+        styles.body,
+        size === 'compact' && styles.compact,
+        {
+          borderRadius: radius,
+          backgroundColor: fill,
+          borderColor: secondary ? theme.colors.hairline : fill,
+        },
+      ]}
     >
-      <LinearGradient
-        colors={colors}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.gradient}
-      >
-        <View pointerEvents="none" style={styles.innerHighlight} />
-        <View pointerEvents="none" style={styles.innerShade} />
-        {loading ? (
-          <ActivityIndicator color="#FFFFFF" size="small" />
-        ) : (
-          <>
-            {icon ? <Ionicons accessible={false} name={icon} size={19} color="#FFFFFF" /> : null}
-            <Text style={styles.label}>{label}</Text>
-            <Ionicons accessible={false} name="arrow-forward" size={18} color="rgba(255,255,255,0.92)" />
-          </>
-        )}
-      </LinearGradient>
+      {loading ? (
+        <ActivityIndicator color={fg} size="small" />
+      ) : (
+        <>
+          {icon ? <Ionicons accessible={false} name={icon} size={19} color={fg} /> : null}
+          <Text
+            numberOfLines={1}
+            maxFontSizeMultiplier={1.6}
+            style={[theme.typography.headline, styles.label, { color: fg }]}
+          >
+            {label}
+          </Text>
+          {trailingIcon ? (
+            DIRECTIONAL.includes(trailingIcon) ? (
+              <DirectionalIcon name={trailingIcon as DirectionalIconName} size={18} color={fg} />
+            ) : (
+              <Ionicons accessible={false} name={trailingIcon as IoniconName} size={18} color={fg} />
+            )
+          ) : null}
+        </>
+      )}
     </MotionPressable>
-    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  shell: {
-    borderRadius: 18,
-  },
-  pressable: {
-    borderRadius: 18,
-    overflow: 'hidden',
-  },
-  gradient: {
-    minHeight: 56,
+  body: {
+    minHeight: 52,
     paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  innerHighlight: {
-    position: 'absolute',
-    top: 1,
-    right: 16,
-    left: 16,
-    height: 1,
-    borderRadius: 1,
-    backgroundColor: 'rgba(255,255,255,0.68)',
-  },
-  innerShade: {
-    position: 'absolute',
-    right: 14,
-    bottom: 1,
-    left: 14,
-    height: 1,
-    borderRadius: 1,
-    backgroundColor: 'rgba(13,33,112,0.22)',
-  },
-  label: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: 0.1,
-  },
+  compact: { minHeight: 44, paddingHorizontal: 14 },
+  label: { flexShrink: 1, textAlign: 'center' },
 });

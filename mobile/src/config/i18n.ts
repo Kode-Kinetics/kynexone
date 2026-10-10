@@ -18,6 +18,12 @@ import {
 import { mfaAr, mfaEn } from './mfaStrings';
 import { welcomeAr, welcomeEn } from './welcomeStrings';
 import { selfieAr, selfieEn } from './selfieStrings';
+// Lane-owned string modules (see each file's header). Registered here once so lanes never edit this file.
+import { shellStrings } from './strings/shellStrings';
+import { homeStrings } from './strings/homeStrings';
+import { leavePayStrings } from './strings/leavePayStrings';
+import { managerStrings } from './strings/managerStrings';
+import { accountStrings } from './strings/accountStrings';
 
 export type { AppLanguage };
 
@@ -81,6 +87,12 @@ export const en = {
   mfa: mfaEn,
   signin: welcomeEn,
   selfie: selfieEn,
+  more: shellStrings.en.more,
+  kit: shellStrings.en.kit,
+  home: homeStrings.en,
+  leavePay: leavePayStrings.en,
+  manager: managerStrings.en,
+  account: accountStrings.en,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -96,6 +108,10 @@ export const en = {
     notifications: 'Notifications',
     aiAssistant: 'AI Assistant',
     settings: 'Settings',
+    punch: 'Punch',
+    account: 'Account',
+    overtime: 'Overtime',
+    tabsLabel: 'Main navigation',
   },
   dashboard: {
     welcome: 'Good {{period}}, {{name}}',
@@ -340,6 +356,12 @@ const ar: TranslationResources = {
   mfa: mfaAr,
   signin: welcomeAr,
   selfie: selfieAr,
+  more: shellStrings.ar.more,
+  kit: shellStrings.ar.kit,
+  home: homeStrings.ar,
+  leavePay: leavePayStrings.ar,
+  manager: managerStrings.ar,
+  account: accountStrings.ar,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',
@@ -355,6 +377,10 @@ const ar: TranslationResources = {
     notifications: 'الإشعارات',
     aiAssistant: 'المساعد الذكي',
     settings: 'الإعدادات',
+    punch: 'البصمة',
+    account: 'الحساب',
+    overtime: 'العمل الإضافي',
+    tabsLabel: 'التنقل الرئيسي',
   },
   dashboard: {
     welcome: 'صباح الخير، {{name}}',

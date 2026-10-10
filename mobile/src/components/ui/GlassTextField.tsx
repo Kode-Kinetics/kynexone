@@ -44,16 +44,13 @@ export function GlassTextField({
   useEffect(() => {
     focusProgress.value = reduceMotion
       ? focused ? 1 : 0
-      : withSpring(focused ? 1 : 0, { damping: 18, stiffness: 220, mass: 0.72 });
-  }, [focusProgress, focused, reduceMotion]);
+      : withSpring(focused ? 1 : 0, theme.motion.springs.snappy);
+  }, [focusProgress, focused, reduceMotion, theme.motion.springs.snappy]);
 
   const focusMotion = useAnimatedStyle(() => ({
     transform: [
-      { perspective: 700 },
-      { translateY: interpolate(focusProgress.value, [0, 1], [0, -2]) },
-      { scale: interpolate(focusProgress.value, [0, 1], [1, 1.008]) },
+      { scale: interpolate(focusProgress.value, [0, 1], [1, 1.004]) },
     ],
-    shadowOpacity: interpolate(focusProgress.value, [0, 1], [0, 0.18]),
   }));
 
   return (
@@ -67,9 +64,9 @@ export function GlassTextField({
           focusMotion,
           {
             borderColor: error
-              ? theme.colors.danger
+              ? theme.colors.status.danger.fg
               : focused
-                ? theme.colors.primary
+                ? theme.colors.accent
                 : 'transparent',
           },
         ]}
@@ -85,7 +82,7 @@ export function GlassTextField({
             accessible={false}
             name={icon}
             size={19}
-            color={focused ? theme.colors.primary : theme.colors.textMuted}
+            color={focused ? theme.colors.accent : theme.colors.textMuted}
             style={multiline ? styles.iconMultiline : undefined}
           />
           <TextInput
@@ -120,7 +117,7 @@ export function GlassTextField({
         <Text
           accessibilityLiveRegion="polite"
           role="alert"
-          style={[theme.typography.caption, styles.error, { color: theme.colors.danger }]}
+          style={[theme.typography.caption, styles.error, { color: theme.colors.status.danger.fg }]}
         >
           {error}
         </Text>
@@ -136,9 +133,6 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderRadius: 18,
     padding: 1,
-    shadowColor: '#4F75FF',
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 14,
   },
   surface: { minHeight: 56 },
   surfaceMultiline: { minHeight: 120 },
@@ -146,5 +140,5 @@ const styles = StyleSheet.create({
   inputRowMultiline: { alignItems: 'flex-start' },
   iconMultiline: { marginTop: 17 },
   input: { flex: 1, minHeight: 52, paddingVertical: 12 },
-  error: { marginTop: 5, marginLeft: 4 },
+  error: { marginTop: 5, marginStart: 4 },
 });
