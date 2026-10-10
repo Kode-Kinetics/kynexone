@@ -533,7 +533,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
 
         <div className="mb-3 flex flex-wrap items-end gap-2">
           <div className="relative min-w-[200px] flex-1">
-            <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden />
+            <Search className="pointer-events-none absolute start-2.5 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" aria-hidden />
             <input
               type="search"
               value={query}

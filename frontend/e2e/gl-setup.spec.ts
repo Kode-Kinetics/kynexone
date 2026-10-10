@@ -242,7 +242,7 @@ async function shot(page: Page, info: TestInfo, name: string) {
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('chart of accounts: real headers, search and type groups, and delete asks a translated confirmation first', async ({ page }) => {
+test('chart of accounts: real headers, search and type groups, and delete asks a translated confirmation first', async ({ page }, info) => {
   const state = await boot(page, { groupMode: true });
   await expect(tab(page, 'Accounts & Mapping')).toHaveAttribute('aria-selected', 'true');
   const chart = page.getByRole('region', { name: 'Chart of Accounts', exact: true });
@@ -265,6 +265,7 @@ test('chart of accounts: real headers, search and type groups, and delete asks a
   await chart.getByRole('button', { name: 'Delete account 1400', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Delete account 1400?' });
   await expect(dialog).toBeVisible();
+  await shot(page, info, 'gl-en-delete-confirm');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(state.writes.filter((w) => w.method === 'DELETE')).toHaveLength(0);
@@ -313,12 +314,12 @@ test('"Where does it post?" lists problems first and the health banner links to 
   await expect(bodyRows.nth(1)).toContainText('Inherited from group');
   await expect(bodyRows.nth(1)).toContainText('Debit');
 
+  await shot(page, info, 'gl-en-group-accounts-mapping');
+
   await tab(page, 'Posting Drivers').click();
   await banner.getByRole('button', { name: /^Loan recovery:/ }).click();
   await expect(tab(page, 'Accounts & Mapping')).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('#gl-route-LOAN_RECEIVABLE')).toBeFocused();
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await shot(page, info, 'gl-en-group-accounts-mapping');
 });
 
 test('a company-scoped user still sees the group accounts the company inherits', async ({ page }) => {
