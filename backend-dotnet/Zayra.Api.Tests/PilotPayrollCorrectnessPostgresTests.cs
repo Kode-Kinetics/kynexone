@@ -214,10 +214,10 @@ public class PilotPayrollCorrectnessPostgresTests
         AssertGosiRefusal((await stat.Update(legacy.Id, new UpdateStatutoryRuleRequest("0.012", "again", ef.AddMonths(1), null),
             CancellationToken.None)).Result);
 
-        // A non-GOSI statutory key is still overridable.
+        // A non-GOSI statutory key is still overridable — as a request a second person approves.
         (await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.standard_multiplier", "1.75", "decimal", "company policy above statute", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None))
-            .Result.Should().BeOfType<CreatedAtActionResult>();
+            .Result.Should().BeOfType<AcceptedResult>();
 
         // 2. Company statutory override (maker-checker): refused at request…
         var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
@@ -257,7 +257,9 @@ public class PilotPayrollCorrectnessPostgresTests
             .Should().Be(1);
         (await db.CountryPayrollRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId && r.RuleKey.StartsWith("gosi.")))
             .Should().BeFalse();
-        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId)).Should().Be(1);
+        // The legacy company row only; the second row is the pending (unapplied) tenant-level ot.* request above.
+        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId && r.CompanyId != null)).Should().Be(1);
+        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId && r.CompanyId == null && r.Status == "PendingApproval")).Should().Be(1);
     }
 
     /// <summary>
@@ -314,7 +316,7 @@ public class PilotPayrollCorrectnessPostgresTests
 
         // The Rates screen shows the GOSI-published value as resolved and flags the override as never applied.
         var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
-        var listed = (await rates.ListStatutory(company.Id, CountryCodes.Saudi, Jurisdictions.KsaMainland, CancellationToken.None))
+        var listed = (await rates.ListStatutory(company.Id, CountryCodes.Saudi, null, Jurisdictions.KsaMainland, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>().Subject.Value!;
         var ceilingRow = ((System.Collections.IEnumerable)listed).Cast<object>()
             .Single(r => Prop<string>(r, "ruleKey") == KsaGosiWageBounds.CeilingRuleKey);

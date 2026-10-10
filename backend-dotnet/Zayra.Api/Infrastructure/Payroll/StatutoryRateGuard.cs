@@ -34,10 +34,21 @@ public static class StatutoryRateGuard
         "workhours.", "leave.",
     };
 
+    /// <summary>
+    /// Client-configurable keys that live under a statutory prefix because they ENHANCE that floor
+    /// (extra EOSB days on top of the statutory minimum). They are allow-listed below; without this
+    /// exemption the prefix guard refused them and the allow-list entry was unwritable.
+    /// </summary>
+    private static readonly HashSet<string> EnhancementKeysUnderStatutoryPrefix = new(StringComparer.Ordinal)
+    {
+        "eosb.enhancement_days_per_year",
+    };
+
     public static bool IsStatutoryKey(string? rateKey)
     {
         if (string.IsNullOrWhiteSpace(rateKey)) return false;
         var k = rateKey.Trim().ToLowerInvariant();
+        if (EnhancementKeysUnderStatutoryPrefix.Contains(k)) return false;
         return StatutoryPrefixes.Any(p => k.StartsWith(p, StringComparison.Ordinal));
     }
 

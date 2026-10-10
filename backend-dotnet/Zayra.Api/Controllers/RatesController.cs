@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -17,12 +18,16 @@ namespace Zayra.Api.Controllers;
 ///
 /// TWO DISJOINT SURFACES with different governance:
 ///  A. api/finance/rates/company    — FULL client CRUD over NON-statutory rates (allow-list gated,
-///     typed + bounded, effective-dated, superseded on change). Permission: payroll.rates.manage.
+///     typed + bounded, effective-dated, superseded on change with history kept resolvable).
+///     Permission: payroll.rates.manage.
 ///  B. api/finance/rates/statutory  — BOUNDED per-company OVERRIDE of a statutory rate: reason +
 ///     effective-date + companyId required, visibly flagged, audited, and MAKER-CHECKER approved
-///     before it goes Active. The seeded platform default stays the authoritative fallback and has
-///     NO client edit path here. Permission: payroll.rates.statutory_override (higher trust) to
-///     create; approvals.decide + maker≠checker to activate.
+///     before it goes Active. Only keys payroll actually reads per company may be overridden
+///     (<see cref="StatutoryOverridePolicy.CompanyAppliedKeys"/>); a floor may only be raised.
+///     The same approval queue carries tenant-level statutory changes (CompanyId = null, requested
+///     through api/statutory-rules) and retirement requests. The requester never decides, and the
+///     decision is claimed atomically so exactly one person decides each request.
+///     Permission: payroll.rates.statutory_override to request and to decide.
 /// </summary>
 [ApiController]
 [Route("api/finance/rates")]
@@ -33,7 +38,8 @@ public class RatesController : ControllerBase
     private readonly IStatutoryRuleReader _reader;
     private readonly IStatutoryRateResolver _statResolver;
 
-    public const string PendingApproval = "PendingApproval";
+    public const string PendingApproval = StatutoryOverridePolicy.PendingApproval;
+    public const string Superseded = CompanyRatePolicyResolver.SupersededStatus;
 
     public RatesController(ZayraDbContext db, IStatutoryRuleReader reader, IStatutoryRateResolver statResolver)
     {
@@ -57,12 +63,12 @@ public class RatesController : ControllerBase
                      && (companyId != null ? (p.CompanyId == companyId || p.CompanyId == null) : p.CompanyId == null))
             .OrderBy(p => p.RateKey).ThenByDescending(p => p.EffectiveFrom)
             .ToListAsync(ct);
-        return Ok(rows.Select(p => new
-        {
-            p.Id, p.CompanyId, p.RateKey, p.RateCategory, p.RateValue, p.DataType, p.Unit,
-            p.EffectiveFrom, p.EffectiveTo, p.Status, p.Notes,
-            inherited = companyId is not null && p.CompanyId == null,
-        }));
+        var registry = (await LoadRegistryAsync(tid.Value, ct))
+            .GroupBy(d => d.RateKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var currency = await CurrencyForScopeAsync(tid.Value, companyId, ct);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return Ok(rows.Select(p => RateRow(p, registry, currency, today, inherited: companyId is not null && p.CompanyId == null)));
     }
 
     [HttpGet("company/registry")]
@@ -83,15 +89,19 @@ public class RatesController : ControllerBase
 
         var validation = await ValidateCompanyRateAsync(tid.Value, req, ct);
         if (validation.Error is not null) return validation.Error;
+        var key = validation.Def!.RateKey; // canonical spelling from the registry, never the caller's casing
+        if (DateRangeError(req.EffectiveFrom, req.EffectiveTo) is { } dateErr) return dateErr;
+        if (await LockedPeriodProblemAsync(tid.Value, companyId, req.EffectiveFrom, ct) is { } locked)
+            return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
 
         // Overlap guard: no two Active rows for the same key+scope may cover overlapping windows.
-        if (await HasOverlapAsync(tid.Value, companyId, req.RateKey.Trim(), req.EffectiveFrom, req.EffectiveTo, null, ct))
-            return BadRequest(new { message = "An active rate for this key and scope already covers an overlapping effective window." });
+        if (await HasOverlapAsync(tid.Value, companyId, key, req.EffectiveFrom, req.EffectiveTo, null, ct))
+            return BadRequest(new { message = "An active rate for this key and scope already covers an overlapping effective window. Change the current rate instead (it will be superseded)." });
 
         var row = new CompanyRatePolicy
         {
-            TenantId = tid.Value, CompanyId = companyId, RateKey = req.RateKey.Trim(),
-            RateCategory = validation.Def!.RateCategory, RateValue = req.RateValue.Trim(),
+            TenantId = tid.Value, CompanyId = companyId, RateKey = key,
+            RateCategory = validation.Def.RateCategory, RateValue = req.RateValue.Trim(),
             DataType = validation.Def.DataType, Unit = validation.Def.Unit,
             EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo,
             Status = CompanyPolicyStatuses.Active, Notes = req.Notes ?? "",
@@ -101,12 +111,16 @@ public class RatesController : ControllerBase
         await WriteAudit("payroll.rate.company.created", "CompanyRatePolicy", row.Id.ToString(), companyId,
             new { row.RateKey, value = row.RateValue, companyId, row.EffectiveFrom, row.EffectiveTo }, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(ToDto(row));
+        return Ok(await RateDtoAsync(tid.Value, row, ct));
     }
 
-    /// <summary>A value change SUPERSEDES: archives the prior Active row and inserts a new
-    /// effective-dated row (never mutates value/effective-from in place) so a run's historical
-    /// rate survives. Only within-place edits allowed elsewhere are Status transitions.</summary>
+    /// <summary>
+    /// A value change SUPERSEDES: the prior row is end-dated the day before the new one starts and
+    /// marked Superseded (still resolvable inside its window, so a re-run or arrears for an earlier
+    /// period uses the old value), and a new effective-dated row is inserted. The rate key never
+    /// changes. Sending the SAME value and start date with only a new EffectiveTo end-dates the
+    /// current row in place — that is how a rate in effect is stopped.
+    /// </summary>
     [HttpPut("company/{id:guid}")]
     public async Task<IActionResult> UpdateCompanyRate(Guid id, [FromBody] CompanyRateRequest req, CancellationToken ct)
     {
@@ -116,22 +130,54 @@ public class RatesController : ControllerBase
         var prior = await _db.CompanyRatePolicies.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.TenantId == tid && p.Id == id && !p.IsDeleted, ct);
         if (prior is null) return NotFound();
         if (ScopeError(prior.CompanyId) is { } err) return err;
+        if (prior.Status != CompanyPolicyStatuses.Active)
+            return Conflict(new { code = "RATE_VERSION_STALE", message = "Only the current version of a rate can be changed. Reload the rate history." });
+        if (!string.IsNullOrWhiteSpace(req.RateKey) && !string.Equals(req.RateKey.Trim(), prior.RateKey, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { code = "RATE_KEY_IMMUTABLE", message = $"A rate's key cannot be changed ('{prior.RateKey}'). End this rate and create a new one for '{req.RateKey.Trim()}'." });
 
-        var validation = await ValidateCompanyRateAsync(tid.Value, req, ct);
+        var validation = await ValidateCompanyRateAsync(tid.Value, req with { RateKey = prior.RateKey }, ct);
         if (validation.Error is not null) return validation.Error;
-        if (await HasOverlapAsync(tid.Value, prior.CompanyId, req.RateKey.Trim(), req.EffectiveFrom, req.EffectiveTo, prior.Id, ct))
+        if (DateRangeError(req.EffectiveFrom, req.EffectiveTo) is { } dateErr) return dateErr;
+
+        var value = req.RateValue.Trim();
+        var endDateOnly = req.EffectiveFrom == prior.EffectiveFrom && string.Equals(value, prior.RateValue, StringComparison.Ordinal);
+        if (endDateOnly)
+        {
+            if (req.EffectiveTo is not { } end)
+                return BadRequest(new { message = "Nothing changed. Send a later start date to change the value, or an end date to stop the rate." });
+            var firstUnpaidDay = end.AddDays(1);
+            if (await LockedPeriodProblemAsync(tid.Value, prior.CompanyId, firstUnpaidDay, ct) is { } lockedEnd)
+                return Conflict(new { code = "RATE_PERIOD_LOCKED", message = lockedEnd });
+            var beforeEnd = prior.EffectiveTo;
+            prior.EffectiveTo = end;
+            prior.UpdatedAtUtc = DateTime.UtcNow;
+            prior.UpdatedBy = this.GetUserId();
+            await WriteAudit("payroll.rate.company.end_dated", "CompanyRatePolicy", prior.Id.ToString(), prior.CompanyId,
+                new { prior.RateKey, value = prior.RateValue, beforeEffectiveTo = beforeEnd, afterEffectiveTo = end, companyId = prior.CompanyId }, ct);
+            await _db.SaveChangesAsync(ct);
+            return Ok(await RateDtoAsync(tid.Value, prior, ct));
+        }
+
+        if (req.EffectiveFrom <= prior.EffectiveFrom)
+            return BadRequest(new { code = "RATE_EFFECTIVE_FROM_NOT_LATER", message = $"A new value must start after the current one ({prior.EffectiveFrom:yyyy-MM-dd}). Earlier periods keep the value they were paid on." });
+        if (prior.EffectiveTo is { } priorEnd && req.EffectiveFrom > priorEnd.AddDays(1))
+            return BadRequest(new { message = $"The current rate already ends on {priorEnd:yyyy-MM-dd}. Create a new rate for the later period instead." });
+        if (await LockedPeriodProblemAsync(tid.Value, prior.CompanyId, req.EffectiveFrom, ct) is { } locked)
+            return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
+        if (await HasOverlapAsync(tid.Value, prior.CompanyId, prior.RateKey, req.EffectiveFrom, req.EffectiveTo, prior.Id, ct))
             return BadRequest(new { message = "An active rate for this key and scope already covers an overlapping effective window." });
 
-        // Supersede: close the prior row the day before the new one takes effect, archive it.
-        prior.Status = CompanyPolicyStatuses.Archived;
-        prior.EffectiveTo ??= req.EffectiveFrom.AddDays(-1);
+        // Supersede: end the prior row the day before the new one takes effect; keep it resolvable.
+        var beforeTo = prior.EffectiveTo;
+        prior.Status = Superseded;
+        prior.EffectiveTo = req.EffectiveFrom.AddDays(-1);
         prior.UpdatedAtUtc = DateTime.UtcNow;
         prior.UpdatedBy = this.GetUserId();
 
         var next = new CompanyRatePolicy
         {
-            TenantId = tid.Value, CompanyId = prior.CompanyId, RateKey = req.RateKey.Trim(),
-            RateCategory = validation.Def!.RateCategory, RateValue = req.RateValue.Trim(),
+            TenantId = tid.Value, CompanyId = prior.CompanyId, RateKey = prior.RateKey,
+            RateCategory = validation.Def!.RateCategory, RateValue = value,
             DataType = validation.Def.DataType, Unit = validation.Def.Unit,
             EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo,
             Status = CompanyPolicyStatuses.Active, Notes = req.Notes ?? "",
@@ -139,11 +185,14 @@ public class RatesController : ControllerBase
         };
         _db.CompanyRatePolicies.Add(next);
         await WriteAudit("payroll.rate.company.updated", "CompanyRatePolicy", next.Id.ToString(), prior.CompanyId,
-            new { prior.RateKey, before = prior.RateValue, after = next.RateValue, supersededId = prior.Id, companyId = prior.CompanyId }, ct);
+            new { prior.RateKey, before = prior.RateValue, after = next.RateValue, supersededId = prior.Id,
+                  priorEffectiveTo = new { before = beforeTo, after = prior.EffectiveTo }, next.EffectiveFrom, companyId = prior.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(ToDto(next));
+        return Ok(await RateDtoAsync(tid.Value, next, ct));
     }
 
+    /// <summary>Deletes a rate that has not started yet. A rate already in effect (or in the past) has
+    /// been, or may have been, paid on — it is end-dated instead, so history stays resolvable.</summary>
     [HttpDelete("company/{id:guid}")]
     public async Task<IActionResult> DeleteCompanyRate(Guid id, CancellationToken ct)
     {
@@ -153,74 +202,110 @@ public class RatesController : ControllerBase
         var row = await _db.CompanyRatePolicies.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.TenantId == tid && p.Id == id && !p.IsDeleted, ct);
         if (row is null) return NotFound();
         if (ScopeError(row.CompanyId) is { } err) return err;
+        if (row.EffectiveFrom <= DateOnly.FromDateTime(DateTime.UtcNow))
+            return Conflict(new
+            {
+                code = "RATE_ALREADY_EFFECTIVE",
+                message = $"This rate has been in effect since {row.EffectiveFrom:yyyy-MM-dd}, so payroll may already have used it. " +
+                          "End-date it instead (send the same value and start date with an end date) — deleting it would rewrite history.",
+            });
         row.IsDeleted = true; row.Status = CompanyPolicyStatuses.Archived; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = this.GetUserId();
         await WriteAudit("payroll.rate.company.deleted", "CompanyRatePolicy", row.Id.ToString(), row.CompanyId,
-            new { row.RateKey, value = row.RateValue, companyId = row.CompanyId }, ct);
+            new { row.RateKey, value = row.RateValue, companyId = row.CompanyId, row.EffectiveFrom }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
 
     // ═══ SURFACE B — statutory rates (bounded per-company override) ═════════════════
 
+    /// <summary>
+    /// The statutory values for a company (<paramref name="companyId"/> set) or, with it omitted, a
+    /// read-only group view: the platform/tenant value for every distinct country of the tenant's
+    /// companies, with how many companies override each one.
+    /// </summary>
     [HttpGet("statutory")]
     public async Task<IActionResult> ListStatutory(
-        [FromQuery] Guid? companyId, [FromQuery] string country, [FromQuery] string jurisdiction, CancellationToken ct)
+        [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? country,
+        [FromQuery] string? jurisdiction, CancellationToken ct)
     {
-        if (!HasPermission("payroll.rates.read") && !HasPermission("payroll.rates.manage") && !HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (!CanReadStatutory()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (companyId is not null && ScopeError(companyId) is { } err) return err;
-        if (string.IsNullOrWhiteSpace(country)) return BadRequest(new { message = "country is required." });
-        var cc = country.ToUpperInvariant();
-        var jur = jurisdiction ?? "";
+        var requestedCountry = (countryCode ?? country)?.Trim();
         var onDate = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        // Distinct statutory rule keys visible for this country/jurisdiction (platform + tenant).
-        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        var keys = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
-            .Where(r => (r.TenantId == null || r.TenantId == tid) && r.CountryCode == cc && r.Jurisdiction == jur)
-            .Select(r => r.RuleKey).Distinct().ToListAsync(ct);
-
-        var overrides = companyId is null ? new List<CompanyStatutoryOverride>()
-            // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-            : await _db.CompanyStatutoryOverrides.IgnoreQueryFilters().AsNoTracking()
-                .Where(o => o.TenantId == tid && !o.IsDeleted && o.CompanyId == companyId
-                         && o.CountryCode == cc && o.Jurisdiction == jur)
-                .ToListAsync(ct);
-
-        var result = new List<object>();
-        foreach (var key in keys.OrderBy(k => k))
+        if (companyId is not null)
         {
-            var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, onDate, tenantId: null, ct);
-            var resolved = await _statResolver.ResolveDecimalAsync(tid.Value, companyId, cc, jur, key, onDate, ct);
-            var active = overrides.FirstOrDefault(o => o.RuleKey == key && o.Status == CompanyPolicyStatuses.Active
-                         && o.EffectiveFrom <= onDate && (o.EffectiveTo == null || o.EffectiveTo >= onDate));
-            var drifted = active is not null
-                && !string.Equals(active.PlatformDefaultAtCreation,
-                    platformDefault?.ToString(CultureInfo.InvariantCulture) ?? "", StringComparison.Ordinal);
-            // GOSI rates and the ceiling are statutory: payroll applies the platform row whatever a
-            // company saved, so the resolved value IS the platform default and an override is flagged.
-            var gosiStatutory = GosiStatutoryValues.IsStatutory(key);
-            result.Add(new
-            {
-                ruleKey = key,
-                resolvedValue = gosiStatutory ? platformDefault : resolved,
-                statutoryLocked = gosiStatutory,
-                neverApplied = gosiStatutory && active is not null,
-                notice = gosiStatutory && active is not null
-                    ? "Saved, never applied — payroll uses the GOSI-published rate."
-                    : null,
-                platformDefault,
-                isOverride = active is not null,
-                overrideId = active?.Id,
-                overrideValue = active?.OverrideValue,
-                reason = active?.Reason,
-                effectiveFrom = active?.EffectiveFrom,
-                effectiveTo = active?.EffectiveTo,
-                reviewBy = active?.ReviewBy,
-                defaultDriftedSinceOverride = drifted,
-            });
+            if (ScopeError(companyId) is { } err) return err;
+            var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tid && c.Id == companyId, ct);
+            var cc = (string.IsNullOrWhiteSpace(requestedCountry) ? company?.CountryCode : requestedCountry)?.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(cc))
+                return BadRequest(new { message = "This company has no country set, so it has no statutory values. Set it in Setup → Companies." });
+            var jur = jurisdiction ?? company?.Jurisdiction ?? "";
+            return Ok(await CompanyStatutoryRowsAsync(tid.Value, companyId.Value, cc, jur, onDate, ct));
         }
+
+        // Group scope: read-only, one block per distinct (country, jurisdiction) of the caller's companies.
+        var scope = this.GetEntityScope();
+        var companies = (await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tid && !c.IsDeleted && c.CountryCode != "")
+                .Select(c => new { c.Id, c.CountryCode, c.Jurisdiction })
+                .ToListAsync(ct))
+            .Where(c => scope.IsGroupLevel || scope.CanAccessCompany(c.Id))
+            .ToList();
+        var pairs = companies
+            .Select(c => (Cc: c.CountryCode.Trim().ToUpperInvariant(), Jur: c.Jurisdiction ?? ""))
+            .Where(p => string.IsNullOrWhiteSpace(requestedCountry) || p.Cc == requestedCountry.ToUpperInvariant())
+            .Where(p => jurisdiction is null || p.Jur == jurisdiction)
+            .Distinct()
+            .ToList();
+        if (pairs.Count == 0 && !string.IsNullOrWhiteSpace(requestedCountry))
+            pairs.Add((requestedCountry.ToUpperInvariant(), jurisdiction ?? ""));
+
+        var visibleCompanyIds = companies.Select(c => c.Id).ToHashSet();
+        var result = new List<object>();
+        foreach (var (cc, jur) in pairs.OrderBy(p => p.Cc).ThenBy(p => p.Jur))
+            result.AddRange(await GroupStatutoryRowsAsync(tid.Value, cc, jur, visibleCompanyIds, onDate, ct));
         return Ok(result);
+    }
+
+    /// <summary>Every request waiting for a decision that the caller may see, company and tenant level.</summary>
+    [HttpGet("statutory/pending")]
+    public async Task<IActionResult> ListPendingStatutory(CancellationToken ct)
+    {
+        if (!CanReadStatutory()) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        var scope = this.GetEntityScope();
+        var groupCaller = this.HasGroupEntityScope();
+
+        var rows = (await Overrides(tid.Value).AsNoTracking()
+                .Where(o => !o.IsDeleted && o.Status == PendingApproval)
+                .OrderBy(o => o.CreatedAtUtc)
+                .ToListAsync(ct))
+            .Where(o => o.CompanyId is null ? groupCaller : scope.CanAccessCompany(o.CompanyId))
+            .ToList();
+        var names = await UserNamesAsync(tid.Value, rows.Select(r => r.CreatedBy), ct);
+        var companyIds = rows.Where(r => r.CompanyId != null).Select(r => r.CompanyId!.Value).Distinct().ToList();
+        var companyNames = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tid && companyIds.Contains(c.Id))
+            .ToDictionaryAsync(c => c.Id, c => string.IsNullOrWhiteSpace(c.TradeName) ? c.LegalNameEn : c.TradeName, ct);
+
+        return Ok(rows.Select(o =>
+        {
+            var p = PendingDto(o, names);
+            return new
+            {
+                p.id, p.kind, p.value, p.effectiveFrom, p.effectiveTo, p.reason, p.reviewBy,
+                p.requestedById, p.requestedByName, p.requestedAt, p.canApprove,
+                companyId = o.CompanyId,
+                companyName = o.CompanyId is { } cid
+                    ? (companyNames.TryGetValue(cid, out var n) ? n : null)
+                    : "All companies (tenant default)",
+                ruleKey = o.RuleKey,
+                countryCode = o.CountryCode,
+                jurisdiction = o.Jurisdiction,
+                platformDefault = o.PlatformDefaultAtCreation,
+            };
+        }));
     }
 
     [HttpPost("statutory/override")]
@@ -230,46 +315,54 @@ public class RatesController : ControllerBase
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
 
         // Bounded invariants (cite the boundary): companyId + reason + effectiveFrom required.
-        if (req.CompanyId is null) return BadRequest(new { message = "companyId is required — a statutory override applies only to the caller's own legal entity." });
+        if (req.CompanyId is null) return BadRequest(new { message = "companyId is required — a statutory override applies only to the caller's own legal entity. Tenant-wide changes are requested through Statutory rules." });
         if (ScopeError(req.CompanyId) is { } err) return err;
         if (string.IsNullOrWhiteSpace(req.Reason)) return BadRequest(new { message = "reason is required for a statutory override." });
         if (string.IsNullOrWhiteSpace(req.CountryCode) || string.IsNullOrWhiteSpace(req.RuleKey)) return BadRequest(new { message = "countryCode and ruleKey are required." });
         if (req.ReviewBy is null) return BadRequest(new { message = "reviewBy (expiry/review date) is required so the override cannot silently outlive its justification." });
         if (string.IsNullOrWhiteSpace(req.OverrideValue)) return BadRequest(new { message = "overrideValue is required." });
+        if (DateRangeError(req.EffectiveFrom, req.EffectiveTo) is { } dateErr) return dateErr;
+        if (req.ReviewBy < req.EffectiveFrom)
+            return BadRequest(new { code = "STATUTORY_DATE_INVALID", message = "The review date cannot be before the override starts." });
+        var key = req.RuleKey.Trim();
         // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
         // only, so a tenant value here would be saved and never applied. Refused with a code.
         // See Infrastructure/Payroll/GosiStatutoryValues.cs.
-        if (GosiStatutoryValues.TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
+        if (GosiStatutoryValues.TenantWriteRefusal(key) is { } gosiRefusal)
             return UnprocessableEntity(gosiRefusal);
 
-        // UNIT GATE. OverrideValue is free text and StatutoryRateResolver hands it straight to the
-        // payroll calculators ahead of the platform default, so this is the highest-consequence
-        // rate write in the product. A rate key takes a decimal FRACTION (0.09 = 9%); "9" is
-        // refused with the expected form named rather than interpreted.
+        // UNIT GATE. OverrideValue is free text and the payroll calculators read it ahead of the
+        // platform default, so this is the highest-consequence rate write in the product.
         // See Infrastructure/Payroll/StatutoryValueUnits.cs.
-        if (StatutoryValueUnits.Validate(req.RuleKey, req.DataType, req.OverrideValue) is { } unitError)
+        if (StatutoryValueUnits.Validate(key, req.DataType, req.OverrideValue) is { } unitError)
             return BadRequest(StatutoryValueUnits.Refusal(unitError));
 
-        var cc = req.CountryCode.ToUpperInvariant();
+        var cc = req.CountryCode.Trim().ToUpperInvariant();
         var jur = req.Jurisdiction ?? "";
-        var onDate = req.EffectiveFrom;
-        var platformDefault = await _reader.GetDecimalAsync(cc, jur, req.RuleKey.Trim(), onDate, tenantId: null, ct);
+        var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
         // ruleKey must resolve to a known statutory rule (no inventing statutory keys).
         if (platformDefault is null)
         {
             // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
             var exists = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
-                .AnyAsync(r => (r.TenantId == null || r.TenantId == tid) && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == req.RuleKey.Trim(), ct);
+                .AnyAsync(r => (r.TenantId == null || r.TenantId == tid) && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key, ct);
             if (!exists) return BadRequest(new { message = $"Unknown statutory rule key '{req.RuleKey}' for {cc}/{jur}." });
         }
+        // Approved-but-never-applied is refused at the door: only keys payroll reads per company.
+        if (StatutoryOverridePolicy.NotAppliedRefusal(key) is { } notApplied)
+            return UnprocessableEntity(notApplied);
+        if (StatutoryOverridePolicy.DirectionRefusal(key, req.OverrideValue, platformDefault) is { } floor)
+            return UnprocessableEntity(floor);
+        if (await LockedPeriodProblemAsync(tid.Value, req.CompanyId, req.EffectiveFrom, ct) is { } locked)
+            return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
 
-        if (await HasStatutoryOverlapAsync(tid.Value, req.CompanyId.Value, cc, jur, req.RuleKey.Trim(), req.EffectiveFrom, req.EffectiveTo, null, ct))
+        if (await HasStatutoryOverlapAsync(tid.Value, req.CompanyId.Value, cc, jur, key, req.EffectiveFrom, req.EffectiveTo, null, ct))
             return BadRequest(new { message = "An active or pending override for this rule and company already covers an overlapping window." });
 
         var row = new CompanyStatutoryOverride
         {
             TenantId = tid.Value, CompanyId = req.CompanyId, CountryCode = cc, Jurisdiction = jur,
-            RuleKey = req.RuleKey.Trim(), OverrideValue = req.OverrideValue.Trim(), DataType = string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType,
+            RuleKey = key, OverrideValue = req.OverrideValue.Trim(), DataType = string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType,
             EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo, ReviewBy = req.ReviewBy,
             Reason = req.Reason.Trim(), PlatformDefaultAtCreation = platformDefault?.ToString(CultureInfo.InvariantCulture) ?? "",
             Status = PendingApproval, CreatedBy = this.GetUserId(),
@@ -281,62 +374,385 @@ public class RatesController : ControllerBase
         return Ok(ToOverrideDto(row));
     }
 
-    /// <summary>Maker-checker activation: a SECOND person approves the pending override. Enforces
-    /// maker ≠ checker on the single most financially/compliance-material write in the design.
-    /// The checker needs the same key as the maker, payroll.rates.statutory_override. It used to need only
-    /// approvals.decide, which every line Manager, Finance and Payroll Manager holds for ordinary request
-    /// queues, so any of them could switch on a company-wide statutory payroll rate.</summary>
+    /// <summary>
+    /// Maker-checker decision on any pending statutory request — a company override, a tenant-level
+    /// change requested through api/statutory-rules, or a retirement. A SECOND person with
+    /// payroll.rates.statutory_override decides (approvals.decide alone is not enough: every line
+    /// manager holds it). The request is claimed with a conditional update on its PendingApproval
+    /// status, so when two checkers press approve together exactly one decides.
+    /// </summary>
     [HttpPost("statutory/override/{id:guid}/approve")]
     public async Task<IActionResult> ApproveStatutoryOverride(Guid id, CancellationToken ct)
     {
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        var row = await _db.CompanyStatutoryOverrides.IgnoreQueryFilters().FirstOrDefaultAsync(o => o.TenantId == tid && o.Id == id && !o.IsDeleted, ct);
+        var row = await Overrides(tid.Value).AsNoTracking().FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted, ct);
         if (row is null) return NotFound();
-        if (ScopeError(row.CompanyId) is { } err) return err;
-        if (row.Status != PendingApproval) return BadRequest(new { message = $"Override is not pending approval (status={row.Status})." });
-        // A GOSI override requested before the request-side guard existed must not become Active: it
-        // would be approved, audited and then ignored by payroll. Refused at approval too.
-        if (GosiStatutoryValues.TenantWriteRefusal(row.RuleKey) is { } gosiRefusal)
-            return UnprocessableEntity(gosiRefusal);
+        if (DecideScopeError(row.CompanyId) is { } err) return err;
+        if (row.Status != PendingApproval)
+            return Conflict(new { code = "STATUTORY_REQUEST_NOT_PENDING", message = $"This request has already been decided (status {row.Status})." });
 
         var approver = this.GetUserId();
         // An unattributed caller cannot be shown to differ from the maker, so it cannot be the checker.
         if (approver is null || approver == row.CreatedBy)
-            return BadRequest(new { message = "Maker-checker: the approver must be a different person from the creator." });
+            return BadRequest(new { code = "MAKER_CHECKER", message = "Maker-checker: the approver must be a different person from the requester." });
 
-        row.Status = CompanyPolicyStatuses.Active;
-        row.ApprovedBy = approver;
-        row.ApprovedAtUtc = DateTime.UtcNow;
-        row.UpdatedAtUtc = DateTime.UtcNow;
-        await WriteAudit("payroll.rate.statutory_override.approved", "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
-            new { row.RuleKey, platformDefaultValue = row.PlatformDefaultAtCreation, overrideValue = row.OverrideValue, reason = row.Reason, approvedBy = approver, maker = row.CreatedBy, companyId = row.CompanyId }, ct);
-        await _db.SaveChangesAsync(ct);
-        return Ok(ToOverrideDto(row));
+        var isRetire = row.DataType == StatutoryOverridePolicy.RetireRequest;
+        if (!isRetire)
+        {
+            // A GOSI override requested before the request-side guard existed must not become Active.
+            if (GosiStatutoryValues.TenantWriteRefusal(row.RuleKey) is { } gosiRefusal) return UnprocessableEntity(gosiRefusal);
+            if (row.CompanyId is not null && StatutoryOverridePolicy.NotAppliedRefusal(row.RuleKey) is { } notApplied)
+                return UnprocessableEntity(notApplied);
+            if (row.CompanyId is null && StatutoryRulesController.TenantWriteRefusal(row.RuleKey) is { } platformOnly)
+                return UnprocessableEntity(platformOnly);
+            var platform = await _reader.GetDecimalAsync(row.CountryCode, row.Jurisdiction, row.RuleKey, row.EffectiveFrom, tenantId: null, ct);
+            if (StatutoryOverridePolicy.DirectionRefusal(row.RuleKey, row.OverrideValue, platform) is { } floor)
+                return UnprocessableEntity(floor);
+            if (await LockedPeriodProblemAsync(tid.Value, row.CompanyId, row.EffectiveFrom, ct) is { } locked)
+                return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
+        }
+
+        var decidedStatus = row.CompanyId is not null && !isRetire ? CompanyPolicyStatuses.Active : StatutoryOverridePolicy.Applied;
+        return await DecideAtomicallyAsync(async () =>
+        {
+            var now = DateTime.UtcNow;
+            if (!await ClaimPendingAsync(tid.Value, id, approver.Value, decidedStatus, now, ct))
+                return (Conflict(new { code = "STATUTORY_REQUEST_NOT_PENDING", message = "Someone else decided this request a moment ago. Reload the queue." }), false);
+
+            string? applyError = null;
+            object? applied = null;
+            if (row.CompanyId is null)
+                applyError = isRetire
+                    ? await TenantStatutoryChange.ApplyRetireAsync(_db, row, ct)
+                    : await TenantStatutoryChange.ApplySetAsync(_db, row, ct);
+            else if (isRetire)
+                applied = await RetireCompanyOverridesAsync(tid.Value, row, approver.Value, ct);
+            if (applyError is not null)
+                return (Conflict(new { code = "STATUTORY_REQUEST_STALE", message = applyError }), false);
+
+            row.Status = decidedStatus;
+            row.ApprovedBy = approver;
+            row.ApprovedAtUtc = now;
+            row.UpdatedAtUtc = now;
+            var action = isRetire ? "payroll.rate.statutory_override.retire_approved"
+                : row.CompanyId is null ? "statutory_rule.override.approved" : "payroll.rate.statutory_override.approved";
+            await WriteAudit(action, "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
+                new { row.RuleKey, platformDefaultValue = row.PlatformDefaultAtCreation, overrideValue = row.OverrideValue, reason = row.Reason,
+                      approvedBy = approver, maker = row.CreatedBy, companyId = row.CompanyId, row.EffectiveFrom, row.EffectiveTo,
+                      kind = isRetire ? "retire" : "change", status = decidedStatus, retired = applied }, ct);
+            await _db.SaveChangesAsync(ct);
+            return (Ok(ToOverrideDto(row)), true);
+        }, ct);
     }
 
+    /// <summary>A checker declines a pending request. Same atomic claim; the requester cannot decide it
+    /// (the requester withdraws through DELETE instead).</summary>
+    [HttpPost("statutory/override/{id:guid}/reject")]
+    public async Task<IActionResult> RejectStatutoryOverride(Guid id, [FromBody] StatutoryDecisionRequest? body, CancellationToken ct)
+    {
+        if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        var row = await Overrides(tid.Value).AsNoTracking().FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted, ct);
+        if (row is null) return NotFound();
+        if (DecideScopeError(row.CompanyId) is { } err) return err;
+        if (row.Status != PendingApproval)
+            return Conflict(new { code = "STATUTORY_REQUEST_NOT_PENDING", message = $"This request has already been decided (status {row.Status})." });
+        var decider = this.GetUserId();
+        if (decider is null || decider == row.CreatedBy)
+            return BadRequest(new { code = "MAKER_CHECKER", message = "The requester cannot decide their own request. Withdraw it instead." });
+
+        return await DecideAtomicallyAsync(async () =>
+        {
+            var now = DateTime.UtcNow;
+            if (!await ClaimPendingAsync(tid.Value, id, decider.Value, StatutoryOverridePolicy.Withdrawn, now, ct))
+                return (Conflict(new { code = "STATUTORY_REQUEST_NOT_PENDING", message = "Someone else decided this request a moment ago. Reload the queue." }), false);
+            await WriteAudit("payroll.rate.statutory_override.rejected", "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
+                new { row.RuleKey, overrideValue = row.OverrideValue, decidedBy = decider, maker = row.CreatedBy, companyId = row.CompanyId, reason = body?.Reason }, ct);
+            await _db.SaveChangesAsync(ct);
+            row.Status = StatutoryOverridePolicy.Withdrawn;
+            return (Ok(ToOverrideDto(row)), true);
+        }, ct);
+    }
+
+    /// <summary>
+    /// A pending request is withdrawn (nothing was ever applied). An ACTIVE override is not switched
+    /// off by one person any more: this files a retirement request (202) that a second person must
+    /// approve, from tomorrow at the earliest. History is never deleted.
+    /// </summary>
     [HttpDelete("statutory/override/{id:guid}")]
-    public async Task<IActionResult> RevertStatutoryOverride(Guid id, CancellationToken ct)
+    public async Task<IActionResult> RevertStatutoryOverride(Guid id, CancellationToken ct, [FromQuery] string? reason = null)
     {
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var row = await _db.CompanyStatutoryOverrides.IgnoreQueryFilters().FirstOrDefaultAsync(o => o.TenantId == tid && o.Id == id && !o.IsDeleted, ct);
         if (row is null) return NotFound();
-        if (ScopeError(row.CompanyId) is { } err) return err;
-        // Archive (not hard-delete) so the "there was an override" trail survives.
-        row.Status = CompanyPolicyStatuses.Archived;
-        row.IsDeleted = true;
-        row.UpdatedAtUtc = DateTime.UtcNow;
-        row.UpdatedBy = this.GetUserId();
-        await WriteAudit("payroll.rate.statutory_override.reverted", "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
-            new { row.RuleKey, platformDefaultValue = row.PlatformDefaultAtCreation, overrideValue = row.OverrideValue, reason = row.Reason, companyId = row.CompanyId }, ct);
+        if (DecideScopeError(row.CompanyId) is { } err) return err;
+        var me = this.GetUserId();
+
+        if (row.Status == PendingApproval)
+        {
+            row.Status = StatutoryOverridePolicy.Withdrawn;
+            row.UpdatedAtUtc = DateTime.UtcNow;
+            row.UpdatedBy = me;
+            await WriteAudit("payroll.rate.statutory_override.withdrawn", "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
+                new { row.RuleKey, overrideValue = row.OverrideValue, companyId = row.CompanyId, withdrawnBy = me, maker = row.CreatedBy }, ct);
+            await _db.SaveChangesAsync(ct);
+            return NoContent();
+        }
+        if (row.Status != CompanyPolicyStatuses.Active || row.CompanyId is null || row.DataType == StatutoryOverridePolicy.RetireRequest)
+            return NoContent(); // already retired, withdrawn or applied — nothing to switch off
+
+        var existing = await Overrides(tid.Value).AsNoTracking()
+            .FirstOrDefaultAsync(o => !o.IsDeleted && o.Status == PendingApproval && o.DataType == StatutoryOverridePolicy.RetireRequest
+                                   && o.CompanyId == row.CompanyId && o.CountryCode == row.CountryCode
+                                   && o.Jurisdiction == row.Jurisdiction && o.RuleKey == row.RuleKey, ct);
+        if (existing is not null) return Accepted(ToOverrideDto(existing));
+
+        var request = new CompanyStatutoryOverride
+        {
+            TenantId = tid.Value, CompanyId = row.CompanyId, CountryCode = row.CountryCode, Jurisdiction = row.Jurisdiction,
+            RuleKey = row.RuleKey, OverrideValue = row.OverrideValue, DataType = StatutoryOverridePolicy.RetireRequest,
+            EffectiveFrom = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1), ReviewBy = null,
+            Reason = string.IsNullOrWhiteSpace(reason) ? "Return to the statutory value" : reason.Trim(),
+            PlatformDefaultAtCreation = row.PlatformDefaultAtCreation, Status = PendingApproval, CreatedBy = me,
+        };
+        _db.CompanyStatutoryOverrides.Add(request);
+        await WriteAudit("payroll.rate.statutory_override.revert_requested", "CompanyStatutoryOverride", request.Id.ToString(), row.CompanyId,
+            new { row.RuleKey, overrideId = row.Id, overrideValue = row.OverrideValue, platformDefaultValue = row.PlatformDefaultAtCreation, companyId = row.CompanyId, retireFrom = request.EffectiveFrom, reason = request.Reason }, ct);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return Accepted(ToOverrideDto(request));
+    }
+
+    // ── Statutory list builders ─────────────────────────────────────────────────
+
+    private sealed record RuleRowView(Guid? TenantId, string RuleKey, string RuleValue, string Description, DateTime EffectiveFrom, DateTime? EffectiveTo);
+
+    private async Task<List<RuleRowView>> VisibleRulesAsync(Guid tid, string cc, string jur, CancellationToken ct)
+        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
+        => await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
+            .Where(r => (r.TenantId == null || r.TenantId == tid) && r.CountryCode == cc && r.Jurisdiction == jur)
+            .Select(r => new RuleRowView(r.TenantId, r.RuleKey, r.RuleValue, r.Description, r.EffectiveFrom, r.EffectiveTo))
+            .ToListAsync(ct);
+
+    private static (RuleRowView? Effective, RuleRowView? Platform) PickRules(IEnumerable<RuleRowView> rows, string key, DateOnly onDate)
+    {
+        var cutoff = onDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var covering = rows.Where(r => r.RuleKey == key && r.EffectiveFrom <= cutoff && (r.EffectiveTo == null || r.EffectiveTo > cutoff)).ToList();
+        var effective = covering.OrderByDescending(r => r.TenantId != null).ThenByDescending(r => r.EffectiveFrom).FirstOrDefault();
+        var platform = covering.Where(r => r.TenantId == null).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault()
+            ?? rows.Where(r => r.RuleKey == key && r.TenantId == null).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault();
+        return (effective, platform);
+    }
+
+    private async Task<List<object>> CompanyStatutoryRowsAsync(Guid tid, Guid companyId, string cc, string jur, DateOnly onDate, CancellationToken ct)
+    {
+        var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        var overrides = await Overrides(tid).AsNoTracking()
+            .Where(o => !o.IsDeleted && o.CompanyId == companyId && o.CountryCode == cc && o.Jurisdiction == jur)
+            .ToListAsync(ct);
+        var names = await UserNamesAsync(tid, overrides.Where(o => o.Status == PendingApproval).Select(o => o.CreatedBy), ct);
+
+        var result = new List<object>();
+        foreach (var key in rules.Select(r => r.RuleKey).Distinct().OrderBy(k => k, StringComparer.Ordinal))
+        {
+            var (effective, platformRow) = PickRules(rules, key, onDate);
+            var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, onDate, tenantId: null, ct);
+            var resolved = await _statResolver.ResolveDecimalAsync(tid, companyId, cc, jur, key, onDate, ct);
+            var active = overrides.FirstOrDefault(o => o.RuleKey == key && o.Status == CompanyPolicyStatuses.Active
+                         && o.DataType != StatutoryOverridePolicy.RetireRequest
+                         && o.EffectiveFrom <= onDate && (o.EffectiveTo == null || o.EffectiveTo >= onDate));
+            var pending = overrides.Where(o => o.RuleKey == key && o.Status == PendingApproval)
+                .OrderByDescending(o => o.CreatedAtUtc).FirstOrDefault();
+            var drifted = active is not null
+                && !string.Equals(active.PlatformDefaultAtCreation,
+                    platformDefault?.ToString(CultureInfo.InvariantCulture) ?? "", StringComparison.Ordinal);
+            // GOSI rates and the ceiling are statutory: payroll applies the platform row whatever a
+            // company saved, so the resolved value IS the platform default and an override is flagged.
+            var gosiStatutory = GosiStatutoryValues.IsStatutory(key);
+            var appliedByPayroll = !gosiStatutory && StatutoryOverridePolicy.IsAppliedForCompany(key);
+            var belowFloor = active is not null && StatutoryOverridePolicy.ViolatesDirection(key, active.OverrideValue, platformDefault);
+            var neverApplied = active is not null && (!appliedByPayroll || belowFloor);
+            result.Add(new
+            {
+                ruleKey = key,
+                countryCode = cc,
+                jurisdiction = jur,
+                resolvedValue = gosiStatutory ? platformDefault : resolved,
+                statutoryLocked = gosiStatutory,
+                neverApplied,
+                notice = !neverApplied ? null
+                    : gosiStatutory ? "Saved, never applied — payroll uses the GOSI-published rate."
+                    : belowFloor ? "Saved, never applied — it is below the legal minimum, so payroll pays the statutory value."
+                    : "Saved, never applied — payroll does not use a company value for this rule.",
+                platformDefault,
+                isOverride = active is not null,
+                overrideId = active?.Id,
+                overrideValue = active?.OverrideValue,
+                reason = active?.Reason,
+                effectiveFrom = active?.EffectiveFrom,
+                effectiveTo = active?.EffectiveTo,
+                reviewBy = active?.ReviewBy,
+                defaultDriftedSinceOverride = drifted,
+                ruleEffectiveFrom = effective is null ? (DateOnly?)null : DateOnly.FromDateTime(effective.EffectiveFrom),
+                ruleEffectiveTo = TenantStatutoryChange.InclusiveEnd(effective?.EffectiveTo),
+                source = string.IsNullOrWhiteSpace(platformRow?.Description) ? null : platformRow!.Description,
+                verified = StatutoryOverridePolicy.IsVerified(platformRow?.Description),
+                appliedByPayroll,
+                direction = StatutoryOverridePolicy.DirectionFor(key),
+                displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
+                pendingOverride = pending is null ? null : PendingDto(pending, names),
+            });
+        }
+        return result;
+    }
+
+    private async Task<List<object>> GroupStatutoryRowsAsync(Guid tid, string cc, string jur, IReadOnlySet<Guid> visibleCompanyIds, DateOnly onDate, CancellationToken ct)
+    {
+        var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        var overrides = await Overrides(tid).AsNoTracking()
+            .Where(o => !o.IsDeleted && o.CountryCode == cc && o.Jurisdiction == jur
+                     && (o.Status == CompanyPolicyStatuses.Active || o.Status == PendingApproval))
+            .ToListAsync(ct);
+        var names = await UserNamesAsync(tid, overrides.Where(o => o.CompanyId == null).Select(o => o.CreatedBy), ct);
+
+        var result = new List<object>();
+        foreach (var key in rules.Select(r => r.RuleKey).Distinct().OrderBy(k => k, StringComparer.Ordinal))
+        {
+            var (effective, platformRow) = PickRules(rules, key, onDate);
+            var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, onDate, tenantId: null, ct);
+            var resolved = await _reader.GetDecimalAsync(cc, jur, key, onDate, tid, ct);
+            var gosiStatutory = GosiStatutoryValues.IsStatutory(key);
+            var overriddenIn = overrides
+                .Where(o => o.RuleKey == key && o.CompanyId is { } cid && visibleCompanyIds.Contains(cid)
+                         && o.Status == CompanyPolicyStatuses.Active && o.DataType != StatutoryOverridePolicy.RetireRequest
+                         && o.EffectiveFrom <= onDate && (o.EffectiveTo == null || o.EffectiveTo >= onDate))
+                .Select(o => o.CompanyId).Distinct().Count();
+            var pending = overrides.Where(o => o.RuleKey == key && o.CompanyId == null && o.Status == PendingApproval)
+                .OrderByDescending(o => o.CreatedAtUtc).FirstOrDefault();
+            result.Add(new
+            {
+                ruleKey = key,
+                countryCode = cc,
+                jurisdiction = jur,
+                resolvedValue = gosiStatutory ? platformDefault : resolved,
+                statutoryLocked = gosiStatutory,
+                neverApplied = false,
+                notice = (string?)null,
+                platformDefault,
+                isOverride = false,
+                isTenantValue = effective?.TenantId is not null,
+                readOnly = true,
+                overriddenInCompanies = overriddenIn,
+                ruleEffectiveFrom = effective is null ? (DateOnly?)null : DateOnly.FromDateTime(effective.EffectiveFrom),
+                ruleEffectiveTo = TenantStatutoryChange.InclusiveEnd(effective?.EffectiveTo),
+                source = string.IsNullOrWhiteSpace(platformRow?.Description) ? null : platformRow!.Description,
+                verified = StatutoryOverridePolicy.IsVerified(platformRow?.Description),
+                appliedByPayroll = !gosiStatutory && StatutoryOverridePolicy.IsAppliedForCompany(key),
+                direction = StatutoryOverridePolicy.DirectionFor(key),
+                displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
+                pendingOverride = pending is null ? null : PendingDto(pending, names),
+            });
+        }
+        return result;
+    }
+
+    private sealed record PendingView(
+        Guid id, string kind, string value, DateOnly effectiveFrom, DateOnly? effectiveTo, string reason, DateOnly? reviewBy,
+        Guid? requestedById, string? requestedByName, DateTime requestedAt, bool canApprove);
+
+    private PendingView PendingDto(CompanyStatutoryOverride o, IReadOnlyDictionary<Guid, string> names)
+    {
+        var me = this.GetUserId();
+        var mayDecide = HasPermission("payroll.rates.statutory_override") && DecideScopeError(o.CompanyId) is null;
+        return new PendingView(
+            o.Id, o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change", o.OverrideValue,
+            o.EffectiveFrom, o.EffectiveTo, o.Reason, o.ReviewBy, o.CreatedBy,
+            o.CreatedBy is { } u && names.TryGetValue(u, out var n) ? n : null,
+            o.CreatedAtUtc,
+            canApprove: mayDecide && me is not null && o.CreatedBy is not null && me != o.CreatedBy);
+    }
+
+    // ── Decision plumbing ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Flips one request out of PendingApproval with a conditional UPDATE … WHERE status =
+    /// 'PendingApproval' AND created_by &lt;&gt; decider. Exactly one concurrent decider gets a row back.
+    /// </summary>
+    private async Task<bool> ClaimPendingAsync(Guid tid, Guid id, Guid decider, string toStatus, DateTime now, CancellationToken ct)
+    {
+        if (_db.Database.IsRelational())
+        {
+            var n = await Overrides(tid)
+                .Where(o => o.Id == id && !o.IsDeleted && o.Status == PendingApproval && o.CreatedBy != decider)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.Status, toStatus)
+                    .SetProperty(o => o.ApprovedBy, (Guid?)decider)
+                    .SetProperty(o => o.ApprovedAtUtc, (DateTime?)now)
+                    .SetProperty(o => o.UpdatedAtUtc, (DateTime?)now)
+                    .SetProperty(o => o.UpdatedBy, (Guid?)decider), ct);
+            return n == 1;
+        }
+        // Non-relational test store: no concurrent writers exist, so check-and-set is exact.
+        var tracked = await Overrides(tid).FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted, ct);
+        if (tracked is null || tracked.Status != PendingApproval || tracked.CreatedBy == decider) return false;
+        tracked.Status = toStatus; tracked.ApprovedBy = decider; tracked.ApprovedAtUtc = now;
+        tracked.UpdatedAtUtc = now; tracked.UpdatedBy = decider;
+        return true;
+    }
+
+    /// <summary>Runs a decision in one transaction; the action says whether to commit.</summary>
+    private async Task<IActionResult> DecideAtomicallyAsync(Func<Task<(IActionResult Result, bool Commit)>> action, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational())
+        {
+            var (result, commit) = await action();
+            if (!commit) _db.ChangeTracker.Clear();
+            return result;
+        }
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var (result, commit) = await action();
+            if (commit) await tx.CommitAsync(ct);
+            else { await tx.RollbackAsync(ct); _db.ChangeTracker.Clear(); }
+            return result;
+        });
+    }
+
+    /// <summary>Ends a company's Active override(s) for the rule from the retirement date (tomorrow at
+    /// the earliest). An override that has not started yet is archived instead.</summary>
+    private async Task<object> RetireCompanyOverridesAsync(Guid tid, CompanyStatutoryOverride request, Guid decider, CancellationToken ct)
+    {
+        var tomorrow = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+        var retireOn = request.EffectiveFrom > tomorrow ? request.EffectiveFrom : tomorrow;
+        var lastDay = retireOn.AddDays(-1);
+        var targets = await Overrides(tid)
+            .Where(o => !o.IsDeleted && o.CompanyId == request.CompanyId && o.Status == CompanyPolicyStatuses.Active
+                     && o.DataType != StatutoryOverridePolicy.RetireRequest
+                     && o.CountryCode == request.CountryCode && o.Jurisdiction == request.Jurisdiction && o.RuleKey == request.RuleKey
+                     && (o.EffectiveTo == null || o.EffectiveTo >= retireOn))
+            .ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        foreach (var o in targets)
+        {
+            if (o.EffectiveFrom >= retireOn) { o.Status = CompanyPolicyStatuses.Archived; o.IsDeleted = true; }
+            else o.EffectiveTo = lastDay;
+            o.UpdatedAtUtc = now; o.UpdatedBy = decider;
+        }
+        return targets.Select(o => new { o.Id, o.EffectiveFrom, o.EffectiveTo, o.Status }).ToList();
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private IQueryable<CompanyStatutoryOverride> Overrides(Guid tid) =>
+        ScopedBypass.TenantWide(_db.CompanyStatutoryOverrides, tid,
+            "Statutory override queue of the caller's tenant; each endpoint re-checks the row's company against the caller's entity scope.");
+
+    private bool CanReadStatutory() =>
+        HasPermission("payroll.rates.read") || HasPermission("payroll.rates.manage") || HasPermission("payroll.rates.statutory_override");
 
     private async Task<IReadOnlyList<ClientRateDefinition>> LoadRegistryAsync(Guid tid, CancellationToken ct)
     {
@@ -357,6 +773,7 @@ public class RatesController : ControllerBase
         var registry = await LoadRegistryAsync(tid, ct);
         var def = registry.FirstOrDefault(d => string.Equals(d.RateKey, key, StringComparison.OrdinalIgnoreCase));
         if (def is null) return (BadRequest(new { message = $"'{key}' is not a registered client-configurable rate key." }), null);
+        key = def.RateKey;
         // Typed + bounded validation.
         if (string.Equals(def.DataType, "decimal", StringComparison.OrdinalIgnoreCase))
         {
@@ -365,11 +782,8 @@ public class RatesController : ControllerBase
             if (def.MinValue is { } min && v < min) return (BadRequest(new { message = $"Value below the allowed minimum ({min})." }), null);
             if (def.MaxValue is { } max && v > max) return (BadRequest(new { message = $"Value above the allowed maximum ({max})." }), null);
         }
-        // POD-C3 — STRING-typed client rates. The typed branch above handled "decimal" ONLY, so a
-        // string-valued policy (the proration basis, the GOSI base, the arrears treatment) was accepted
-        // unvalidated and an unrecognised value would land in the database and 422 every future payroll
-        // run. An enum key is now checked against its OWN allowed set and 400s here — a silent fallback
-        // is exactly how a tenant ends up paying on a basis nobody chose.
+        // POD-C3 — STRING-typed client rates: an enum key is checked against its OWN allowed set and
+        // 400s here — a silent fallback is exactly how a tenant ends up paying on a basis nobody chose.
         else if (string.Equals(def.DataType, "string", StringComparison.OrdinalIgnoreCase))
         {
             var value = (req.RateValue ?? string.Empty).Trim();
@@ -399,6 +813,50 @@ public class RatesController : ControllerBase
         return (null, def);
     }
 
+    private IActionResult? DateRangeError(DateOnly from, DateOnly? to)
+    {
+        if (from == default) return BadRequest(new { code = "RATE_DATE_INVALID", message = "effectiveFrom is required." });
+        if (to is { } end && end < from)
+            return BadRequest(new { code = "RATE_DATE_INVALID", message = $"The end date ({end:yyyy-MM-dd}) cannot be before the start date ({from:yyyy-MM-dd})." });
+        return null;
+    }
+
+    /// <summary>
+    /// A rate change starting <paramref name="from"/> changes pay for that month and every month after
+    /// it. If payroll for any of those months is already Locked/Paid, or the accounting period is
+    /// closed, the change would silently rewrite finalised figures — refused with the reason. A
+    /// tenant-default value (companyId null) reaches every company, so any company's lock counts.
+    /// </summary>
+    private async Task<string?> LockedPeriodProblemAsync(Guid tid, Guid? companyId, DateOnly from, CancellationToken ct)
+    {
+        var fromKey = from.Year * 100 + from.Month;
+        var locked = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tid && (r.Status == "Locked" || r.Status == "Paid")
+                     && r.Year * 100 + r.Month >= fromKey
+                     && (companyId == null || r.CompanyId == companyId || r.CompanyId == null))
+            .OrderByDescending(r => r.Year).ThenByDescending(r => r.Month)
+            .Select(r => new { r.Year, r.Month })
+            .FirstOrDefaultAsync(ct);
+        var scopeText = companyId is null ? " for at least one company" : " for this company";
+        if (locked is not null)
+            return $"Payroll for {locked.Year}-{locked.Month:00} is already locked{scopeText}, so a value starting {from:yyyy-MM-dd} would change pay that has been finalised. " +
+                   $"Choose a start date after {locked.Year}-{locked.Month:00}, or correct past pay through a payroll adjustment.";
+
+        var fromPeriod = from.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+        var closed = (await _db.GlPeriodCloses.AsNoTracking()
+                .Where(p => p.TenantId == tid && p.Status == GlPeriodStatuses.Closed
+                         && (companyId == null || p.CompanyId == companyId || p.CompanyId == null))
+                .Select(p => p.Period)
+                .ToListAsync(ct))
+            .Where(p => string.CompareOrdinal(p, fromPeriod) >= 0)
+            .OrderByDescending(p => p, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (closed is not null)
+            return $"The accounting period {closed} is closed{scopeText}, so a value starting {from:yyyy-MM-dd} would change figures already in the books. " +
+                   "Choose a later start date, or have Finance reopen the period first.";
+        return null;
+    }
+
     private async Task<bool> HasOverlapAsync(Guid tid, Guid? companyId, string rateKey, DateOnly from, DateOnly? to, Guid? excludeId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
@@ -411,10 +869,10 @@ public class RatesController : ControllerBase
 
     private async Task<bool> HasStatutoryOverlapAsync(Guid tid, Guid companyId, string cc, string jur, string ruleKey, DateOnly from, DateOnly? to, Guid? excludeId, CancellationToken ct)
     {
-        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        var rows = await _db.CompanyStatutoryOverrides.IgnoreQueryFilters().AsNoTracking()
-            .Where(o => o.TenantId == tid && !o.IsDeleted && o.CompanyId == companyId
+        var rows = await Overrides(tid).AsNoTracking()
+            .Where(o => !o.IsDeleted && o.CompanyId == companyId
                      && o.CountryCode == cc && o.Jurisdiction == jur && o.RuleKey == ruleKey
+                     && o.DataType != StatutoryOverridePolicy.RetireRequest
                      && (o.Status == CompanyPolicyStatuses.Active || o.Status == PendingApproval)
                      && (excludeId == null || o.Id != excludeId))
             .Select(o => new { o.EffectiveFrom, o.EffectiveTo }).ToListAsync(ct);
@@ -424,15 +882,69 @@ public class RatesController : ControllerBase
     private static bool Overlaps(DateOnly aFrom, DateOnly? aTo, DateOnly bFrom, DateOnly? bTo)
         => aFrom <= (bTo ?? DateOnly.MaxValue) && bFrom <= (aTo ?? DateOnly.MaxValue);
 
+    /// <summary>Write scope. A tenant-default (null company) write needs a GROUP-scoped caller — judged
+    /// on the caller's grant (HasGroupEntityScope), not on the company currently selected in the
+    /// switcher, so a group admin viewing one company is not refused.</summary>
     private IActionResult? ScopeError(Guid? companyId)
     {
-        var scope = this.GetEntityScope();
-        if (companyId is null) return scope.IsGroupLevel ? null : Forbid();
-        return scope.CanAccessCompany(companyId) ? null : Forbid();
+        if (companyId is null) return this.HasGroupEntityScope() ? null : Forbid();
+        return this.GetEntityScope().CanAccessCompany(companyId) ? null : Forbid();
     }
+
+    /// <summary>Who may decide (or withdraw) a request: the request's own company, or group scope for a
+    /// tenant-level request.</summary>
+    private IActionResult? DecideScopeError(Guid? companyId) => ScopeError(companyId);
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    private async Task<IReadOnlyDictionary<Guid, string>> UserNamesAsync(Guid tid, IEnumerable<Guid?> ids, CancellationToken ct)
+    {
+        var wanted = ids.Where(i => i is not null).Select(i => i!.Value).Distinct().ToList();
+        if (wanted.Count == 0) return new Dictionary<Guid, string>();
+        return await _db.Users.AsNoTracking()
+            .Where(u => u.TenantId == tid && wanted.Contains(u.Id))
+            .ToDictionaryAsync(u => u.Id, u => string.IsNullOrWhiteSpace(u.FullName) ? u.Email : u.FullName, ct);
+    }
+
+    /// <summary>The currency an amount-unit rate is paid in: the company's own currency, or for
+    /// tenant defaults the one currency every company of the tenant shares (null when they differ).</summary>
+    private async Task<string?> CurrencyForScopeAsync(Guid tid, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId is not null)
+            return await _db.Companies.AsNoTracking().Where(c => c.TenantId == tid && c.Id == companyId)
+                .Select(c => c.DefaultCurrency).FirstOrDefaultAsync(ct);
+        var currencies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tid && !c.IsDeleted && c.IsActive)
+            .Select(c => c.DefaultCurrency).Distinct().ToListAsync(ct);
+        return currencies.Count == 1 ? currencies[0] : null;
+    }
+
+    private async Task<object> RateDtoAsync(Guid tid, CompanyRatePolicy p, CancellationToken ct)
+    {
+        var registry = (await LoadRegistryAsync(tid, ct))
+            .GroupBy(d => d.RateKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var currency = await CurrencyForScopeAsync(tid, p.CompanyId, ct);
+        return RateRow(p, registry, currency, DateOnly.FromDateTime(DateTime.UtcNow), inherited: false);
+    }
+
+    private static object RateRow(CompanyRatePolicy p, IReadOnlyDictionary<string, ClientRateDefinition> registry, string? scopeCurrency, DateOnly today, bool inherited)
+    {
+        registry.TryGetValue(p.RateKey, out var def);
+        var unit = string.IsNullOrWhiteSpace(p.Unit) ? def?.Unit ?? "" : p.Unit;
+        return new
+        {
+            p.Id, p.CompanyId, p.RateKey, p.RateCategory, p.RateValue, p.DataType, p.Unit,
+            p.EffectiveFrom, p.EffectiveTo, p.Status, p.Notes,
+            inherited,
+            label = def?.Description,
+            unit,
+            currency = string.Equals(unit, "amount", StringComparison.OrdinalIgnoreCase) ? scopeCurrency : null,
+            inEffect = (p.Status == CompanyPolicyStatuses.Active || p.Status == Superseded)
+                       && p.EffectiveFrom <= today && (p.EffectiveTo == null || p.EffectiveTo >= today),
+        };
+    }
 
     private async Task WriteAudit(string action, string entity, string entityId, Guid? companyId, object metadata, CancellationToken ct)
     {
@@ -451,14 +963,13 @@ public class RatesController : ControllerBase
         await Task.CompletedTask;
     }
 
-    private static object ToDto(CompanyRatePolicy p) => new
-    { p.Id, p.CompanyId, p.RateKey, p.RateCategory, p.RateValue, p.DataType, p.Unit, p.EffectiveFrom, p.EffectiveTo, p.Status, p.Notes };
-
     private static object ToOverrideDto(CompanyStatutoryOverride o) => new
     {
         o.Id, o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey, o.OverrideValue, o.DataType,
         o.EffectiveFrom, o.EffectiveTo, o.ReviewBy, o.Reason, o.Status, isOverride = true,
+        kind = o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change",
         overridesStatutoryDefault = o.PlatformDefaultAtCreation, o.ApprovedBy, o.ApprovedAtUtc,
+        requestedById = o.CreatedBy, requestedAt = o.CreatedAtUtc,
     };
 }
 
@@ -466,3 +977,4 @@ public record CompanyRateRequest(string RateKey, string RateValue, DateOnly Effe
 public record StatutoryOverrideRequest(
     Guid? CompanyId, string CountryCode, string Jurisdiction, string RuleKey, string OverrideValue,
     DateOnly EffectiveFrom, string Reason, DateOnly? ReviewBy, DateOnly? EffectiveTo = null, string? DataType = null);
+public record StatutoryDecisionRequest(string? Reason = null);

@@ -1893,7 +1893,7 @@ public class PayrollController : ControllerBase
         // OvertimeController, which used to duplicate the calculation on the pre-S1 basis and
         // therefore reported a different number for the same overtime hour.
         // [FLAG-COMPLIANCE-KSA: weekend/holiday OT multipliers may differ — Art.107 baseline only]
-        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, eff, tenantId, cancellationToken);
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, eff, tenantId, cancellationToken, companyId: company.Id);
         var otMultiplier = otContext.StandardMultiplier;
         var otRestDayMultiplier = otContext.RestDayMultiplier;
         var otHolidayMultiplier = otContext.HolidayMultiplier;
@@ -1904,11 +1904,11 @@ public class PayrollController : ControllerBase
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "lop.monthly_day_divisor", eff, tenantId, cancellationToken) ?? 30m);
+            packCc, packJur, "lop.monthly_day_divisor", eff, tenantId, cancellationToken, companyId: company.Id) ?? 30m);
         // Standard work minutes per day: used to convert absence minutes to LOP days.
         // [FLAG-COMPLIANCE-KSA: 480 min (8h); adjust for Ramadan or sector shift patterns]
         var lopStdMinutesPerDay = (int)(await _ruleReader.GetDecimalAsync(
-            packCc, packJur, "lop.standard_work_minutes_per_day", eff, tenantId, cancellationToken) ?? 480m);
+            packCc, packJur, "lop.standard_work_minutes_per_day", eff, tenantId, cancellationToken, companyId: company.Id) ?? 480m);
 
         // ── Attendance: employees who had daily records processed in this period ──
         // Used in Rule 10 (WARN_NO_ATTENDANCE) to detect employees skipped by attendance system.

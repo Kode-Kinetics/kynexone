@@ -567,7 +567,7 @@ public class OvertimeController : ControllerBase
         //    and never read a statutory rule, so it reported 112.50 for the canonical 60/40 Saudi
         //    overtime hour that payroll paid at 162.50 (Art. 107: hourly WAGE + 50% of BASIC).
         var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, employee?.CompanyId, employee?.CountryCode, ct);
-        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct);
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct, companyId: employee?.CompanyId);
 
         // The divisor: the request's own policy, unless the pack states one (payroll applies the
         // same rule override on top of the active policy's StandardMonthlyHours).

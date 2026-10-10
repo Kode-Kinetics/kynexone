@@ -34,41 +34,29 @@ public sealed class StatutoryRateResolver : IStatutoryRateResolver
         Guid tenantId, Guid? companyId, string countryCode, string jurisdiction, string ruleKey,
         DateOnly onDate, CancellationToken ct = default)
     {
-        if (companyId is not null)
-        {
-            // IgnoreQueryFilters + explicit tenant/company scope (system read), mirroring
-            // CompanyTaxPolicyResolver. Only Active, date-covered overrides for THIS company count.
-            var overrideRow = await _db.CompanyStatutoryOverrides
-                .IgnoreQueryFilters().AsNoTracking()
-                .Where(o => o.TenantId == tenantId && !o.IsDeleted
-                         && o.CompanyId == companyId
-                         && o.Status == CompanyPolicyStatuses.Active
-                         && o.CountryCode == countryCode && o.Jurisdiction == jurisdiction && o.RuleKey == ruleKey
-                         && o.EffectiveFrom <= onDate
-                         && (o.EffectiveTo == null || o.EffectiveTo >= onDate))
-                .OrderByDescending(o => o.EffectiveFrom)
-                .Select(o => o.OverrideValue)
-                .FirstOrDefaultAsync(ct);
-            if (overrideRow is not null && decimal.TryParse(overrideRow,
-                System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v))
-                return v;
-        }
-
-        // Fall back to the tenant override / platform default via the untouched reader.
-        return await _reader.GetDecimalAsync(countryCode, jurisdiction, ruleKey, onDate, tenantId, ct);
+        // ONE resolution path with payroll: the company-aware reader. A company is passed only for the
+        // keys payroll itself reads per company (StatutoryOverridePolicy.CompanyAppliedKeys), so the
+        // value this returns is the value a payslip uses — never an override payroll would ignore.
+        var company = StatutoryOverridePolicy.IsAppliedForCompany(ruleKey) ? companyId : null;
+        return await _reader.GetDecimalAsync(countryCode, jurisdiction, ruleKey, onDate, tenantId, ct, company);
     }
 }
 
 public interface ICompanyRatePolicyResolver
 {
     /// <summary>Resolves a non-statutory client rate: company row wins over tenant default; newest
-    /// effective row that covers the date wins. Only Active, non-deleted rows.</summary>
+    /// effective row that covers the date wins. Active rows AND Superseded rows count, each only
+    /// inside its own effective window — a supersede end-dates the prior row the day before the new
+    /// one starts, so a re-run or arrears for an earlier period still resolves the value it had.</summary>
     Task<CompanyRatePolicy?> ResolveAsync(
         Guid tenantId, Guid? companyId, string rateKey, DateOnly onDate, CancellationToken ct = default);
 }
 
 public sealed class CompanyRatePolicyResolver : ICompanyRatePolicyResolver
 {
+    /// <summary>A company rate replaced by a later version. Still resolvable inside its window.</summary>
+    public const string SupersededStatus = "Superseded";
+
     private readonly ZayraDbContext _db;
     public CompanyRatePolicyResolver(ZayraDbContext db) => _db = db;
 
@@ -79,7 +67,10 @@ public sealed class CompanyRatePolicyResolver : ICompanyRatePolicyResolver
             // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
             .IgnoreQueryFilters().AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted
-                     && p.Status == CompanyPolicyStatuses.Active
+                     // Archived-and-not-deleted is how a supersede was recorded before "Superseded"
+                     // existed; those rows carry the EffectiveTo the supersede gave them.
+                     && (p.Status == CompanyPolicyStatuses.Active || p.Status == SupersededStatus
+                         || p.Status == CompanyPolicyStatuses.Archived)
                      && p.RateKey == rateKey
                      && p.EffectiveFrom <= onDate
                      && (p.EffectiveTo == null || p.EffectiveTo >= onDate)
