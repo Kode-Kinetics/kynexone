@@ -246,10 +246,11 @@ public class RatesController : ControllerBase
         {
             if (ScopeError(companyId) is { } err) return err;
             var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tid && c.Id == companyId, ct);
-            var cc = (string.IsNullOrWhiteSpace(requestedCountry) ? company?.CountryCode : requestedCountry)?.Trim().ToUpperInvariant();
-            if (string.IsNullOrWhiteSpace(cc))
+            var rawCc = (string.IsNullOrWhiteSpace(requestedCountry) ? company?.CountryCode : requestedCountry)?.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(rawCc))
                 return BadRequest(new { message = "This company has no country set, so it has no statutory values. Set it in Setup → Companies." });
-            var jur = jurisdiction ?? company?.Jurisdiction ?? "";
+            // The company's "SA" + no jurisdiction is the rule pack's "SAU"/"KSA-mainland" (StatutoryPackKey).
+            var (cc, jur) = StatutoryPackKey.Normalize(rawCc, string.IsNullOrWhiteSpace(jurisdiction) ? company?.Jurisdiction : jurisdiction);
             return Ok(await CompanyStatutoryRowsAsync(tid.Value, companyId.Value, cc, jur, onDate, ct));
         }
 
@@ -261,14 +262,17 @@ public class RatesController : ControllerBase
                 .ToListAsync(ct))
             .Where(c => scope.IsGroupLevel || scope.CanAccessCompany(c.Id))
             .ToList();
+        var requested = string.IsNullOrWhiteSpace(requestedCountry) ? ((string Cc, string Jur)?)null
+            : StatutoryPackKey.Normalize(requestedCountry, jurisdiction);
         var pairs = companies
-            .Select(c => (Cc: c.CountryCode.Trim().ToUpperInvariant(), Jur: c.Jurisdiction ?? ""))
-            .Where(p => string.IsNullOrWhiteSpace(requestedCountry) || p.Cc == requestedCountry.ToUpperInvariant())
-            .Where(p => jurisdiction is null || p.Jur == jurisdiction)
+            .Select(c => StatutoryPackKey.Normalize(c.CountryCode, c.Jurisdiction))
+            .Select(p => (Cc: p.CountryCode, Jur: p.Jurisdiction))
+            .Where(p => requested is null || p.Cc == requested.Value.Cc)
+            .Where(p => requested is null || string.IsNullOrWhiteSpace(jurisdiction) || p.Jur == requested.Value.Jur)
             .Distinct()
             .ToList();
-        if (pairs.Count == 0 && !string.IsNullOrWhiteSpace(requestedCountry))
-            pairs.Add((requestedCountry.ToUpperInvariant(), jurisdiction ?? ""));
+        if (pairs.Count == 0 && requested is { } only)
+            pairs.Add(only);
 
         var visibleCompanyIds = companies.Select(c => c.Id).ToHashSet();
         var result = new List<object>();
@@ -346,8 +350,8 @@ public class RatesController : ControllerBase
         if (StatutoryValueUnits.Validate(key, req.DataType, req.OverrideValue) is { } unitError)
             return BadRequest(StatutoryValueUnits.Refusal(unitError));
 
-        var cc = req.CountryCode.Trim().ToUpperInvariant();
-        var jur = req.Jurisdiction ?? "";
+        // Stored under the rule pack's key, which is what payroll's reader looks overrides up by.
+        var (cc, jur) = StatutoryPackKey.Normalize(req.CountryCode, req.Jurisdiction);
         var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
         // ruleKey must resolve to a known statutory rule (no inventing statutory keys).
         if (platformDefault is null)

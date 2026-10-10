@@ -53,6 +53,8 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId, Guid? companyId, CancellationToken ct)
     {
+        // Callers pass a company's own country ("SA", no jurisdiction); rules are keyed "SAU"/"KSA-mainland".
+        (countryCode, jurisdiction) = StatutoryPackKey.Normalize(countryCode, jurisdiction);
         if (companyId is { } cid && tenantId is { } tid
             && await CompanyOverrideAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tid, cid, ct) is { } overrideValue)
             return overrideValue;
