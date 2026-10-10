@@ -334,15 +334,17 @@ public class GlPhase2Tests
         var company = Guid.NewGuid();
         var ctrl = RatesCtrl(db, tid, new[] { "payroll.rates.read", "payroll.rates.manage" });
 
+        // Pinned on a key payroll reads; recorded-only keys are refused (CompanyRateAppliedByPayrollTests).
+        const string key = "payparameter.arrears_max_lookback_months";
         // Over-max is rejected (bounded input).
-        (await ctrl.CreateCompanyRate(company, new CompanyRateRequest("allowance.wellness.monthly_amount", "999999999", new DateOnly(2026, 1, 1)), CancellationToken.None))
+        (await ctrl.CreateCompanyRate(company, new CompanyRateRequest(key, "999", new DateOnly(2026, 1, 1)), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
 
-        var created = (OkObjectResult)await ctrl.CreateCompanyRate(company, new CompanyRateRequest("allowance.wellness.monthly_amount", "500", new DateOnly(2026, 1, 1)), CancellationToken.None);
+        var created = (OkObjectResult)await ctrl.CreateCompanyRate(company, new CompanyRateRequest(key, "24", new DateOnly(2026, 1, 1)), CancellationToken.None);
         var id = (Guid)Prop(created.Value!, "Id")!;
 
         // Update supersedes: old archived, new Active row inserted.
-        (await ctrl.UpdateCompanyRate(id, new CompanyRateRequest("allowance.wellness.monthly_amount", "750", new DateOnly(2026, 6, 1)), CancellationToken.None))
+        (await ctrl.UpdateCompanyRate(id, new CompanyRateRequest(key, "36", new DateOnly(2026, 6, 1)), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         var rows = await db.CompanyRatePolicies.IgnoreQueryFilters().Where(p => p.TenantId == tid && p.CompanyId == company).ToListAsync();
         rows.Should().HaveCount(2);
@@ -350,8 +352,8 @@ public class GlPhase2Tests
         var superseded = rows.Single(r => r.Status == RatesController.Superseded);
         superseded.EffectiveTo.Should().Be(new DateOnly(2026, 5, 31), "the prior value stays resolvable up to the day before the new one");
         var resolver = new CompanyRatePolicyResolver(db);
-        (await resolver.ResolveAsync(tid, company, "allowance.wellness.monthly_amount", new DateOnly(2026, 3, 15)))!.RateValue.Should().Be("500");
-        (await resolver.ResolveAsync(tid, company, "allowance.wellness.monthly_amount", new DateOnly(2026, 7, 15)))!.RateValue.Should().Be("750");
+        (await resolver.ResolveAsync(tid, company, key, new DateOnly(2026, 3, 15)))!.RateValue.Should().Be("24");
+        (await resolver.ResolveAsync(tid, company, key, new DateOnly(2026, 7, 15)))!.RateValue.Should().Be("36");
     }
 
     [Fact]

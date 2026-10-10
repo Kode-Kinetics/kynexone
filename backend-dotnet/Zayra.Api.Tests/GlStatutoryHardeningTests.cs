@@ -476,27 +476,33 @@ public class GlStatutoryHardeningTests
 
     private static readonly string[] RatePerms = { "payroll.rates.read", "payroll.rates.manage" };
 
+    // Pinned on keys payroll actually reads (ProrationPolicyResolver). The allowance / deduction / EOSB
+    // enhancement keys are recorded only and refused for new values — CompanyRateAppliedByPayrollTests.
+    private const string Lookback = "payparameter.arrears_max_lookback_months";
+    private const string Basis = "payparameter.proration_basis";
+
     [Fact]
     public async Task CompanyRate_KeyIsCanonical_Immutable_AndDatesAreValidated()
     {
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid(); var company = Guid.NewGuid();
         var r = Rates(db, tid, RatePerms);
-        var created = (await r.CreateCompanyRate(company, new CompanyRateRequest("Allowance.Wellness.Monthly_Amount", "500", new DateOnly(2026, 1, 1)), default)).Should().BeOfType<OkObjectResult>().Subject;
-        Prop(created.Value!, "RateKey").Should().Be("allowance.wellness.monthly_amount");
-        Prop(created.Value!, "label").Should().Be("Monthly wellness allowance (company benefit)");
-        Prop(created.Value!, "unit").Should().Be("amount");
+        var created = (await r.CreateCompanyRate(company, new CompanyRateRequest("PayParameter.Arrears_Max_Lookback_Months", "24", new DateOnly(2026, 1, 1)), default)).Should().BeOfType<OkObjectResult>().Subject;
+        Prop(created.Value!, "RateKey").Should().Be(Lookback);
+        Prop(created.Value!, "label").Should().Be("How many past periods a retro/arrears settlement may reach back over (default 24)");
+        Prop(created.Value!, "unit").Should().Be("months");
         Prop(created.Value!, "inEffect").Should().Be(true);
+        Prop(created.Value!, "appliedByPayroll").Should().Be(true);
         var id = (Guid)Prop(created.Value!, "Id")!;
 
-        (await r.UpdateCompanyRate(id, new CompanyRateRequest("allowance.mobile.monthly_amount", "600", new DateOnly(2026, 6, 1)), default)).Should().BeOfType<BadRequestObjectResult>("the key never changes");
-        (await r.UpdateCompanyRate(id, new CompanyRateRequest("allowance.wellness.monthly_amount", "600", new DateOnly(2025, 6, 1)), default)).Should().BeOfType<BadRequestObjectResult>("a new value must start later");
-        (await r.CreateCompanyRate(company, new CompanyRateRequest("allowance.mobile.monthly_amount", "1", new DateOnly(2026, 6, 1), new DateOnly(2026, 5, 1)), default)).Should().BeOfType<BadRequestObjectResult>("end before start");
+        (await r.UpdateCompanyRate(id, new CompanyRateRequest(Basis, "Calendar30", new DateOnly(2026, 6, 1)), default)).Should().BeOfType<BadRequestObjectResult>("the key never changes");
+        (await r.UpdateCompanyRate(id, new CompanyRateRequest(Lookback, "36", new DateOnly(2025, 6, 1)), default)).Should().BeOfType<BadRequestObjectResult>("a new value must start later");
+        (await r.CreateCompanyRate(company, new CompanyRateRequest(Basis, "Calendar30", new DateOnly(2026, 6, 1), new DateOnly(2026, 5, 1)), default)).Should().BeOfType<BadRequestObjectResult>("end before start");
         (await r.DeleteCompanyRate(id, default)).Should().BeOfType<ConflictObjectResult>("in effect → end-date it instead");
 
         // End-date in place: same value and start, new end.
-        (await r.UpdateCompanyRate(id, new CompanyRateRequest("allowance.wellness.monthly_amount", "500", new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31)), default)).Should().BeOfType<OkObjectResult>();
-        var future = (OkObjectResult)await r.CreateCompanyRate(company, new CompanyRateRequest("allowance.mobile.monthly_amount", "1", DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30)), default);
+        (await r.UpdateCompanyRate(id, new CompanyRateRequest(Lookback, "24", new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31)), default)).Should().BeOfType<OkObjectResult>();
+        var future = (OkObjectResult)await r.CreateCompanyRate(company, new CompanyRateRequest(Basis, "Calendar30", DateOnly.FromDateTime(DateTime.UtcNow).AddDays(30)), default);
         (await r.DeleteCompanyRate((Guid)Prop(future.Value!, "Id")!, default)).Should().BeOfType<NoContentResult>();
     }
 
@@ -514,21 +520,26 @@ public class GlStatutoryHardeningTests
         db.GlPeriodCloses.Add(new GlPeriodClose { TenantId = tid, CompanyId = null, Period = "2026-07", Status = GlPeriodStatuses.Closed });
         await db.SaveChangesAsync();
         var r = Rates(db, tid, RatePerms);
-        var locked = (await r.CreateCompanyRate(company, new CompanyRateRequest("allowance.mobile.monthly_amount", "100", new DateOnly(2026, 5, 10)), default)).Should().BeOfType<ConflictObjectResult>().Subject;
+        var locked = (await r.CreateCompanyRate(company, new CompanyRateRequest(Lookback, "12", new DateOnly(2026, 5, 10)), default)).Should().BeOfType<ConflictObjectResult>().Subject;
         ((string)Prop(locked.Value!, "message")!).Should().Contain("2026-05").And.Contain("locked");
-        var closed = (await r.CreateCompanyRate(company, new CompanyRateRequest("allowance.mobile.monthly_amount", "100", new DateOnly(2026, 6, 10)), default)).Should().BeOfType<ConflictObjectResult>().Subject;
+        var closed = (await r.CreateCompanyRate(company, new CompanyRateRequest(Lookback, "12", new DateOnly(2026, 6, 10)), default)).Should().BeOfType<ConflictObjectResult>().Subject;
         ((string)Prop(closed.Value!, "message")!).Should().Contain("2026-07").And.Contain("closed");
-        (await r.CreateCompanyRate(company, new CompanyRateRequest("allowance.mobile.monthly_amount", "100", new DateOnly(2026, 8, 1)), default)).Should().BeOfType<OkObjectResult>();
+        (await r.CreateCompanyRate(company, new CompanyRateRequest(Lookback, "12", new DateOnly(2026, 8, 1)), default)).Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
-    public async Task EosbEnhancementDays_IsWritable()
+    public async Task EosbEnhancementDays_IsNotStatutory_ButIsRefusedAsRecordedOnly()
     {
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid();
-        (await Rates(db, tid, RatePerms).CreateCompanyRate(Guid.NewGuid(), new CompanyRateRequest("eosb.enhancement_days_per_year", "5", new DateOnly(2026, 1, 1)), default))
-            .Should().BeOfType<OkObjectResult>();
+        // It clears the statutory-prefix guard (an enhancement, not the floor) ...
+        StatutoryRateGuard.IsStatutoryKey("eosb.enhancement_days_per_year").Should().BeFalse();
         StatutoryRateGuard.IsStatutoryKey("eosb.days_per_year_1to5").Should().BeTrue("the statutory floor itself stays off free CRUD");
+        // ... but no EOSB calculation reads it, so a value would change nobody's award.
+        var refused = (await Rates(db, tid, RatePerms).CreateCompanyRate(Guid.NewGuid(), new CompanyRateRequest("eosb.enhancement_days_per_year", "5", new DateOnly(2026, 1, 1)), default))
+            .Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        Prop(refused.Value!, "code").Should().Be("COMPANY_RATE_NOT_APPLIED");
+        ((string)Prop(refused.Value!, "message")!).Should().Contain("GCC Settings");
     }
 
     [Fact]

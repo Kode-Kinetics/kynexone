@@ -258,6 +258,10 @@ const ar: Record<string, string> = {
   'Scheduled rate deleted.': 'تم حذف المعدل المجدول.',
   'Read-only. You do not have permission to edit company rates.': 'للعرض فقط. ليست لديك صلاحية لتعديل معدلات الشركة.',
   'No client-configurable rates are registered. Load the standard payroll chart from the Accounts & Mapping tab.': 'لا توجد معدلات مسجلة قابلة للإعداد. حمّل دليل حسابات الرواتب القياسي من تبويب الحسابات والربط.',
+  'Recorded only — payroll does not use this': 'مسجّل فقط — لا تستخدمه الرواتب',
+  'Recorded only — payroll does not use these': 'مسجّلة فقط — لا تستخدمها الرواتب',
+  'Payroll does not read this value, so it changes nobody’s pay. End-date it to tidy up. Set allowances and deductions per grade under Benefits → Grade benefits, or on the employee’s pay package.': 'لا تقرأ الرواتب هذه القيمة، لذا لا تغيّر أجر أي موظف. حدّد تاريخ انتهائها لتنظيم السجل. حدّد البدلات والاستقطاعات لكل درجة من المزايا ← مزايا الدرجة، أو في باقة أجر الموظف.',
+  'None of the registered rates is used by payroll, so there is nothing to add here.': 'لا تستخدم الرواتب أيًا من المعدلات المسجلة، لذا لا يوجد ما يمكن إضافته هنا.',
 
   // ── Statutory rates ──
   'GOSI contribution, Saudi employee share': 'اشتراك التأمينات الاجتماعية، حصة الموظف السعودي',

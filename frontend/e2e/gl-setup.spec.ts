@@ -29,6 +29,8 @@ interface GlOptions {
   locale?: 'en' | 'ar';
   /** GET /drivers fails with a 500 until the test sets `control.driversDown = false`. */
   driversDown?: boolean;
+  /** POST /rates/company for this key answers 422 COMPANY_RATE_NOT_APPLIED (a registry loaded before the server changed). */
+  serverRefusesKey?: string;
 }
 
 interface Recorded { method: string; path: string; search: string; body: unknown }
@@ -83,14 +85,18 @@ const health = {
   ],
 };
 
+const wellnessReason = "Payroll does not use 'Monthly wellness allowance (company benefit)' yet, so saving it would change nobody's pay. Set allowances and deductions per grade under Benefits (Grade benefits), or on the employee's pay package.";
 const registry = [
-  { rateKey: 'allowance.site', rateCategory: 'Allowance', dataType: 'decimal', unit: 'amount', minValue: 0, maxValue: 100000, description: 'Site allowance' },
-  { rateKey: 'ot.weekend_multiplier', rateCategory: 'PayParameter', dataType: 'decimal', unit: 'multiplier', minValue: 1, maxValue: 3, description: 'Weekend overtime multiplier' },
+  { rateKey: 'allowance.site', rateCategory: 'Allowance', dataType: 'decimal', unit: 'amount', minValue: 0, maxValue: 100000, description: 'Site allowance', appliedByPayroll: true, notAppliedReason: null },
+  { rateKey: 'ot.weekend_multiplier', rateCategory: 'PayParameter', dataType: 'decimal', unit: 'multiplier', minValue: 1, maxValue: 3, description: 'Weekend overtime multiplier', appliedByPayroll: true, notAppliedReason: null },
+  // Recorded only: saved by an earlier version, never read by payroll.
+  { rateKey: 'allowance.wellness.monthly_amount', rateCategory: 'Allowance', dataType: 'decimal', unit: 'amount', minValue: 0, maxValue: 100000, description: 'Monthly wellness allowance (company benefit)', appliedByPayroll: false, notAppliedReason: wellnessReason },
 ];
 
 function companyRates(companyId: string | null) {
   const group = [
-    { id: 'rate-g-weekend', companyId: null, rateKey: 'ot.weekend_multiplier', rateCategory: 'PayParameter', rateValue: '1.5', dataType: 'decimal', unit: 'multiplier', effectiveFrom: iso(year - 1, 1, 1), effectiveTo: null, status: 'Active', notes: '', inEffect: true, label: 'Weekend overtime multiplier' },
+    { id: 'rate-g-weekend', companyId: null, rateKey: 'ot.weekend_multiplier', rateCategory: 'PayParameter', rateValue: '1.5', dataType: 'decimal', unit: 'multiplier', effectiveFrom: iso(year - 1, 1, 1), effectiveTo: null, status: 'Active', notes: '', inEffect: true, label: 'Weekend overtime multiplier', appliedByPayroll: true },
+    { id: 'rate-g-wellness', companyId: null, rateKey: 'allowance.wellness.monthly_amount', rateCategory: 'Allowance', rateValue: '250', dataType: 'decimal', unit: 'amount', currency: 'SAR', effectiveFrom: iso(year - 1, 3, 1), effectiveTo: null, status: 'Active', notes: '', inEffect: true, label: 'Monthly wellness allowance (company benefit)', appliedByPayroll: false },
   ];
   if (!companyId) return group;
   return [
@@ -183,6 +189,9 @@ async function boot(page: Page, options: GlOptions = {}) {
     // ── Rates ──
     if (p === '/api/finance/rates/company/registry') return reply(registry);
     if (p === '/api/finance/rates/company' && method === 'GET') return reply(companyRates(companyId));
+    if (p === '/api/finance/rates/company' && method === 'POST' && (body as { rateKey?: string })?.rateKey === options.serverRefusesKey) {
+      return reply({ code: 'COMPANY_RATE_NOT_APPLIED', rateKey: options.serverRefusesKey, appliedByPayroll: false, message: "Payroll does not use 'Site allowance' yet, so saving it would change nobody's pay. Set allowances and deductions per grade under Benefits (Grade benefits), or on the employee's pay package." }, 422);
+    }
     if (p.startsWith('/api/finance/rates/company')) return method === 'DELETE' ? route.fulfill({ status: 204 }) : reply({ ...(body as object) });
     if (p === '/api/finance/rates/statutory/pending') return reply(pending);
     if (p === '/api/finance/rates/statutory' && method === 'GET') {
@@ -382,6 +391,51 @@ test('company rates show one in-effect row per rate, with source, scheduled rows
   await shot(page, info, 'gl-en-company-rates');
 });
 
+test('a recorded-only company rate is flagged, cannot be added or changed, and can still be end-dated', async ({ page }, info) => {
+  const state = await boot(page, { groupMode: true });
+  await tab(page, 'Company Rates').click();
+  const wellness = page.locator('[data-rate-key="allowance.wellness.monthly_amount"]');
+  await expect(wellness).toContainText('Recorded only — payroll does not use this');
+  await expect(wellness).toContainText('changes nobody’s pay');
+  await expect(wellness.getByRole('button', { name: 'Change value', exact: true })).toHaveCount(0);
+  // An applied rate keeps its Change action.
+  await expect(page.locator('[data-rate-key="ot.weekend_multiplier"]').getByRole('button', { name: 'Change value', exact: true })).toBeVisible();
+
+  // The Add picker offers the recorded-only key only as a disabled option, with the reason as its group.
+  await page.getByRole('button', { name: 'Add rate' }).click();
+  const dialog = page.getByRole('dialog');
+  const picker = dialog.getByRole('combobox');
+  await expect(picker.locator('optgroup[label="Recorded only — payroll does not use these"] option[value="allowance.wellness.monthly_amount"]')).toBeDisabled();
+  await expect(picker.locator('option[value="allowance.site"]')).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  // End-date sends the row's own value and start date plus the end date — an in-place end, not a new value.
+  await wellness.getByRole('button', { name: 'End-date', exact: true }).click();
+  const end = page.getByRole('dialog');
+  await end.getByLabel('Last day in effect').fill(iso(year, 6, 30));
+  await shot(page, info, 'gl-en-company-rates-recorded-only');
+  await end.getByRole('button', { name: 'End-date', exact: true }).click();
+  await expect(end).toHaveCount(0);
+  const put = state.writes.find((w) => w.method === 'PUT' && w.path === '/api/finance/rates/company/rate-g-wellness');
+  expect(put?.body).toMatchObject({ rateKey: 'allowance.wellness.monthly_amount', rateValue: '250', effectiveFrom: iso(year - 1, 3, 1), effectiveTo: iso(year, 6, 30) });
+  expect(state.writes.filter((w) => w.method === 'POST' && w.path === '/api/finance/rates/company')).toHaveLength(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('when the server refuses a rate payroll does not use, its message is shown verbatim and nothing is added', async ({ page }) => {
+  const state = await boot(page, { groupMode: true, serverRefusesKey: 'allowance.site' });
+  await tab(page, 'Company Rates').click();
+  await page.getByRole('button', { name: 'Add rate' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('combobox').selectOption('allowance.site');
+  await dialog.locator('input[type="number"]').fill('300');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.getByText("Payroll does not use 'Site allowance' yet, so saving it would change nobody's pay. Set allowances and deductions per grade under Benefits (Grade benefits), or on the employee's pay package.", { exact: true })).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByText('Rate added.', { exact: true })).toHaveCount(0);
+  expect(state.writes.filter((w) => w.method === 'POST' && w.path === '/api/finance/rates/company')).toHaveLength(1);
+});
+
 test('statutory: group view formats 9.75%, and a pending override survives reload without Approve for its requester', async ({ page }) => {
   const state = await boot(page, { groupMode: true });
   await tab(page, 'Statutory Rates').click();
@@ -450,6 +504,8 @@ test('the GL tab renders in Arabic, right to left', async ({ page }, info) => {
   await expect(gosi).toContainText('اشتراك التأمينات الاجتماعية، حصة الموظف السعودي');
   await expect(gosi).toContainText('9.75%');
   await expect(page.getByText('بانتظار التحقق النظامي').first()).toBeVisible();
+  await page.getByRole('tab', { name: 'معدلات الشركة', exact: true }).click();
+  await expect(page.locator('[data-rate-key="allowance.wellness.monthly_amount"]')).toContainText('مسجّل فقط — لا تستخدمه الرواتب');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   await shot(page, info, 'gl-ar-statutory');
   expect(state.errors).toEqual([]);

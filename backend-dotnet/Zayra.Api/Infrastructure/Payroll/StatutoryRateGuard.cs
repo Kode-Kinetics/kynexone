@@ -105,6 +105,30 @@ public static class StatutoryRateGuard
         Def(tenantId, "payparameter.prorated_components",        "PayParameter", "string",  "list",  null, null, "Comma-separated components proration applies to. Default BASIC,HOUSING,TRANSPORT,OTHER_ALLOWANCES,FIXED_DEDUCTION"),
     };
 
+    /// <summary>
+    /// The registry keys a payroll / EOSB / settlement calculation actually READS. Each entry is the
+    /// constant its consumer reads (<see cref="ProrationPolicyResolver"/>, through
+    /// <see cref="ICompanyRatePolicyResolver"/>), so a key is listed here only with a proven consumer.
+    /// Every other registry key (the allowance/deduction amounts, the EOSB enhancement days, the
+    /// probation OT multiplier, the notice period) is RECORDED ONLY: it was accepted and stored, and
+    /// nothing ever applied it. The write surface refuses new values for those keys
+    /// (COMPANY_RATE_NOT_APPLIED) instead of letting a customer believe pay changed. Writing the
+    /// consumer is the only correct way to add a key here.
+    /// </summary>
+    private static readonly HashSet<string> PayrollAppliedKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ProrationRateKeys.Basis,
+        ProrationRateKeys.GosiBase,
+        ProrationRateKeys.ArrearsGosiTreatment,
+        ProrationRateKeys.ArrearsMaxLookback,
+        ProrationRateKeys.ProratedComponents,
+    };
+
+    /// <summary>True only for a client-rate key some payroll calculation reads (see <see cref="PayrollAppliedKeys"/>).
+    /// A tenant-registered custom key is never applied: no code knows to read it.</summary>
+    public static bool IsAppliedByPayroll(string? rateKey) =>
+        !string.IsNullOrWhiteSpace(rateKey) && PayrollAppliedKeys.Contains(rateKey.Trim());
+
     private static ClientRateDefinition Def(
         Guid tenantId, string key, string category, string dataType, string unit,
         decimal? min, decimal? max, string description) => new()
