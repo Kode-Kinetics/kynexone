@@ -20,7 +20,7 @@ export interface GlAccount {
   companyId: string | null;
   code: string;
   name: string;
-  accountType: string; // Asset | Liability | Expense | Equity | Revenue
+  accountType: string; // Asset | Liability | Equity | Income | Expense (older rows may say Revenue)
   isActive: boolean;
 }
 
@@ -90,7 +90,64 @@ export interface GlDriverRequest {
 
 export const GL_DRIVER_CATEGORIES = ['Earning', 'Deduction', 'Balancing'] as const;
 export const GL_DRIVER_MATCH_MODES = ['Exact', 'Suffix', 'Prefix', 'Any'] as const;
-export const GL_ACCOUNT_TYPES = ['Asset', 'Liability', 'Expense', 'Equity', 'Revenue'] as const;
+export const GL_ACCOUNT_TYPES = ['Asset', 'Liability', 'Equity', 'Income', 'Expense'] as const;
+
+// ── Where does each driver post? (GET /gl/resolve) ───────────────────────────
+export type GlResolveSource = 'CompanyMapping' | 'GroupMapping' | 'CompanyDriverDefault' | 'GroupDriverDefault' | 'BuiltIn';
+export type GlResolveProblem = 'Unmapped' | 'InactiveAccount' | 'NotInChart' | 'InactiveDriver';
+
+export interface GlResolveRow {
+  driverKey: string;
+  label: string;
+  category: string;
+  side: string; // DR | CR
+  componentCodes?: string[];
+  account: { id: string | null; code: string; name: string };
+  source: GlResolveSource | string;
+  existsInChart?: boolean;
+  isActive?: boolean;
+  problem?: GlResolveProblem | string | null;
+}
+
+export interface GlResolveResponse {
+  companyId: string | null;
+  rows: GlResolveRow[];
+}
+
+// ── Control-account sign health (GET /gl/control-accounts/health) ───────────
+export interface GlControlAccountHealthRow {
+  driver: string;
+  account: string;
+  nature: string;
+  scopedBalance: number;
+  tenantBalance: number;
+  isHealthy: boolean;
+  violation: string | null;
+}
+
+export interface GlControlAccountHealth {
+  generatedAtUtc: string;
+  companyId: string | null;
+  healthy: boolean;
+  violations: string[];
+  accounts: GlControlAccountHealthRow[];
+}
+
+// ── Chart of accounts CSV import ─────────────────────────────────────────────
+export interface GlAccountImportResult {
+  dryRun: boolean;
+  created: number;
+  updated: number;
+  unchanged: number;
+  errors: { row: number; code: string; message: string }[];
+}
+
+export interface GlSeedResult {
+  accounts: number;
+  mappings: number;
+  drivers: number;
+  rateDefinitions: number;
+}
 
 export const financeGlApi = {
   // ── Chart of accounts ──────────────────────────────────────────────────────
@@ -125,12 +182,29 @@ export const financeGlApi = {
     client.put<GlDriver>(`/api/finance/gl/drivers/${id}`, data).then((r) => r.data),
   deleteDriver: (id: string) => client.delete(`/api/finance/gl/drivers/${id}`),
 
-  // ── Seed defaults (group scope only) ───────────────────────────────────────
-  seedDefaults: () =>
+  // ── Seed defaults (group scope only): adds what is missing, never changes existing rows ──
+  seedDefaults: () => client.post<GlSeedResult>('/api/finance/gl/seed-defaults', {}).then((r) => r.data),
+
+  // ── Effective routing + health ─────────────────────────────────────────────
+  resolve: (companyId?: string | null) =>
+    client.get<GlResolveResponse>('/api/finance/gl/resolve', { params: scoped(companyId) }).then((r) => r.data),
+  controlAccountHealth: (companyId?: string | null) =>
     client
-      .post<{ accounts: number; mappings: number; drivers: number; rateDefinitions: number }>(
-        '/api/finance/gl/seed-defaults',
-        {},
-      )
+      .get<GlControlAccountHealth>('/api/finance/gl/control-accounts/health', { params: scoped(companyId) })
       .then((r) => r.data),
+
+  // ── Chart of accounts CSV ──────────────────────────────────────────────────
+  exportAccounts: (companyId?: string | null) =>
+    client
+      .get<Blob>('/api/finance/gl/accounts/export', { params: scoped(companyId), responseType: 'blob' })
+      .then((r) => r.data),
+  importAccounts: (file: File, companyId: string | null | undefined, dryRun: boolean) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client
+      .post<GlAccountImportResult>('/api/finance/gl/accounts/import', form, {
+        params: { ...(scoped(companyId) ?? {}), dryRun },
+      })
+      .then((r) => r.data);
+  },
 };
