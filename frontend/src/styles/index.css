@@ -101,8 +101,8 @@ textarea:focus-visible {
 
   /* ─── Sidebar nav items ────────────────────────────────── */
   .nav-item {
-    @apply relative flex w-full items-center gap-2.5 rounded-lg border border-transparent
-      px-2 py-1.5 text-start font-medium transition-all duration-150 ease-out;
+    @apply relative flex w-full items-center gap-2 rounded-lg border border-transparent
+      px-2 py-1 text-start font-medium transition-all duration-150 ease-out;
   }
 
   /* Active — glass blue pill with left accent */

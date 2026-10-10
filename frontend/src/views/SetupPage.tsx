@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
+import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
 import { CountrySelect } from '../components/CountrySelect';
 import {
@@ -22,7 +23,7 @@ import {
   DEFAULT_WORK_EMAIL_PATTERN,
   isValidEmailDomain,
 } from '../api/organization';
-import { countryPacksApi, statutoryRulesApi } from '../api/countryPacks';
+import { countryPacksApi } from '../api/countryPacks';
 import type { CountryPackOption, StatutorySummary } from '../api/countryPacks';
 import type {
   CompanyDto,
@@ -73,7 +74,7 @@ import Link from 'next/link';
 
 type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
-  | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
+  | 'statutoryRules' | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 type SettingsCategory = 'organization' | 'peoplePay' | 'system';
 type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization' | 'policyLibrary'>;
 
@@ -89,6 +90,7 @@ const tabs: { id: SettingsTab; label: string; description: string; icon: React.E
   { id: 'fiscalYears', label: msg('Fiscal Years'), description: msg('Financial-year periods used by budgets and reporting.'), icon: Calendar, category: 'peoplePay' },
   { id: 'glMapping', label: msg('GL & rates'), description: msg('Payroll posting accounts, company rates and statutory rates.'), icon: Landmark, category: 'peoplePay' },
   { id: 'gccSettings', label: msg('GCC Settings'), description: msg('Country-specific employment and statutory defaults.'), icon: Globe, category: 'peoplePay' },
+  { id: 'statutoryRules', label: msg('Statutory Rules'), description: msg('Tenant-wide effective-dated rules used by payroll and compliance.'), icon: ShieldCheck, category: 'peoplePay' },
   { id: 'masterData', label: msg('Master Data'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
   { id: 'numberingRules', label: msg('Numbering'), description: msg('Prefixes and sequences for generated record numbers.'), icon: Hash, category: 'system' },
   { id: 'systemSettings', label: msg('System Settings'), description: msg('Workspace-wide operational defaults.'), icon: Settings, category: 'system' },
@@ -99,8 +101,8 @@ const tabs: { id: SettingsTab; label: string; description: string; icon: React.E
 
 const directSettingsOrder: SettingsTab[] = [
   'establishment', 'companies', 'branches', 'departments', 'designations', 'grades',
-  'masterData', 'numberingRules', 'systemSettings', 'gccSettings', 'fiscalYears',
-  'locations', 'glMapping', 'notificationTemplates', 'emailConfig', 'adminAuditLogs',
+  'masterData', 'numberingRules', 'systemSettings', 'gccSettings', 'statutoryRules',
+  'fiscalYears', 'locations', 'glMapping', 'notificationTemplates', 'emailConfig', 'adminAuditLogs',
 ];
 
 // Small read-only field for the statutory pack profile panel.
@@ -333,8 +335,8 @@ function CompaniesTab() {
                 <InfoRow label="Locale / Currency" value={`${statutorySummary.localeCode} · ${statutorySummary.currencyCode} ${statutorySummary.currencySymbol}`} />
                 <InfoRow label="Calendar / RTL" value={`${statutorySummary.calendarSystem} · ${statutorySummary.isRtl ? 'RTL' : 'LTR'}`} />
               </div>
-              <p className="mt-3 text-xs text-amber-700 border-t border-indigo-200 pt-3">
-                Sample default — configure rates for your establishment in Tenant Admin → Statutory Rules Engine.
+              <p className="mt-3 border-t border-indigo-200 pt-3 text-xs text-amber-700 dark:border-indigo-700/40 dark:text-amber-300">
+                Review the tenant-wide rule history in <Link href="/setup?tab=statutoryRules" className="font-semibold underline">Statutory Rules</Link>. Configure company-specific values under GL &amp; rates.
               </p>
             </>
           )}
@@ -2269,13 +2271,16 @@ export function SetupPage() {
   // mode also prevents its component from mounting or requesting restricted data.
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const visibleTabs = canWrite ? tabs : tabs.filter((tab) => tab.id === 'companies');
+  const canReadCompanies = canWrite || hasPermission('organization.read');
+  const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
+  const visibleTabs = canWrite ? tabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
   const tabParam = searchParams?.get('tab');
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || tabParam === 'importOrganization' || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
       ? (tabParam as SettingsTab)
-      : canWrite ? 'aiSetup' : 'companies';
+      : fallbackTab;
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
   const focusLevelId = searchParams?.get('level') ?? undefined;
@@ -2289,10 +2294,12 @@ export function SetupPage() {
   }, [requestedTab]);
 
   useEffect(() => {
-    companiesApi.listAll().then(setCompanies).catch(() => {});
-    gradesApi.listAll().then(setGrades).catch(() => {});
-    costCentersApi.listAll().then(setCostCenters).catch(() => {});
-  }, []);
+    if (canReadCompanies) companiesApi.listAll().then(setCompanies).catch(() => {});
+    if (canWrite) {
+      gradesApi.listAll().then(setGrades).catch(() => {});
+      costCentersApi.listAll().then(setCostCenters).catch(() => {});
+    }
+  }, [canReadCompanies, canWrite]);
 
   const selectTab = (tab: Tab) => {
     setActiveTab(tab);
@@ -2303,7 +2310,9 @@ export function SetupPage() {
 
   // Resolve permissions on every render so a permission change cannot leave a
   // formerly available settings panel visible until the synchronization effect.
-  const selectedTab = canWrite ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab) : 'companies';
+  const selectedTab = canWrite
+    ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab)
+    : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
   const SelectedSettingIcon = selectedSetting.icon;
@@ -2315,7 +2324,7 @@ export function SetupPage() {
       return { id: tab.id, label: t(tab.label), icon: tab.icon };
     }),
     ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
-  ] : [{ id: 'companies' as const, label: t('Companies'), icon: Building2 }];
+  ] : visibleTabs.map((tab) => ({ id: tab.id, label: t(tab.label), icon: tab.icon }));
 
   return (
     <div className="space-y-4">
@@ -2324,7 +2333,7 @@ export function SetupPage() {
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
             ? t('Configure every setup area directly, or use Setup Studio to prepare a reviewed starter configuration.')
-            : t('View your organization’s companies and legal entity details.')}
+            : t('Review the setup areas available to your role.')}
         </p>
       </header>
 
@@ -2387,6 +2396,7 @@ export function SetupPage() {
             {selectedTab === 'numberingRules' && <NumberingRulesTab />}
             {selectedTab === 'systemSettings' && <SystemSettingsTab />}
             {selectedTab === 'gccSettings' && <GCCSettingsTab />}
+            {selectedTab === 'statutoryRules' && <StatutoryRulesPanel />}
             {selectedTab === 'fiscalYears' && <FiscalYearsTab />}
             {selectedTab === 'locations' && <LocationsTab />}
             {selectedTab === 'glMapping' && <GlSetupPanel companies={companies} costCenters={costCenters} />}

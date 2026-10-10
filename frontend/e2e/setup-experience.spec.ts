@@ -99,6 +99,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       return reply({ total: 2, applied: { branches: 1, grades: 1 } });
     }
     if (path === '/api/admin/audit-logs') return reply(paged([]));
+    if (path === '/api/statutory-rules') return reply([]);
     if (path === '/api/establishment/levels' || path === '/api/planning/establishment') return reply([]);
     if (path === '/api/establishment/matrix') return reply({ enforcementMode: 'Enforced', unresolvedDepartmentCount: 0, departments: [] });
     if (path === '/api/tenant-hr-config') return reply({ establishmentEnforcementMode: 'Enforced' });
@@ -257,7 +258,7 @@ test('offers import separately from Setup Studio and preserves its organization 
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   const setupSections = page.getByRole('navigation', { name: 'Setup sections', exact: true });
-  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Master Data', 'Numbering', 'System Settings', 'GCC Settings', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
+  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Master Data', 'Numbering', 'System Settings', 'GCC Settings', 'Statutory Rules', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
     await expect(setupSections.getByRole('button', { name: label, exact: true })).toBeVisible();
   }
   await setupSections.getByRole('button', { name: 'Companies', exact: true }).click();
@@ -701,7 +702,7 @@ test('checks import and every settings entry screen for contained navigation', a
   }
   await contained(page);
   await evidence(page, info, 'compact-import-entry');
-  for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
+  for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'statutoryRules', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
     await page.goto(`/setup?tab=${tab}`);
     await expect(page.locator('#setup-setting-content')).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();

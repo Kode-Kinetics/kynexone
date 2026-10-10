@@ -38,75 +38,46 @@ public class StatutoryRateUnitTests
 
     // ── 1. The mistyped percentage, refused at every write path ──────────────────────────────
     //
-    // These controller tests use a GPSSA contribution key: a tenant write of any GOSI rate is now refused
-    // outright as statutory (GOSI_RATE_IS_STATUTORY — see PilotPayrollCorrectnessPostgresTests), so the
-    // unit gate is exercised on a key a tenant may still write. The band and the refusal are the same.
-
+    // GPSSA/GOSI contribution keys are platform-only. Exercise the same shared unit gate
+    // through a tenant-aware overtime multiplier, retaining contribution unit tests below.
     [Fact]
-    public async Task StatutoryRulesApi_RefusesARateTypedAsAPercentage()
+    public async Task StatutoryRulesApi_RefusesAnOutOfRangeMultiplier()
     {
         using var db = MakeDb();
-        Seed(db, "gpssa.national_employee_rate", "0.09");
+        Seed(db, "ot.standard_multiplier", "1.5");
         await db.SaveChangesAsync();
-
-        var ctrl = StatutoryRulesControllerFor(db);
-
-        // "9" meaning 9%. The stored platform default beside it is "0.09".
-        var result = await ctrl.Create(new CreateStatutoryRuleRequest(
-            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gpssa.national_employee_rate",
-            "9", "decimal", "Annual GOSI circular update", new DateTime(2026, 1, 1), null),
-            CancellationToken.None);
-
+        var result = await StatutoryRulesControllerFor(db).Create(new CreateStatutoryRuleRequest(
+            CountryCodes.Saudi, Jurisdictions.KsaMainland, "ot.standard_multiplier",
+            "15", "decimal", "Reviewed policy", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None);
         var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
-        // A stable code a client can branch on, beside the message a person reads.
         Assert.Equal(StatutoryValueUnits.UnitRefusalCode, Field(bad.Value!, "code"));
-        var message = Field(bad.Value!, "message");
-
-        // The refusal has to name the FORM, not merely say "invalid".
-        Assert.Contains("FRACTION", message, StringComparison.Ordinal);
-        Assert.Contains("0.09", message, StringComparison.Ordinal);
-        Assert.Contains("Nothing has been saved", message, StringComparison.Ordinal);
-
-        // And nothing may have been written.
-        Assert.Empty(await db.StatutoryRules.IgnoreQueryFilters()
-            .Where(r => r.TenantId == TenantId).ToListAsync());
+        Assert.Empty(await db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == TenantId).ToListAsync());
     }
 
     [Fact]
-    public async Task StatutoryRulesApi_RefusesAPercentageOnSupersede()
+    public async Task StatutoryRulesApi_RefusesAnInvalidMultiplierOnSupersede()
     {
         using var db = MakeDb();
-        var prior = Seed(db, "gpssa.national_employee_rate", "0.09", tenantId: TenantId);
+        var prior = Seed(db, "ot.standard_multiplier", "1.5", tenantId: TenantId);
         await db.SaveChangesAsync();
-
-        var ctrl = StatutoryRulesControllerFor(db);
-        var result = await ctrl.Update(prior.Id, new UpdateStatutoryRuleRequest(
-            "9.75", "2026 circular", new DateTime(2026, 7, 1), null), CancellationToken.None);
-
+        var result = await StatutoryRulesControllerFor(db).Update(prior.Id, new UpdateStatutoryRuleRequest(
+            "15", "Reviewed policy", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None);
         var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
         Assert.Equal(StatutoryValueUnits.UnitRefusalCode, Field(bad.Value!, "code"));
-        Assert.Contains("0.0975", Field(bad.Value!, "message"), StringComparison.Ordinal);
-
-        // The prior row must be untouched — a refused supersede closes nothing.
         Assert.Null((await db.StatutoryRules.FindAsync(prior.Id))!.EffectiveTo);
     }
 
     [Fact]
-    public async Task StatutoryRulesApi_AcceptsTheSameRateWrittenAsAFraction()
+    public async Task StatutoryRulesApi_AcceptsAValidTenantAwareMultiplier()
     {
         using var db = MakeDb();
-        Seed(db, "gpssa.national_employee_rate", "0.09");
+        Seed(db, "ot.standard_multiplier", "1.5");
         await db.SaveChangesAsync();
-
         var result = await StatutoryRulesControllerFor(db).Create(new CreateStatutoryRuleRequest(
-            CountryCodes.Saudi, Jurisdictions.KsaMainland, "gpssa.national_employee_rate",
-            "0.0975", "decimal", "2026 circular", new DateTime(2026, 1, 1), null),
-            CancellationToken.None);
-
+            CountryCodes.Saudi, Jurisdictions.KsaMainland, "ot.standard_multiplier",
+            "1.75", "decimal", "Reviewed policy", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None);
         Assert.IsType<CreatedAtActionResult>(result.Result);
-        var stored = Assert.Single(await db.StatutoryRules.IgnoreQueryFilters()
-            .Where(r => r.TenantId == TenantId).ToListAsync());
-        Assert.Equal("0.0975", stored.RuleValue);
+        Assert.Equal("1.75", Assert.Single(await db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == TenantId).ToListAsync()).RuleValue);
     }
 
     [Theory]

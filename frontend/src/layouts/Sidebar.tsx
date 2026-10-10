@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ChevronDown, LogOut, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
@@ -16,6 +16,16 @@ interface SidebarProps {
   isCollapsed: boolean;
   onClose: () => void;
   onToggleCollapse: () => void;
+}
+
+function pathIsActive(pathname: string | null, path: string | undefined, allPaths: string[]) {
+  if (!path) return false;
+  if (path === '/dashboard') return pathname === '/dashboard' || pathname === '/';
+  if (pathname === path) return true;
+  if (pathname?.startsWith(path + '/')) {
+    return !allPaths.some((candidate) => candidate !== path && candidate.startsWith(path + '/') && pathname.startsWith(candidate));
+  }
+  return false;
 }
 
 export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: SidebarProps) {
@@ -76,16 +86,29 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
     hideTip();
   };
 
-  // All groups expanded by default
+  const allNavPaths = navigationGroups
+    .flatMap((group) => group.items.map((item) => item.path))
+    .filter((path): path is string => Boolean(path));
+  const activeGroupLabel = navigationGroups.find((group) =>
+    group.items.some((item) => pathIsActive(pathname, item.path, allNavPaths)),
+  )?.label;
+
+  // Keep the overview shortcuts and the current work area open. One work area at a time keeps
+  // every section header visible on laptop screens instead of turning the sidebar into a long page.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    () => new Set(navigationGroups.map((g) => g.label))
+    () => new Set(['Overview', ...(activeGroupLabel ? [activeGroupLabel] : [])]),
   );
+
+  useEffect(() => {
+    if (!activeGroupLabel) return;
+    setExpandedGroups(new Set(['Overview', activeGroupLabel]));
+  }, [activeGroupLabel]);
 
   const toggleGroup = (label: string) => {
     setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
+      if (label === 'Overview') return prev;
+      const next = new Set(['Overview']);
+      if (!prev.has(label)) next.add(label);
       return next;
     });
   };
@@ -108,22 +131,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
     router.replace('/login');
   };
 
-  const allNavPaths = navigationGroups
-    .flatMap((g) => g.items.map((i) => i.path))
-    .filter((p): p is string => Boolean(p));
-
   const isActive = (path?: string) => {
-    if (!path) return false;
-    if (path === '/dashboard') return pathname === '/dashboard' || pathname === '/';
-    if (pathname === path) return true;
-    // Match as a prefix only when no more-specific sibling nav path also matches
-    if (pathname?.startsWith(path + '/')) {
-      const hasMoreSpecificMatch = allNavPaths.some(
-        (p) => p !== path && p.startsWith(path + '/') && pathname.startsWith(p),
-      );
-      return !hasMoreSpecificMatch;
-    }
-    return false;
+    return pathIsActive(pathname, path, allNavPaths);
   };
 
   return (
@@ -178,7 +187,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
         </div>
 
         {/* Navigation */}
-        <nav aria-label="Primary navigation" onScroll={onNavScroll} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="flex-1 overflow-y-auto overflow-x-hidden py-3">
+        <nav aria-label="Primary navigation" onScroll={onNavScroll} onKeyDown={(e) => { if (e.key === 'Escape') hideTip(); }} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2 [scrollbar-gutter:stable]">
           {navigationGroups.map((group, gi) => {
             // Module visibility is resolved from the item's PATH against the backend catalog,
             // not only from the hand-tagged `requiredFeatureKey`. Only 8 of ~35 items ever carried
@@ -194,8 +203,9 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
             );
             if (visibleItems.length === 0) return null;
 
-            const isExpanded = isCollapsed || expandedGroups.has(group.label);
+            const isExpanded = expandedGroups.has(group.label);
             const hasActiveItem = visibleItems.some((item) => isActive(item.path));
+            const groupId = `sidebar-group-${group.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
             return (
               <div key={group.label} className={gi > 0 ? 'mt-1' : ''}>
@@ -205,7 +215,9 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                   <button
                     type="button"
                     onClick={() => toggleGroup(group.label)}
-                    className={`group/hdr mb-0.5 flex w-full items-center justify-between rounded-lg px-3 py-1.5 transition-all duration-150 ${
+                    aria-expanded={isExpanded}
+                    aria-controls={groupId}
+                    className={`group/hdr mb-0.5 flex w-full items-center justify-between rounded-lg px-3 py-1 transition-all duration-150 ${
                       isExpanded
                         ? 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
                         : 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
@@ -229,19 +241,23 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                     />
                   </button>
                 ) : (
-                  gi > 0 && (
-                    <div className="mx-3 mb-2 h-px bg-slate-100 dark:bg-white/[0.06]" />
-                  )
+                  <button
+                    type="button"
+                    title={t(group.label)}
+                    aria-label={t(group.label)}
+                    aria-expanded={isExpanded}
+                    aria-controls={groupId}
+                    onClick={() => toggleGroup(group.label)}
+                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                  >
+                    {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
+                  </button>
                 )}
 
-                {/* ── Items — smooth CSS grid-row animation ── */}
-                <div
-                  className={`grid transition-[grid-template-rows] duration-200 ease-out ${
-                    isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
-                  }`}
-                >
-                  <div className="overflow-hidden">
-                    <div className="space-y-0.5 px-2 pb-1">
+                {/* Closed sections leave the tab order; clipped controls previously remained focusable. */}
+                {isExpanded && (
+                  <div id={groupId} className="px-2 pb-1">
+                    <div className="space-y-px">
                       {visibleItems.map((item) => {
                         const Icon = item.icon;
                         const active = isActive(item.path);
@@ -256,12 +272,13 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                             onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) showTip(e.currentTarget, item.path, t(item.label), 0); }}
                             onBlur={hideTip}
                             onClick={() => { hideTip(); handleNav(item.path); }}
+                            aria-current={active ? 'page' : undefined}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
-                            }`}
+                            } min-h-11 lg:min-h-8`}
                           >
                             <span
-                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors ${
+                              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
                                 active
                                   ? 'bg-sapphire/[0.12] text-sapphire dark:bg-sapphire/[0.18] dark:text-[#7AABFF]'
                                   : 'text-slate-400 group-hover:text-sapphire/70 dark:text-slate-500 dark:group-hover:text-[#7AABFF]/70'
@@ -294,7 +311,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                       })}
                     </div>
                   </div>
-                </div>
+                )}
 
               </div>
             );
@@ -323,8 +340,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
               </button>
             </div>
           ) : (
-            <div className="p-3">
-              <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-2 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
+            <div className="p-2">
+              <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
                 <div className="min-w-0 flex-1 text-start">
                   <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">
@@ -342,9 +359,6 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                 >
                   <LogOut className="h-3.5 w-3.5" />
                 </button>
-              </div>
-              <div className="mt-2 flex items-center justify-center gap-1.5">
-                <Logo collapsed={false} size="sm" />
               </div>
             </div>
           )}

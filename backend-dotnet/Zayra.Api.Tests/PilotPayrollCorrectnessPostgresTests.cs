@@ -61,15 +61,14 @@ public class PilotPayrollCorrectnessPostgresTests
             CancellationToken.None);
         AssertGosiRefusal(result.Result);
 
-        // "35" meaning 35% for a rate a tenant MAY override is refused for its unit, with a code.
+        // The legacy target ratio is also platform-only: the calculator does not read tenant overrides.
         var mistyped = await ctrl.Create(new CreateStatutoryRuleRequest(
             CountryCodes.Saudi, Jurisdictions.KsaMainland, "nitaqat.default_target_ratio",
             "35", "decimal", "Typed as a percentage", new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), null),
             CancellationToken.None);
-        var bad = mistyped.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
-        Prop<string>(bad.Value!, "code").Should().Be(StatutoryValueUnits.UnitRefusalCode,
-            "a client must be able to branch on WHY the value was refused, not parse prose");
-        Prop<string>(bad.Value!, "message").Should().Contain("0.35").And.Contain("Nothing has been saved");
+        var bad = mistyped.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        Prop<string>(bad.Value!, "code").Should().Be("STATUTORY_PLATFORM_ONLY");
+
 
         (await db.StatutoryRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId))
             .Should().BeFalse("a refused rate must not be written anywhere");
@@ -217,7 +216,7 @@ public class PilotPayrollCorrectnessPostgresTests
 
         // A non-GOSI statutory key is still overridable.
         (await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
-            "ot.standard_multiplier", "1.75", "decimal", "company policy above statute", ef, null), CancellationToken.None))
+            "ot.standard_multiplier", "1.75", "decimal", "company policy above statute", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None))
             .Result.Should().BeOfType<CreatedAtActionResult>();
 
         // 2. Company statutory override (maker-checker): refused at request…
