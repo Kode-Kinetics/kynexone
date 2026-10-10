@@ -1,6 +1,14 @@
 namespace Zayra.Api.Application.AI;
 public interface IPolicyDocumentService
 {
+    Task<IReadOnlyList<PolicyDocumentDto>> ListAsync(Guid tenantId, PolicyReadScope scope, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<PolicyDocumentDto>>(Array.Empty<PolicyDocumentDto>());
+    Task<PolicyAskResponse> AskAsync(Guid tenantId, Guid? userId, string userRole, string question, PolicyReadScope scope, CancellationToken ct)
+        => Task.FromResult(new PolicyAskResponse("No accessible published policy was found.", [], false));
+    Task<PolicyDocumentDto?> FindAsync(Guid tenantId, Guid documentId, PolicyReadScope scope, CancellationToken ct)
+        => Task.FromResult<PolicyDocumentDto?>(null);
+    Task<PolicyDocumentText?> TextAsync(Guid tenantId, Guid documentId, PolicyReadScope scope, CancellationToken ct)
+        => Task.FromResult<PolicyDocumentText?>(null);
     Task<PolicyDocumentDto> UploadAsync(Guid tenantId, Guid? userId, Stream content, string fileName, string mimeType, CancellationToken ct);
     Task<IReadOnlyList<PolicyDocumentDto>> ListAsync(Guid tenantId, CancellationToken ct);
     Task<bool> DeleteAsync(Guid tenantId, Guid documentId, CancellationToken ct);

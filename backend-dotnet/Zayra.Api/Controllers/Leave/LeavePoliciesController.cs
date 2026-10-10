@@ -98,6 +98,7 @@ public class LeavePoliciesController : ControllerBase
             AppliesOnProbation = req.AppliesOnProbation,
             AnnualEntitlementDays = req.AnnualEntitlementDays,
             AccrualMethod = req.AccrualMethod ?? "Yearly",
+            ProratePartialMonths = req.ProratePartialMonths ?? false,
             CarryForwardMax = req.CarryForwardMax,
             CarryForwardExpiry = req.CarryForwardExpiry,
             EncashmentAllowed = req.EncashmentAllowed,
@@ -123,6 +124,8 @@ public class LeavePoliciesController : ControllerBase
             "Created", string.Empty, policy.Name, "Leave policy created",
             User.Identity?.Name ?? "Admin", ct);
         await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore: false, ct);
+        if (policy.ProratePartialMonths)
+            await AuditProrationChoiceAsync(tenantId.Value, policy, false, ct);
 
         return Created($"/api/leave/policies/{policy.Id}", policy);
     }
@@ -155,6 +158,13 @@ public class LeavePoliciesController : ControllerBase
                     + "today by encashment, which is enforced.",
             })
             : null;
+
+    private Task AuditProrationChoiceAsync(Guid tenantId, LeavePolicy policy, bool previous, CancellationToken ct)
+        => _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(), "PartialMonthProrationChanged",
+            $"prorate_partial_months={previous.ToString().ToLowerInvariant()}",
+            $"prorate_partial_months={policy.ProratePartialMonths.ToString().ToLowerInvariant()}",
+            "Calendar-day proration for monthly joining/leaving periods; applies to unposted accruals only. Posted accruals require an adjustment.",
+            User.Identity?.Name ?? "Admin", ct);
 
     /// <summary>
     /// KSA statutory special leave (maternity, marriage, bereavement, birth, Hajj, iddah) cannot be
@@ -247,6 +257,7 @@ public class LeavePoliciesController : ControllerBase
             return carryForwardRefusal;
 
         var waiverBefore = policy.AllowsHajjBeyondStatutoryEligibility;
+        var prorationBefore = policy.ProratePartialMonths;
         if (!string.IsNullOrWhiteSpace(req.Name)) policy.Name = req.Name;
         if (req.CountryCode is not null) policy.CountryCode = req.CountryCode;
         if (req.CompanyId.HasValue) policy.CompanyId = req.CompanyId;
@@ -259,6 +270,7 @@ public class LeavePoliciesController : ControllerBase
         if (req.AppliesOnProbation.HasValue) policy.AppliesOnProbation = req.AppliesOnProbation.Value;
         if (req.AnnualEntitlementDays.HasValue) policy.AnnualEntitlementDays = req.AnnualEntitlementDays.Value;
         if (!string.IsNullOrWhiteSpace(req.AccrualMethod)) policy.AccrualMethod = req.AccrualMethod;
+        if (req.ProratePartialMonths.HasValue) policy.ProratePartialMonths = req.ProratePartialMonths.Value;
         if (req.CarryForwardMax.HasValue) policy.CarryForwardMax = req.CarryForwardMax.Value;
         if (req.CarryForwardExpiry.HasValue) policy.CarryForwardExpiry = req.CarryForwardExpiry.Value;
         if (req.EncashmentAllowed.HasValue) policy.EncashmentAllowed = req.EncashmentAllowed.Value;
@@ -289,6 +301,8 @@ public class LeavePoliciesController : ControllerBase
             User.Identity?.Name ?? "Admin", ct);
         if (leaveType is not null)
             await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore, ct);
+        if (prorationBefore != policy.ProratePartialMonths)
+            await AuditProrationChoiceAsync(tenantId.Value, policy, prorationBefore, ct);
 
         return Ok(policy);
     }
@@ -337,7 +351,8 @@ public record CreateLeavePolicyRequest(
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
     string? Status,
-    bool AllowsHajjBeyondStatutoryEligibility = false);
+    bool AllowsHajjBeyondStatutoryEligibility = false,
+    bool? ProratePartialMonths = null);
 
 public record UpdateLeavePolicyRequest(
     string? Name,
@@ -364,4 +379,5 @@ public record UpdateLeavePolicyRequest(
     string? PayrollImpact,
     Guid? ApprovalWorkflowId,
     string? Status,
-    bool? AllowsHajjBeyondStatutoryEligibility = null);
+    bool? AllowsHajjBeyondStatutoryEligibility = null,
+    bool? ProratePartialMonths = null);

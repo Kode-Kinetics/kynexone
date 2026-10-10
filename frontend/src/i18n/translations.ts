@@ -4,6 +4,9 @@ import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
+import { setupExperience } from './setupExperience';
+import { setupPolicyConfiguration } from './setupPolicyConfiguration';
+import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
@@ -1381,6 +1384,9 @@ const en: Dict = {
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   ...employeeCompletion.en,
+  ...setupExperience.en,
+  ...setupPolicyConfiguration.en,
+  ...policyIntelligence.en,
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
@@ -2750,6 +2756,9 @@ const ar: Dict = {
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   ...employeeCompletion.ar,
+  ...setupExperience.ar,
+  ...setupPolicyConfiguration.ar,
+  ...policyIntelligence.ar,
 
   ...releaseA.ar,
 };

@@ -260,9 +260,29 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("chunk_count");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentSha256")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("")
+                        .HasColumnName("content_sha256");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime?>("EffectiveFromUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_from_utc");
+
+                    b.Property<DateTime?>("EffectiveToUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_to_utc");
 
                     b.Property<string>("ErrorMessage")
                         .HasColumnType("text")
@@ -291,6 +311,22 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("original_name");
 
+                    b.Property<string>("PublicationStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasDefaultValue("Draft")
+                        .HasColumnName("publication_status");
+
+                    b.Property<DateTime?>("PublishedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at_utc");
+
+                    b.Property<Guid?>("PublishedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("published_by_user_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -301,6 +337,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime>("UpdatedAtUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
@@ -310,9 +347,13 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.HasIndex("TenantId", "Status");
+
+                    b.HasIndex("TenantId", "CompanyId", "PublicationStatus");
 
                     b.ToTable("policy_documents", (string)null);
                 });
@@ -5660,12 +5701,12 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Code")
-                        .IsUnique();
-
                     b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "IsDeleted");
+
+                    b.HasIndex("TenantId", "CompanyId", "Code")
+                        .IsUnique();
 
                     b.ToTable("branches", (string)null);
                 });
@@ -16046,6 +16087,12 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("payroll_impact");
+
+                    b.Property<bool>("ProratePartialMonths")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("prorate_partial_months");
 
                     b.Property<bool>("PublicHolidaysIncluded")
                         .HasColumnType("boolean")

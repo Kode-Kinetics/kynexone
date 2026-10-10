@@ -235,11 +235,16 @@ test.describe('HR Command Center: layout and interaction', () => {
     test.skip(formOf(page) !== 'desktop', 'desktop rail only');
     await open(page);
     const nav = page.getByRole('navigation', { name: 'Primary navigation' });
+    // The desktop rail keeps Overview plus one work area open so every section heading remains
+    // visible without a page-height sidebar. Open the area whose entry we are exercising instead
+    // of relying on the pre-redesign behaviour where every section was expanded at once.
+    await nav.getByRole('button', { name: 'Finance & Talent', exact: true }).click();
     await nav.getByRole('button', { name: 'Payroll', exact: true }).hover();
     const tip = page.getByRole('tooltip');
     await expect(tip).toContainText('Run, review, approve and lock monthly payroll.');
     await page.mouse.move(900, 500);
     await expect(tip).toHaveCount(0);
+    await nav.getByRole('button', { name: 'Administration', exact: true }).click();
     await nav.getByRole('button', { name: 'Approvals', exact: true }).focus();
     await page.keyboard.press('Shift+Tab');
     await page.keyboard.press('Tab');

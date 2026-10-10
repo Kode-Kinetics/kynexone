@@ -62,6 +62,18 @@ public class RawSqlExecutionRatchetTests
         // (transaction-scoped; a preview waits at most 5 s for a lock). Neither writes a row. Exercised by
         // EmployeeImportPilotSafetyPostgresTests.
         ["Controllers/EmployeesController.cs"] = 3,
+        // Parameterized pg_advisory_xact_lock only: SHA-256("SETUP:" + authenticated tenant ID),
+        // held until the setup transaction commits or rolls back. It writes no rows and cannot
+        // widen tenant/company scope; all record access remains in ApplyCore's scoped queries.
+        // SetupConfigurationApplyTests.ConcurrentIdenticalApplySerializesPoliciesAndEligibility
+        // proves serialization; ConcurrentTenantsWithIdenticalCodesKeepPoliciesAndEligibilityIsolated
+        // proves the guarded setup writes remain separate for tenants sharing the same codes.
+        ["Controllers/SetupAssistantController.cs"] = 1,
+        // Parameterized transaction-scoped advisory lock only: the key is derived from the
+        // authenticated tenant ID and serializes overlapping statutory-rule mutations. It writes
+        // no table row; StatutoryRuleSafeguardPostgresTests.ConcurrentOverlappingCreatesProduceOneVersionAndOneConflict
+        // proves the serialization and StatutoryRulesIsolationTests proves tenant isolation.
+        ["Controllers/StatutoryRulesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 2,
         // Admin-seat pg_advisory_xact_lock (was a session lock + unlock pair, 2 -> 1).
         ["Infrastructure/Auth/AccessManagementService.cs"] = 1,

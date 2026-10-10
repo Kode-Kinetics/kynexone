@@ -194,9 +194,11 @@ public class LeaveService : ILeaveService
         return balance;
     }
 
-    public async Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default)
+    public Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default)
+        => AccrueMonthlyAsync(tenantId, DateTime.UtcNow, ct);
+
+    internal async Task AccrueMonthlyAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct = default)
     {
-        var accrualMonth = DateTime.UtcNow;
         if (!_db.Database.IsRelational())
         {
             await AccrueMonthlyCoreAsync(tenantId, accrualMonth, ct);
@@ -235,17 +237,28 @@ public class LeaveService : ILeaveService
     private async Task AccrueMonthlyCoreAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct)
     {
         var activePolicies = await _db.LeavePolicies
-            .Where(p => p.TenantId == tenantId && p.Status == "Active" && p.AccrualMethod == "Monthly")
+            .Where(p => p.TenantId == tenantId && p.Status == "Active")
             .ToListAsync(ct);
         var eligibilityRows = await _db.LeavePolicyEligibilities
             .Where(e => e.TenantId == tenantId && e.IsActive)
             .ToListAsync(ct);
 
         var currentYear = accrualMonth.Year;
+        var monthStart = new DateOnly(currentYear, accrualMonth.Month, 1);
+        var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+        var monthDays = DateTime.DaysInMonth(currentYear, accrualMonth.Month);
         var employees = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
-            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.JoiningDate })
+            .Where(e => e.TenantId == tenantId && (e.Status == EmployeeStatuses.Active || e.Status == EmployeeStatuses.Offboarded))
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.JoiningDate, e.Status })
             .ToListAsync(ct);
+        // Offboarded means serving notice, not that employment has already ended. The
+        // non-cancelled offboarding's last working day bounds this service period; a
+        // contract expiry alone is not evidence that service ended (it may be renewed).
+        var offboardings = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay != default)
+            .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+            .ToListAsync(ct);
+        var offboardingsByEmployee = offboardings.ToLookup(o => o.EmployeeId);
         var companyCountries = await _db.Companies
             .AsNoTracking()
             .Where(c => c.TenantId == tenantId)
@@ -266,13 +279,28 @@ public class LeaveService : ILeaveService
 
         var accrualOn = DateOnly.FromDateTime(accrualMonth);
 
-        foreach (var policy in activePolicies)
+        foreach (var policy in activePolicies.Where(p => p.AccrualMethod == "Monthly"))
         {
             var monthlyAccrual = Math.Round(policy.AnnualEntitlementDays / 12, 4);
             var accrualReference = $"MONTHLY-ACCRUAL-{currentYear}-{accrualMonth.Month:00}";
             bool policyIsAnnualLeave = annualLeaveTypeIds.Contains(policy.LeaveTypeId);
             foreach (var emp in employees)
             {
+                var joinedOn = DateOnly.FromDateTime(emp.JoiningDate);
+                // An Active flag cannot grant leave before employment has begun. Do not
+                // invent a service start for incomplete records either.
+                if (emp.JoiningDate == default || joinedOn > accrualOn || joinedOn > monthEnd) continue;
+                var offboarding = offboardingsByEmployee[emp.Id]
+                    .Where(o => o.LastWorkingDay >= joinedOn)
+                    .OrderByDescending(o => o.CreatedAtUtc)
+                    .FirstOrDefault();
+                if (emp.Status == EmployeeStatuses.Offboarded && offboarding is null) continue;
+                var serviceStart = joinedOn > monthStart ? joinedOn : monthStart;
+                var serviceEnd = offboarding is not null && offboarding.LastWorkingDay < monthEnd
+                    ? offboarding.LastWorkingDay
+                    : monthEnd;
+                if (serviceEnd < serviceStart) continue;
+                var serviceDays = serviceEnd.DayNumber - serviceStart.DayNumber + 1;
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
                     ? companyCountry
                     : string.Empty;
@@ -280,7 +308,8 @@ public class LeaveService : ILeaveService
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
                 // company-specific override). Accrue only the same most-specific policy that
-                // request submission would resolve, otherwise the employee is credited twice.
+                // request submission would resolve. A more-specific Yearly policy also wins
+                // over a Monthly default and must not receive that default's monthly credit.
                 var resolvedPolicy = activePolicies
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
@@ -310,7 +339,7 @@ public class LeaveService : ILeaveService
                 if (policyIsAnnualLeave)
                 {
                     var statutoryDays = await ResolveKsaAnnualEntitlementAsync(
-                        employeeCountryCode, emp.JoiningDate, accrualOn, ct);
+                        employeeCountryCode, emp.JoiningDate, serviceEnd < accrualOn ? serviceEnd : accrualOn, ct);
                     if (statutoryDays is decimal floorDays && floorDays > effectiveAnnualDays)
                     {
                         effectiveAnnualDays = floorDays;
@@ -321,6 +350,15 @@ public class LeaveService : ILeaveService
                 var employeeMonthlyAccrual = effectiveAnnualDays == policy.AnnualEntitlementDays
                     ? monthlyAccrual
                     : Math.Round(effectiveAnnualDays / 12, 4);
+                if (policy.ProratePartialMonths && serviceDays < monthDays)
+                {
+                    // Posting convention is a company-policy choice, not a statutory rate.
+                    // Apply the service fraction after resolving the annual statutory floor.
+                    // Balances and ledger amounts store two decimal places, so round once to
+                    // that precision rather than rely on different database rounding later.
+                    employeeMonthlyAccrual = Math.Round(effectiveAnnualDays / 12 * serviceDays / monthDays, 2, MidpointRounding.AwayFromZero);
+                    accrualReason += $"; prorated for {serviceDays}/{monthDays} calendar days of service ({serviceStart:yyyy-MM-dd} to {serviceEnd:yyyy-MM-dd})";
+                }
 
                 var balance = await GetOrCreateBalanceAsync(tenantId, emp.Id, policy.LeaveTypeId, currentYear, ct);
                 balance.EmployeeName = emp.FullName;
