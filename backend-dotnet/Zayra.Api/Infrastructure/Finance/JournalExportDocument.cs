@@ -84,7 +84,40 @@ public static class JournalExportKinds
 
 /// <summary>A request-time setting a formatter accepts (Oracle ledger id, journal source, …). Persisted
 /// with the export so a download regenerates the same bytes.</summary>
-public sealed record JournalExportOptionSpec(string Key, string Label, string DefaultValue, string Description, int MaxLength = 60);
+/// <param name="Required">The ERP refuses the file without it (Oracle's LEDGER_ID): the export is refused, before
+/// anything is persisted, until the user supplies it.</param>
+public sealed record JournalExportOptionSpec(string Key, string Label, string DefaultValue, string Description, int MaxLength = 60,
+    bool Required = false);
+
+/// <summary>The lines of ONE legal entity inside an export, labelled by the ERP company code they carry.</summary>
+public sealed record JournalLegalEntity(Guid? CompanyId, string CompanyCode, IReadOnlyList<JournalExportLine> Lines);
+
+public static class JournalLegalEntities
+{
+    /// <summary>
+    /// Groups lines by LEGAL ENTITY, never by the code string: two companies that (wrongly) share an ERP code are
+    /// still two entities here, so neither the per-company balance gate nor the one-document-per-company split can
+    /// merge them. A row with no company (an unattributed row folded into a company export) belongs to the company
+    /// whose code it was stamped with, when exactly one company in the file carries that code; otherwise it is its
+    /// own group under its code (UNATTRIBUTED). Ordered by code, then id — the order files were always written in.
+    /// </summary>
+    public static IReadOnlyList<JournalLegalEntity> Of(IEnumerable<JournalExportLine> lines)
+    {
+        var list = lines as IReadOnlyList<JournalExportLine> ?? lines.ToList();
+        var codeToId = list.Where(l => l.CompanyId is not null)
+            .GroupBy(l => l.CompanyCode, StringComparer.Ordinal)
+            .Where(g => g.Select(l => l.CompanyId).Distinct().Count() == 1)
+            .ToDictionary(g => g.Key, g => g.First().CompanyId, StringComparer.Ordinal);
+        return list
+            .GroupBy(l => (l.CompanyId ?? codeToId.GetValueOrDefault(l.CompanyCode)) is { } id
+                ? (Id: (Guid?)id, Code: string.Empty)
+                : (Id: (Guid?)null, Code: l.CompanyCode))
+            .Select(g => new JournalLegalEntity(g.Key.Id, g.First().CompanyCode, g.ToList()))
+            .OrderBy(e => e.CompanyCode, StringComparer.Ordinal)
+            .ThenBy(e => e.CompanyId)
+            .ToList();
+    }
+}
 
 /// <summary>
 /// A balanced, single-currency, tied-out journal ready to be formatted. Construction is the ONLY way to
@@ -137,25 +170,29 @@ public sealed class JournalExportDocument
     /// </summary>
     public IReadOnlyList<JournalPostingDocument> PostingDocuments()
     {
-        var refCompanies = Lines.GroupBy(l => l.JournalRef)
-            .ToDictionary(g => g.Key, g => g.Select(l => l.CompanyCode).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
+        // By legal entity, not by code string (JournalLegalEntities.Of): two companies sharing a code stay apart.
+        var entities = JournalLegalEntities.Of(Lines);
+        var refCompanies = entities.SelectMany((e, i) => e.Lines.Select(l => (l.JournalRef, Entity: i)))
+            .GroupBy(x => x.JournalRef, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Entity).Distinct().Count(), StringComparer.Ordinal);
         var scope = string.IsNullOrWhiteSpace(Period) ? (PayrollRunId is { } r ? "RUN" + r.ToString("N")[..8] : "ALL") : Period;
         var docs = new List<JournalPostingDocument>();
         var seq = 0;
-        foreach (var company in Lines.GroupBy(l => l.CompanyCode).OrderBy(g => g.Key, StringComparer.Ordinal))
+        foreach (var company in entities)
         {
+            var code = company.CompanyCode;
             var residual = new List<JournalExportLine>();
             var residualRefs = new List<string>();
-            foreach (var journal in company.GroupBy(l => l.JournalRef).OrderBy(g => g.Key, StringComparer.Ordinal))
+            foreach (var journal in company.Lines.GroupBy(l => l.JournalRef).OrderBy(g => g.Key, StringComparer.Ordinal))
             {
                 var lines = journal.OrderBy(l => l.LineNo).ToList();
                 var net = lines.Sum(l => JournalAmount.Round(l.Debit) - JournalAmount.Round(l.Credit));
                 if (net != 0m) { residual.AddRange(lines); residualRefs.Add(journal.Key); continue; }
-                var docRef = refCompanies[journal.Key] > 1 ? $"{journal.Key}@{company.Key}" : journal.Key;
-                docs.Add(new JournalPostingDocument(++seq, company.Key, docRef, false, new[] { journal.Key }, lines));
+                var docRef = refCompanies[journal.Key] > 1 ? $"{journal.Key}@{code}" : journal.Key;
+                docs.Add(new JournalPostingDocument(++seq, code, docRef, false, new[] { journal.Key }, lines));
             }
             if (residual.Count > 0)
-                docs.Add(new JournalPostingDocument(++seq, company.Key, $"{scope}-{company.Key}-COMPOSITE", true,
+                docs.Add(new JournalPostingDocument(++seq, code, $"{scope}-{code}-COMPOSITE", true,
                     residualRefs, residual.OrderBy(l => l.LineNo).ToList()));
         }
         return docs;
@@ -224,4 +261,9 @@ public interface IJournalExportFormatter
     /// golden file; "Template" when the column layout is our best reading of the vendor's import template
     /// and MUST be validated in the client's ERP test instance before production use.</summary>
     string Status => "Template";
+
+    /// <summary>True when the target ERP books one legal entity per file or per import (one QuickBooks company
+    /// file, one Xero/Zoho organisation, one D365 legal entity per data project). A file holding several companies
+    /// is refused for these formats, because the ERP would book every company into one ledger.</summary>
+    bool SingleEntity => false;
 }

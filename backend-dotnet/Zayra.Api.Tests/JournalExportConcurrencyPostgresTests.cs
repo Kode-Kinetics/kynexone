@@ -101,6 +101,11 @@ public class JournalExportConcurrencyPostgresTests
         await using (var db = _fx.CreateDb())
             StatusOf(await Controller(db, checker).ConfirmJournals(exportId,
                 new ErpJournalConfirmationRequest(new() { new(journals[0], "ERP-77") }), default)).Should().Be(200);
+        // A partly recorded export is ERP evidence: a re-export waits until every journal has an outcome.
+        StatusOf(await CreateAsync(tenantId, "2024-07", maker)).Should().Be(409);
+        await using (var db = _fx.CreateDb())
+            StatusOf(await Controller(db, checker).RejectJournals(exportId,
+                new ErpJournalRejectionRequest(new() { new(journals[1], "Refused by the ERP") }), default)).Should().Be(200);
 
         await using (var db = _fx.CreateDb())
         {
@@ -117,7 +122,7 @@ public class JournalExportConcurrencyPostgresTests
                 .Where(l => l.TenantId == tenantId && l.GlJournalExportId == IdOf(next)).Select(l => l.JournalRef).Distinct().ToListAsync();
             confirmedRefs.Should().NotContain(journals[0], "the ERP holds that journal");
             (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == exportId)).Status
-                .Should().Be(GlJournalExportStatuses.Superseded, "its unconfirmed journal is re-sent by the new export");
+                .Should().Be(GlJournalExportStatuses.PartiallyConfirmed, "its confirmed journal stays evidence; only the refused one is re-sent");
         }
     }
 

@@ -13533,6 +13533,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(24)")
                         .HasColumnName("status");
 
+                    b.Property<string>("SupersedeReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("supersede_reason");
+
+                    b.Property<Guid?>("SupersededByExportId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("superseded_by_export_id");
+
                     b.Property<bool>("SuppressReversedPairs")
                         .HasColumnType("boolean")
                         .HasColumnName("suppress_reversed_pairs");

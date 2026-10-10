@@ -4402,6 +4402,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ErpDocumentNumber).HasMaxLength(120);
             entity.Property(x => x.RejectionReason).HasMaxLength(1000);
             entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.SupersedeReason).HasMaxLength(300);
             entity.Property(x => x.FilterJson).HasColumnType("json");
             entity.Property(x => x.TotalDebits).HasColumnType("decimal(18,4)");
             entity.Property(x => x.TotalCredits).HasColumnType("decimal(18,4)");

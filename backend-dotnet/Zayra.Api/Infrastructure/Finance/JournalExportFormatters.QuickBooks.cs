@@ -28,6 +28,7 @@ namespace Zayra.Api.Infrastructure.Finance;
 public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
 {
     public string Key => "quickbooks-iif";
+    public bool SingleEntity => true;
     public string DisplayName => "QuickBooks Desktop IIF (General Journal)" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "QuickBooks Desktop matches ACCNT on the account NAME in your chart of accounts and silently creates a new "
@@ -136,6 +137,7 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
 public sealed class QuickBooksOnlineJournalFormatter : IJournalExportFormatter
 {
     public string Key => "quickbooks-online-journal";
+    public bool SingleEntity => true;
     public string DisplayName => "QuickBooks Online journal entry import CSV" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "Columns follow QuickBooks Online's journal-entry import. Account is our external code when mapped, else our "
