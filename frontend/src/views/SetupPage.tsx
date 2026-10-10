@@ -120,6 +120,7 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 function CompaniesTab() {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
   const { isGroupScope, setSelectedCompany } = useCompany();
@@ -433,9 +434,9 @@ function CompaniesTab() {
           <FormField label="GOSI Employer ID">
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="ERP company code">
-            <input type="text" maxLength={30} value={form.erpCompanyCode ?? ''} onChange={(e) => f('erpCompanyCode', e.target.value.trim())} className="input w-full" placeholder="e.g. 1000" spellCheck={false} />
-            <p className="mt-1 text-xs text-slate-400">The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.</p>
+          <FormField label={t('ERP company code')}>
+            <input type="text" maxLength={30} value={form.erpCompanyCode ?? ''} onChange={(e) => f('erpCompanyCode', e.target.value.trim())} className="input w-full" placeholder="1000" spellCheck={false} />
+            <p className="mt-1 text-xs text-slate-400">{t('The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.')}</p>
           </FormField>
           <FormField label="Work Email Domain">
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">

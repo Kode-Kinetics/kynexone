@@ -27,6 +27,8 @@ const ar: Record<string, string> = {
   'Grades & salary bands': 'الدرجات ونطاقات الرواتب',
   'Fiscal years': 'السنوات المالية',
   'GL & rates': 'دفتر الأستاذ العام والمعدلات',
+  'ERP company code': 'رمز الشركة في نظام تخطيط الموارد',
+  'The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.': 'الرمز الذي يستخدمه نظام تخطيط الموارد لهذه المنشأة القانونية (رمز الشركة في SAP، أو مقطع الموازنة في Oracle). تُدرجه ملفات تصدير القيود في كل سطر.',
   'GCC compliance': 'الامتثال الخليجي',
   'Master data': 'البيانات الرئيسية',
   'Numbering': 'الترقيم',
