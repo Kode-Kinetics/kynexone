@@ -40,6 +40,7 @@ import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
+import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 // ── Payroll import/export helpers ───────────────────────────────────────────────
 
 const salaryStructuresImportExport = {
@@ -3321,6 +3322,8 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
 
   const debits  = journal?.entries.filter(e => e.entryType === 'DR') ?? [];
   const credits = journal?.entries.filter(e => e.entryType === 'CR') ?? [];
+  const selectedRun = runs.find(r => r.id === runId);
+  const exportPeriod = selectedRun ? `${selectedRun.year}-${String(selectedRun.month).padStart(2, '0')}` : undefined;
 
   return (
     <div className="space-y-4">
@@ -3399,6 +3402,9 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
           </div>
         </div>
       )}
+
+      {/* ERP hand-off: the posting file for the month, and what the ERP said about it. */}
+      <JournalExportsPanel defaultPeriod={exportPeriod} />
     </div>
   );
 }

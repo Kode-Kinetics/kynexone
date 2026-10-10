@@ -5,6 +5,7 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
+import { glErp } from './glErp';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
@@ -1385,6 +1386,7 @@ const en: Dict = {
   ...attendanceEvidence.en,
   ...employeeCompletion.en,
   ...setupExperience.en,
+  ...glErp.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -2757,6 +2759,7 @@ const ar: Dict = {
   ...attendanceEvidence.ar,
   ...employeeCompletion.ar,
   ...setupExperience.ar,
+  ...glErp.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 
