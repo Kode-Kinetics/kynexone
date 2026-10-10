@@ -1,5 +1,5 @@
-// GL → ERP hand-off: journal export panel (components/gl/JournalExportsPanel.tsx) and accounting periods
-// (components/gl/GlPeriodsPanel.tsx). Keys already translated elsewhere (Company, Open, Closed, Try again, …) are
+// GL → ERP hand-off: journal export panel (components/gl/JournalExportsPanel.tsx), accounting periods
+// (components/gl/GlPeriodsPanel.tsx), the chart's ERP account code, and statutory-rule approvals (StatutoryRulesPanel.tsx). Keys already translated elsewhere (Company, Open, Closed, Try again, …) are
 // reused, not redefined here.
 const ar: Record<string, string> = {
   'Send journal to your ERP': 'إرسال القيد إلى نظام تخطيط الموارد',
@@ -75,6 +75,42 @@ const ar: Record<string, string> = {
   'Why reopen this month? (required)': 'لماذا يُعاد فتح هذا الشهر؟ (مطلوب)',
   'Reopening…': 'جارٍ إعادة الفتح…',
   'Confirm reopen': 'تأكيد إعادة الفتح',
+  // ERP account code on the chart of accounts (components/gl/AccountsMappingsPanel.tsx)
+  'ERP account code': 'رمز الحساب في نظام تخطيط الموارد',
+  'The account code in your ERP if it differs from this one. Journal exports use it.':
+    'رمز الحساب في نظام تخطيط الموارد لديك إذا كان يختلف عن هذا الرمز. تستخدمه ملفات تصدير القيود.',
+  'No ERP account code': 'لا يوجد رمز حساب في نظام تخطيط الموارد',
+  // Tenant-wide statutory rules go through maker-checker (components/StatutoryRulesPanel.tsx)
+  'Sent for approval — a second administrator must approve this before payroll uses it.':
+    'أُرسل للموافقة — يجب أن يوافق عليه مسؤول ثانٍ قبل أن يستخدمه نظام الرواتب.',
+  'Pending approval': 'بانتظار الموافقة',
+  'Changes waiting for a second administrator': 'تغييرات بانتظار موافقة مسؤول ثانٍ',
+  'Payroll keeps using the current values until a second administrator approves. The person who asked cannot approve their own request.':
+    'يستمر نظام الرواتب في استخدام القيم الحالية حتى يوافق مسؤول ثانٍ. لا يمكن لمقدّم الطلب الموافقة على طلبه.',
+  'Pending changes could not be loaded.': 'تعذّر تحميل التغييرات المعلّقة.',
+  'Change {rule} to {value} from {date}': 'تغيير {rule} إلى {value} اعتبارًا من {date}',
+  'Retire {rule} from {date} and return to the platform value': 'إنهاء سريان {rule} اعتبارًا من {date} والعودة إلى قيمة المنصة',
+  'Reason: {reason}': 'السبب: {reason}',
+  'Requested by {name} on {date}': 'طلبه {name} في {date}',
+  'Unknown user': 'مستخدم غير معروف',
+  'Withdraw my request': 'سحب طلبي',
+  'Waiting for another administrator': 'بانتظار مسؤول آخر',
+  'Approve this change?': 'الموافقة على هذا التغيير؟',
+  'Reject this change?': 'رفض هذا التغيير؟',
+  'Payroll will use the new value from its start date. This is recorded in the audit log with your name.':
+    'سيستخدم نظام الرواتب القيمة الجديدة اعتبارًا من تاريخ بدئها. يُسجَّل ذلك في سجل التدقيق باسمك.',
+  'Nothing changes in payroll. The request is closed and recorded in the audit log.':
+    'لا يتغير شيء في الرواتب. يُغلق الطلب ويُسجَّل في سجل التدقيق.',
+  'Reason for rejecting (optional)': 'سبب الرفض (اختياري)',
+  'Approving…': 'جارٍ الموافقة…',
+  'Rejecting…': 'جارٍ الرفض…',
+  'Change approved. Payroll uses it from its start date.': 'تمت الموافقة على التغيير. يستخدمه نظام الرواتب اعتبارًا من تاريخ بدئه.',
+  'Change rejected. Nothing changed in payroll.': 'تم رفض التغيير. لم يتغير شيء في الرواتب.',
+  'Request withdrawn. Nothing changed in payroll.': 'تم سحب الطلب. لم يتغير شيء في الرواتب.',
+  'The decision could not be saved.': 'تعذّر حفظ القرار.',
+  'Request retirement': 'طلب إنهاء السريان',
+  'Retiring takes effect only after a second administrator approves it.': 'لا يسري إنهاء السريان إلا بعد موافقة مسؤول ثانٍ.',
+  'A second administrator must approve each change before payroll uses it.': 'يجب أن يوافق مسؤول ثانٍ على كل تغيير قبل أن يستخدمه نظام الرواتب.',
 };
 
 export const glErp = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

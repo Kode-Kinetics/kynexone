@@ -22,6 +22,8 @@ export interface GlAccount {
   name: string;
   accountType: string; // Asset | Liability | Equity | Income | Expense (older rows may say Revenue)
   isActive: boolean;
+  /** The account code in the client's ERP, when it differs from `code`. Journal exports send it. */
+  externalCode?: string | null;
 }
 
 export interface GlAccountRequest {
@@ -29,6 +31,8 @@ export interface GlAccountRequest {
   name: string;
   accountType: string;
   isActive: boolean;
+  /** Create: optional. Update: omitted/null leaves it unchanged, '' clears it. */
+  externalCode?: string | null;
 }
 
 export interface GlMappingRow {

@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Archive, CalendarClock, PencilLine, Plus, RefreshCw, Scale, Search, ShieldCheck } from 'lucide-react';
+import { Archive, CalendarClock, Hourglass, PencilLine, Plus, RefreshCw, Scale, Search, ShieldCheck, X } from 'lucide-react';
 import { countryPacksApi, statutoryRulesApi } from '../api/countryPacks';
-import type { CountryPackOption, CreateStatutoryRuleRequest, StatutoryRuleDto } from '../api/countryPacks';
+import type { CountryPackOption, CreateStatutoryRuleRequest, StatutoryPendingRequest, StatutoryRuleDto, StatutoryRuleWriteResult } from '../api/countryPacks';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useT } from '../hooks/useT';
@@ -41,6 +41,9 @@ const statusFor = (rule: StatutoryRuleDto): RuleStatus => {
   return msg('Active');
 };
 
+const ruleIdentity = (row: { countryCode: string; jurisdiction: string; ruleKey: string }) =>
+  `${row.countryCode}|${row.jurisdiction}|${row.ruleKey}`;
+
 const isPlatformManaged = (key: string) =>
   ['gosi.', 'saned.', 'gpssa.', 'grsia.', 'dews.', 'eosb.', 'leave.', 'workhours.'].some((prefix) => key.toLowerCase().startsWith(prefix))
   || ['nitaqat.default_target_ratio', 'emiratisation.target_ratio', 'emiratization.target_ratio', 'qatarization.target_ratio'].includes(key.toLowerCase());
@@ -51,8 +54,10 @@ export function StatutoryRulesPanel() {
   const format = useFormat();
   // Effective dates are calendar boundaries; preserve their UTC day in every viewer's zone.
   const dateLabel = (value?: string | null) => value ? format.date(value.slice(0, 10)) : t('Open-ended');
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canManage = hasPermission('payroll.rates.statutory_override');
+  // GET /api/finance/rates/statutory/pending is readable with any of these (RatesController.CanReadStatutory).
+  const canSeePending = canManage || hasPermission('payroll.rates.read') || hasPermission('payroll.rates.manage');
   const [rows, setRows] = useState<StatutoryRuleDto[]>([]);
   const [packs, setPacks] = useState<CountryPackOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,12 +73,32 @@ export function StatutoryRulesPanel() {
   const [formError, setFormError] = useState('');
   const [retiring, setRetiring] = useState<StatutoryRuleDto | null>(null);
   const [retireBusy, setRetireBusy] = useState(false);
+  // Every write is a maker-checker REQUEST (202): the table only ever shows what the server says
+  // payroll uses, and requests waiting for a second administrator are listed separately.
+  const [pending, setPending] = useState<StatutoryPendingRequest[]>([]);
+  const [pendingError, setPendingError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [deciding, setDeciding] = useState<{ request: StatutoryPendingRequest; action: 'approve' | 'reject' } | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [decisionError, setDecisionError] = useState('');
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
+
+  const loadPending = useCallback(async () => {
+    if (!canSeePending) return;
+    setPendingError('');
+    try {
+      setPending(await statutoryRulesApi.pending());
+    } catch (error) {
+      setPendingError(errorMessage(error, t('Pending changes could not be loaded.')));
+    }
+  }, [canSeePending, t]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError('');
     try {
-      const [ruleRows, countryPacks] = await Promise.all([statutoryRulesApi.list(), countryPacksApi.available()]);
+      const [ruleRows, countryPacks] = await Promise.all([statutoryRulesApi.list(), countryPacksApi.available(), loadPending()]);
       setRows(ruleRows);
       setPacks(countryPacks);
     } catch (error) {
@@ -81,7 +106,15 @@ export function StatutoryRulesPanel() {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [loadPending, t]);
+
+  const pendingByRule = useMemo(() => new Map(pending.map((request) => [ruleIdentity(request), request])), [pending]);
+
+  /** A 202 means "filed, not applied": say so, and leave the table exactly as the server reports it. */
+  const afterWrite = async (result: StatutoryRuleWriteResult) => {
+    if (result.outcome === 'pending') setNotice(t('Sent for approval — a second administrator must approve this before payroll uses it.'));
+    await load();
+  };
 
   useEffect(() => { void load(); }, [load]);
 
@@ -159,22 +192,24 @@ export function StatutoryRulesPanel() {
       return;
     }
     setSaving(true);
+    setNotice('');
     try {
+      let result: StatutoryRuleWriteResult;
       if (editing) {
-        await statutoryRulesApi.update(editing.id, {
+        result = await statutoryRulesApi.update(editing.id, {
           ruleValue: form.ruleValue.trim(), description: form.description.trim(),
           effectiveFrom: new Date(form.effectiveFrom).toISOString(),
           effectiveTo: form.effectiveTo ? new Date(form.effectiveTo).toISOString() : null,
         });
       } else {
-        await statutoryRulesApi.create({
+        result = await statutoryRulesApi.create({
           ...form, ruleValue: form.ruleValue.trim(), description: form.description.trim(),
           effectiveFrom: new Date(form.effectiveFrom).toISOString(),
           effectiveTo: form.effectiveTo ? new Date(form.effectiveTo).toISOString() : null,
         });
       }
       setFormOpen(false);
-      await load();
+      await afterWrite(result);
     } catch (error) {
       setFormError(errorMessage(error, t('The statutory override could not be saved.')));
     } finally {
@@ -186,10 +221,11 @@ export function StatutoryRulesPanel() {
     if (!retiring) return;
     setRetireBusy(true);
     setFormError('');
+    setNotice('');
     try {
-      await statutoryRulesApi.remove(retiring.id);
+      const result = await statutoryRulesApi.remove(retiring.id);
       setRetiring(null);
-      await load();
+      await afterWrite(result);
     } catch (error) {
       setFormError(errorMessage(error, t('The override could not be retired.')));
       setRetiring(null);
@@ -197,6 +233,49 @@ export function StatutoryRulesPanel() {
       setRetireBusy(false);
     }
   };
+
+  const openDecision = (request: StatutoryPendingRequest, action: 'approve' | 'reject') => {
+    setDeciding({ request, action });
+    setRejectReason('');
+    setDecisionError('');
+  };
+
+  const decide = async () => {
+    if (!deciding) return;
+    setDecisionBusy(true);
+    setDecisionError('');
+    try {
+      if (deciding.action === 'approve') await statutoryRulesApi.approve(deciding.request.id);
+      else await statutoryRulesApi.reject(deciding.request.id, rejectReason.trim());
+      setNotice(deciding.action === 'approve'
+        ? t('Change approved. Payroll uses it from its start date.')
+        : t('Change rejected. Nothing changed in payroll.'));
+      setDeciding(null);
+      await load();
+    } catch (error) {
+      setDecisionError(errorMessage(error, t('The decision could not be saved.')));
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
+  const withdraw = async (request: StatutoryPendingRequest) => {
+    setWithdrawingId(request.id);
+    setFormError('');
+    try {
+      await statutoryRulesApi.withdraw(request.id);
+      setNotice(t('Request withdrawn. Nothing changed in payroll.'));
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error, t('The decision could not be saved.')));
+    } finally {
+      setWithdrawingId(null);
+    }
+  };
+
+  const describeRequest = (request: StatutoryPendingRequest) => request.kind === 'retire'
+    ? t('Retire {rule} from {date} and return to the platform value', { rule: request.ruleKey, date: dateLabel(request.effectiveFrom) })
+    : t('Change {rule} to {value} from {date}', { rule: request.ruleKey, value: request.value, date: dateLabel(request.effectiveFrom) });
 
   const selectedFormRule = formCatalogue.find((row) => row.ruleKey === form.ruleKey);
 
@@ -254,6 +333,53 @@ export function StatutoryRulesPanel() {
         </div>
       </div>
 
+      {notice && (
+        <div role="status" className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice('')} className="shrink-0 text-xs font-semibold hover:underline" aria-label={t('Close')}><X className="h-3.5 w-3.5" aria-hidden /></button>
+        </div>
+      )}
+
+      {canSeePending && (pending.length > 0 || pendingError) && (
+        <section aria-labelledby="statutory-pending-heading" className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-400/20 dark:bg-amber-400/[0.06]">
+          <div className="flex items-start gap-2">
+            <Hourglass className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden />
+            <div className="min-w-0">
+              <h3 id="statutory-pending-heading" className="text-sm font-semibold text-slate-950 dark:text-white">{t('Changes waiting for a second administrator')}</h3>
+              <p className="mt-0.5 text-xs leading-5 text-slate-600 dark:text-slate-300">{t('Payroll keeps using the current values until a second administrator approves. The person who asked cannot approve their own request.')}</p>
+            </div>
+          </div>
+          {pendingError && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-300">{pendingError}</p>}
+          <ul className="mt-2 divide-y divide-amber-200/70 dark:divide-amber-400/10">
+            {pending.map((request) => {
+              const mine = !!user?.id && request.requestedById === user.id;
+              return (
+                <li key={request.id} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 text-xs leading-5 text-slate-700 dark:text-slate-200">
+                    <p className="font-semibold text-slate-900 dark:text-white"><span className="me-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{t('Pending approval')}</span>{describeRequest(request)}</p>
+                    <p className="text-slate-500 dark:text-slate-400">{request.countryCode} · {request.jurisdiction || t('All jurisdictions')}{request.kind === 'change' && request.effectiveTo ? ` · ${t('Until {date}', { date: dateLabel(request.effectiveTo) })}` : ''}</p>
+                    {request.reason && <p>{t('Reason: {reason}', { reason: request.reason })}</p>}
+                    <p className="text-slate-500 dark:text-slate-400">{t('Requested by {name} on {date}', { name: request.requestedByName || t('Unknown user'), date: format.date(request.requestedAt) })}</p>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    {request.canApprove ? (
+                      <>
+                        <button type="button" onClick={() => openDecision(request, 'approve')} className="btn-primary h-8 px-3 text-xs">{t('Approve')}</button>
+                        <button type="button" onClick={() => openDecision(request, 'reject')} className="btn-secondary h-8 px-3 text-xs">{t('Reject')}</button>
+                      </>
+                    ) : mine && canManage ? (
+                      <button type="button" onClick={() => void withdraw(request)} disabled={withdrawingId === request.id} className="btn-secondary h-8 px-3 text-xs disabled:opacity-50">{t('Withdraw my request')}</button>
+                    ) : (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{t('Waiting for another administrator')}</span>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
       {formError && !formOpen && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-300">{formError}</div>}
 
       <div className="surface overflow-hidden">
@@ -270,6 +396,7 @@ export function StatutoryRulesPanel() {
               <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
                 {visibleRows.map((rule) => {
                   const status = statusFor(rule);
+                  const waiting = pendingByRule.get(ruleIdentity(rule));
                   return (
                     <tr key={rule.id} className="align-top hover:bg-slate-50/70 dark:hover:bg-white/[0.02]">
                       <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${rule.isTenantOverride ? 'bg-amber-100 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300' : 'bg-blue-100 text-blue-800 dark:bg-blue-400/15 dark:text-blue-300'}`}>{t(rule.isTenantOverride ? 'Tenant override' : 'Platform rule')}</span></td>
@@ -278,9 +405,9 @@ export function StatutoryRulesPanel() {
                       <td className="px-3 py-3 font-mono text-xs font-semibold text-sapphire dark:text-cyanAccent">{rule.ruleValue}</td>
                       <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300"><span className="block">{dateLabel(rule.effectiveFrom)}</span><span className="text-slate-400">{t('Until {date}', { date: dateLabel(rule.effectiveTo) })}</span></td>
                       <td className="max-w-[260px] px-3 py-3 text-xs leading-5 text-slate-600 dark:text-slate-300">{rule.description || t('No source recorded')}</td>
-                      <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${status === 'Active' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-300' : status === 'Scheduled' ? 'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{t(status)}</span></td>
+                      <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${status === 'Active' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-300' : status === 'Scheduled' ? 'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{t(status)}</span>{waiting && status !== 'Retired' && <span className="mt-1.5 block w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300" title={describeRequest(waiting)}>{t('Pending approval')}</span>}</td>
                       <td className="px-3 py-3">
-                        {rule.isTenantOverride && canManage && status === 'Active' ? <div className="flex gap-2"><button type="button" onClick={() => openSupersede(rule)} className="text-xs font-semibold text-sapphire hover:underline"><PencilLine className="me-1 inline h-3.5 w-3.5" />{t('Supersede')}</button><button type="button" onClick={() => setRetiring(rule)} className="text-xs font-semibold text-red-600 hover:underline"><Archive className="me-1 inline h-3.5 w-3.5" />{t('Retire')}</button></div> : <span className="text-xs text-slate-400">{t(status === 'Scheduled' ? 'Scheduled' : 'Read only')}</span>}
+                        {rule.isTenantOverride && canManage && status === 'Active' && !waiting ? <div className="flex gap-2"><button type="button" onClick={() => openSupersede(rule)} className="text-xs font-semibold text-sapphire hover:underline"><PencilLine className="me-1 inline h-3.5 w-3.5" />{t('Supersede')}</button><button type="button" onClick={() => setRetiring(rule)} className="text-xs font-semibold text-red-600 hover:underline"><Archive className="me-1 inline h-3.5 w-3.5" />{t('Retire')}</button></div> : <span className="text-xs text-slate-400">{waiting && rule.isTenantOverride && status === 'Active' ? t('Pending approval') : t(status === 'Scheduled' ? 'Scheduled' : 'Read only')}</span>}
                       </td>
                     </tr>
                   );
@@ -291,10 +418,10 @@ export function StatutoryRulesPanel() {
         )}
       </div>
 
-      <Modal isOpen={formOpen} title={editing ? t('Supersede {rule}', { rule: editing.ruleKey }) : t('New statutory override')} onClose={() => setFormOpen(false)} size="lg" footer={<><button type="button" onClick={() => setFormOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={() => void save()} disabled={saving || (!editing && isPlatformManaged(form.ruleKey))} className="btn-primary disabled:opacity-50">{t(saving ? 'Saving…' : editing ? 'Create new version' : 'Create override')}</button></>}>
+      <Modal isOpen={formOpen} title={editing ? t('Supersede {rule}', { rule: editing.ruleKey }) : t('New statutory override')} onClose={() => setFormOpen(false)} size="lg" footer={<><button type="button" onClick={() => setFormOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={() => void save()} disabled={saving || (!editing && isPlatformManaged(form.ruleKey))} className="btn-primary disabled:opacity-50">{saving ? t('Sending…') : t('Send for approval')}</button></>}>
         <div className="space-y-4">
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
-            {t('Changes are tenant-wide and effective-dated. Platform-maintained statutory families cannot be overridden. New versions start no earlier than tomorrow so completed payroll remains reproducible.')}
+            {t('Changes are tenant-wide and effective-dated. Platform-maintained statutory families cannot be overridden. New versions start no earlier than tomorrow so completed payroll remains reproducible.')} {t('A second administrator must approve each change before payroll uses it.')}
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('Country pack')}
@@ -335,8 +462,31 @@ export function StatutoryRulesPanel() {
         </div>
       </Modal>
 
-      <Modal isOpen={!!retiring} title={t('Retire statutory override')} onClose={() => setRetiring(null)} footer={<><button type="button" onClick={() => setRetiring(null)} className="btn-secondary">{t('Keep override')}</button><button type="button" onClick={() => void retire()} disabled={retireBusy} className="btn-danger disabled:opacity-50">{t(retireBusy ? 'Retiring…' : 'Retire tomorrow')}</button></>}>
-        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{t('This closes {rule} prospectively and returns future calculations to the applicable platform value. Historical payroll keeps the version it used.', { rule: retiring?.ruleKey ?? '' })}</p>
+      <Modal isOpen={!!retiring} title={t('Retire statutory override')} onClose={() => setRetiring(null)} footer={<><button type="button" onClick={() => setRetiring(null)} className="btn-secondary">{t('Keep override')}</button><button type="button" onClick={() => void retire()} disabled={retireBusy} className="btn-danger disabled:opacity-50">{retireBusy ? t('Sending…') : t('Request retirement')}</button></>}>
+        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{t('This closes {rule} prospectively and returns future calculations to the applicable platform value. Historical payroll keeps the version it used.', { rule: retiring?.ruleKey ?? '' })} {t('Retiring takes effect only after a second administrator approves it.')}</p>
+      </Modal>
+
+      <Modal
+        isOpen={!!deciding}
+        title={deciding?.action === 'approve' ? t('Approve this change?') : t('Reject this change?')}
+        onClose={() => setDeciding(null)}
+        footer={<><button type="button" onClick={() => setDeciding(null)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={() => void decide()} disabled={decisionBusy} className={`${deciding?.action === 'approve' ? 'btn-primary' : 'btn-danger'} disabled:opacity-50`}>{decisionBusy ? t(deciding?.action === 'approve' ? 'Approving…' : 'Rejecting…') : t(deciding?.action === 'approve' ? 'Approve' : 'Reject')}</button></>}
+      >
+        {deciding && (
+          <div className="space-y-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+            <p className="font-semibold text-slate-900 dark:text-white">{describeRequest(deciding.request)}</p>
+            {deciding.request.reason && <p>{t('Reason: {reason}', { reason: deciding.request.reason })}</p>}
+            <p>{deciding.action === 'approve'
+              ? t('Payroll will use the new value from its start date. This is recorded in the audit log with your name.')
+              : t('Nothing changes in payroll. The request is closed and recorded in the audit log.')}</p>
+            {deciding.action === 'reject' && (
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">{t('Reason for rejecting (optional)')}
+                <textarea value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} rows={2} className="input-field mt-1 h-auto resize-y" />
+              </label>
+            )}
+            {decisionError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-400/10 dark:text-red-300">{decisionError}</p>}
+          </div>
+        )}
       </Modal>
     </div>
   );

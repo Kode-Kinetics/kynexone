@@ -275,11 +275,11 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   };
 
   // ── Account create / edit / delete ─────────────────────────────────────────
-  const [newAcct, setNewAcct] = useState({ code: '', name: '', accountType: 'Expense' });
+  const [newAcct, setNewAcct] = useState({ code: '', name: '', accountType: 'Expense', externalCode: '' });
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
   const [editing, setEditing] = useState<GlAccount | null>(null);
-  const [editForm, setEditForm] = useState({ code: '', name: '', accountType: 'Expense', isActive: true });
+  const [editForm, setEditForm] = useState({ code: '', name: '', accountType: 'Expense', isActive: true, externalCode: '' });
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -292,8 +292,11 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     setAdding(true);
     setAddError('');
     try {
-      await financeGlApi.createAccount({ code: newAcct.code.trim(), name: newAcct.name.trim(), accountType: newAcct.accountType, isActive: true }, scope);
-      setNewAcct({ code: '', name: '', accountType: newAcct.accountType });
+      await financeGlApi.createAccount(
+        { code: newAcct.code.trim(), name: newAcct.name.trim(), accountType: newAcct.accountType, isActive: true, externalCode: newAcct.externalCode.trim() || null },
+        scope,
+      );
+      setNewAcct({ code: '', name: '', accountType: newAcct.accountType, externalCode: '' });
       toast.success(t('Account added.'));
       await reloadAll();
     } catch (e) {
@@ -305,7 +308,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
 
   const openEdit = (a: GlAccount) => {
     setEditing(a);
-    setEditForm({ code: a.code, name: a.name, accountType: a.accountType === 'Revenue' ? 'Income' : a.accountType, isActive: a.isActive });
+    setEditForm({ code: a.code, name: a.name, accountType: a.accountType === 'Revenue' ? 'Income' : a.accountType, isActive: a.isActive, externalCode: a.externalCode ?? '' });
     setEditError('');
   };
 
@@ -321,7 +324,8 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     try {
       await financeGlApi.updateAccount(
         editing.id,
-        { code: editForm.code.trim(), name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive },
+        // Always sent: '' clears the ERP code on the server, a value replaces it.
+        { code: editForm.code.trim(), name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive, externalCode: editForm.externalCode.trim() },
         { force },
       );
       setEditing(null);
@@ -378,7 +382,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     ];
     return all
       .filter(({ account: a }) => !typeFilter || (typeFilter === 'Income' ? a.accountType === 'Income' || a.accountType === 'Revenue' : a.accountType === typeFilter))
-      .filter(({ account: a }) => !q || a.code.toLowerCase().includes(q) || a.name.toLowerCase().includes(q))
+      .filter(({ account: a }) => !q || a.code.toLowerCase().includes(q) || a.name.toLowerCase().includes(q) || (a.externalCode ?? '').toLowerCase().includes(q))
       .sort((x, y) => typeIndex(x.account.accountType) - typeIndex(y.account.accountType) || x.account.code.localeCompare(y.account.code, undefined, { numeric: true }));
   }, [ownAccounts, groupDefaults, query, typeFilter]);
   const groups = useMemo(() => {
@@ -572,10 +576,11 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           }
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[820px] text-sm">
               <thead className={theadClass}>
                 <tr>
                   <th scope="col" className={thClass}>{t('Code')}</th>
+                  <th scope="col" className={thClass}>{t('ERP account code')}</th>
                   <th scope="col" className={thClass}>{t('Name')}</th>
                   <th scope="col" className={thClass}>{t('Type')}</th>
                   <th scope="col" className={thClass}>{t('Scope')}</th>
@@ -586,7 +591,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               <tbody>
                 {groups.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-xs text-slate-500">
+                    <td colSpan={7} className="px-3 py-6 text-center text-xs text-slate-500">
                       {t('No accounts match your search.')}
                     </td>
                   </tr>
@@ -594,13 +599,16 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                 {groups.map((g) => (
                   <Fragment key={g.type}>
                     <tr className="border-t border-slate-200 bg-slate-50/70 dark:border-white/10 dark:bg-white/[0.02]">
-                      <th scope="colgroup" colSpan={6} className="px-3 py-1.5 text-start text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      <th scope="colgroup" colSpan={7} className="px-3 py-1.5 text-start text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {t('{type} ({count})', { type: accountTypeLabel(t, g.type), count: g.rows.length })}
                       </th>
                     </tr>
                     {g.rows.map(({ account: a, inherited }) => (
                       <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
                         <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
+                          {a.externalCode ? a.externalCode : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
+                        </td>
                         <td className="px-3 py-2">{a.name}</td>
                         <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
                         <td className="px-3 py-2">
@@ -646,7 +654,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               {inCompanyView ? t('Add a company account') : t('Add a group account')}
             </p>
             <FieldError error={addError} />
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr_160px_auto] sm:items-end">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr_160px_160px_auto] sm:items-end">
               <Field label={t('Code')} required>
                 <input value={newAcct.code} onChange={(e) => setNewAcct((x) => ({ ...x, code: e.target.value }))} className="input h-8 w-full font-mono text-xs" placeholder="5006" />
               </Field>
@@ -662,10 +670,23 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                   ))}
                 </select>
               </Field>
+              <Field label={t('ERP account code')}>
+                <input
+                  value={newAcct.externalCode}
+                  onChange={(e) => setNewAcct((x) => ({ ...x, externalCode: e.target.value }))}
+                  maxLength={60}
+                  className="input h-8 w-full font-mono text-xs"
+                  placeholder={t('Optional')}
+                  aria-describedby="gl-new-erp-code-hint"
+                />
+              </Field>
               <button type="button" onClick={addAccount} disabled={adding || !writable} className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
                 <Plus className="h-3 w-3" aria-hidden /> {t('Add account')}
               </button>
             </div>
+            <p id="gl-new-erp-code-hint" className="mt-1.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+              {t('ERP account code')}: {t('The account code in your ERP if it differs from this one. Journal exports use it.')}
+            </p>
           </div>
         )}
       </section>
@@ -829,6 +850,17 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               <option value="false">{t('Inactive')}</option>
             </select>
           </Field>
+          <div className="sm:col-span-2">
+            <Field label={t('ERP account code')} hint={t('The account code in your ERP if it differs from this one. Journal exports use it.')}>
+              <input
+                value={editForm.externalCode}
+                onChange={(e) => setEditForm((x) => ({ ...x, externalCode: e.target.value }))}
+                maxLength={60}
+                className="input w-full font-mono"
+                placeholder={t('Optional')}
+              />
+            </Field>
+          </div>
         </div>
       </Modal>
 
