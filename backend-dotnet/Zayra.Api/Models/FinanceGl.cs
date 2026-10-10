@@ -118,8 +118,16 @@ public static class PayrollGlCatalog
         new Driver("DED:STATUTORY_ER",      "Deduction — Social Insurance (Employer)", "2106", "Social Insurance Employer Payable",   "Liability"),
         new Driver("DED:TAX",               "Deduction — Income Tax",        "2102", "Income Tax Payable",              "Liability"),
         new Driver("DED:LOAN",              "Deduction — Loans & Advances",  "2107", "Loan & Advance Deductions Payable","Liability"),
-        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "2104", "Attendance Adjustment Payable",   "Liability"),
-        new Driver("DED:LEAVE",             "Deduction — Leave",             "2105", "Leave Deduction Payable",         "Liability"),
+        // Attendance / late / LOP and unpaid-leave deductions are NOT owed to anyone: the employer simply
+        // pays less for time not worked. They used to credit 2104 "Attendance Adjustment Payable" and 2105
+        // "Leave Deduction Payable" — liabilities with no remittance group (RemitGroups.ForSource returns
+        // null for "Attendance"/"Leave") and therefore nothing that could ever clear them, so they grew on
+        // the balance sheet every month. They are CONTRA-EXPENSES now, exactly like DED:SETTLEMENT_RECOVERY
+        // → 5113: the credit reduces payroll cost, which is what an unpaid absence economically is.
+        // 20261010120000_RouteAbsenceDeductionsToContraExpense moves existing tenants' untouched seeded
+        // rows; balances already sitting in 2104/2105 are left for the accountant to reclassify.
+        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "5008", "Attendance & Late Deductions (contra)",  "Expense"),
+        new Driver("DED:LEAVE",             "Deduction — Leave",             "5009", "Unpaid Leave & LOP Deductions (contra)", "Expense"),
         new Driver("DED:FIXED_DEDUCTION",   "Deduction — Fixed",             "2103", "Fixed Deductions Payable",        "Liability"),
         new Driver("DED:OTHER",             "Deduction — Other",             "2199", "Other Deductions",                "Liability"),
         // POD-C3 — recovery of a prior void's ALREADY-DISBURSED net pay. It credits the 1420 ASSET the
@@ -130,6 +138,9 @@ public static class PayrollGlCatalog
         // Balancing entries
         new Driver("EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense", "5101", "Employer Social Insurance Expense", "Expense"),
         new Driver("NET_PAYABLE",           "Net Salaries Payable",          "2100", "Salaries Payable",                "Liability"),
+        // The explicit sub-unit rounding difference the Lock journal books so the STORED journal balances
+        // to the halala instead of being accepted ±0.01 out. Balancing: never selected by component routing.
+        new Driver("ROUNDING",              "Payroll Rounding Differences",  "5199", "Payroll Rounding Differences",    "Expense"),
         // POD-B1 SETTLEMENT — the cash/bank asset the net-pay and statutory-remittance disbursements
         // credit when a liability is cleared. Name/code deliberately match the "1000 - Cash/Bank"
         // string the Loans/Advances/Bonus modules already post to (AdvancesController.cs:336,
@@ -195,8 +206,9 @@ public static class PayrollGlCatalog
         Sys(tenantId, "DED:STATUTORY_EE",      "Deduction — Social Ins (EE)",   GlDriverCategories.Deduction, "CR", "Liability", "2101", "Social Insurance Payable (Employee)","Statutory","Any",   null,               21),
         Sys(tenantId, "DED:TAX",               "Deduction — Income Tax",        GlDriverCategories.Deduction, "CR", "Liability", "2102", "Income Tax Payable",               "Tax",       "Any",    null,               22),
         Sys(tenantId, "DED:LOAN",              "Deduction — Loans & Advances",  GlDriverCategories.Deduction, "CR", "Liability", "2107", "Loan & Advance Deductions Payable","Loan",      "Any",    null,               23),
-        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Liability", "2104", "Attendance Adjustment Payable",    "Attendance","Any",    null,               24),
-        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Liability", "2105", "Leave Deduction Payable",          "Leave",     "Any",    null,               25),
+        // Contra-expense, not a payable — see the catalog note above (no remittance path ever cleared 2104/2105).
+        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Expense",   "5008", "Attendance & Late Deductions (contra)", "Attendance","Any", null,          24),
+        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Expense",   "5009", "Unpaid Leave & LOP Deductions (contra)","Leave",     "Any", null,          25),
         Sys(tenantId, "DED:FIXED_DEDUCTION",   "Deduction — Fixed",             GlDriverCategories.Deduction, "CR", "Liability", "2103", "Fixed Deductions Payable",         null,        "Exact",  "FIXED_DEDUCTION",  26),
         Sys(tenantId, "DED:OTHER",             "Deduction — Other",             GlDriverCategories.Deduction, "CR", "Liability", "2199", "Other Deductions",                 null,        "Any",    null,               98),
         // POD-C3 — Exact match on the RECEIVABLE_RECOVERY component code so it is selected ahead of the
@@ -243,6 +255,8 @@ public static class PayrollGlCatalog
         // account by accident. They are resolved EXCLUSIVELY by explicit GlAccountResolver.AccountLabel.
         Sys(tenantId, "EOSB_PROVISION",        "End of Service Benefit Provision",GlDriverCategories.Balancing,"CR","Liability","2310", "End of Service Benefit Provision", null,        "Any",    null,               108),
         Sys(tenantId, "SETTLEMENT_PAYABLE",    "Final Settlement Payable",      GlDriverCategories.Balancing, "CR", "Liability", "2320", "Final Settlement Payable",         null,        "Any",    null,               109),
+        // Balancing: resolved only by explicit key from the Lock journal's rounding line, never by routing.
+        Sys(tenantId, "ROUNDING",              "Payroll Rounding Differences",  GlDriverCategories.Balancing, "DR", "Expense",   "5199", "Payroll Rounding Differences",     null,        "Any",    null,               110),
     };
 
     private static GlDriver Sys(
@@ -418,6 +432,9 @@ public static class PayrollGlDescriptions
 {
     public const string NetPayable      = "Net salaries payable";
     public const string DeductionPrefix = "Payroll deduction: ";
+    public const string EmployerStatutory = "Employer statutory contributions (social insurance)";
+    /// <summary>The explicit sub-unit rounding line Lock books so the stored journal balances exactly.</summary>
+    public const string Rounding        = "Payroll rounding difference";
 }
 
 /// <summary>Statutory remittance groups for POD-B1. A group maps a deduction Source to the set of

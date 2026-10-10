@@ -168,8 +168,13 @@ public sealed class PayrollVoidService
         Guid? cascadedFromRunId,
         CancellationToken ct)
     {
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(
-            r => r.TenantId == tenantId && r.Id == runId, ct);
+        // P0 — FOR UPDATE on the run row. The void used to read the run without a lock, so two concurrent
+        // voids both read "Locked", both found the accrual live (!IsReversed) and both posted a full set
+        // of contras: the month reversed twice, every liability driven negative. VoidAsync runs this inside
+        // a transaction, so the second caller now waits for the first to commit, then reads "Voided" and is
+        // refused with already_voided. The same row lock serialises a void against a concurrent Lock.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct);
 
         if (run is null) return VoidRunResult.NotFound;
         if (run.Status == "Voided") return VoidRunResult.AlreadyVoided;
