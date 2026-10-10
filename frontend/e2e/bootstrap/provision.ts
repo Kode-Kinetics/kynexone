@@ -964,7 +964,10 @@ async function ensureLeaveAndAttendance(
       body: { fromDate, toDate, employeeId: null },
     }), `process attendance punches (${fromDate}..${toDate})`, [200, 201]);
 
-  const from = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+  // The imported history below is exactly days 5..1. Processing one extra day created a synthetic
+  // zero-minute Absent record at day 6; on Saturdays that is the current timesheet's Sunday start
+  // and makes an otherwise valid seven-hour entry look over-allocated.
+  const from = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
   const to = new Date(Date.now() - 1 * 86_400_000).toISOString().slice(0, 10);
   const existingAttendance = (await call(
     'GET', `/api/attendance/daily?from=${from}&to=${to}&page=1&pageSize=5`, { token: adminToken },
