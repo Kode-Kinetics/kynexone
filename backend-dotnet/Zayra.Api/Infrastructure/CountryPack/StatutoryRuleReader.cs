@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.CountryPack;
 
@@ -15,23 +18,83 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
     // caching the null-miss too preserves the exact fallback-default behaviour. Values are
     // byte-identical to the un-memoized query — only repeat lookups are served from the dict.
     private readonly Dictionary<(string cc, string jur, string ruleKey, DateOnly eff, Guid? tenantId), string?> _memo = new();
+    // Company overrides memoised separately and keyed WITH the company, so one entity's override can
+    // never be served to another entity (or to a company-less read) from the cache.
+    private readonly Dictionary<(string cc, string jur, string ruleKey, DateOnly eff, Guid tenantId, Guid companyId), string?> _companyMemo = new();
 
     public StatutoryRuleReader(ZayraDbContext db) => _db = db;
 
-    public async Task<decimal?> GetDecimalAsync(
+    public Task<decimal?> GetDecimalAsync(
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId = null, CancellationToken ct = default)
+        => GetDecimalAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct, companyId: null);
+
+    public Task<string?> GetStringAsync(
+        string countryCode, string jurisdiction, string ruleKey,
+        DateOnly effectiveDate, Guid? tenantId = null, CancellationToken ct = default)
+        => GetStringAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct, companyId: null);
+
+    public async Task<decimal?> GetDecimalAsync(
+        string countryCode, string jurisdiction, string ruleKey,
+        DateOnly effectiveDate, Guid? tenantId, CancellationToken ct, Guid? companyId)
     {
-        var raw = await FetchAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct);
+        var raw = await ResolveAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, companyId, ct);
         if (raw is null) return null;
         return decimal.TryParse(raw, System.Globalization.NumberStyles.Any,
             System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
     }
 
-    public async Task<string?> GetStringAsync(
+    public Task<string?> GetStringAsync(
         string countryCode, string jurisdiction, string ruleKey,
-        DateOnly effectiveDate, Guid? tenantId = null, CancellationToken ct = default)
-        => await FetchAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct);
+        DateOnly effectiveDate, Guid? tenantId, CancellationToken ct, Guid? companyId)
+        => ResolveAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, companyId, ct);
+
+    private async Task<string?> ResolveAsync(
+        string countryCode, string jurisdiction, string ruleKey,
+        DateOnly effectiveDate, Guid? tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId is { } cid && tenantId is { } tid
+            && await CompanyOverrideAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tid, cid, ct) is { } overrideValue)
+            return overrideValue;
+        return await FetchAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct);
+    }
+
+    /// <summary>
+    /// The Active, date-covered override THIS legal entity holds for the rule, or null. An override
+    /// that weakens a statutory floor against the platform value on that date is ignored — such a row
+    /// can only predate the write-time floor check, and paying it would underpay an employee.
+    /// </summary>
+    private async Task<string?> CompanyOverrideAsync(
+        string countryCode, string jurisdiction, string ruleKey,
+        DateOnly effectiveDate, Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        var key = (countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, companyId);
+        if (_companyMemo.TryGetValue(key, out var cached)) return cached;
+
+        var value = await ScopedBypass.TenantWide(_db.CompanyStatutoryOverrides, tenantId,
+                "Payroll statutory read for one legal entity: the run's company is pinned in the predicate below.")
+            .AsNoTracking()
+            .Where(o => o.CompanyId == companyId && !o.IsDeleted
+                     && o.Status == CompanyPolicyStatuses.Active
+                     && o.DataType != StatutoryOverridePolicy.RetireRequest
+                     && o.CountryCode == countryCode && o.Jurisdiction == jurisdiction && o.RuleKey == ruleKey
+                     && o.EffectiveFrom <= effectiveDate
+                     && (o.EffectiveTo == null || o.EffectiveTo >= effectiveDate))
+            .OrderByDescending(o => o.EffectiveFrom)
+            .Select(o => o.OverrideValue)
+            .FirstOrDefaultAsync(ct);
+
+        if (value is not null)
+        {
+            var platformRaw = await FetchAsync(countryCode, jurisdiction, ruleKey, effectiveDate, null, ct);
+            decimal? platform = decimal.TryParse(platformRaw, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : null;
+            if (StatutoryOverridePolicy.ViolatesDirection(ruleKey, value, platform)) value = null;
+        }
+
+        _companyMemo[key] = value;
+        return value;
+    }
 
     private async Task<string?> FetchAsync(
         string countryCode, string jurisdiction, string ruleKey,

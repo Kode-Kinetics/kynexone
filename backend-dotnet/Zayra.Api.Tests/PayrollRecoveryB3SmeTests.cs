@@ -62,6 +62,7 @@ public class PayrollRecoveryB3SmeTests
             new("permission", "payroll.approve"),
             new("permission", "payroll.lock"),
             new("permission", "payroll.export"),
+            new("permission", "finance.gl.period.reopen"),
             new("permission", "finance.gl.manage"),
             new("permission", "finance.gl.read"),
         }, "test")),
@@ -90,6 +91,10 @@ public class PayrollRecoveryB3SmeTests
         return new FinanceGlController(db)
         { ControllerContext = new ControllerContext { HttpContext = http } };
     }
+
+    // Reopening a closed period is never done by the person who closed it (strict SoD).
+    private static FinanceGlController GlReopener(ZayraDbContext db, Guid tenantId) =>
+        new(db) { ControllerContext = new ControllerContext { HttpContext = Ctx(tenantId, Guid.NewGuid()) } };
 
     // ── The control accounts this pod is accountable for, by their PERSISTED label ────────────────
     private const string NetPayable   = "2100 - Salaries Payable";
@@ -941,9 +946,9 @@ public class PayrollRecoveryB3SmeTests
             .Should().Be(voidRows, "a refused recovery must not claim on the audit chain that it happened");
 
         // An audited REOPEN is the stated exit; then the void proceeds.
-        (await Gl(db, tid).ReopenPeriod("2026-06", f.CompanyId, new GlPeriodActionRequest("payroll correction"), CancellationToken.None))
+        (await GlReopener(db, tid).ReopenPeriod("2026-06", f.CompanyId, new GlPeriodActionRequest("payroll correction"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
-        (await Gl(db, tid).ReopenPeriod("2026-07", f.CompanyId, new GlPeriodActionRequest("payroll correction"), CancellationToken.None))
+        (await GlReopener(db, tid).ReopenPeriod("2026-07", f.CompanyId, new GlPeriodActionRequest("payroll correction"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
         (await Void(db, tid, f.Run.Id, "June is wrong")).Should().BeOfType<OkObjectResult>();
@@ -976,7 +981,7 @@ public class PayrollRecoveryB3SmeTests
         (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == replacement.Id)).Status
             .Should().Be("Approved", "…and does not advance the run");
 
-        (await Gl(db, tid).ReopenPeriod("2026-06", f.CompanyId, new GlPeriodActionRequest("post the replacement"), CancellationToken.None))
+        (await GlReopener(db, tid).ReopenPeriod("2026-06", f.CompanyId, new GlPeriodActionRequest("post the replacement"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
         (await Payroll(db, tid, Checker).Lock(replacement.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();

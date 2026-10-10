@@ -95,6 +95,7 @@ public class BonusGlIndependentAuditTests
             new("permission", "payroll.write"),
             new("permission", "payroll.approve"),
             new("permission", "loans.write"),
+            new("permission", "finance.gl.period.reopen"),
             new("permission", "finance.gl.manage"),
             new("permission", "finance.gl.read"),
         }, "test")),

@@ -1,11 +1,15 @@
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
@@ -20,9 +24,15 @@ namespace Zayra.Api.Controllers;
 /// Phase 2 governance:
 ///  - Permission-first: finance.gl.read on reads, finance.gl.manage on account/mapping writes,
 ///    finance.gl.drivers.manage on driver writes (predicate authoring beyond Exact needs the
-///    higher-trust finance.gl.drivers.author_predicates).
+///    higher-trust finance.gl.drivers.author_predicates; pointing a driver's default at an account
+///    also needs finance.gl.manage). Reopening a closed period needs finance.gl.period.reopen and
+///    is never done by the person who closed it.
 ///  - Company-scoped: every companyId is authorised against the caller's entity scope; group-level
-///    (companyId == null) writes require a group-scoped caller.
+///    (companyId == null) writes require a group-scoped caller (judged on the caller's grant, not on
+///    the company selected in the switcher).
+///  - Journals store account LABELS as text ("code - name"), so an account whose label any journal
+///    line carries can no longer change code or name, and an account still referenced anywhere can
+///    be neither deactivated nor deleted.
 ///  - Audited with per-change diffs (before→after), not counts.
 /// </summary>
 [ApiController]
@@ -34,6 +44,14 @@ public class FinanceGlController : ControllerBase
     public FinanceGlController(ZayraDbContext db) => _db = db;
 
     public const string PredicateAuthorPermission = "finance.gl.drivers.author_predicates";
+    public const string PeriodReopenPermission = "finance.gl.period.reopen";
+
+    /// <summary>The only account types the chart accepts.</summary>
+    public static readonly IReadOnlyList<string> AccountTypes = new[] { "Asset", "Liability", "Equity", "Income", "Expense" };
+    private static readonly Regex CodePattern = new(@"^[A-Za-z0-9.\-]{1,30}$", RegexOptions.CultureInvariant);
+    public const int ImportMaxBytes = 2 * 1024 * 1024;
+    public const int ImportMaxRows = 5000;
+    private static readonly string[] CsvHeaders = { "Code", "Name", "Type", "IsActive" };
 
     // ── Chart of accounts ────────────────────────────────────────────────────
 
@@ -62,18 +80,25 @@ public class FinanceGlController : ControllerBase
 
         var code = (req.Code ?? "").Trim();
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Code and Name are required." });
+        if (CodeProblem(code) is { } codeErr) return BadRequest(new { code = "GL_ACCOUNT_CODE_INVALID", message = codeErr });
+        if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
         // IgnoreQueryFilters is intentional: the scope was authorised above (ScopeError); the WHERE
         // re-applies exact tenant+company scope so the uniqueness check sees the correct scope's rows.
         if (await _db.GlAccounts.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tid && a.CompanyId == companyId && a.Code == code, ct))
             return BadRequest(new { message = $"Account code '{code}' already exists in this scope." });
-        var acct = new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = req.Name.Trim(), AccountType = req.AccountType, IsActive = req.IsActive };
+        var acct = new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = req.Name.Trim(), AccountType = type, IsActive = req.IsActive };
         _db.GlAccounts.Add(acct);
         await WriteAudit("finance.gl.account.created", "GlAccount", acct.Id.ToString(), companyId,
-            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, companyId }, ct);
+            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, acct.IsActive, companyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, companyId));
     }
 
+    /// <summary>
+    /// Updates an account. <paramref name="force"/> is accepted for compatibility and ignored: a
+    /// deactivation that would leave a live mapping (in ANY company) or a driver default pointing at an
+    /// inactive account is refused, because posting would silently fall back to a different account.
+    /// </summary>
     [HttpPut("accounts/{id:guid}")]
     public async Task<IActionResult> UpdateAccount(Guid id, [FromQuery] bool force, [FromBody] GlAccountRequest req, CancellationToken ct)
     {
@@ -81,26 +106,22 @@ public class FinanceGlController : ControllerBase
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         // Residual Phase-1 guard graduated to server: blank name must 400, not 500 on Trim().
         if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Name is required." });
+        if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
 
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var acct = await _db.GlAccounts.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.TenantId == tid && a.Id == id, ct);
         if (acct is null) return NotFound();
         if (ScopeError(acct.CompanyId) is { } err) return err;
 
-        // Residual Phase-1 guard: cannot deactivate an account still referenced by a same-scope mapping
-        // unless force=true. The client confirm() was advisory only.
-        if (acct.IsActive && !req.IsActive && !force)
-        {
-            // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-            var inUse = await _db.GlAccountMappings.IgnoreQueryFilters()
-                .AnyAsync(m => m.TenantId == tid && m.CompanyId == acct.CompanyId && m.AccountId == id && m.IsActive, ct);
-            if (inUse) return BadRequest(new { message = "Account is referenced by an active mapping in this scope. Pass force=true to deactivate anyway.", requiresForce = true });
-        }
+        var newCode = string.IsNullOrWhiteSpace(req.Code) ? acct.Code : req.Code.Trim();
+        var newName = req.Name.Trim();
+        if (await AccountChangeProblemAsync(tid.Value, acct, newCode, newName, type, req.IsActive, ct) is { } problem)
+            return problem;
 
-        var before = new { acct.Name, acct.AccountType, acct.IsActive };
-        acct.Name = req.Name.Trim(); acct.AccountType = req.AccountType; acct.IsActive = req.IsActive; acct.UpdatedAtUtc = DateTime.UtcNow;
+        var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive };
+        acct.Code = newCode; acct.Name = newName; acct.AccountType = type; acct.IsActive = req.IsActive; acct.UpdatedAtUtc = DateTime.UtcNow;
         await WriteAudit("finance.gl.account.updated", "GlAccount", acct.Id.ToString(), acct.CompanyId,
-            new { before, after = new { acct.Name, acct.AccountType, acct.IsActive }, companyId = acct.CompanyId }, ct);
+            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive }, companyId = acct.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, acct.CompanyId));
     }
@@ -114,14 +135,122 @@ public class FinanceGlController : ControllerBase
         var acct = await _db.GlAccounts.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.TenantId == tid && a.Id == id, ct);
         if (acct is null) return NotFound();
         if (ScopeError(acct.CompanyId) is { } err) return err;
-        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        if (await _db.GlAccountMappings.IgnoreQueryFilters().AnyAsync(m => m.TenantId == tid && m.AccountId == id, ct))
-            return BadRequest(new { message = "Account is in use by a payroll mapping; remap it first." });
+        var refs = await AccountReferencesAsync(tid.Value, acct, ct);
+        if (refs.Count > 0)
+            return Conflict(new { code = "GL_ACCOUNT_IN_USE", message = $"Account '{Label(acct)}' is still used by {string.Join("; ", refs)}. Remap those first.", references = refs });
+        if (await IsLabelPostedAsync(tid.Value, Label(acct), ct))
+            return Conflict(new { code = "GL_ACCOUNT_POSTED", message = $"Journal lines already name '{Label(acct)}', so it cannot be deleted. Deactivate it instead once nothing maps to it." });
         _db.GlAccounts.Remove(acct);
         await WriteAudit("finance.gl.account.deleted", "GlAccount", acct.Id.ToString(), acct.CompanyId,
-            new { code = acct.Code, name = acct.Name, companyId = acct.CompanyId }, ct);
+            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, companyId = acct.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    /// <summary>The chart of accounts for one scope as CSV (Code, Name, Type, IsActive).</summary>
+    [HttpGet("accounts/export")]
+    public async Task<IActionResult> ExportAccounts([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.read") && !HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+        var rows = await ScopeAccounts(tid.Value, companyId).AsNoTracking().OrderBy(a => a.Code).ToListAsync(ct);
+        var csv = Csv.Build(CsvHeaders, rows.Select(a => (IReadOnlyList<object?>)new object?[] { a.Code, a.Name, a.AccountType, a.IsActive ? "true" : "false" }));
+        var suffix = companyId is null ? "group" : companyId.Value.ToString("N")[..8];
+        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"chart_of_accounts_{suffix}_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    /// <summary>
+    /// Imports a chart of accounts for one scope from CSV (Code, Name, Type, IsActive). ALL OR NOTHING:
+    /// every row is validated first against the same rules as the single-account endpoints (code
+    /// format, account type, posted-label immutability, in-use deactivation); any error writes nothing.
+    /// <paramref name="dryRun"/> defaults to true so a file is always previewed before it is applied.
+    /// </summary>
+    [HttpPost("accounts/import")]
+    [RequestSizeLimit(ImportMaxBytes + 64 * 1024)]
+    public async Task<IActionResult> ImportAccounts([FromQuery] Guid? companyId, [FromQuery] bool? dryRun, IFormFile? file, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+        var isDryRun = dryRun ?? true;
+
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = "Attach the CSV as the multipart field 'file'." });
+        if (file.Length > ImportMaxBytes)
+            return BadRequest(new { message = $"The file is larger than {ImportMaxBytes / (1024 * 1024)} MB. Split it and import the parts." });
+
+        string content;
+        using (var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            content = await reader.ReadToEndAsync(ct);
+
+        List<Dictionary<string, string>> rows;
+        try { rows = Csv.Parse(content); }
+        catch (CsvShapeException ex) { return BadRequest(new { message = ex.Message }); }
+        var headerLine = content.Split('\n').FirstOrDefault()?.Trim().TrimStart('﻿') ?? "";
+        var headers = Csv.SplitRow(headerLine).Select(h => h.Trim()).ToList();
+        var missing = CsvHeaders.Where(h => !headers.Contains(h, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (missing.Count > 0)
+            return BadRequest(new { message = $"The file is missing the column(s) {string.Join(", ", missing)}. Expected: {string.Join(",", CsvHeaders)}." });
+        if (rows.Count > ImportMaxRows)
+            return BadRequest(new { message = $"The file has {rows.Count} rows; the limit is {ImportMaxRows}." });
+
+        // IgnoreQueryFilters-free: ScopeAccounts pins tenant + exact scope.
+        var existing = await ScopeAccounts(tid.Value, companyId).ToListAsync(ct);
+        var byCode = existing.GroupBy(a => a.Code, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var errors = new List<object>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var creates = new List<GlAccount>();
+        var updates = new List<(GlAccount Account, object Before, string Name, string Type, bool Active)>();
+        var unchanged = 0;
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var rowNum = i + 2;
+            var r = rows[i];
+            var code = r.GetValueOrDefault("Code", "").Trim();
+            var name = r.GetValueOrDefault("Name", "").Trim();
+            var typeRaw = r.GetValueOrDefault("Type", "").Trim();
+            var activeRaw = r.GetValueOrDefault("IsActive", "").Trim();
+            void Fail(string message) => errors.Add(new { row = rowNum, code, message });
+
+            if (CodeProblem(code) is { } codeErr) { Fail(codeErr); continue; }
+            if (!seen.Add(code)) { Fail($"Code '{code}' appears more than once in this file."); continue; }
+            if (name.Length == 0) { Fail("Name is required."); continue; }
+            if (CanonicalAccountType(typeRaw) is not { } type) { Fail($"Type '{typeRaw}' is not one of {string.Join(", ", AccountTypes)}."); continue; }
+            bool active;
+            if (activeRaw.Length == 0 || activeRaw.Equals("true", StringComparison.OrdinalIgnoreCase) || activeRaw == "1" || activeRaw.Equals("yes", StringComparison.OrdinalIgnoreCase)) active = true;
+            else if (activeRaw.Equals("false", StringComparison.OrdinalIgnoreCase) || activeRaw == "0" || activeRaw.Equals("no", StringComparison.OrdinalIgnoreCase)) active = false;
+            else { Fail($"IsActive '{activeRaw}' must be true or false."); continue; }
+
+            if (!byCode.TryGetValue(code, out var acct))
+            {
+                creates.Add(new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = name, AccountType = type, IsActive = active });
+                continue;
+            }
+            if (acct.Name == name && string.Equals(acct.AccountType, type, StringComparison.Ordinal) && acct.IsActive == active) { unchanged++; continue; }
+            if (await AccountChangeProblemMessageAsync(tid.Value, acct, acct.Code, name, type, active, ct) is { } problem) { Fail(problem); continue; }
+            updates.Add((acct, new { acct.Code, acct.Name, acct.AccountType, acct.IsActive }, name, type, active));
+        }
+
+        var body = new { dryRun = isDryRun, created = creates.Count, updated = updates.Count, unchanged, errors };
+        if (errors.Count > 0) return isDryRun ? Ok(body) : UnprocessableEntity(body);
+        if (isDryRun) return Ok(body);
+
+        foreach (var a in creates) _db.GlAccounts.Add(a);
+        foreach (var (a, _, name, type, active) in updates)
+        {
+            a.Name = name; a.AccountType = type; a.IsActive = active; a.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        await WriteAudit("finance.gl.account.imported", "GlAccount", companyId?.ToString() ?? "tenant-default", companyId,
+            new
+            {
+                companyId, fileName = file.FileName, created = creates.Select(a => new { a.Code, a.Name, a.AccountType, a.IsActive }),
+                updated = updates.Select(u => new { before = u.Before, after = new { u.Account.Code, Name = u.Name, AccountType = u.Type, IsActive = u.Active } }),
+                unchanged,
+            }, ct);
+        await _db.SaveChangesAsync(ct);
+        return Ok(body);
     }
 
     // ── Driver → account mappings ────────────────────────────────────────────
@@ -150,6 +279,7 @@ public class FinanceGlController : ControllerBase
             label = d.Label,
             category = d.Category,
             accountType = d.AccountType,
+            allowedAccountTypes = AllowedAccountTypes(d),
             defaultAccount = $"{d.DefaultCode} - {d.DefaultName}",
             mappedAccountId = byDriver.TryGetValue(d.Key, out var m) ? m.AccountId : (Guid?)null,
             segmentCostCenterId = byDriver.TryGetValue(d.Key, out var m2) ? m2.SegmentCostCenterId : null,
@@ -160,16 +290,23 @@ public class FinanceGlController : ControllerBase
 
     /// <summary>Replace the scope's driver→account mappings wholesale. CRITICAL: the wholesale delete
     /// is scoped to (Tenant, CompanyId==scope) so saving one company's overrides never wipes another
-    /// company's overrides or the tenant defaults.</summary>
+    /// company's overrides or the tenant defaults. A new or changed mapping must point at an ACTIVE
+    /// account whose type the driver accepts (earnings → Expense, deductions → the type the catalog
+    /// declares, NET_PAYABLE → Liability).</summary>
     [HttpPut("mappings")]
     public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] List<GlMappingRequest> mappings, CancellationToken ct)
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } err) return err;
+        mappings ??= new List<GlMappingRequest>();
+
+        var dupes = mappings.GroupBy(m => (m.DriverKey ?? "").Trim(), StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+        if (dupes.Count > 0)
+            return BadRequest(new { code = "GL_MAPPING_DUPLICATE_DRIVER", message = $"Each driver may be mapped once. Repeated: {string.Join(", ", dupes)}." });
 
         var drivers = await LoadScopedDriversAsync(tid.Value, companyId, ct);
-        var validDrivers = drivers.Select(d => d.Key).ToHashSet();
+        var driverByKey = drivers.ToDictionary(d => d.Key, StringComparer.Ordinal);
 
         // Account cross-scope rule: a mapping may only reference an account visible to its scope —
         // the company's own accounts + tenant defaults. A tenant-default save (companyId==null) may
@@ -177,8 +314,8 @@ public class FinanceGlController : ControllerBase
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var accountSet = await _db.GlAccounts.IgnoreQueryFilters()
             .Where(a => a.TenantId == tid && (companyId != null ? (a.CompanyId == companyId || a.CompanyId == null) : a.CompanyId == null))
-            .Select(a => a.Id).ToListAsync(ct);
-        var accounts = accountSet.ToHashSet();
+            .Select(a => new { a.Id, a.Code, a.Name, a.AccountType, a.IsActive }).ToListAsync(ct);
+        var accounts = accountSet.ToDictionary(a => a.Id);
 
         // Cost-center overlay must be visible to the scope (tenant-global cost centers + company scope).
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
@@ -187,22 +324,41 @@ public class FinanceGlController : ControllerBase
             .Select(c => c.Id).ToListAsync(ct);
         var costCenters = validCostCenters.ToHashSet();
 
-        foreach (var m in mappings)
-        {
-            if (!validDrivers.Contains(m.DriverKey)) return BadRequest(new { message = $"Unknown driver '{m.DriverKey}' in this scope." });
-            if (!accounts.Contains(m.AccountId)) return BadRequest(new { message = $"Account '{m.AccountId}' is not visible to this scope." });
-            if (m.SegmentCostCenterId is { } cc && !costCenters.Contains(cc)) return BadRequest(new { message = $"Cost center '{cc}' is not visible to this scope." });
-        }
-
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var existing = await _db.GlAccountMappings.IgnoreQueryFilters()
             .Where(m => m.TenantId == tid && m.CompanyId == companyId).ToListAsync(ct);
+        var prevByDriver = existing.GroupBy(m => m.DriverKey).ToDictionary(g => g.Key, g => g.First());
 
-        // Per-driver before→after diff for the audit trail (who repointed which driver, from what to what).
-        var prevByDriver = existing.ToDictionary(m => m.DriverKey, m => m.AccountId);
+        foreach (var m in mappings)
+        {
+            if (!driverByKey.TryGetValue(m.DriverKey ?? "", out var driver)) return BadRequest(new { message = $"Unknown driver '{m.DriverKey}' in this scope." });
+            if (!accounts.TryGetValue(m.AccountId, out var account)) return BadRequest(new { message = $"Account '{m.AccountId}' is not visible to this scope." });
+            if (m.SegmentCostCenterId is { } cc && !costCenters.Contains(cc)) return BadRequest(new { message = $"Cost center '{cc}' is not visible to this scope." });
+            var changed = !prevByDriver.TryGetValue(m.DriverKey!, out var prev) || prev.AccountId != m.AccountId;
+            if (!changed) continue;
+            if (!account.IsActive)
+                return BadRequest(new { code = "GL_MAPPING_INACTIVE_ACCOUNT", message = $"'{account.Code} - {account.Name}' is inactive. Activate it or choose another account for {driver.Label}." });
+            var allowed = AllowedAccountTypes(driver);
+            if (!allowed.Contains(account.AccountType, StringComparer.OrdinalIgnoreCase))
+                return BadRequest(new
+                {
+                    code = "GL_MAPPING_TYPE_MISMATCH",
+                    message = $"{driver.Label} posts to a {string.Join(" or ", allowed)} account, but '{account.Code} - {account.Name}' is {account.AccountType}. Choose a matching account.",
+                });
+        }
+
+        // Per-driver before→after diff for the audit trail (who repointed which driver, from what to what,
+        // and which cost-centre tag it carries).
         var diff = mappings
-            .Where(m => !prevByDriver.TryGetValue(m.DriverKey, out var old) || old != m.AccountId)
-            .Select(m => new { m.DriverKey, oldAccount = prevByDriver.TryGetValue(m.DriverKey, out var o) ? o : (Guid?)null, newAccount = m.AccountId })
+            .Where(m => !prevByDriver.TryGetValue(m.DriverKey, out var old) || old.AccountId != m.AccountId || old.SegmentCostCenterId != m.SegmentCostCenterId)
+            .Select(m => new
+            {
+                m.DriverKey,
+                oldAccount = prevByDriver.TryGetValue(m.DriverKey, out var o) ? o.AccountId : (Guid?)null,
+                newAccount = m.AccountId,
+                oldCostCenter = prevByDriver.TryGetValue(m.DriverKey, out var oc) ? oc.SegmentCostCenterId : null,
+                newCostCenter = m.SegmentCostCenterId,
+            })
             .ToList();
         var removed = prevByDriver.Keys.Except(mappings.Select(m => m.DriverKey)).ToList();
 
@@ -245,13 +401,17 @@ public class FinanceGlController : ControllerBase
 
         var validation = await ValidateDriverAsync(tid.Value, companyId, req, null, ct);
         if (validation is not null) return validation;
+        if (string.IsNullOrWhiteSpace(req.DefaultCode))
+            return BadRequest(new { code = "GL_DRIVER_DEFAULT_REQUIRED", message = "Choose the account this driver posts to by default (DefaultCode)." });
+        var defaultAccount = await DefaultAccountAsync(tid.Value, companyId, req.DefaultCode, ct);
+        if (defaultAccount.Error is not null) return defaultAccount.Error;
 
         var driver = new GlDriver
         {
             TenantId = tid.Value, CompanyId = companyId,
             Key = req.Key.Trim(), Label = (req.Label ?? "").Trim(), Category = req.Category,
             PostingSide = req.PostingSide, AccountType = string.IsNullOrWhiteSpace(req.AccountType) ? "Expense" : req.AccountType,
-            DefaultCode = (req.DefaultCode ?? "").Trim(), DefaultName = (req.DefaultName ?? "").Trim(),
+            DefaultCode = defaultAccount.Account!.Code, DefaultName = defaultAccount.Account.Name,
             MatchSource = string.IsNullOrWhiteSpace(req.MatchSource) ? null : req.MatchSource,
             MatchMode = string.IsNullOrWhiteSpace(req.MatchMode) ? GlDriverMatchModes.Exact : req.MatchMode,
             MatchComponentCode = string.IsNullOrWhiteSpace(req.MatchComponentCode) ? null : req.MatchComponentCode.Trim(),
@@ -261,7 +421,8 @@ public class FinanceGlController : ControllerBase
         };
         _db.GlDrivers.Add(driver);
         await WriteAudit("finance.gl.driver.created", "GlDriver", driver.Id.ToString(), companyId,
-            new { driver.Key, driver.Category, driver.MatchMode, driver.MatchSource, driver.MatchComponentCode, companyId }, ct);
+            new { driver.Key, driver.Label, driver.Category, driver.PostingSide, driver.AccountType, driver.DefaultCode, driver.DefaultName,
+                  driver.MatchMode, driver.MatchSource, driver.MatchComponentCode, driver.IsActive, companyId }, ct);
         await _db.SaveChangesAsync(ct);
 
         var shadowed = await IsFullyShadowedBySystemExactAsync(tid.Value, companyId, driver, ct);
@@ -277,36 +438,49 @@ public class FinanceGlController : ControllerBase
         var driver = await _db.GlDrivers.IgnoreQueryFilters().FirstOrDefaultAsync(d => d.TenantId == tid && d.Id == id, ct);
         if (driver is null) return NotFound();
         if (ScopeError(driver.CompanyId) is { } err) return err;
+        if (!string.IsNullOrWhiteSpace(req.Key) && !string.Equals(req.Key.Trim(), driver.Key, StringComparison.Ordinal))
+            return BadRequest(new { code = "GL_DRIVER_KEY_IMMUTABLE", message = $"A driver's key cannot change ('{driver.Key}'): mappings and journals refer to it. Create a new driver instead." });
 
+        // DefaultCode: a change must point at an existing ACTIVE account visible to the driver's scope,
+        // and repointing posting is an account decision, so it also needs finance.gl.manage.
+        GlAccount? newDefault = null;
+        var requestedDefault = (req.DefaultCode ?? "").Trim();
+        if (requestedDefault.Length > 0 && !string.Equals(requestedDefault, driver.DefaultCode, StringComparison.Ordinal))
+        {
+            var d = await DefaultAccountAsync(tid.Value, driver.CompanyId, requestedDefault, ct);
+            if (d.Error is not null) return d.Error;
+            newDefault = d.Account;
+        }
+
+        var before = DriverAuditView(driver);
         if (driver.IsSystem)
         {
-            // System rows: only Label, DefaultCode/Name, SortOrder, IsActive are editable.
-            var before = new { driver.Label, driver.DefaultCode, driver.DefaultName, driver.SortOrder, driver.IsActive };
+            // System rows: only Label, default account, SortOrder are editable. They cannot be switched
+            // off — payroll's journal relies on every system driver existing.
             if (req.Category != driver.Category || req.PostingSide != driver.PostingSide
                 || (req.MatchSource ?? "") != (driver.MatchSource ?? "") || (req.MatchMode ?? "") != driver.MatchMode
                 || (req.MatchComponentCode ?? "") != (driver.MatchComponentCode ?? "")
                 || req.EmitsEmployerExpensePair != driver.EmitsEmployerExpensePair
                 || (req.PairedExpenseDriverKey ?? "") != (driver.PairedExpenseDriverKey ?? ""))
-                return BadRequest(new { message = "System driver routing fields are read-only. Only label, default account, sort order and active state may change." });
+                return BadRequest(new { message = "System driver routing fields are read-only. Only label, default account and sort order may change." });
+            if (!req.IsActive)
+                return BadRequest(new { code = "GL_SYSTEM_DRIVER_REQUIRED", message = "System drivers cannot be deactivated: payroll posting depends on every one of them. Remap its account instead." });
             driver.Label = (req.Label ?? driver.Label).Trim();
-            driver.DefaultCode = (req.DefaultCode ?? driver.DefaultCode).Trim();
-            driver.DefaultName = (req.DefaultName ?? driver.DefaultName).Trim();
+            if (newDefault is not null) { driver.DefaultCode = newDefault.Code; driver.DefaultName = newDefault.Name; }
             driver.SortOrder = req.SortOrder;
-            driver.IsActive = req.IsActive;
             driver.UpdatedAtUtc = DateTime.UtcNow;
             await WriteAudit("finance.gl.driver.updated", "GlDriver", driver.Id.ToString(), driver.CompanyId,
-                new { system = true, before, after = new { driver.Label, driver.DefaultCode, driver.DefaultName, driver.SortOrder, driver.IsActive } }, ct);
+                new { system = true, before, after = DriverAuditView(driver) }, ct);
             await _db.SaveChangesAsync(ct);
             return Ok(ToDriverDto(driver, driver.CompanyId));
         }
 
-        // Custom row: full validation (key cannot change to a system key; predicate authoring gated).
-        var v = await ValidateDriverAsync(tid.Value, driver.CompanyId, req, driver.Id, ct);
+        // Custom row: full validation (predicate authoring gated, category→side enforced).
+        var v = await ValidateDriverAsync(tid.Value, driver.CompanyId, req with { Key = driver.Key }, driver.Id, ct);
         if (v is not null) return v;
-        var beforeCustom = new { driver.Key, driver.Category, driver.MatchMode, driver.MatchSource, driver.MatchComponentCode, driver.EmitsEmployerExpensePair, driver.PairedExpenseDriverKey };
-        driver.Key = req.Key.Trim(); driver.Label = (req.Label ?? "").Trim(); driver.Category = req.Category;
+        driver.Label = (req.Label ?? "").Trim(); driver.Category = req.Category;
         driver.PostingSide = req.PostingSide; driver.AccountType = string.IsNullOrWhiteSpace(req.AccountType) ? "Expense" : req.AccountType;
-        driver.DefaultCode = (req.DefaultCode ?? "").Trim(); driver.DefaultName = (req.DefaultName ?? "").Trim();
+        if (newDefault is not null) { driver.DefaultCode = newDefault.Code; driver.DefaultName = newDefault.Name; }
         driver.MatchSource = string.IsNullOrWhiteSpace(req.MatchSource) ? null : req.MatchSource;
         driver.MatchMode = string.IsNullOrWhiteSpace(req.MatchMode) ? GlDriverMatchModes.Exact : req.MatchMode;
         driver.MatchComponentCode = string.IsNullOrWhiteSpace(req.MatchComponentCode) ? null : req.MatchComponentCode.Trim();
@@ -314,7 +488,7 @@ public class FinanceGlController : ControllerBase
         driver.PairedExpenseDriverKey = string.IsNullOrWhiteSpace(req.PairedExpenseDriverKey) ? null : req.PairedExpenseDriverKey.Trim();
         driver.IsActive = req.IsActive; driver.SortOrder = req.SortOrder; driver.UpdatedAtUtc = DateTime.UtcNow;
         await WriteAudit("finance.gl.driver.updated", "GlDriver", driver.Id.ToString(), driver.CompanyId,
-            new { system = false, before = beforeCustom, after = new { driver.Key, driver.Category, driver.MatchMode, driver.MatchSource, driver.MatchComponentCode, driver.EmitsEmployerExpensePair, driver.PairedExpenseDriverKey } }, ct);
+            new { system = false, before, after = DriverAuditView(driver) }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDriverDto(driver, driver.CompanyId));
     }
@@ -329,9 +503,15 @@ public class FinanceGlController : ControllerBase
         if (driver is null) return NotFound();
         if (ScopeError(driver.CompanyId) is { } err) return err;
         if (driver.IsSystem) return BadRequest(new { message = "System drivers cannot be deleted." });
+        // A tenant-wide driver is visible to every company, so a mapping in ANY company may use it.
+        var mappedIn = await Mappings(tid.Value)
+            .Where(m => m.DriverKey == driver.Key && (driver.CompanyId == null || m.CompanyId == driver.CompanyId))
+            .Select(m => m.CompanyId).Distinct().ToListAsync(ct);
+        if (mappedIn.Count > 0)
+            return Conflict(new { code = "GL_DRIVER_IN_USE", message = $"Driver '{driver.Key}' is still mapped to an account in {mappedIn.Count} scope(s). Remove those mappings first, or deactivate the driver." });
         _db.GlDrivers.Remove(driver);
         await WriteAudit("finance.gl.driver.deleted", "GlDriver", driver.Id.ToString(), driver.CompanyId,
-            new { driver.Key, companyId = driver.CompanyId }, ct);
+            new { driver.Key, before = DriverAuditView(driver), companyId = driver.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -346,7 +526,7 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
 
         var seeded = await GlDriverSeeder.SeedTenantDefaultsAsync(_db, tid.Value, ct);
         // Configurability keystone: seed the data-driven pay-component defaults alongside the GL defaults
@@ -461,10 +641,12 @@ public class FinanceGlController : ControllerBase
         return Ok(ToPeriodDto(existing));
     }
 
+    /// <summary>Reopens a closed period. Needs finance.gl.period.reopen (Admin by default) and is refused
+    /// to the person who closed it — reopening the books is a second person's decision.</summary>
     [HttpPost("periods/{period}/reopen")]
     public async Task<IActionResult> ReopenPeriod(string period, [FromQuery] Guid? companyId, [FromBody] GlPeriodActionRequest? req, CancellationToken ct)
     {
-        if (!HasPermission("finance.gl.manage")) return Forbid();
+        if (!HasPermission(PeriodReopenPermission)) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } err) return err;
         if (string.IsNullOrWhiteSpace(req?.Reason))
@@ -475,21 +657,28 @@ public class FinanceGlController : ControllerBase
             .FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == companyId && p.Period == period, ct);
         if (existing is null || existing.Status != GlPeriodStatuses.Closed)
             return BadRequest(new { message = $"Period {period} is not closed in this scope." });
+        var me = this.GetUserId();
+        if (me is null || me == existing.ClosedByUserId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = "GL_PERIOD_REOPEN_SOD",
+                message = $"You closed {period}, so someone else must reopen it. Ask another person with period-reopen rights.",
+            });
 
         existing.Status = GlPeriodStatuses.Open;
         existing.ReopenedAtUtc = DateTime.UtcNow;
-        existing.ReopenedByUserId = this.GetUserId();
+        existing.ReopenedByUserId = me;
         existing.ReopenedByName = UserName();
         existing.ReopenReason = req.Reason;
         existing.UpdatedAtUtc = DateTime.UtcNow;
         await WriteAudit("finance.gl.period.reopened", "GlPeriodClose", existing.Id.ToString(), companyId,
-            new { period, companyId, before = GlPeriodStatuses.Closed, after = GlPeriodStatuses.Open, reason = req.Reason }, ct);
+            new { period, companyId, before = GlPeriodStatuses.Closed, after = GlPeriodStatuses.Open, reason = req.Reason, closedBy = existing.ClosedByUserId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToPeriodDto(existing));
     }
 
     private static bool IsValidPeriod(string period) =>
-        System.Text.RegularExpressions.Regex.IsMatch(period ?? string.Empty, @"^\d{4}-(0[1-9]|1[0-2])$");
+        Regex.IsMatch(period ?? string.Empty, @"^\d{4}-(0[1-9]|1[0-2])$");
 
     private string? UserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name");
 
@@ -499,6 +688,128 @@ public class FinanceGlController : ControllerBase
         p.ClosedAtUtc, p.ClosedByName, p.ClosedReason,
         p.ReopenedAtUtc, p.ReopenedByName, p.ReopenReason,
     };
+
+    // ── Account rules ─────────────────────────────────────────────────────────
+
+    public static string? CanonicalAccountType(string? type) =>
+        AccountTypes.FirstOrDefault(t => string.Equals(t, (type ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private static object AccountTypeRefusal(string? type) => new
+    {
+        code = "GL_ACCOUNT_TYPE_INVALID",
+        message = $"Account type '{type}' is not recognised. Use one of: {string.Join(", ", AccountTypes)}.",
+        allowed = AccountTypes,
+    };
+
+    private static string? CodeProblem(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return "Code is required.";
+        return CodePattern.IsMatch(code) ? null
+            : $"Code '{code}' may only use letters, digits, '.' and '-', up to 30 characters.";
+    }
+
+    private static string Label(GlAccount a) => $"{a.Code} - {a.Name}";
+
+    /// <summary>Accounts that a driver may post to. System drivers: exactly what the catalog declares.
+    /// Custom drivers: earnings are expenses; deductions a liability, a receivable (asset) or a
+    /// contra-expense; balancing drivers their declared type.</summary>
+    public static IReadOnlyList<string> AllowedAccountTypes(GlDriver d)
+    {
+        if (d.IsSystem || d.Category == GlDriverCategories.Balancing)
+            return new[] { CanonicalAccountType(d.AccountType) ?? d.AccountType };
+        return d.Category switch
+        {
+            GlDriverCategories.Earning => new[] { "Expense" },
+            GlDriverCategories.Deduction => new[] { "Liability", "Asset", "Expense" },
+            _ => new[] { CanonicalAccountType(d.AccountType) ?? d.AccountType },
+        };
+    }
+
+    private IQueryable<GlAccount> ScopeAccounts(Guid tid, Guid? companyId) =>
+        ScopedBypass.TenantWide(_db.GlAccounts, tid,
+                "Chart of accounts of one authorised scope; the company is pinned in the predicate below.")
+            .Where(a => a.CompanyId == companyId);
+
+    private IQueryable<GlAccountMapping> Mappings(Guid tid) =>
+        ScopedBypass.TenantWide(_db.GlAccountMappings, tid,
+            "Reference checks must see mappings in EVERY company of the tenant: a company may map a tenant-default account.");
+
+    private IQueryable<GlDriver> Drivers(Guid tid) =>
+        ScopedBypass.TenantWide(_db.GlDrivers, tid,
+            "Reference checks must see drivers in every company of the tenant.");
+
+    private Task<bool> IsLabelPostedAsync(Guid tid, string label, CancellationToken ct) =>
+        _db.FinanceGlEntries.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tid && (e.DebitAccount == label || e.CreditAccount == label), ct);
+
+    /// <summary>Everything that points at an account: mappings in ANY company (an account id is unique,
+    /// and a company may map a tenant-default account) and active drivers whose default is its code.</summary>
+    private async Task<List<string>> AccountReferencesAsync(Guid tid, GlAccount acct, CancellationToken ct)
+    {
+        var refs = new List<string>();
+        var mapped = await Mappings(tid).AsNoTracking()
+            .Where(m => m.AccountId == acct.Id && m.IsActive)
+            .Select(m => new { m.DriverKey, m.CompanyId }).ToListAsync(ct);
+        foreach (var m in mapped)
+            refs.Add($"the {m.DriverKey} mapping ({(m.CompanyId is null ? "group default" : "company " + m.CompanyId)})");
+        var drivers = await Drivers(tid).AsNoTracking()
+            .Where(d => d.IsActive && d.DefaultCode == acct.Code
+                     && (acct.CompanyId == null || d.CompanyId == acct.CompanyId))
+            .Select(d => d.Key).ToListAsync(ct);
+        foreach (var d in drivers) refs.Add($"the default account of driver {d}");
+        return refs;
+    }
+
+    private async Task<IActionResult?> AccountChangeProblemAsync(Guid tid, GlAccount acct, string newCode, string newName, string newType, bool newActive, CancellationToken ct)
+    {
+        var (status, code, message, extra) = await AccountChangeProblemCoreAsync(tid, acct, newCode, newName, newType, newActive, ct);
+        if (status is null) return null;
+        var body = new { code, message, references = extra };
+        return status == StatusCodes.Status400BadRequest ? BadRequest(body) : Conflict(body);
+    }
+
+    private async Task<string?> AccountChangeProblemMessageAsync(Guid tid, GlAccount acct, string newCode, string newName, string newType, bool newActive, CancellationToken ct)
+        => (await AccountChangeProblemCoreAsync(tid, acct, newCode, newName, newType, newActive, ct)).Message;
+
+    /// <summary>The single rule set for changing an account (form and CSV import alike).</summary>
+    private async Task<(int? Status, string? Code, string? Message, List<string>? References)> AccountChangeProblemCoreAsync(
+        Guid tid, GlAccount acct, string newCode, string newName, string newType, bool newActive, CancellationToken ct)
+    {
+        var codeChanged = !string.Equals(newCode, acct.Code, StringComparison.Ordinal);
+        var nameChanged = !string.Equals(newName, acct.Name, StringComparison.Ordinal);
+        if (codeChanged && CodeProblem(newCode) is { } codeErr)
+            return (StatusCodes.Status400BadRequest, "GL_ACCOUNT_CODE_INVALID", codeErr, null);
+        if ((codeChanged || nameChanged) && await IsLabelPostedAsync(tid, Label(acct), ct))
+            return (StatusCodes.Status409Conflict, "GL_ACCOUNT_POSTED",
+                $"Journal lines already name '{Label(acct)}', so its code and name can no longer change — the books would stop matching the chart. Create a new account and remap the drivers to it.", null);
+        if (codeChanged && await ScopeAccounts(tid, acct.CompanyId).AnyAsync(a => a.Code == newCode && a.Id != acct.Id, ct))
+            return (StatusCodes.Status400BadRequest, "GL_ACCOUNT_CODE_TAKEN", $"Account code '{newCode}' already exists in this scope.", null);
+
+        if (!string.Equals(newType, acct.AccountType, StringComparison.OrdinalIgnoreCase))
+        {
+            var mappedKeys = await Mappings(tid).AsNoTracking().Where(m => m.AccountId == acct.Id)
+                .Select(m => m.DriverKey).Distinct().ToListAsync(ct);
+            if (mappedKeys.Count > 0)
+            {
+                var drivers = await Drivers(tid).AsNoTracking().Where(d => mappedKeys.Contains(d.Key)).ToListAsync(ct);
+                var compiled = PayrollGlCatalog.SystemDriverSeeds(tid).Where(d => mappedKeys.Contains(d.Key) && drivers.All(x => x.Key != d.Key));
+                var clash = drivers.Concat(compiled).Where(d => !AllowedAccountTypes(d).Contains(newType, StringComparer.OrdinalIgnoreCase))
+                    .Select(d => d.Key).Distinct().ToList();
+                if (clash.Count > 0)
+                    return (StatusCodes.Status409Conflict, "GL_ACCOUNT_TYPE_IN_USE",
+                        $"'{Label(acct)}' is mapped to {string.Join(", ", clash)}, which cannot post to a {newType} account. Remap those drivers first.", clash);
+            }
+        }
+
+        if (acct.IsActive && !newActive)
+        {
+            var refs = await AccountReferencesAsync(tid, acct, ct);
+            if (refs.Count > 0)
+                return (StatusCodes.Status409Conflict, "GL_ACCOUNT_IN_USE",
+                    $"'{Label(acct)}' is still used by {string.Join("; ", refs)}. Remap those first — an inactive account must not receive postings.", refs);
+        }
+        return (null, null, null, null);
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -516,6 +827,33 @@ public class FinanceGlController : ControllerBase
         return rows.GroupBy(d => d.Key).Select(g => g.OrderByDescending(d => d.CompanyId != null).First()).ToList();
     }
 
+    /// <summary>The ACTIVE account a driver default names, visible to the driver's scope (its company's
+    /// accounts, then tenant defaults). Setting it is an account decision: finance.gl.manage.</summary>
+    private async Task<(IActionResult? Error, GlAccount? Account)> DefaultAccountAsync(Guid tid, Guid? companyId, string? defaultCode, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage"))
+            return (StatusCode(StatusCodes.Status403Forbidden, new { code = "GL_DRIVER_DEFAULT_NEEDS_MANAGE", message = "Choosing the account a driver posts to needs the finance.gl.manage permission." }), null);
+        var code = (defaultCode ?? "").Trim();
+        var candidates = await ScopedBypass.TenantWide(_db.GlAccounts, tid,
+                "Driver default account lookup: the driver's company and tenant defaults, pinned below.")
+            .AsNoTracking()
+            .Where(a => a.Code == code && (a.CompanyId == null || (companyId != null && a.CompanyId == companyId)))
+            .ToListAsync(ct);
+        var account = candidates.OrderByDescending(a => a.CompanyId != null).FirstOrDefault();
+        if (account is null)
+            return (BadRequest(new { code = "GL_DRIVER_DEFAULT_UNKNOWN", message = $"There is no account '{code}' in this scope's chart of accounts. Create it first, then choose it." }), null);
+        if (!account.IsActive)
+            return (BadRequest(new { code = "GL_DRIVER_DEFAULT_INACTIVE", message = $"'{Label(account)}' is inactive and cannot be a driver's default." }), null);
+        return (null, account);
+    }
+
+    private static object DriverAuditView(GlDriver d) => new
+    {
+        d.Key, d.Label, d.Category, d.PostingSide, d.AccountType, d.DefaultCode, d.DefaultName,
+        d.MatchMode, d.MatchSource, d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey,
+        d.IsActive, d.SortOrder,
+    };
+
     private async Task<IActionResult?> ValidateDriverAsync(Guid tid, Guid? companyId, GlDriverRequest req, Guid? selfId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(req.Key)) return BadRequest(new { message = "Key is required." });
@@ -523,6 +861,14 @@ public class FinanceGlController : ControllerBase
         if (req.Category is not (GlDriverCategories.Earning or GlDriverCategories.Deduction or GlDriverCategories.Balancing))
             return BadRequest(new { message = "Category must be Earning, Deduction or Balancing." });
         if (req.PostingSide is not ("DR" or "CR")) return BadRequest(new { message = "PostingSide must be DR or CR." });
+        // An earning is an expense debit; a deduction is a credit (a payable, a receivable relieved or a
+        // contra-expense). The opposite side would post the journal backwards.
+        if (req.Category == GlDriverCategories.Earning && req.PostingSide != "DR")
+            return BadRequest(new { code = "GL_DRIVER_SIDE_INVALID", message = "An earning driver posts on the debit side (DR)." });
+        if (req.Category == GlDriverCategories.Deduction && req.PostingSide != "CR")
+            return BadRequest(new { code = "GL_DRIVER_SIDE_INVALID", message = "A deduction driver posts on the credit side (CR)." });
+        if (!string.IsNullOrWhiteSpace(req.AccountType) && CanonicalAccountType(req.AccountType) is null)
+            return BadRequest(AccountTypeRefusal(req.AccountType));
         var mode = string.IsNullOrWhiteSpace(req.MatchMode) ? GlDriverMatchModes.Exact : req.MatchMode;
         if (mode is not (GlDriverMatchModes.Exact or GlDriverMatchModes.Suffix or GlDriverMatchModes.Prefix or GlDriverMatchModes.Any))
             return BadRequest(new { message = "MatchMode must be Exact, Suffix, Prefix or Any." });
@@ -585,14 +931,15 @@ public class FinanceGlController : ControllerBase
                        && (d.CompanyId == null || d.CompanyId == companyId) && d.Id != driver.Id, ct);
     }
 
-    /// <summary>Authorises a companyId against the caller's entity scope. Fail-closed: a company write
-    /// requires CanAccessCompany; a group-default (companyId==null) write requires a group scope.</summary>
+    /// <summary>Authorises a companyId against the caller's entity scope. Fail-closed: a company scope
+    /// requires CanAccessCompany; a group-default (companyId==null) scope requires a GROUP grant —
+    /// judged by HasGroupEntityScope (the caller's grant), not GetEntityScope (which narrows to the
+    /// company selected in the switcher and used to 403 a group admin viewing one company).</summary>
     private IActionResult? ScopeError(Guid? companyId)
     {
-        var scope = this.GetEntityScope();
         if (companyId is null)
-            return scope.IsGroupLevel ? null : Forbid();
-        return scope.CanAccessCompany(companyId) ? null : Forbid();
+            return this.HasGroupEntityScope() ? null : Forbid();
+        return this.GetEntityScope().CanAccessCompany(companyId) ? null : Forbid();
     }
 
     private bool HasPermission(string permission) =>

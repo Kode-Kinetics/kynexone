@@ -86,21 +86,25 @@ public static class OvertimeStatutoryContextResolver
         string jurisdiction,
         DateOnly effectiveDate,
         Guid tenantId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? companyId = null)
     {
+        // companyId: the legal entity whose approved company override (if any) wins for the four
+        // numeric keys below — each is in StatutoryOverridePolicy.CompanyAppliedKeys. ot.hourly_base
+        // is deliberately read WITHOUT the company: it is not company-overridable, so it never is.
         var standard = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleStandardMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleStandardMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? StatutoryStandardMultiplierFallback;
         var restDay = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleRestDayMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleRestDayMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? standard;
         var holiday = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleHolidayMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleHolidayMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? standard;
         var hourlyBase = await reader.GetStringAsync(
             countryCode, jurisdiction, RuleHourlyBase, effectiveDate, tenantId, ct);
         var monthlyHours = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleStandardMonthlyHours, effectiveDate, tenantId, ct);
+            countryCode, jurisdiction, RuleStandardMonthlyHours, effectiveDate, tenantId, ct, companyId);
 
         return new OvertimeStatutoryContext(
             OvertimeStatutoryCalculator.BaseIsFullWage(hourlyBase),

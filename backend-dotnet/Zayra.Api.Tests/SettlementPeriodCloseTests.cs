@@ -64,6 +64,7 @@ public class SettlementPeriodCloseTests
             new(ClaimTypes.Name, "finance-user"),
             new("permission", "finance.gl.manage"),
             new("permission", "finance.gl.read"),
+            new("permission", "finance.gl.period.reopen"),
         };
         var httpCtx = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
         var ctrl = new FinanceGlController(db);
@@ -485,7 +486,7 @@ public class SettlementPeriodCloseTests
             .Should().Be(0, "a closed period must post no accrual");
 
         // Reopen (reason required) then Lock succeeds.
-        (await gl.ReopenPeriod("2026-06", run.CompanyId, new GlPeriodActionRequest("correction window"), CancellationToken.None))
+        (await MakeGlCtrl(db, tenantId).ReopenPeriod("2026-06", run.CompanyId, new GlPeriodActionRequest("correction window"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         (await payroll.Lock(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         (await db.FinanceGlEntries.CountAsync(x => x.SourceModule == "Payroll" && x.SourceEntityId == run.Id))
@@ -511,7 +512,7 @@ public class SettlementPeriodCloseTests
         blocked.Should().BeOfType<UnprocessableEntityObjectResult>();
         (await RunGl(db, run.Id)).Any(l => l.EventType == GlEventTypes.NetSettlement).Should().BeFalse();
 
-        (await gl.ReopenPeriod("2026-07", run.CompanyId, new GlPeriodActionRequest("reopen"), CancellationToken.None))
+        (await MakeGlCtrl(db, tenantId).ReopenPeriod("2026-07", run.CompanyId, new GlPeriodActionRequest("reopen"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         (await payroll.SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest("R", new DateOnly(2026, 7, 15)), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
@@ -529,9 +530,13 @@ public class SettlementPeriodCloseTests
 
         (await gl.ClosePeriod("2026-06", null, new GlPeriodActionRequest("group close"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
-        (await gl.ReopenPeriod("2026-06", null, new GlPeriodActionRequest(null), CancellationToken.None))
+        var reopener = MakeGlCtrl(db, tenantId);
+        (await reopener.ReopenPeriod("2026-06", null, new GlPeriodActionRequest(null), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>("reopen without a reason must be rejected");
-        (await gl.ReopenPeriod("2026-06", null, new GlPeriodActionRequest("auditor request"), CancellationToken.None))
+        // Strict SoD: the person who closed the period cannot reopen it.
+        (await gl.ReopenPeriod("2026-06", null, new GlPeriodActionRequest("my own close"), CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        (await reopener.ReopenPeriod("2026-06", null, new GlPeriodActionRequest("auditor request"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
 
         var audits = await db.AuditLogs.AsNoTracking().Where(a => a.TenantId == tenantId).Select(a => a.Action).ToListAsync();
