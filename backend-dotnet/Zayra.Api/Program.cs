@@ -435,6 +435,7 @@ builder.Services.AddScoped<IAiAdvisoryService, AiAdvisoryService>();
 builder.Services.AddScoped<Zayra.Api.Application.Shifts.IRosterPlannerService, Zayra.Api.Infrastructure.Shifts.RosterPlannerService>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupStatutoryDefaults, Zayra.Api.Infrastructure.Setup.SetupStatutoryDefaults>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupAssistantService, Zayra.Api.Infrastructure.Setup.SetupAssistantService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Setup.PolicyExtractionService>();
 builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiService, Zayra.Api.Infrastructure.Recruitment.RecruitmentAiService>();
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();

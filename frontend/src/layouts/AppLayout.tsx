@@ -65,7 +65,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
   const { isFeatureEnabled } = useFeatureFlags();
-  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view'));
+  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view') || hasPermission('ess.read'));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
   const [commandOpen, setCommandOpen] = useState(false);

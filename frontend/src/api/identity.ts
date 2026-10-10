@@ -286,7 +286,7 @@ export const usersApi = {
   get: (userId: string) =>
     client.get<UserListItem>(`/api/access/users/${userId}`).then(r => r.data),
 
-  create: (body: { email: string; fullName: string; password: string; roles: string[] }) =>
+  create: (body: { email: string; fullName: string; password: string; roles: string[]; companyId?: string; isGroupScope?: boolean }) =>
     client.post('/api/access/users', body).then(r => r.data),
 
   update: (userId: string, body: { fullName?: string; phoneNumber?: string; preferredLanguage?: string; timezone?: string }) =>

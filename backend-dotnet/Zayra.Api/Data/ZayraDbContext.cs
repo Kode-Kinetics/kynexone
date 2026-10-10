@@ -1774,7 +1774,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("branches");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Branch codes are business identifiers within a legal entity. Group tenants
+            // commonly have an HQ in every company, so tenant-wide uniqueness prevents a
+            // valid second company from being configured.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });
@@ -2188,6 +2191,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("leave_policies");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.AnnualEntitlementDays).HasPrecision(6,2);
+            entity.Property(x => x.ProratePartialMonths).HasDefaultValue(false);
             entity.Property(x => x.CarryForwardMax).HasPrecision(6,2);
             entity.Property(x => x.EncashmentMaxDays).HasPrecision(6,2);
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);
@@ -4489,6 +4493,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.PublicationStatus).HasMaxLength(24).HasDefaultValue("Draft");
+            entity.Property(x => x.ContentSha256).HasMaxLength(64).HasDefaultValue(string.Empty);
+            entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PublicationStatus });
             entity.HasMany(x => x.Chunks).WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
         });
 

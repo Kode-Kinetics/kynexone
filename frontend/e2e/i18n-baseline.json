@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-07",
+  "pinnedAt": "2026-10-10",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -46,11 +46,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 5701,
-    "rawStatus": 58,
-    "locale": 220,
+    "hardcoded": 5599,
+    "rawStatus": 57,
+    "locale": 214,
     "icons": 0,
-    "files": 126
+    "files": 124
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -223,8 +223,7 @@
       "hardcoded": 46
     },
     "src/components/AiSetupAssistant.tsx": {
-      "hardcoded": 100,
-      "locale": 1
+      "hardcoded": 96
     },
     "src/components/CompanySwitcher.tsx": {
       "hardcoded": 3
@@ -281,9 +280,6 @@
     "src/components/OfferPlacementFields.tsx": {
       "hardcoded": 3
     },
-    "src/components/PolicyDocumentManager.tsx": {
-      "hardcoded": 19
-    },
     "src/components/ReadinessChecklist.tsx": {
       "hardcoded": 14
     },
@@ -339,16 +335,14 @@
     },
     "src/components/loans/LoanPaymentsTab.tsx": {
       "hardcoded": 37,
-      "rawStatus": 2,
-      "locale": 1
+      "rawStatus": 2
     },
     "src/components/loans/LoanPoliciesTab.tsx": {
       "hardcoded": 24,
       "locale": 1
     },
     "src/components/loans/LoanStatement.tsx": {
-      "hardcoded": 5,
-      "locale": 2
+      "hardcoded": 5
     },
     "src/components/payroll/SaudiBankExportPanel.tsx": {
       "rawStatus": 3,
@@ -409,7 +403,7 @@
       "locale": 1
     },
     "src/views/BenefitsPage.tsx": {
-      "hardcoded": 120,
+      "hardcoded": 107,
       "locale": 1
     },
     "src/views/CompliancePage.tsx": {
@@ -421,7 +415,7 @@
       "hardcoded": 2
     },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 189,
+      "hardcoded": 181,
       "rawStatus": 3,
       "locale": 5
     },
@@ -454,17 +448,12 @@
       "locale": 2
     },
     "src/views/LoginPage.tsx": {
-      "hardcoded": 21
+      "hardcoded": 2
     },
     "src/views/MigrationImportPage.tsx": {
       "hardcoded": 53,
       "rawStatus": 1,
       "locale": 2
-    },
-    "src/views/MyBenefitsPage.tsx": {
-      "hardcoded": 10,
-      "rawStatus": 1,
-      "locale": 1
     },
     "src/views/NewHiresPage.tsx": {
       "hardcoded": 31,
@@ -525,7 +514,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 280,
+      "hardcoded": 278,
       "rawStatus": 1,
       "locale": 3
     },
@@ -534,9 +523,9 @@
       "locale": 8
     },
     "src/views/TenantAdminPage.tsx": {
-      "hardcoded": 112,
+      "hardcoded": 87,
       "rawStatus": 1,
-      "locale": 13
+      "locale": 12
     },
     "src/views/TimesheetsPage.tsx": {
       "hardcoded": 59,
@@ -544,7 +533,7 @@
       "locale": 5
     },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 203,
+      "hardcoded": 201,
       "locale": 3
     }
   }

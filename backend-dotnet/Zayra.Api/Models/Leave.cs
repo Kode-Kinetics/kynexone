@@ -38,6 +38,11 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     public bool AppliesOnProbation { get; set; }
     public decimal AnnualEntitlementDays { get; set; }
     public string AccrualMethod { get; set; } = "Yearly";
+    /// <summary>
+    /// For monthly accrual, credit the calendar-day service fraction in joining and leaving
+    /// months. False preserves an existing policy's more generous full-month credit.
+    /// </summary>
+    public bool ProratePartialMonths { get; set; }
     public decimal CarryForwardMax { get; set; }
     public int CarryForwardExpiry { get; set; }
     public bool EncashmentAllowed { get; set; }

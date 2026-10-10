@@ -1,320 +1,153 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Upload, FileText, Trash2, MessageSquareText, CheckCircle, XCircle, Clock, Send,
-} from 'lucide-react';
-import { policyDocumentsApi } from '../api/policyDocuments';
-import type { PolicyDocument, PolicyAskResponse } from '../api/policyDocuments';
-import { notifyApiError } from '../api/client';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fmtBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function StatusBadge({ status }: { status: PolicyDocument['status'] }) {
-  if (status === 'Ready') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-        <CheckCircle className="h-3 w-3" />
-        Ready
-      </span>
-    );
-  }
-  if (status === 'Failed') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
-        <XCircle className="h-3 w-3" />
-        Failed
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-      <Clock className="h-3 w-3" />
-      Processing
-    </span>
-  );
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { FileText } from 'lucide-react';
+import { policyDocumentsApi, type PolicyDocument, type PolicyAskResponse } from '../api/policyDocuments';
+import { companiesApi, type CompanyDto } from '../api/organization';
+import { useAuth } from '../contexts/AuthContext';
+import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import { Modal } from './Modal';
+import { PolicyAnswer } from './PolicyAnswer';
 
 export function PolicyDocumentManager() {
+  const id = useId();
+  const t = useT(); const fmt = useFormat(); const { hasRole, hasPermission } = useAuth();
+  const canAuthor = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  const canPublish = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager'));
   const [documents, setDocuments] = useState<PolicyDocument[]>([]);
+  const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [question, setQuestion] = useState('');
-  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [page, setPage] = useState(0);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [review, setReview] = useState<PolicyDocument | null>(null);
+  const [text, setText] = useState('');
+  const [textLoading, setTextLoading] = useState(false);
+  const [companyId, setCompanyId] = useState('');
+  const [from, setFrom] = useState(''); const [to, setTo] = useState('');
+  const [confirmation, setConfirmation] = useState<{ document: PolicyDocument; action: 'delete' | 'withdraw' } | null>(null);
+  const [question, setQuestion] = useState(''); const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState<PolicyAskResponse | null>(null);
   const [askError, setAskError] = useState('');
-
+  const generation = useRef(0);
+  const filePicker = useRef<HTMLInputElement>(null);
+  const uploadRequest = useRef<AbortController | null>(null);
+  const askRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { generation.current++; uploadRequest.current?.abort(); askRequest.current?.abort(); }, []);
   const load = useCallback(async () => {
+    const token = ++generation.current; setLoading(true); setError('');
+    try { const docs = await policyDocumentsApi.list(); if (token === generation.current) { setDocuments(docs); setPage(0); } }
+    catch { if (token === generation.current) setError(t('Could not load the policy library. Try Refresh.')); }
+    finally { if (token === generation.current) setLoading(false); }
+  }, [t]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!canPublish) return;
+    let active = true;
+    companiesApi.listAll().then(items => { if (active) setCompanies(items); }).catch(() => { if (active) setError(t('Could not load companies. Refresh before publishing.')); });
+    return () => { active = false; };
+  }, [canPublish, t]);
+  useEffect(() => {
+    if (!review) return;
+    const controller = new AbortController(); setText(''); setTextLoading(true); setError('');
+    setCompanyId(review.companyId ?? '');
+    setFrom(review.effectiveFromUtc?.slice(0, 10) ?? ''); setTo(review.effectiveToUtc?.slice(0, 10) ?? '');
+    policyDocumentsApi.text(review.id, controller.signal).then(result => { if (!controller.signal.aborted) setText(result.text); })
+      .catch(() => { if (!controller.signal.aborted) setError(t('Could not read the document. Close and retry.')); })
+      .finally(() => { if (!controller.signal.aborted) setTextLoading(false); });
+    return () => controller.abort();
+  }, [review, t]);
+  const upload = async () => {
+    if (!selectedFile || busy || !canAuthor) return;
+    if (!/\.(pdf|docx|txt)$/i.test(selectedFile.name) || !selectedFile.size || selectedFile.size > 20 * 1024 * 1024) {
+      setError(t('Choose a PDF, DOCX or TXT file between 1 byte and 20 MB.')); return;
+    }
+    const controller = new AbortController(); uploadRequest.current = controller;
+    setBusy(true); setError(''); setNotice('');
     try {
-      const docs = await policyDocumentsApi.list();
-      setDocuments(docs);
-    } catch {
-      // silently fail — list may be empty
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const handleUpload = async (file: File) => {
-    setUploadError('');
-
-    // Validate type
-    const allowed = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
-    if (!allowed.includes(file.type)) {
-      setUploadError('Only PDF, DOCX, and TXT files are supported.');
-      return;
-    }
-
-    // Validate size (20 MB)
-    if (file.size > 20 * 1024 * 1024) {
-      setUploadError('File size must be 20 MB or less.');
-      return;
-    }
-
-    setUploading(true);
+      const doc = await policyDocumentsApi.upload(selectedFile, controller.signal);
+      if (!controller.signal.aborted) { setDocuments(previous => [doc, ...previous.filter(item => item.id !== doc.id)]); setSelectedFile(null); setPage(0); setNotice(t('Document saved as a draft. Employees cannot access it until publication.')); }
+    } catch { if (!controller.signal.aborted) setError(t('Document upload failed. Your file is kept; try again.')); }
+    finally { if (!controller.signal.aborted) setBusy(false); uploadRequest.current = null; }
+  };
+  const publish = async () => {
+    if (!review || busy || !companyId || !from || !text || !canPublish) return;
+    if (to && to < from) { setError(t('The end date must be on or after the start date.')); return; }
+    setBusy(true); setError('');
     try {
-      const doc = await policyDocumentsApi.upload(file);
-      setDocuments(prev => [doc, ...prev]);
-    } catch {
-      setUploadError('Upload failed. Please try again.');
-    } finally {
-      setUploading(false);
-    }
+      const doc = await policyDocumentsApi.publish(review.id, { companyId, contentSha256: review.contentSha256, effectiveFromUtc: `${from}T00:00:00Z`, effectiveToUtc: to ? `${to}T23:59:59Z` : null });
+      setDocuments(previous => previous.map(item => item.id === doc.id ? doc : item)); setReview(null); setNotice(t('Policy published for the selected company and effective dates.'));
+    } catch { setError(t('Could not publish. Check your access and refresh the document before trying again.')); }
+    finally { setBusy(false); }
   };
-
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleUpload(file);
-    e.target.value = '';
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleUpload(file);
-  };
-
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This action cannot be undone.`)) return;
+  const confirmAction = async () => {
+    if (!confirmation || busy) return;
+    setBusy(true); setError('');
     try {
-      await policyDocumentsApi.delete(id);
-      setDocuments(prev => prev.filter(d => d.id !== id));
-    } catch (e) {
-      notifyApiError(e, 'Failed to delete document.');
-    }
+      if (confirmation.action === 'delete') {
+        await policyDocumentsApi.delete(confirmation.document.id);
+        setDocuments(previous => previous.filter(item => item.id !== confirmation.document.id));
+        setNotice(t('Document deleted.'));
+      } else {
+        const doc = await policyDocumentsApi.withdraw(confirmation.document.id);
+        setDocuments(previous => previous.map(item => item.id === doc.id ? doc : item));
+        setNotice(t('Policy withdrawn from employee answers.'));
+      }
+      setPage(0); setConfirmation(null);
+    } catch { setError(t('The document could not be changed. Refresh and try again.')); }
+    finally { setBusy(false); }
   };
-
-  const handleAsk = async () => {
+  const ask = async () => {
     if (!question.trim() || asking) return;
-    setAsking(true);
-    setAskError('');
-    setAnswer(null);
-    try {
-      const res = await policyDocumentsApi.ask(question.trim());
-      setAnswer(res);
-    } catch {
-      setAskError('Failed to get an answer. Make sure at least one document is ready.');
-    } finally {
-      setAsking(false);
-    }
+    const controller = new AbortController(); askRequest.current = controller;
+    setAsking(true); setAskError(''); setAnswer(null);
+    try { const result = await policyDocumentsApi.ask(question.trim(), controller.signal); if (!controller.signal.aborted) setAnswer(result); }
+    catch { if (!controller.signal.aborted) setAskError(t('Could not answer from the policy library. Your question is kept.')); }
+    finally { if (!controller.signal.aborted) setAsking(false); }
   };
-
-  return (
-    <div className="space-y-6">
-      {/* Upload zone */}
-      <div
-        className={`rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
-          dragOver
-            ? 'border-sapphire bg-sapphire/5 dark:border-sapphire dark:bg-sapphire/10'
-            : 'border-slate-200 hover:border-sapphire/50 dark:border-white/[0.12] dark:hover:border-sapphire/40'
-        }`}
-        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
-          className="hidden"
-          onChange={handleFileInput}
-        />
-        <div className="flex flex-col items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-sapphire/10 text-sapphire dark:bg-sapphire/20">
-            <Upload className="h-6 w-6" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">
-              Drop a policy document here
-            </p>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-              PDF, DOCX, or TXT — max 20 MB
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90 disabled:opacity-50"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {uploading ? 'Uploading…' : 'Browse files'}
-          </button>
-        </div>
-        {uploadError && (
-          <p className="mt-3 text-xs text-rose-600 dark:text-rose-400">{uploadError}</p>
-        )}
+  const visible = documents.slice(page * 10, (page + 1) * 10);
+  return <div className="space-y-4">
+    <div><h2 className="text-lg font-semibold">{t('Policy library')}</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Review documents, publish the approved version, and let employees ask Kody about their company policies.')}</p></div>
+    {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}</p>}
+    {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
+    {canAuthor && <div className="flex flex-wrap items-end gap-3 rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/20">
+      <label className="min-w-0 flex-1 text-sm font-medium">{t('Add a policy document')}<input ref={filePicker} type="file" accept=".pdf,.docx,.txt" disabled={busy} className="hidden" onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setError(''); }} /><span className="mt-2 block text-xs font-normal text-slate-600 dark:text-slate-400">{t('PDF, DOCX or TXT, up to 20 MB. Uploads remain private drafts until published.')}</span></label>
+      <button type="button" className="btn-secondary" disabled={busy} onClick={() => filePicker.current?.click()}>{t('Choose file')}</button><span className="break-words text-xs">{selectedFile?.name || t('No file selected')}</span>
+      <button type="button" className="btn-primary" disabled={busy || !selectedFile} onClick={() => void upload()}>{busy ? t('Working…') : t('Upload draft')}</button>
+      {busy && uploadRequest.current && <button type="button" className="btn-secondary" onClick={() => { uploadRequest.current?.abort(); uploadRequest.current = null; setBusy(false); }}>{t('Cancel upload')}</button>}
+    </div>}
+    {documents.length >= 100 && <p className="text-xs text-slate-600 dark:text-slate-300">{t('Only the latest 100 documents are shown.')}</p>}
+    <section className="rounded-xl border border-slate-200 dark:border-white/10" aria-label={t('Policy documents')}>
+      <div className="flex items-center justify-between border-b border-slate-200 p-3 dark:border-white/10"><span className="text-sm">{t('Most recent {count} documents', { count: documents.length })}</span><button type="button" className="btn-secondary" disabled={loading || busy} onClick={() => void load()}>{t('Refresh')}</button></div>
+      {loading ? <p role="status" className="p-4 text-sm">{t('Loading…')}</p> : documents.length === 0 ? <p className="p-5 text-sm text-slate-600 dark:text-slate-300">{t('No policy documents yet. Add an approved policy to start your library.')}</p> : <ul className="divide-y divide-slate-200 dark:divide-white/10">{visible.map(doc => <li key={doc.id} className="flex flex-wrap items-center gap-3 p-3">
+        <FileText className="h-5 w-5 text-sapphire" aria-hidden="true" />
+        <div className="min-w-0 flex-1"><p className="break-words text-sm font-semibold">{doc.originalName}</p><p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t(doc.status)} · {t(doc.publicationStatus || 'Draft')} · {fmt.date(doc.createdAtUtc)}</p>{doc.errorMessage && <p className="text-xs text-rose-700 dark:text-rose-300">{doc.errorMessage}</p>}</div>
+        {canAuthor && doc.status === 'Ready' && <button type="button" className="btn-secondary" onClick={() => setReview(doc)}>{t('Review document')}</button>}
+        {canPublish && doc.publicationStatus === 'Published' && <button type="button" className="btn-secondary" disabled={busy} onClick={() => setConfirmation({ document: doc, action: 'withdraw' })}>{t('Withdraw')}</button>}
+        {canPublish && (!doc.publicationStatus || doc.publicationStatus === 'Draft') && <button type="button" className="btn-secondary text-rose-700 dark:text-rose-300" disabled={busy} onClick={() => setConfirmation({ document: doc, action: 'delete' })}>{t('Delete')}</button>}
+      </li>)}</ul>}
+      {documents.length > 10 && <div className="flex items-center justify-between border-t p-3 text-sm dark:border-white/10"><button type="button" className="btn-secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>{t('Previous')}</button><span>{t('Page {page} of {pages}', { page: page + 1, pages: Math.ceil(documents.length / 10) })}</span><button type="button" className="btn-secondary" disabled={(page + 1) * 10 >= documents.length} onClick={() => setPage(page + 1)}>{t('Next')}</button></div>}
+    </section>
+    <section className="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-white/10" aria-label={t('Policy answer preview')}>
+      <h3 className="font-semibold">{t('Policy answer preview')}</h3><p className="text-xs text-slate-600 dark:text-slate-300">{t('HR preview can use accessible drafts. Employee Kody answers use only published, effective policies for their company.')}</p>
+      <form noValidate className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void ask(); }}><label className="min-w-0 flex-1"><span className="sr-only">{t('Ask about your policy')}</span><input className="input w-full" maxLength={2000} value={question} onChange={event => setQuestion(event.target.value)} placeholder={t('Ask about your policy')} /></label><button type="submit" className="btn-primary" disabled={asking || !question.trim()}>{asking ? t('Checking policies…') : t('Ask Kody')}</button></form>
+      {askError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{askError}</p>}{answer && <PolicyAnswer answer={answer} />}
+    </section>
+    <Modal isOpen={!!review} onClose={() => { if (!busy) setReview(null); }} title={t('Review document')} size="lg" footer={<><button type="button" className="btn-secondary" disabled={busy} onClick={() => setReview(null)}>{t('Close')}</button>{canPublish && <button type="button" className="btn-primary" disabled={busy || textLoading || !text || !companyId || !from} onClick={() => void publish()}>{busy ? t('Working…') : t('Publish policy')}</button>}</>}>
+      <div className="space-y-4"><p className="font-medium">{review?.originalName}</p>{error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}</p>}
+      <div tabIndex={0} role="region" aria-label={t('Document text')} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-200 p-3 text-sm dark:border-white/10">{textLoading ? t('Loading…') : text}</div>
+      {canPublish && <><p className="text-sm text-slate-600 dark:text-slate-300">{t('Publishing makes this version available to employees of the selected company during its effective dates. Dates use UTC.')}</p><p className="text-sm font-medium">{t('Every employee in this company can ask about the whole document. Remove confidential salary bands or individual information before publishing.')}</p><div className="grid gap-3 sm:grid-cols-3">
+        <label htmlFor={`${id}-company`} className="text-sm">{t('Company')}<select id={`${id}-company`} className="input mt-1 w-full" value={companyId} onChange={event => setCompanyId(event.target.value)}><option value="">{t('Select company')}</option>{companies.map(company => <option key={company.id} value={company.id}>{company.legalNameEn}</option>)}</select></label>
+        <label className="text-sm">{t('Effective from')}<input type="date" className="input mt-1 w-full" value={from} onChange={event => setFrom(event.target.value)} /></label>
+        <label className="text-sm">{t('Effective to (optional)')}<input type="date" className="input mt-1 w-full" value={to} min={from} onChange={event => setTo(event.target.value)} /></label>
+      </div></>}
       </div>
-
-      {/* Document list */}
-      <div className="rounded-xl border border-slate-200 bg-white dark:border-white/[0.08] dark:bg-white/[0.02]">
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3 dark:border-white/[0.07]">
-          <p className="text-sm font-semibold text-slate-800 dark:text-white">
-            Uploaded Documents
-          </p>
-          <button
-            type="button"
-            onClick={load}
-            className="text-xs text-sapphire hover:underline dark:text-cyan-400"
-          >
-            Refresh
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
-        ) : documents.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 py-14 text-center">
-            <FileText className="h-10 w-10 text-slate-200 dark:text-slate-700" />
-            <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              No policy documents yet
-            </p>
-            <p className="text-xs text-slate-400 dark:text-slate-500">
-              Upload a PDF, DOCX, or TXT file above to enable policy search.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-            {documents.map(doc => (
-              <div key={doc.id} className="flex items-center gap-4 px-5 py-4">
-                <FileText className="h-5 w-5 shrink-0 text-sapphire dark:text-cyan-400" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">
-                    {doc.originalName}
-                  </p>
-                  <div className="mt-0.5 flex items-center gap-2">
-                    <span className="text-xs text-slate-400">{fmtBytes(doc.fileSizeBytes)}</span>
-                    {doc.status === 'Ready' && doc.chunkCount > 0 && (
-                      <span className="text-xs text-slate-400">{doc.chunkCount} chunks</span>
-                    )}
-                    {doc.errorMessage && (
-                      <span className="truncate text-xs text-rose-500">{doc.errorMessage}</span>
-                    )}
-                  </div>
-                </div>
-                <StatusBadge status={doc.status} />
-                <button
-                  type="button"
-                  onClick={() => handleDelete(doc.id, doc.originalName)}
-                  className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
-                  aria-label={`Delete ${doc.originalName}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Policy Assistant */}
-      <div className="rounded-xl border border-slate-200 bg-white dark:border-white/[0.08] dark:bg-white/[0.02]">
-        <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3 dark:border-white/[0.07]">
-          <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
-          <p className="text-sm font-semibold text-slate-800 dark:text-white">Policy Assistant</p>
-          <span className="ms-auto rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-            Advisory
-          </span>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="flex gap-2">
-            <input
-              value={question}
-              onChange={e => setQuestion(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAsk(); } }}
-              placeholder="Ask a question about your uploaded policies…"
-              disabled={asking}
-              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-slate-500"
-            />
-            <button
-              type="button"
-              onClick={handleAsk}
-              disabled={asking || !question.trim()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90 disabled:opacity-50"
-            >
-              <Send className="h-3.5 w-3.5" />
-              {asking ? 'Asking…' : 'Ask'}
-            </button>
-          </div>
-
-          {askError && (
-            <p className="text-xs text-rose-600 dark:text-rose-400">{askError}</p>
-          )}
-
-          {answer && (
-            <div className="rounded-lg border border-sapphire/20 bg-sapphire/5 p-4 dark:border-sapphire/30 dark:bg-sapphire/10 space-y-3">
-              <div className="flex items-center gap-2">
-                <MessageSquareText className="h-4 w-4 text-sapphire dark:text-cyan-400" />
-                <span className="text-xs font-semibold text-sapphire dark:text-cyan-400">Assistant</span>
-                <span className="ms-auto rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
-                  Advisory Only
-                </span>
-                {!answer.isGrounded && (
-                  <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
-                    Low confidence
-                  </span>
-                )}
-              </div>
-              <p className="text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap">
-                {answer.answer}
-              </p>
-              {answer.sources.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">Sources:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {answer.sources.map((src, i) => (
-                      <span key={i} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-xs text-slate-600 border border-slate-200 dark:bg-white/5 dark:border-white/10 dark:text-slate-300">
-                        <FileText className="h-3 w-3" />
-                        {src}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            Answers are advisory only. Always verify important policy information with HR.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+    </Modal>
+    <Modal isOpen={!!confirmation} onClose={() => { if (!busy) setConfirmation(null); }} title={confirmation?.action === 'delete' ? t('Delete document') : t('Withdraw policy')} size="sm" footer={<><button type="button" className="btn-secondary" disabled={busy} onClick={() => setConfirmation(null)}>{t('Cancel')}</button><button type="button" className="btn-primary bg-rose-700" disabled={busy} onClick={() => void confirmAction()}>{busy ? t('Working…') : confirmation?.action === 'delete' ? t('Delete document') : t('Withdraw policy')}</button></>}>
+      <p className="break-words font-medium">{confirmation?.document.originalName}</p><p className="mt-2 text-sm">{confirmation?.action === 'delete' ? t('This removes the draft from the library. Source text is retained for audit.') : t('This removes the policy from future employee answers. The document stays in the library.')}</p>{error && <p role="alert" className="mt-2 text-sm text-rose-700 dark:text-rose-300">{error}</p>}
+    </Modal>
+  </div>;
 }

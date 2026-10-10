@@ -100,6 +100,87 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     }
 
     [Fact]
+    public async Task CompanyScopedAdministrator_CannotCreateASiblingCompany()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var own = new Company { TenantId = tenantId, LegalNameEn = "OWN", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(own);
+        await db.SaveChangesAsync();
+
+        var before = await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId);
+        var result = await MakeCompaniesController(db, tenantId, own.Id).Create(NewCompanyRequest("Sibling"), CancellationToken.None);
+
+        result.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        (await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId)).Should().Be(before);
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdministrator_CannotMutateGroupSharedGrades()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var own = new Company { TenantId = tenantId, LegalNameEn = "OWN", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(own);
+        await db.SaveChangesAsync();
+        var controller = new GradesController(
+            new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new NullAudit()), db)
+        {
+            ControllerContext = new ControllerContext { HttpContext = HttpCtx(ScopedPrincipal(tenantId, own.Id), null) },
+        };
+
+        var result = await controller.Create(
+            new Application.Organization.GradeRequest("G-LOCAL", "Unsafe local grade", "Staff", 1, Currency: "SAR"),
+            CancellationToken.None);
+
+        result.Result.Should().BeOfType<ForbidResult>();
+        (await db.Grades.IgnoreQueryFilters().AnyAsync(grade => grade.TenantId == tenantId && grade.Code == "G-LOCAL")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GroupScopeAdministrator_CompanySelectionDoesNotRevokeSharedCatalogAuthority()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var selected = new Company { TenantId = tenantId, LegalNameEn = "SELECTED", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(selected);
+        await db.SaveChangesAsync();
+        var controller = new GradesController(
+            new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new NullAudit()), db)
+        {
+            ControllerContext = new ControllerContext { HttpContext = HttpCtx(GroupPrincipal(tenantId), selected.Id.ToString()) },
+        };
+
+        var result = await controller.Create(
+            new Application.Organization.GradeRequest("G-GROUP", "Shared group grade", "Staff", 1, Currency: "SAR"),
+            CancellationToken.None);
+
+        result.Result.Should().BeOfType<CreatedAtActionResult>();
+        (await db.Grades.IgnoreQueryFilters().AnyAsync(grade => grade.TenantId == tenantId && grade.Code == "G-GROUP")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdministrator_CannotMutateTenantWideStatutoryRules()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var own = new Company { TenantId = tenantId, LegalNameEn = "OWN", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(own);
+        await db.SaveChangesAsync();
+        var controller = new StatutoryRulesController(db)
+        {
+            ControllerContext = new ControllerContext { HttpContext = HttpCtx(ScopedPrincipal(tenantId, own.Id), null) },
+        };
+
+        var result = await controller.Create(new CreateStatutoryRuleRequest(
+            "SA", "KSA-mainland", "example.key", "1", "decimal", "delegated admin attempt",
+            DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None);
+
+        result.Result.Should().BeOfType<ForbidResult>();
+        (await db.StatutoryRules.IgnoreQueryFilters().AnyAsync(rule => rule.TenantId == tenantId)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task CompanyStatusChange_FailsClosed_WithZeroMutation()
     {
         await using var db = _fx.CreateDb();
@@ -150,7 +231,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
 
     // ── Harness ────────────────────────────────────────────────────────────────
 
-    private static CompaniesController MakeCompaniesController(ZayraDbContext db, Guid tenantId) => new(
+    private static CompaniesController MakeCompaniesController(ZayraDbContext db, Guid tenantId, Guid? scopedTo = null) => new(
         new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new NullAudit()), db)
     {
         ControllerContext = new ControllerContext
@@ -162,6 +243,9 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
                     new Claim("tenant_id", tenantId.ToString()),
                     new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                     new Claim(ClaimTypes.Role, "Admin"),
+                    new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(scopedTo.HasValue
+                        ? (object)new { v = 2, m = "companies", c = new[] { scopedTo.Value } }
+                        : new { v = 2, m = "group", c = Array.Empty<Guid>() })),
                 }, "Test"))
             }
         }
@@ -185,6 +269,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "Admin"),
             new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         }, "Test"));
 
@@ -193,6 +278,8 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim(ClaimTypes.Role, "Admin"),
+            new Claim("permission", "payroll.rates.statutory_override"),
             new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } })),
         }, "Test"));
 

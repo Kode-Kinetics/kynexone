@@ -409,6 +409,7 @@ public class KsaStatutorySpecialLeaveTests
             new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
             new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new System.Security.Claims.Claim("permission", "organization.setup.apply"),
+            new System.Security.Claims.Claim("permission", "leave.policy_manage"),
         };
         return new SetupAssistantController(db, new NoPreview(), new AuditService(db))
         {

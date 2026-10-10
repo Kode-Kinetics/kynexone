@@ -24,6 +24,7 @@ public class PolicyDocumentPermissionTests
 {
     [Theory]
     [InlineData("Admin")]
+    [InlineData("HR Director")]
     [InlineData("HR Manager")]
     [InlineData("HR Officer")]
     public async Task TheSeededPolicyRoles_CanListAndAsk(string role)

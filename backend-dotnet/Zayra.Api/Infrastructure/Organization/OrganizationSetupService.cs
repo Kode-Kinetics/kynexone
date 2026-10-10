@@ -192,7 +192,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     public async Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         await EnsureCompanyExists(tenantId, request.CompanyId, cancellationToken);
-        await EnsureBranchCodeUnique(tenantId, request.Code, null, cancellationToken);
+        await EnsureBranchCodeUnique(tenantId, request.CompanyId, request.Code, null, cancellationToken);
         var branch = new Branch { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(branch, request);
         _db.Branches.Add(branch);
@@ -206,7 +206,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         var branch = await _db.Branches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (branch is null) return null;
         await EnsureCompanyExists(tenantId, request.CompanyId, cancellationToken);
-        await EnsureBranchCodeUnique(tenantId, request.Code, id, cancellationToken);
+        await EnsureBranchCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
         Apply(branch, request);
         branch.UpdatedAtUtc = DateTime.UtcNow;
         branch.UpdatedBy = context.UserId;
@@ -681,14 +681,15 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (exists) throw new InvalidOperationException("Company registration number already exists in this tenant.");
     }
 
-    private async Task EnsureBranchCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
+    private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = OrgCodes.Normalize(code);
         // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
         // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
         // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
-        var exists = await _db.Branches.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Branch code already exists in this tenant.");
+        var exists = await _db.Branches.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == companyId
+            && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (exists) throw new InvalidOperationException("Branch code already exists for this company.");
     }
 
     private async Task EnsureDepartmentCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
