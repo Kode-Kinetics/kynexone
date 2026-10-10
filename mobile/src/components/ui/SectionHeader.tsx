@@ -15,7 +15,7 @@ export function SectionHeader({ title, subtitle, actionLabel, onAction }: Props)
   return (
     <View style={styles.row}>
       <View style={styles.copy}>
-        <Text style={[theme.typography.h3, { color: theme.colors.text }]}>{title}</Text>
+        <Text accessibilityRole="header" style={[theme.typography.h3, { color: theme.colors.text }]}>{title}</Text>
         {subtitle ? (
           <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
             {subtitle}
@@ -23,8 +23,8 @@ export function SectionHeader({ title, subtitle, actionLabel, onAction }: Props)
         ) : null}
       </View>
       {actionLabel && onAction ? (
-        <MotionPressable onPress={onAction} haptic="selection" contentStyle={styles.action}>
-          <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
+        <MotionPressable onPress={onAction} accessibilityRole="button" accessibilityLabel={actionLabel} contentStyle={styles.action}>
+          <Text style={[theme.typography.footnote, { color: theme.colors.accent, fontWeight: '600' }]}>
             {actionLabel}
           </Text>
         </MotionPressable>

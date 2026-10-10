@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  I18nManager,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -18,7 +17,6 @@ import {
   enableAppSwitcherProtectionAsync,
   usePreventScreenCapture,
 } from 'expo-screen-capture';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { authApi } from '@/api/services';
 import {
@@ -30,7 +28,9 @@ import {
   secondsLeft,
   spellSecretForScreenReader,
 } from '@/auth/mfaFlow';
-import { COLORS } from '@/config';
+import { DirectionalIcon, LiquidBackdrop } from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
+import type { KynexTheme } from '@/theme/tokens';
 import { MfaCodeError, MfaCodeInput, useCodeEntry } from './mfaCodeEntry';
 
 export interface MfaEnrollmentViewProps {
@@ -75,6 +75,9 @@ export function MfaEnrollmentView({
   confirmWhenDone = true,
 }: MfaEnrollmentViewProps) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+  const accent = theme.colors.accent;
   const [setup, setSetup] = useState<SetupState>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [provisioningUri, setProvisioningUri] = useState('');
@@ -182,7 +185,7 @@ export function MfaEnrollmentView({
             ))}
           </View>
           <TouchableOpacity style={styles.outlineButton} onPress={() => share(recoveryCodes.join('\n'))} accessibilityRole="button">
-            <Ionicons name="share-outline" size={18} color={COLORS.blue} />
+            <Ionicons accessible={false} name="share-outline" size={18} color={accent} />
             <Text style={styles.outlineButtonText}>{t('mfa.shareCodes')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -242,7 +245,7 @@ export function MfaEnrollmentView({
       return (
         <>
           {header}
-          <ActivityIndicator color={COLORS.cyan} style={styles.loading} />
+          <ActivityIndicator color={accent} style={styles.loading} />
           <Text style={styles.helper}>{t('mfa.loadingSetup')}</Text>
         </>
       );
@@ -267,7 +270,7 @@ export function MfaEnrollmentView({
         {header}
         <Text style={styles.stepTitle}>{t('mfa.step1')}</Text>
         <TouchableOpacity style={styles.outlineButton} onPress={openAuthenticator} accessibilityRole="button">
-          <Ionicons name="open-outline" size={18} color={COLORS.blue} />
+          <Ionicons accessible={false} name="open-outline" size={18} color={accent} />
           <Text style={styles.outlineButtonText}>{t('mfa.openAuthenticator')}</Text>
         </TouchableOpacity>
         {noAuthenticator ? <Text style={styles.warning}>{t('mfa.noAuthenticator')}</Text> : null}
@@ -289,7 +292,7 @@ export function MfaEnrollmentView({
           {t('mfa.longPressToCopy')} {t('mfa.clipboardSync')}
         </Text>
         <TouchableOpacity style={styles.copyButton} onPress={() => share(secret)} accessibilityRole="button">
-          <Ionicons name="share-outline" size={16} color={COLORS.cyan} />
+          <Ionicons accessible={false} name="share-outline" size={16} color={accent} />
           <Text style={styles.copyText}>{t('mfa.shareKey')}</Text>
         </TouchableOpacity>
 
@@ -315,7 +318,7 @@ export function MfaEnrollmentView({
           accessibilityRole="button"
           accessibilityState={{ disabled: !canSubmit, busy: submitting }}
         >
-          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{t('mfa.enable')}</Text>}
+          {submitting ? <ActivityIndicator color={theme.colors.onFill} /> : <Text style={styles.primaryText}>{t('mfa.enable')}</Text>}
         </TouchableOpacity>
       </>
     );
@@ -323,7 +326,7 @@ export function MfaEnrollmentView({
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <LinearGradient colors={['#0B1020', '#0F1830', '#0B1020']} style={StyleSheet.absoluteFill} />
+      <LiquidBackdrop subtle />
       {!done ? (
         <TouchableOpacity
           style={styles.back}
@@ -331,14 +334,14 @@ export function MfaEnrollmentView({
           accessibilityRole="button"
           accessibilityLabel={onRestart ? t('mfa.cancel') : t('mfa.backToSignIn')}
         >
-          <Ionicons name={I18nManager.isRTL ? 'arrow-forward' : 'arrow-back'} size={22} color="#fff" />
+          <DirectionalIcon name="back" size={22} color={accent} />
         </TouchableOpacity>
       ) : null}
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.card}>
           <View style={styles.iconCircle}>
-            <Ionicons name={done ? 'shield-checkmark-outline' : 'key-outline'} size={34} color={COLORS.cyan} />
+            <Ionicons accessible={false} name={done ? 'shield-checkmark-outline' : 'key-outline'} size={34} color={accent} />
           </View>
           {body()}
         </View>
@@ -347,57 +350,73 @@ export function MfaEnrollmentView({
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.navy },
-  scroll: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingTop: 90, paddingBottom: 50 },
-  back: { position: 'absolute', top: 58, start: 22, zIndex: 2, padding: 8 },
-  card: {
-    borderRadius: 22,
-    padding: 24,
-    backgroundColor: 'rgba(255,255,255,0.055)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignSelf: 'center',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(94,235,255,0.1)',
-    marginBottom: 16,
-  },
-  title: { color: '#fff', fontSize: 22, fontWeight: '800', textAlign: 'center' },
-  subtitle: { color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: 8 },
-  account: { color: COLORS.cyan, textAlign: 'center', fontSize: 13, fontWeight: '600', marginTop: 7 },
-  loading: { marginTop: 28, marginBottom: 10 },
-  stepTitle: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 24, marginBottom: 10, textAlign: 'auto' },
-  outlineButton: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingVertical: 13,
-    marginTop: 4,
-  },
-  outlineButtonText: { color: COLORS.blue, fontWeight: '700' },
-  warning: { color: '#FCD34D', fontSize: 12, lineHeight: 18, marginTop: 10, textAlign: 'auto' },
-  helper: { color: 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: 18, marginTop: 14, textAlign: 'auto' },
-  secretBox: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 10, padding: 13, marginTop: 9 },
-  // Setup keys and recovery codes are Latin/digits: keep them left-to-right in Arabic.
-  secret: { color: '#fff', textAlign: 'center', fontSize: 17, fontWeight: '800', letterSpacing: 2, writingDirection: 'ltr' },
-  recoveryCode: { color: '#fff', textAlign: 'center', fontSize: 15, fontWeight: '700', letterSpacing: 1, writingDirection: 'ltr', paddingVertical: 2 },
-  copyButton: { flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 14 },
-  copyText: { color: COLORS.cyan, fontSize: 13, fontWeight: '700' },
-  privateNote: { color: '#FCD34D', fontSize: 12, lineHeight: 17, textAlign: 'center', marginTop: 10 },
-  securityNote: { color: 'rgba(255,255,255,0.45)', fontSize: 11, lineHeight: 16, textAlign: 'center', marginTop: 6 },
-  timer: { color: 'rgba(255,255,255,0.45)', textAlign: 'center', marginTop: 12, fontSize: 12 },
-  primaryButton: { backgroundColor: COLORS.blue, borderRadius: 14, alignItems: 'center', paddingVertical: 15, marginTop: 20 },
-  primaryText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-  disabled: { opacity: 0.45 },
-  errorBox: { backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 12, padding: 14, marginTop: 22 },
-  errorBoxText: { color: '#FCA5A5', textAlign: 'center', fontSize: 13, lineHeight: 19 },
-});
+function makeStyles(theme: KynexTheme) {
+  const c = theme.colors;
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: c.canvas },
+    scroll: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingTop: 90, paddingBottom: 50 },
+    back: {
+      position: 'absolute', top: 54, start: 16, zIndex: 2,
+      width: 44, height: 44, alignItems: 'center', justifyContent: 'center',
+    },
+    card: {
+      borderRadius: theme.radius.lg,
+      padding: 24,
+      backgroundColor: c.cardRaised,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.hairline,
+      ...theme.shadows.raised,
+    },
+    iconCircle: {
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      alignSelf: 'center',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: c.surfaceInset,
+      marginBottom: 16,
+    },
+    title: { ...theme.typography.title2, color: c.text, textAlign: 'center' },
+    subtitle: { ...theme.typography.subheadline, color: c.textSecondary, textAlign: 'center', marginTop: 8 },
+    account: { ...theme.typography.footnote, color: c.accent, textAlign: 'center', fontWeight: '600', marginTop: 7 },
+    loading: { marginTop: 28, marginBottom: 10 },
+    stepTitle: { ...theme.typography.subheadline, color: c.text, fontWeight: '700', marginTop: 24, marginBottom: 10, textAlign: 'auto' },
+    outlineButton: {
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: c.surfaceInset,
+      borderRadius: theme.radius.sm,
+      minHeight: 48,
+      paddingVertical: 12,
+      marginTop: 4,
+    },
+    outlineButtonText: { ...theme.typography.callout, color: c.accent, fontWeight: '700' },
+    warning: { ...theme.typography.footnote, color: c.status.warning.fg, marginTop: 10, textAlign: 'auto' },
+    helper: { ...theme.typography.footnote, color: c.textSecondary, marginTop: 14, textAlign: 'auto' },
+    secretBox: { backgroundColor: c.surfaceInset, borderRadius: 10, padding: 13, marginTop: 9 },
+    // Setup keys and recovery codes are Latin/digits: keep them left-to-right in Arabic.
+    secret: { color: c.text, textAlign: 'center', fontSize: 17, fontWeight: '800', letterSpacing: 2, writingDirection: 'ltr' },
+    recoveryCode: { color: c.text, textAlign: 'center', fontSize: 15, fontWeight: '700', letterSpacing: 1, writingDirection: 'ltr', paddingVertical: 2 },
+    copyButton: { flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6, minHeight: 44, paddingHorizontal: 14 },
+    copyText: { ...theme.typography.footnote, color: c.accent, fontWeight: '700' },
+    privateNote: { ...theme.typography.footnote, color: c.status.warning.fg, textAlign: 'center', marginTop: 10 },
+    securityNote: { ...theme.typography.caption, color: c.textMuted, textAlign: 'center', marginTop: 6 },
+    timer: { ...theme.typography.footnote, color: c.textMuted, textAlign: 'center', marginTop: 12 },
+    primaryButton: {
+      backgroundColor: c.primaryFill,
+      borderRadius: theme.radius.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: 52,
+      paddingVertical: 14,
+      marginTop: 20,
+    },
+    primaryText: { ...theme.typography.headline, color: c.onFill },
+    disabled: { opacity: 0.45 },
+    errorBox: { backgroundColor: c.status.danger.tint, borderRadius: theme.radius.sm, padding: 14, marginTop: 22 },
+    errorBoxText: { ...theme.typography.footnote, color: c.text, textAlign: 'center' },
+  });
+}

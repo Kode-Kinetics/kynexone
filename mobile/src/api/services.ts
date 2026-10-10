@@ -23,7 +23,9 @@ import {
   publicResetInput,
 } from '@/auth/publicAuthInput';
 import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode } from '@/auth/welcomeCode';
-import { mapEmployeeProfile } from './profileMapper';
+import { mapEmployeeProfile, type EmployeeProfileRecord } from './profileMapper';
+import { mapDashboardExtras, type EmployeeHomeExtras } from './homeMappers';
+import { holidaysApi } from './holidays';
 import { fetchAllPages } from './paging';
 import {
   classifyLoginResponse,
@@ -33,7 +35,8 @@ import {
   secretFromProvisioningUri,
   type MfaPrompt,
 } from '@/auth/mfaFlow';
-import { riyadhBusinessDate, riyadhBusinessMonth } from '@/utils/businessDate';
+import { riyadhBusinessDate } from '@/utils/businessDate';
+import { zonedWallTimeToUtcIso } from '@/features/overtime/overtimeLogic';
 import {
   buildLocationFields,
   buildPunchBody,
@@ -48,6 +51,25 @@ import {
   type VerificationCacheEntry,
   type WithdrawalResult,
 } from '@/features/attendance/selfieAttendance';
+import { COMPANY_TIME_ZONE, companyWallTimeToUtcIso } from '@/features/attendance/companyTime';
+import {
+  balanceFacts,
+  mapLeaveFacts,
+  decidableOvertime,
+  mapOvertimeApproval,
+  mapWorkflowApproval,
+  mergeInbox,
+  myDecisionsFrom,
+  overtimeOutcome,
+  workflowOutcome,
+  type BalanceFacts,
+  type DecisionOutcome,
+  type InboxItem,
+  type LeaveFacts,
+  type MyDecision,
+} from '@/features/approvals/approvalModel';
+import { overlapping, teamTodayCounts, type OutEntry, type TeamDay, type TeamMemberToday } from '@/features/approvals/teamModel';
+import { teamCalendarApi } from './teamCalendar';
 import type {
   AuthUser,
   AuthTokens,
@@ -62,7 +84,6 @@ import type {
   Payslip,
   PayslipDetail,
   PayslipLine,
-  EmployeeProfile,
   EmployeeDocument,
   HRRequest,
   HRRequestComment,
@@ -73,7 +94,6 @@ import type {
   AIAskResponse,
   EmployeeDashboard,
   ManagerDashboard,
-  TeamMember,
   PaginatedResponse,
   Holiday,
 } from '@/types';
@@ -110,12 +130,17 @@ export function localDateTimeToUtcIso(date: string, time: string): string {
   return local.toISOString();
 }
 
-/** HH:mm in the device's local time for a UTC ISO timestamp. */
+/** HH:mm on the company clock (Asia/Riyadh) for a UTC ISO timestamp, whatever zone the phone is in. */
 function utcIsoToLocalHHmm(value?: string | null): string {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: COMPANY_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(d);
 }
 
 function mapRole(roles?: string[]): AuthUser['role'] {
@@ -266,11 +291,8 @@ function mapPayslip(raw: any, currency?: string): Payslip {
     id: String(raw.id ?? ''),
     month,
     year,
-    periodLabel:
-      raw.periodLabel ||
-      (hasPeriod
-        ? new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-        : 'Payslip'),
+    // The screen formats the month in the UI language from year/month; this is only the server's label.
+    periodLabel: raw.periodLabel || '',
     periodStart: hasPeriod ? localIsoDate(new Date(year, month - 1, 1)) : raw.paidFromDate ?? undefined,
     periodEnd: raw.paidToDate ?? undefined,
     grossSalary,
@@ -294,21 +316,20 @@ function mapPayslip(raw: any, currency?: string): Payslip {
 function payslipLines(raw: any): { earnings: PayslipLine[]; deductions: PayslipLine[] } {
   const num = (v: unknown) => Number(v ?? 0) || 0;
   const earnings: PayslipLine[] = [
-    { code: 'BASIC', description: 'Basic Salary', amount: num(raw.basicSalary), type: 'Earning' as const },
-    { code: 'HOUSING', description: 'Housing Allowance', amount: num(raw.housingAllowance), type: 'Earning' as const },
-    { code: 'TRANSPORT', description: 'Transport Allowance', amount: num(raw.transportAllowance), type: 'Earning' as const },
-    { code: 'OTHER', description: 'Other Allowances', amount: num(raw.otherAllowances), type: 'Earning' as const },
-    { code: 'ARREARS', description: 'Arrears', amount: num(raw.arrearsAmount), type: 'Earning' as const },
+    { code: 'BASIC', description: 'Basic salary', descriptionAr: 'الراتب الأساسي', amount: num(raw.basicSalary), type: 'Earning' as const },
+    { code: 'HOUSING', description: 'Housing allowance', descriptionAr: 'بدل السكن', amount: num(raw.housingAllowance), type: 'Earning' as const },
+    { code: 'TRANSPORT', description: 'Transport allowance', descriptionAr: 'بدل النقل', amount: num(raw.transportAllowance), type: 'Earning' as const },
+    { code: 'OTHER', description: 'Other allowances', descriptionAr: 'بدلات أخرى', amount: num(raw.otherAllowances), type: 'Earning' as const },
+    { code: 'ARREARS', description: 'Arrears', descriptionAr: 'فروقات مستحقة', amount: num(raw.arrearsAmount), type: 'Earning' as const },
   ].filter((l) => l.amount !== 0);
 
-  const total = num(raw.deductions);
+  // Only the columns the slip itself carries. Whatever they do not explain stays unexplained: the
+  // screen flags it as "not itemised" rather than inventing an "Other deductions" line by subtraction.
   const statutory = num(raw.employeeStatutoryTotal);
   const loans = num(raw.loanDeductions);
-  const other = Math.round((total - statutory - loans) * 100) / 100;
   const deductions: PayslipLine[] = [
-    { code: 'STATUTORY', description: 'Statutory (GOSI)', amount: statutory, type: 'Deduction' as const },
-    { code: 'LOAN', description: 'Loan / Advance Recovery', amount: loans, type: 'Deduction' as const },
-    { code: 'OTHER_DED', description: 'Other Deductions', amount: other > 0 ? other : 0, type: 'Deduction' as const },
+    { code: 'STATUTORY', description: 'Statutory (GOSI)', descriptionAr: 'التأمينات الاجتماعية (GOSI)', amount: statutory, type: 'Deduction' as const },
+    { code: 'LOAN', description: 'Loan / advance recovery', descriptionAr: 'استرداد قرض / سلفة', amount: loans, type: 'Deduction' as const },
   ].filter((l) => l.amount !== 0);
 
   return {
@@ -346,7 +367,8 @@ function mapApprovalItem(item: any): ApprovalItem {
     type: mapApprovalType(item.entityName ?? item.module),
     title,
     requestedBy: item.requestedByName ?? requester ?? 'Requester',
-    requestedAt: item.createdAtUtc ?? new Date().toISOString(),
+    // Never "just now" when the server sent no date: an empty string renders as no date.
+    requestedAt: item.createdAtUtc ?? '',
     urgency: item.isOverdue ? 'HIGH' : String(item.priority ?? '').toLowerCase() === 'high' ? 'HIGH' : 'MEDIUM',
     summary: item.description ?? item.entityName ?? '',
     details,
@@ -406,19 +428,31 @@ function mapOvertimeStatus(status?: string): OvertimeRequest['status'] {
   return 'Pending'; // PendingManager, PendingHR, Submitted…
 }
 
-function mapOvertimeRequest(raw: any): OvertimeRequest {
+/** An overtime request with the raw instants and status, so screens format times on the company clock. */
+export interface OvertimeRecord extends OvertimeRequest {
+  startUtc: string;
+  endUtc: string;
+  rawStatus: string;
+  decidedAt: string | null;
+}
+
+function mapOvertimeRequest(raw: any): OvertimeRecord {
   const minutes = Number(raw.requestedMinutes ?? 0);
   return {
     id: String(raw.id ?? ''),
     date: raw.workDate ?? '',
     startTime: utcIsoToLocalHHmm(raw.startTimeUtc),
     endTime: utcIsoToLocalHHmm(raw.endTimeUtc),
+    startUtc: raw.startTimeUtc ?? '',
+    endUtc: raw.endTimeUtc ?? '',
     totalHours: minutes / 60,
     durationMinutes: minutes,
     approvedMinutes: Number(raw.approvedMinutes ?? 0),
     reason: raw.reason ?? '',
     status: mapOvertimeStatus(raw.status),
+    rawStatus: String(raw.status ?? ''),
     submittedAt: raw.createdAtUtc ?? '',
+    decidedAt: raw.decidedAtUtc ?? null,
     approvalTimeline: [],
   };
 }
@@ -756,7 +790,12 @@ async function resolveTodayAttendance(dailyRecord: any | null | undefined): Prom
 
 // ---- Dashboard ----
 export const dashboardApi = {
-  async getEmployeeDashboard(): Promise<EmployeeDashboard> {
+  /**
+   * GET /ess/dashboard. Also carries what the shared type leaves out (announcements, today's
+   * processed status and worked minutes — see mapDashboardExtras). Unread notifications here are
+   * the dashboard's top five; Home replaces the count with the full unread list when it loads.
+   */
+  async getEmployeeDashboard(): Promise<EmployeeDashboard & EmployeeHomeExtras> {
     const data = await apiGet<any>('/ess/dashboard');
     const todayAttendance = await resolveTodayAttendance(data.attendanceToday).catch(
       () => fallbackTodayAttendance
@@ -776,49 +815,51 @@ export const dashboardApi = {
       pendingRequestsCount: Number(data.pendingRequests ?? 0),
       expiringDocuments: (data.documentAlerts ?? []).map(mapDocument),
       unreadNotifications: (data.notifications ?? []).filter((n: any) => !n.isRead).length,
+      // Loaded separately (holidaysApi) so a missing calendar never fails the dashboard.
       upcomingHolidays: [],
+      ...mapDashboardExtras(data),
     };
   },
 
+  /**
+   * Manager summary built from the SAME sources and definitions as the Approvals and Team screens
+   * (features/approvals/approvalModel + teamModel), so every number on Home reconciles with the list
+   * it opens. /dashboard/overview is not used: its approval count came from a different query than
+   * the queue, and its team figures are tenant-wide.
+   */
   async getManagerDashboard(): Promise<ManagerDashboard> {
-    const monthPrefix = riyadhBusinessMonth();
-    const [overview, team, overtime] = await Promise.all([
-      apiGet<any>('/dashboard/overview'),
-      teamApi.getTeamMembers(),
-      // Every request this month, page by page (one page of 200 left the rest out of the total).
-      // The API orders by work date, newest first, so paging stops once a page reaches last month.
-      fetchAllPages<any>(
-        (page, pageSize) => apiGet<BackendPaged<any>>(`/overtime/requests?page=${page}&pageSize=${pageSize}`),
-        { enough: (rows) => String(rows[rows.length - 1]?.workDate ?? '') < monthPrefix }
-      ).catch(() => null),
-    ]);
-    // Team counts come from the manager's own scoped team, not /dashboard/summary,
-    // which reports tenant-wide headcount.
-    const count = (s: string) => team.filter((m) => m.todayStatus === s).length;
-    const otMinutes = itemsOf(overtime)
-      .filter((r) => String(r.workDate ?? '').startsWith(monthPrefix) && !/reject/i.test(r.status ?? ''))
-      .reduce((sum, r) => sum + Number(r.requestedMinutes ?? 0), 0);
+    const [inbox, team] = await Promise.all([approvalsApi.getInbox(), teamApi.getTeamToday()]);
+    const counts = teamTodayCounts(team.members, team.day);
+    const pendingByType: Partial<Record<ApprovalItem['type'], number>> = {};
+    for (const item of inbox.items) {
+      const key = mapApprovalType(item.kind === 'RECRUITMENT' ? 'REQUISITION' : item.kind);
+      pendingByType[key] = (pendingByType[key] ?? 0) + 1;
+    }
     return {
       teamSummary: {
-        total: team.length,
-        present: count('PRESENT') + count('LATE'),
-        absent: count('ABSENT'),
-        onLeave: count('ON_LEAVE'),
-        lateToday: count('LATE'),
+        total: counts.total,
+        present: counts.present,
+        absent: counts.absent,
+        onLeave: counts.onLeave,
+        lateToday: counts.late,
       },
-      pendingApprovalsCount: Number(overview.pendingApprovals ?? 0),
-      pendingByType: (overview.approvalQueue ?? []).reduce((acc: Record<string, number>, item: any) => {
-        const key = mapApprovalType(item.module ?? item.entityName);
-        acc[key] = (acc[key] ?? 0) + 1;
-        return acc;
-      }, {}) as ManagerDashboard['pendingByType'],
-      overtimeAlert: otMinutes > 0 ? { thisMonth: Math.round((otMinutes / 60) * 10) / 10, lastMonth: 0 } : undefined,
+      pendingApprovalsCount: inbox.items.length,
+      pendingByType: pendingByType as ManagerDashboard['pendingByType'],
+      // Overtime hours are no longer summed here: the old figure mixed pending and approved hours
+      // and opened the pending queue. Pending overtime is counted in the approvals inbox instead.
+      overtimeAlert: undefined,
     };
   },
 
-  async getHolidays(_year: number): Promise<Holiday[]> {
-    // Holidays live under /leave/holidays/calendars/{id}/holidays; no screen uses this yet.
-    return [];
+  /** The tenant's public holidays in a calendar year (GET /leave/holidays/range). */
+  async getHolidays(year: number): Promise<Holiday[]> {
+    const rows = await holidaysApi.getRange(`${year}-01-01`, `${year}-12-31`);
+    return rows.map((h) => ({
+      date: h.date,
+      name: h.nameEn,
+      nameAr: h.nameAr,
+      type: /relig|islam|eid/i.test(h.type ?? '') ? 'RELIGIOUS' : /company/i.test(h.type ?? '') ? 'COMPANY' : 'PUBLIC',
+    }));
   },
 };
 
@@ -974,7 +1015,9 @@ export const attendanceApi = {
       .map(
         (record: any): AttendanceDay => ({
           date: record.workDate,
-          status: record.missingPunch ? 'MISSING_PUNCH' : mapStatus(record.status),
+          // Missing punch = one punch without the other. No punches at all keeps the server's verdict
+          // (Absent, Rest day, On leave…), which the processor also flags as missingPunch.
+          status: record.missingPunch && !!record.firstInUtc !== !!record.lastOutUtc ? 'MISSING_PUNCH' : mapStatus(record.status),
           clockIn: record.firstInUtc ?? undefined,
           clockOut: record.lastOutUtc ?? undefined,
           workHours: Number(record.totalWorkedMinutes ?? 0) / 60,
@@ -986,6 +1029,7 @@ export const attendanceApi = {
       .sort((a, b) => b.date.localeCompare(a.date));
   },
 
+  /** Requested times are company wall-clock times (Asia/Riyadh), not the phone's zone. */
   async submitRegularization(payload: {
     date: string;
     requestedClockIn?: string;
@@ -996,10 +1040,10 @@ export const attendanceApi = {
       workDate: payload.date,
       requestType: 'MissingPunch',
       requestedInUtc: payload.requestedClockIn
-        ? localDateTimeToUtcIso(payload.date, payload.requestedClockIn)
+        ? companyWallTimeToUtcIso(payload.date, payload.requestedClockIn)
         : undefined,
       requestedOutUtc: payload.requestedClockOut
-        ? localDateTimeToUtcIso(payload.date, payload.requestedClockOut)
+        ? companyWallTimeToUtcIso(payload.date, payload.requestedClockOut)
         : undefined,
       reason: payload.reason,
     });
@@ -1064,7 +1108,8 @@ export const leaveApi = {
       employeeId,
       leaveTypeId: payload.leaveTypeId,
       startDate: payload.startDate,
-      endDate: payload.endDate,
+      // A half day is one date; the server refuses a half day over a range.
+      endDate: payload.isHalfDay ? payload.startDate : payload.endDate,
       dayType: payload.isHalfDay ? 'Half' : 'Full',
       reason: payload.reason,
       isEmergency: false,
@@ -1090,31 +1135,63 @@ export const leaveApi = {
 };
 
 // ---- Overtime ----
+/** The limits of the tenant's overtime policy, as the server applies them (OvertimePolicyLimits). */
+export interface OvertimePolicyInfo {
+  id: string;
+  minimumMinutes: number;
+  maximumMinutesPerDay: number;
+  monthlyCapMinutes: number;
+  roundingRule: string;
+}
+
+/** What payroll calculated for an approved request (OvertimeController /calculations). */
+export interface OvertimePay {
+  overtimeRequestId: string;
+  approvedMinutes: number;
+  multiplier: number;
+  amount: number;
+  currency: string;
+}
+
 export const overtimeApi = {
   /**
-   * Backend DTO (OvertimeController.cs, develop):
+   * Backend DTO (OvertimeController.cs):
    *   OvertimeRequestCreate(int EmployeeId, Guid? OvertimePolicyId, Guid? OvertimeTypeId,
    *                         DateOnly WorkDate, DateTime StartTimeUtc, DateTime EndTimeUtc,
    *                         string? Source, string? Reason)
-   * projectCode / costCenter / attachment / comp-off do not exist server-side.
+   * Times are wall-clock on the company calendar (`timeZone`, default the device zone for old
+   * callers). Crossing midnight must be asked for with `endsNextDay`; an end at or before the start
+   * is refused here instead of being silently pushed into the next day.
    */
   async submitOTRequest(payload: {
     date: string;
     startTime: string;
     endTime: string;
     reason: string;
+    endsNextDay?: boolean;
+    timeZone?: string;
     overtimeTypeId?: string;
-  }): Promise<OvertimeRequest> {
+  }): Promise<OvertimeRecord> {
     const employeeId = await requireEmployeeId();
-    const start = new Date(localDateTimeToUtcIso(payload.date, payload.startTime));
-    let end = new Date(localDateTimeToUtcIso(payload.date, payload.endTime));
-    // 22:00 → 02:00 is an overnight block, not a negative one.
-    if (end.getTime() <= start.getTime()) end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+    const nextDay = Boolean(payload.endsNextDay);
+    let startIso: string;
+    let endIso: string;
+    if (payload.timeZone) {
+      startIso = zonedWallTimeToUtcIso(payload.date, payload.startTime, payload.timeZone);
+      endIso = zonedWallTimeToUtcIso(payload.date, payload.endTime, payload.timeZone, nextDay ? 1 : 0);
+    } else {
+      startIso = localDateTimeToUtcIso(payload.date, payload.startTime);
+      const end = new Date(localDateTimeToUtcIso(payload.date, payload.endTime));
+      endIso = new Date(end.getTime() + (nextDay ? 86_400_000 : 0)).toISOString();
+    }
+    if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
+      throw new Error('The end time must be after the start time.');
+    }
     const result = await apiPost<any>('/overtime/requests', {
       employeeId,
       workDate: payload.date,
-      startTimeUtc: start.toISOString(),
-      endTimeUtc: end.toISOString(),
+      startTimeUtc: startIso,
+      endTimeUtc: endIso,
       reason: payload.reason,
       overtimeTypeId: payload.overtimeTypeId || undefined,
       source: 'Mobile',
@@ -1127,12 +1204,47 @@ export const overtimeApi = {
    * Every page of the employee's history: this used to read one page of 50 and show it as the
    * whole history, so the 51st request and everything older simply was not there.
    */
-  async getMyOTRequests(): Promise<OvertimeRequest[]> {
+  async getMyOTRequests(): Promise<OvertimeRecord[]> {
     const employeeId = await requireEmployeeId();
     const rows = await fetchAllPages<any>((page, pageSize) =>
       apiGet<BackendPaged<any>>(`/overtime/requests?employeeId=${employeeId}&page=${page}&pageSize=${pageSize}`)
     );
     return rows.map(mapOvertimeRequest);
+  },
+
+  /**
+   * GET /overtime/policies. The server applies the FIRST active policy when a request names none, and
+   * that order is not defined — so limits are returned only when exactly one policy is active.
+   * null means "unknown": the form then checks only the 12-hour ceiling.
+   */
+  async getPolicyLimits(): Promise<OvertimePolicyInfo | null> {
+    const policies = await apiGet<any[]>('/overtime/policies');
+    const active = (policies ?? []).filter((p) => p.isActive !== false && !p.isDeleted);
+    if (active.length !== 1) return null;
+    const p = active[0];
+    return {
+      id: String(p.id),
+      minimumMinutes: Number(p.minimumMinutes ?? 0),
+      maximumMinutesPerDay: Number(p.maximumMinutesPerDay ?? 0),
+      monthlyCapMinutes: Number(p.monthlyCapMinutes ?? 0),
+      roundingRule: String(p.roundingRule ?? ''),
+    };
+  },
+
+  /**
+   * GET /overtime/calculations?employeeId={self} — pay worked out for approved requests. The endpoint
+   * is not pageable: it returns the newest 100. An older request simply shows no pay line (never a guess).
+   */
+  async getMyPay(): Promise<OvertimePay[]> {
+    const employeeId = await requireEmployeeId();
+    const rows = await apiGet<any[]>(`/overtime/calculations?employeeId=${employeeId}`);
+    return (rows ?? []).map((r) => ({
+      overtimeRequestId: String(r.overtimeRequestId ?? ''),
+      approvedMinutes: Number(r.approvedMinutes ?? 0),
+      multiplier: Number(r.multiplier ?? 0),
+      amount: Number(r.amount ?? 0),
+      currency: String(r.currency ?? ''),
+    }));
   },
 };
 
@@ -1147,6 +1259,14 @@ async function authHeaders(): Promise<Record<string, string>> {
 }
 
 // ---- Payslips ----
+/** A payslip as the detail screen shows it. */
+export interface PayslipView extends PayslipDetail {
+  /** Employer contributions (GOSI employer share, hazard) — paid on top of pay, not deducted from it. */
+  employerLines: PayslipLine[];
+  /** The server's own check that the lines add up to the totals; null when it did not say. */
+  reconciled: boolean | null;
+}
+
 async function payslipCurrency(): Promise<string | undefined> {
   try {
     const dashboard = await apiGet<any>('/ess/dashboard');
@@ -1167,23 +1287,28 @@ export const payslipApi = {
   /**
    * GET /ess/payslips/{id} (W2-D S6): the slip's real component lines, built the
    * way the PDF builds them, with header totals computed from those lines.
+   * Lines carry nameAr; employer contributions (paid on top, never deducted) are kept apart.
    * Falls back to the list row's columns on an older backend (404).
    */
-  async getPayslipDetail(id: string): Promise<PayslipDetail> {
+  async getPayslipDetail(id: string): Promise<PayslipView> {
     try {
       const d = await apiGet<any>(`/ess/payslips/${id}`);
       const lines: any[] = d.lines ?? [];
-      const toLine = (l: any, i: number, prefix: string): PayslipLine => ({
+      const toLine = (l: any, i: number, prefix: string, type: PayslipLine['type']): PayslipLine => ({
         id: `${prefix}${i}`,
         code: String(l.name ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_'),
         description: l.name ?? '',
+        descriptionAr: l.nameAr || undefined,
         componentName: l.name ?? '',
         amount: Number(l.amount ?? 0),
-        type: l.type === 'Deduction' ? 'Deduction' : 'Earning',
+        type,
       });
-      const earnings = lines.filter((l) => l.type === 'Earning').map((l, i) => toLine(l, i, 'e'));
-      const deductions = lines.filter((l) => l.type === 'Deduction').map((l, i) => toLine(l, i, 'd'));
-      const base = mapPayslip({ ...d, status: 'Final' });
+      const earnings = lines.filter((l) => l.type === 'Earning').map((l, i) => toLine(l, i, 'e', 'Earning'));
+      const deductions = lines.filter((l) => l.type === 'Deduction').map((l, i) => toLine(l, i, 'd', 'Deduction'));
+      const employerLines = lines
+        .filter((l) => l.type === 'EmployerContribution')
+        .map((l, i) => toLine(l, i, 'c', 'Deduction'));
+      const base = mapPayslip({ ...d, status: d.status ?? 'Final' });
       return {
         ...base,
         grossSalary: Number(d.grossSalary ?? 0),
@@ -1194,6 +1319,8 @@ export const payslipApi = {
         earnings,
         deductions,
         details: [...earnings, ...deductions],
+        employerLines,
+        reconciled: typeof d.reconciled === 'boolean' ? d.reconciled : null,
         ytdGross: d.ytdGross ?? undefined,
         ytdNet: d.ytdNet ?? undefined,
       };
@@ -1202,13 +1329,15 @@ export const payslipApi = {
     }
     const [slips, currency] = await Promise.all([apiGet<any[]>('/ess/payslips'), payslipCurrency()]);
     const raw = slips.find((item) => String(item.id) === id);
-    if (!raw) throw new Error('This payslip is no longer available.');
+    if (!raw) throw Object.assign(new Error('payslip_not_found'), { response: { status: 404 } });
     const { earnings, deductions } = payslipLines(raw);
     return {
       ...mapPayslip(raw, currency),
       earnings,
       deductions,
       details: [...earnings, ...deductions],
+      employerLines: [],
+      reconciled: null,
       loanDeductions: Number(raw.loanDeductions ?? 0) || undefined,
       ytdGross: raw.ytdGross ?? undefined,
       ytdNet: raw.ytdNet ?? undefined,
@@ -1223,9 +1352,22 @@ export const payslipApi = {
 
 // ---- Profile ----
 export const profileApi = {
-  async getProfile(): Promise<EmployeeProfile> {
-    const profile = await apiGet<any>('/ess/profile');
-    return mapEmployeeProfile(profile);
+  /**
+   * GET /ess/profile, plus the employing company's country from /auth/me (companies[].countryCode)
+   * so the screen shows that jurisdiction's identity documents. Country stays unknown when /auth/me
+   * fails or the session spans companies in different countries.
+   */
+  async getProfile(): Promise<EmployeeProfileRecord> {
+    const [profile, me] = await Promise.all([
+      apiGet<any>('/ess/profile'),
+      apiGet<any>('/auth/me').catch(() => null),
+    ]);
+    const companies: any[] = Array.isArray(me?.companies) ? me.companies : [];
+    const countries = new Set(companies.map((c) => String(c?.countryCode ?? '').trim().toUpperCase()).filter(Boolean));
+    return {
+      ...mapEmployeeProfile(profile),
+      companyCountry: countries.size === 1 ? [...countries][0] : undefined,
+    };
   },
 
   async requestProfileUpdate(changes: Record<string, string | undefined>): Promise<void> {
@@ -1435,6 +1577,134 @@ export const approvalsApi = {
     const item = await apiGet<any>(`/approval-requests/${taskId}`);
     return mapApprovalItem(item);
   },
+
+  /**
+   * Everything waiting for this manager, in one exception-first list (approvalModel.mergeInbox):
+   *   - workflow approvals where the caller is the current approver (server-scoped), every page;
+   *   - overtime at the manager stage (PendingManager) for the caller's scoped team, every page —
+   *     OvertimeController has its own approval path, so these are never in /approval-requests.
+   * If one source fails the other is still shown and `unavailable` names the missing one, so a
+   * partial list is never presented as complete.
+   */
+  async getInbox(): Promise<{ items: InboxItem[]; unavailable: ('workflow' | 'overtime')[] }> {
+    const self = Number(await getCurrentEmployeeId());
+    const selfId = Number.isFinite(self) && self > 0 ? self : null;
+    const [workflow, overtime] = await Promise.allSettled([
+      fetchAllPages<any>((page, pageSize) =>
+        apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
+      ),
+      fetchAllPages<any>((page, pageSize) =>
+        apiGet<BackendPaged<any>>(`/overtime/requests?status=PendingManager&page=${page}&pageSize=${pageSize}`)
+      ),
+    ]);
+    if (workflow.status === 'rejected' && overtime.status === 'rejected') throw workflow.reason;
+    const unavailable: ('workflow' | 'overtime')[] = [];
+    const workflowItems = workflow.status === 'fulfilled' ? workflow.value.map(mapWorkflowApproval) : [];
+    if (workflow.status === 'rejected') unavailable.push('workflow');
+    let overtimeItems: InboxItem[] = [];
+    if (overtime.status === 'fulfilled') {
+      const scoped = overtime.value
+        .map((row) => mapOvertimeApproval(row, selfId))
+        .filter((x): x is InboxItem => x !== null);
+      // The scope includes indirect reports the caller cannot approve (the server checks the
+      // employee's resolved approvers), so ask the server who approves each employee's overtime.
+      const isAdmin = (await userStorage.getUser())?.role === 'SUPER_ADMIN';
+      const approverOf = new Map<number, boolean | null>();
+      if (!isAdmin && selfId !== null) {
+        const employeeIds = [...new Set(scoped.map((i) => i.requesterEmployeeId).filter((id): id is number => id !== null))];
+        await Promise.all(employeeIds.map(async (employeeId) => {
+          try {
+            const resolved = await apiGet<any>(`/employees/${employeeId}/workflow-approvers?workflowType=Overtime`);
+            const approvers: any[] = Array.isArray(resolved?.approvers) ? resolved.approvers : [];
+            approverOf.set(employeeId, approvers.some((a) => Number(a?.employeeId) === selfId));
+          } catch {
+            approverOf.set(employeeId, null);
+          }
+        }));
+      }
+      const decidable = decidableOvertime(scoped, approverOf, isAdmin);
+      overtimeItems = decidable.items;
+      if (decidable.unresolved) unavailable.push('overtime');
+    } else if (overtime.reason?.response?.status !== 403) {
+      // 403 = this login has no overtime approval rights: nothing is missing, there is nothing to show.
+      unavailable.push('overtime');
+    }
+    return { items: mergeInbox(workflowItems, overtimeItems), unavailable };
+  },
+
+  /**
+   * Requests on the caller's team that the caller decided (GET /approval-requests?queue=team, one
+   * status at a time — the queue accepts a single status), reduced to rows carrying a decision by
+   * this user. /approval-requests without a queue returns only rows waiting for the caller, so
+   * history read from it was always empty.
+   */
+  async getMyDecisions(myUserId: string): Promise<MyDecision[]> {
+    const statuses = ['Approved', 'Rejected', 'Pending', 'ReturnedToRequester'];
+    const pages = await Promise.all(
+      statuses.map((status) =>
+        fetchAllPages<any>((page, pageSize) =>
+          apiGet<BackendPaged<any>>(`/approval-requests?queue=team&status=${status}&page=${page}&pageSize=${pageSize}`)
+        )
+      )
+    );
+    return myDecisionsFrom(pages.flat(), myUserId);
+  },
+
+  /**
+   * What a manager needs before deciding a leave request: the request itself, the requester's
+   * balance for that leave type, and approved leave by others on the same dates. Balance and
+   * overlap are best-effort: when either cannot be read it is null and the sheet says so.
+   */
+  /** GET /api/leave/requests/{id} — dates, days and reason for a leave approval card. */
+  async getLeaveFacts(leaveRequestId: string): Promise<LeaveFacts | null> {
+    return mapLeaveFacts(await apiGet<any>(`/leave/requests/${leaveRequestId}`));
+  },
+
+  async getLeaveContext(leaveRequestId: string): Promise<{
+    leave: LeaveFacts;
+    balance: BalanceFacts | null;
+    balanceUnavailable: boolean;
+    overlap: OutEntry[] | null;
+  }> {
+    const leave = await approvalsApi.getLeaveFacts(leaveRequestId);
+    if (!leave) throw new Error('Leave request not found.');
+    const [balances, calendar] = await Promise.allSettled([
+      leave.employeeId
+        ? apiGet<BackendPaged<any>>(`/leave/balances?employeeId=${leave.employeeId}`)
+        : Promise.reject(new Error('No employee')),
+      leave.startDate && leave.endDate
+        ? teamCalendarApi.getTeamLeave(leave.startDate, leave.endDate)
+        : Promise.reject(new Error('No dates')),
+    ]);
+    const balance = balances.status === 'fulfilled' ? balanceFacts(itemsOf(balances.value), leave) : null;
+    return {
+      leave,
+      balance,
+      balanceUnavailable: balances.status === 'rejected',
+      overlap:
+        calendar.status === 'fulfilled' && leave.startDate && leave.endDate
+          ? overlapping(calendar.value, leave.startDate, leave.endDate, leave.employeeId)
+          : null,
+    };
+  },
+
+  /** Approve or reject one inbox item through its own source's endpoint; returns the TRUE resulting state. */
+  async decide(item: InboxItem, decision: 'approve' | 'reject', comment?: string): Promise<DecisionOutcome> {
+    const notes = comment?.trim() || undefined;
+    if (item.source === 'overtime') {
+      // OvertimeDecisionRequest(int ApprovedMinutes, string? Notes): a manager approves the hours as requested.
+      const r = await apiPost<any>(`/overtime/requests/${item.id}/${decision}`, {
+        approvedMinutes: decision === 'approve' ? item.overtime?.minutes ?? 0 : 0,
+        notes,
+      });
+      return overtimeOutcome(r);
+    }
+    const r = await apiPost<any>(`/approval-requests/${item.id}/decisions`, {
+      decision: decision === 'approve' ? 'Approve' : 'Reject',
+      comments: notes,
+    });
+    return workflowOutcome(r);
+  },
 };
 
 // ---- Notifications ----
@@ -1515,16 +1785,49 @@ export const aiApi = {
 // ---- Team (Manager/Supervisor) ----
 export const teamApi = {
   /**
+   * Direct reports with today's status, plus what is known about today itself: whether it is a
+   * public holiday in the tenant's calendar (so nobody is counted absent on it). The holiday check
+   * is best-effort; when it fails `holidayKnown` is false and no one is counted as off for it.
+   */
+  async getTeamToday(): Promise<{
+    members: TeamMemberToday[];
+    day: TeamDay;
+    holiday: { nameEn: string | null; nameAr: string | null } | null;
+    holidayKnown: boolean;
+    businessDate: string;
+  }> {
+    const businessDate = riyadhBusinessDate();
+    const [members, holiday] = await Promise.all([
+      teamApi.getTeamMembers(),
+      teamCalendarApi.getPublicHoliday(businessDate).then(
+        (h) => ({ ok: true as const, h }),
+        () => ({ ok: false as const, h: null })
+      ),
+    ]);
+    return {
+      members,
+      day: { publicHoliday: holiday.h !== null },
+      holiday: holiday.h,
+      holidayKnown: holiday.ok,
+      businessDate,
+    };
+  },
+
+  /**
    * GET /ess/team (W2-D S8): the caller's direct reports with today's status,
    * resolved server-side from the daily record, then today's raw punches, then
    * approved leave. Falls back to the scoped /employees + /attendance/daily
    * derivation on an older backend (404).
    */
-  async getTeamMembers(): Promise<TeamMember[]> {
+  async getTeamMembers(): Promise<TeamMemberToday[]> {
     try {
       const team = await apiGet<any[]>('/ess/team');
       return team.map(
-        (m): TeamMember => ({
+        (m): TeamMemberToday => ({
+          // The server's own words ("Not clocked in", "Late", …): teamModel buckets these, so a
+          // report with no punch yet is "not clocked in", not "absent", before the day is processed.
+          rawStatus: m.todayStatus ?? '',
+          currentlyActive: m.currentlyActive === true,
           employeeId: String(m.employeeId),
           fullName: m.fullName ?? 'Employee',
           jobTitle: m.jobTitle ?? '',
@@ -1552,9 +1855,11 @@ export const teamApi = {
     const byEmployee = new Map(itemsOf(attendance).map((a: any) => [a.employeeId, a]));
     return itemsOf(employees)
       .filter((e: any) => e.managerEmployeeId === employeeId && e.id !== employeeId)
-      .map((e: any): TeamMember => {
+      .map((e: any): TeamMemberToday => {
         const a = byEmployee.get(e.id);
         return {
+          rawStatus: a ? (a.missingPunch ? 'Missing punch' : String(a.status ?? '')) : 'Not clocked in',
+          currentlyActive: Boolean(a?.firstInUtc && !a?.lastOutUtc),
           employeeId: String(e.id),
           fullName: e.fullName ?? 'Employee',
           jobTitle: e.designation ?? '',

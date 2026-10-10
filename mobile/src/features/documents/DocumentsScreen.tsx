@@ -1,165 +1,195 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
+import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { documentsApi } from '@/api/adapters';
 import { normalizePickedFile, type PickedFile } from '@/api/services';
-import { formatDate } from '@/utils/date';
 import { FEATURES } from '@/config/features';
 import { useTheme } from '@/theme/ThemeProvider';
+import { useFormat } from '@/utils/format';
+import { haptics } from '@/utils/haptics';
 import {
+  BottomSheet,
   GlassIconButton,
-  GlassSurface,
   LiquidBackdrop,
   LiquidButton,
   MotionPressable,
   ScreenHero,
-  SectionHeader,
+  SkeletonRow,
+  StateCard,
+  StatusPill,
+  Surface,
 } from '@/components/ui';
+import { daysBetween } from '@/features/approvals/teamModel';
+import { useManagerText } from '@/features/approvals/useManagerText';
 import type { EmployeeDocument } from '@/types';
 
-const documentTypes = [
-  'Passport',
-  'Visa',
-  'Iqama',
-  'Emirates ID',
-  'Work Permit',
-  'Educational Certificate',
-  'Professional Certificate',
-  'Medical Certificate',
-  'Contract',
-  'Other',
-];
+/** Document types: `value` is what the API stores (English, read by HR on the web); `key` is the label. */
+const DOCUMENT_TYPES = [
+  { key: 'iqama', value: 'Iqama' },
+  { key: 'nationalId', value: 'National ID' },
+  { key: 'passport', value: 'Passport' },
+  { key: 'visa', value: 'Visa' },
+  { key: 'workPermit', value: 'Work Permit' },
+  { key: 'contract', value: 'Contract' },
+  { key: 'education', value: 'Educational Certificate' },
+  { key: 'professional', value: 'Professional Certificate' },
+  { key: 'medical', value: 'Medical Certificate' },
+  { key: 'emiratesId', value: 'Emirates ID' },
+  { key: 'other', value: 'Other' },
+] as const;
 
-function daysUntilExpiry(date?: string | null): number | null {
-  if (!date) return null;
-  return Math.ceil((new Date(date).getTime() - Date.now()) / 86_400_000);
+const EXTRA_TYPE_KEYS: Record<string, string> = { 'hr request attachment': 'hrAttachment' };
+const ATTENTION_DAYS = 60;
+
+type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
+
+function useDocText() {
+  const { t } = useTranslation();
+  const tx = t as unknown as (k: string, o?: Record<string, unknown>) => string;
+  return {
+    type: (value: string) => {
+      const v = value.trim().toLowerCase();
+      const key = DOCUMENT_TYPES.find((d) => d.value.toLowerCase() === v)?.key ?? EXTRA_TYPE_KEYS[v];
+      return key ? tx(`manager.docs.types.${key}`) : value;
+    },
+    review: (doc: EmployeeDocument): { tone: Tone; label: string } => {
+      const v = (doc.verificationStatus ?? '').toLowerCase();
+      if (v === 'approved' || v === 'verified') return { tone: 'success', label: tx('manager.docs.status.verified') };
+      if (v === 'pending') return { tone: 'info', label: tx('manager.docs.status.pending') };
+      if (v === 'rejected') return { tone: 'danger', label: tx('manager.docs.status.rejected') };
+      return { tone: 'neutral', label: tx('manager.docs.status.uploaded') };
+    },
+  };
+}
+
+function localIsoDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 export default function DocumentsScreen() {
-  const { theme, reduceMotion } = useTheme();
-  const [documents, setDocuments] = useState<EmployeeDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { theme } = useTheme();
+  const { t } = useTranslation();
+  const f = useFormat();
+  const docText = useDocText();
+  const mtext = useManagerText();
+  const [documents, setDocuments] = useState<EmployeeDocument[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [uploadModal, setUploadModal] = useState(false);
-  const [uploadData, setUploadData] = useState({
-    documentType: documentTypes[0],
-    expiryDate: '',
-    documentNumber: '',
-  });
-  const [selectedFile, setSelectedFile] = useState<PickedFile | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [typePickerOpen, setTypePickerOpen] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [completionMessage, setCompletionMessage] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const today = f.businessDate() ?? localIsoDate(new Date());
 
   const fetchDocuments = useCallback(async () => {
-    setLoadError(null);
     try {
       const data = await documentsApi.getDocuments();
-      setDocuments(Array.isArray(data) ? data : (data as { items?: EmployeeDocument[] }).items || []);
-    } catch (error: any) {
-      setLoadError(error.message || 'Failed to load documents.');
+      setDocuments(Array.isArray(data) ? data : (data as { items?: EmployeeDocument[] }).items ?? []);
+      setLoadFailed(false);
+    } catch {
+      setLoadFailed(true);
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    void fetchDocuments();
-  }, [fetchDocuments]);
-
-  const expiring = useMemo(
-    () => documents.filter((document) => {
-      const days = daysUntilExpiry(document.expiryDate);
-      return days !== null && days <= 60;
-    }),
-    [documents],
+  useFocusEffect(
+    useCallback(() => {
+      void fetchDocuments();
+    }, [fetchDocuments]),
   );
 
-  const verifiedCount = useMemo(
-    () => documents.filter((document) => ['Verified', 'Approved'].includes(document.verificationStatus ?? document.status)).length,
-    [documents],
+  const daysLeft = useCallback((doc: EmployeeDocument) => (doc.expiryDate ? daysBetween(today, doc.expiryDate) : null), [today]);
+  const attention = useMemo(
+    () => (documents ?? [])
+      .filter((d) => {
+        const left = daysLeft(d);
+        return left !== null && left <= ATTENTION_DAYS;
+      })
+      .sort((a, b) => (daysLeft(a) ?? 0) - (daysLeft(b) ?? 0)),
+    [daysLeft, documents],
   );
+  const verified = (documents ?? []).filter((d) => docText.review(d).tone === 'success').length;
 
-  const downloadDocument = async (document: EmployeeDocument) => {
-    setDownloadingId(document.id);
+  const openDocument = async (doc: EmployeeDocument) => {
+    if (!FEATURES.DOCUMENT_DOWNLOAD || openingId) return;
+    setOpeningId(doc.id);
+    setNotice(null);
+    let uri: string | null = null;
     try {
-      const { url, headers } = await documentsApi.downloadDocument(document.id);
-      const safeName = (document.fileName ?? `document-${document.id}`).replace(/[^\w.\-]+/g, '_');
-      const result = await FileSystem.downloadAsync(
-        url,
-        `${FileSystem.cacheDirectory}${safeName}`,
-        { headers },
-      );
-      if (result.status !== 200) throw new Error(`Download failed (HTTP ${result.status})`);
+      const { url, headers } = await documentsApi.downloadDocument(doc.id);
+      const safeName = (doc.fileName ?? `document-${doc.id}`).replace(/[^\w.-]+/g, '_');
+      const result = await FileSystem.downloadAsync(url, `${FileSystem.cacheDirectory}${safeName}`, { headers });
+      uri = result.uri;
+      if (result.status !== 200) throw new Error(String(result.status));
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(result.uri);
-      else Alert.alert('Downloaded', `Saved to ${result.uri}`);
-    } catch (error: any) {
-      Alert.alert('Could not open document', error.message || 'Please try again.');
-    } finally {
-      setDownloadingId(null);
-    }
-  };
-
-  const pickFile = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
-        copyToCacheDirectory: true,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        const asset = result.assets[0];
-        setSelectedFile(normalizePickedFile({
-          uri: asset.uri,
-          name: asset.name,
-          mimeType: asset.mimeType,
-          size: asset.size,
-        }));
-      }
     } catch {
-      Alert.alert('File unavailable', 'Could not select this file.');
+      haptics.error();
+      setNotice({ ok: false, text: t('manager.docs.openError') });
+    } finally {
+      // Personal documents never linger on the device after they are shared.
+      if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+      setOpeningId(null);
     }
   };
 
-  const submitUpload = async () => {
-    if (!selectedFile) {
-      Alert.alert('File required', 'Select a PDF or image first.');
-      return;
-    }
-    setUploading(true);
-    try {
-      await documentsApi.uploadDocument({
-        file: selectedFile,
-        documentType: uploadData.documentType,
-        expiryDate: uploadData.expiryDate || undefined,
-        documentNumber: uploadData.documentNumber.trim() || undefined,
-      });
-      setUploadModal(false);
-      setSelectedFile(null);
-      setUploadData({ documentType: documentTypes[0], expiryDate: '', documentNumber: '' });
-      setCompletionMessage('Document uploaded. HR can now verify it.');
-      await fetchDocuments();
-    } catch (error: any) {
-      Alert.alert('Upload failed', error.message || 'Please try again.');
-    } finally {
-      setUploading(false);
-    }
+  const expiryLine = (doc: EmployeeDocument) => {
+    const left = daysLeft(doc);
+    if (left === null || !doc.expiryDate) return null;
+    if (left < 0) return { tone: 'danger' as const, text: t('manager.docs.expired', { date: f.date(doc.expiryDate, 'medium') }) };
+    const days = mtext.days(left);
+    return {
+      tone: left <= ATTENTION_DAYS ? ('warning' as const) : ('neutral' as const),
+      text: t('manager.docs.expires', { date: f.date(doc.expiryDate, 'medium'), left: days }),
+    };
+  };
+
+  const renderRow = (doc: EmployeeDocument, last: boolean) => {
+    const review = docText.review(doc);
+    const expiry = expiryLine(doc);
+    const name = docText.type(doc.documentType);
+    return (
+      <MotionPressable
+        key={doc.id}
+        accessibilityRole={FEATURES.DOCUMENT_DOWNLOAD ? 'button' : undefined}
+        accessibilityLabel={[t('manager.docs.open', { name }), review.label, expiry?.text].filter(Boolean).join('. ')}
+        accessibilityState={{ busy: openingId === doc.id }}
+        disabled={!FEATURES.DOCUMENT_DOWNLOAD || openingId !== null}
+        onPress={() => void openDocument(doc)}
+      >
+        <View style={[styles.row, !last && { borderBottomColor: theme.colors.hairline, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+          <Ionicons accessible={false} name="document-outline" size={22} color={theme.colors.accent} />
+          <View style={styles.flex}>
+            <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{name}</Text>
+            {doc.documentNumber ? (
+              <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{t('manager.docs.number', { number: doc.documentNumber })}</Text>
+            ) : null}
+            {expiry ? (
+              <Text style={[theme.typography.footnote, { color: expiry.tone === 'neutral' ? theme.colors.textSecondary : theme.colors.status[expiry.tone].fg }]}>
+                {expiry.text}
+              </Text>
+            ) : null}
+            <View style={styles.pills}>
+              <StatusPill tone={review.tone} label={review.label} />
+            </View>
+          </View>
+          {FEATURES.DOCUMENT_DOWNLOAD ? (
+            <Ionicons
+              accessible={false}
+              name={openingId === doc.id ? 'hourglass-outline' : 'share-outline'}
+              size={20}
+              color={theme.colors.textMuted}
+            />
+          ) : null}
+        </View>
+      </MotionPressable>
+    );
   };
 
   return (
@@ -167,6 +197,7 @@ export default function DocumentsScreen() {
       <LiquidBackdrop subtle />
       <ScrollView
         contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -174,537 +205,274 @@ export default function DocumentsScreen() {
               setRefreshing(true);
               void fetchDocuments();
             }}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
+            tintColor={theme.colors.accent}
           />
         }
-        showsVerticalScrollIndicator={false}
       >
         <ScreenHero
-          eyebrow="Employee records"
-          title="Documents"
-          subtitle={`${documents.length} record${documents.length === 1 ? '' : 's'} · ${verifiedCount} verified`}
+          title={t('manager.docs.title')}
+          subtitle={documents ? t('manager.docs.subtitle', { n: f.number(documents.length), verified: f.number(verified) }) : undefined}
           actions={
             FEATURES.FILE_UPLOAD ? (
-              <GlassIconButton
-                icon="cloud-upload-outline"
-                label="Upload document"
-                accent
-                onPress={() => setUploadModal(true)}
-              />
+              <GlassIconButton icon="cloud-upload-outline" label={t('manager.docs.upload')} accent onPress={() => setUploadOpen(true)} />
             ) : undefined
           }
         />
 
-        {completionMessage ? (
-          <Animated.View
-            entering={reduceMotion ? undefined : FadeInDown.duration(220)}
-            exiting={reduceMotion ? undefined : FadeOutUp.duration(160)}
-            style={styles.completionWrap}
-          >
-            <GlassSurface
+        {notice ? (
+          <View style={styles.section}>
+            <Text
               accessibilityRole="alert"
               accessibilityLiveRegion="polite"
-              elevated={false}
-              radius={theme.radius.lg}
-              contentStyle={styles.completionBanner}
+              style={[theme.typography.subheadline, { color: notice.ok ? theme.colors.status.success.fg : theme.colors.status.danger.fg }]}
             >
-              <Ionicons name="checkmark-circle" size={22} color={theme.colors.success} />
-              <Text style={[theme.typography.caption, styles.completionText, { color: theme.colors.text }]}>
-                {completionMessage}
-              </Text>
-              <MotionPressable
-                accessibilityRole="button"
-                accessibilityLabel="Dismiss upload confirmation"
-                onPress={() => setCompletionMessage(null)}
-                haptic="selection"
-                contentStyle={styles.completionDismiss}
-              >
-                <Ionicons name="close" size={18} color={theme.colors.textMuted} />
-              </MotionPressable>
-            </GlassSurface>
-          </Animated.View>
-        ) : null}
-
-        {!loading ? (
-          <View style={styles.section}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.metricRail}>
-              <DocumentMetric label="Total" value={documents.length} icon="folder-open-outline" accent={theme.colors.primary} />
-              <DocumentMetric label="Verified" value={verifiedCount} icon="shield-checkmark-outline" accent={theme.colors.success} />
-              <DocumentMetric label="Attention" value={expiring.length} icon="warning-outline" accent={theme.colors.warning} />
-            </ScrollView>
+              {notice.text}
+            </Text>
           </View>
         ) : null}
 
-        {expiring.length ? (
+        {documents === null && !loadFailed ? (
           <View style={styles.section}>
-            <SectionHeader title="Needs attention" subtitle="Expiring or expired documents" />
-            <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.alertCard}>
-              {expiring.map((document, index) => (
-                <ExpiryAlert
-                  key={document.id}
-                  document={document}
-                  isLast={index === expiring.length - 1}
-                  onPress={() => void downloadDocument(document)}
-                />
-              ))}
-            </GlassSurface>
+            <Surface contentStyle={styles.list}>
+              <SkeletonRow />
+              <SkeletonRow />
+              <SkeletonRow />
+            </Surface>
           </View>
-        ) : null}
-
-        <View style={styles.section}>
-          <SectionHeader title="Document vault" subtitle="Secure employee records" />
-          {loading ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-              <ActivityIndicator color={theme.colors.primary} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading document vault…</Text>
-            </GlassSurface>
-          ) : loadError ? (
-            <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-              <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
-              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>Documents unavailable</Text>
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, textAlign: 'center' }]}>{loadError}</Text>
-              <LiquidButton label="Try again" onPress={() => void fetchDocuments()} />
-            </GlassSurface>
-          ) : documents.length === 0 ? (
-            <EmptyDocuments onUpload={FEATURES.FILE_UPLOAD ? () => setUploadModal(true) : undefined} />
-          ) : (
-            <View style={styles.list}>
-              {documents.map((document) => (
-                <DocumentCard
-                  key={document.id}
-                  document={document}
-                  loading={downloadingId === document.id}
-                  onOpen={() => void downloadDocument(document)}
-                />
-              ))}
+        ) : loadFailed && !documents ? (
+          <View style={styles.section}>
+            <StateCard variant="error" title={t('manager.docs.errorTitle')} onRetry={() => void fetchDocuments()} />
+          </View>
+        ) : !documents?.length ? (
+          <View style={styles.section}>
+            <StateCard
+              variant="empty"
+              title={t('manager.docs.emptyTitle')}
+              body={t('manager.docs.emptyBody')}
+              action={FEATURES.FILE_UPLOAD ? { label: t('manager.docs.upload'), onPress: () => setUploadOpen(true) } : undefined}
+            />
+          </View>
+        ) : (
+          <>
+            {attention.length ? (
+              <View style={styles.section}>
+                <Text accessibilityRole="header" style={[theme.typography.title3, { color: theme.colors.text }]}>{t('manager.docs.attention')}</Text>
+                <Surface contentStyle={styles.list}>{attention.map((d, i) => renderRow(d, i === attention.length - 1))}</Surface>
+              </View>
+            ) : null}
+            <View style={styles.section}>
+              <Text accessibilityRole="header" style={[theme.typography.title3, { color: theme.colors.text }]}>{t('manager.docs.all')}</Text>
+              <Surface contentStyle={styles.list}>{documents.map((d, i) => renderRow(d, i === documents.length - 1))}</Surface>
             </View>
-          )}
-        </View>
-        <View style={styles.bottomSpacer} />
+          </>
+        )}
       </ScrollView>
 
-      <UploadDocumentModal
-        visible={uploadModal}
-        data={uploadData}
-        file={selectedFile}
-        typePickerOpen={typePickerOpen}
-        uploading={uploading}
-        onDataChange={setUploadData}
-        onTypePickerToggle={() => setTypePickerOpen((current) => !current)}
-        onTypeSelect={(documentType) => {
-          setUploadData((current) => ({ ...current, documentType }));
-          setTypePickerOpen(false);
+      <UploadSheet
+        visible={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={() => {
+          setUploadOpen(false);
+          setNotice({ ok: true, text: t('manager.docs.uploaded') });
+          void fetchDocuments();
         }}
-        onPickFile={() => void pickFile()}
-        onRemoveFile={() => setSelectedFile(null)}
-        onClose={() => {
-          setUploadModal(false);
-          setTypePickerOpen(false);
-        }}
-        onSubmit={() => void submitUpload()}
       />
     </View>
   );
 }
 
-function DocumentMetric({
-  label,
-  value,
-  icon,
-  accent,
-}: {
-  label: string;
-  value: number;
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  accent: string;
-}) {
+function UploadSheet({ visible, onClose, onUploaded }: { visible: boolean; onClose: () => void; onUploaded: () => void }) {
   const { theme } = useTheme();
-  return (
-    <GlassSurface elevated={false} radius={theme.radius.xl} style={styles.metricCard} contentStyle={styles.metricContent}>
-      <View style={[styles.metricIcon, { backgroundColor: `${accent}18` }]}>
-        <Ionicons name={icon} size={19} color={accent} />
-      </View>
-      <Text style={[styles.metricValue, { color: theme.colors.text }]}>{value}</Text>
-      <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>{label}</Text>
-    </GlassSurface>
-  );
-}
+  const { t } = useTranslation();
+  const f = useFormat();
+  const tx = t as unknown as (k: string, o?: Record<string, unknown>) => string;
+  const [type, setType] = useState<string>(DOCUMENT_TYPES[0].value);
+  const [number, setNumber] = useState('');
+  const [expiry, setExpiry] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [file, setFile] = useState<PickedFile | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<'file' | 'upload' | null>(null);
 
-function ExpiryAlert({
-  document,
-  isLast,
-  onPress,
-}: {
-  document: EmployeeDocument;
-  isLast: boolean;
-  onPress: () => void;
-}) {
-  const { theme } = useTheme();
-  const days = daysUntilExpiry(document.expiryDate);
-  const expired = days !== null && days < 0;
-  const accent = expired ? theme.colors.danger : theme.colors.warning;
-  return (
-    <MotionPressable onPress={onPress} haptic="selection" contentStyle={styles.rounded}>
-      <View
-        style={[
-          styles.alertRow,
-          !isLast && { borderBottomColor: theme.colors.divider, borderBottomWidth: StyleSheet.hairlineWidth },
-        ]}
-      >
-        <View style={[styles.alertIcon, { backgroundColor: `${accent}18` }]}>
-          <Ionicons name={expired ? 'alert-circle-outline' : 'time-outline'} size={19} color={accent} />
-        </View>
-        <View style={styles.alertCopy}>
-          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{document.documentType}</Text>
-          <Text style={[theme.typography.caption, { color: accent, marginTop: 2 }]}>
-            {expired ? 'Expired' : `${days} days remaining`} · {document.expiryDate ? formatDate(document.expiryDate, 'display') : 'No date'}
-          </Text>
-        </View>
-        <Ionicons name="arrow-forward" size={17} color={theme.colors.textMuted} />
-      </View>
-    </MotionPressable>
-  );
-}
+  const reset = () => {
+    setType(DOCUMENT_TYPES[0].value);
+    setNumber('');
+    setExpiry(null);
+    setPickerOpen(false);
+    setFile(null);
+    setError(null);
+  };
 
-function DocumentCard({
-  document,
-  loading,
-  onOpen,
-}: {
-  document: EmployeeDocument;
-  loading: boolean;
-  onOpen: () => void;
-}) {
-  const { theme } = useTheme();
-  const status = document.verificationStatus ?? document.status;
-  const statusMeta = getStatusMeta(status, theme);
-  const expiryMeta = getExpiryMeta(document.expiryDate, theme);
+  const pickFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true });
+      if (!result.canceled && result.assets?.[0]) {
+        const a = result.assets[0];
+        setFile(normalizePickedFile({ uri: a.uri, name: a.name, mimeType: a.mimeType, size: a.size }));
+        setError(null);
+      }
+    } catch {
+      setError('upload');
+    }
+  };
+
+  const onDate = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS !== 'ios') setPickerOpen(false);
+    if (event.type === 'set' && date) setExpiry(localIsoDate(date));
+  };
+
+  const submit = async () => {
+    if (!file) {
+      setError('file');
+      haptics.error();
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      await documentsApi.uploadDocument({ file, documentType: type, expiryDate: expiry ?? undefined, documentNumber: number.trim() || undefined });
+      haptics.success();
+      reset();
+      onUploaded();
+    } catch {
+      haptics.error();
+      setError('upload');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
-    <MotionPressable
-      onPress={FEATURES.DOCUMENT_DOWNLOAD ? onOpen : undefined}
-      disabled={!FEATURES.DOCUMENT_DOWNLOAD || loading}
-      haptic="selection"
-      contentStyle={styles.rounded}
-      accessibilityRole={FEATURES.DOCUMENT_DOWNLOAD ? 'button' : undefined}
-      accessibilityLabel={`Open ${document.documentType}`}
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      title={t('manager.docs.form.title')}
+      subtitle={t('manager.docs.form.subtitle')}
+      actions={
+        <>
+          {error === 'upload' ? (
+            <Text accessibilityRole="alert" style={[theme.typography.footnote, { color: theme.colors.status.danger.fg }]}>
+              {t('manager.docs.form.uploadError')}
+            </Text>
+          ) : null}
+          <LiquidButton label={t('manager.docs.form.submit')} icon="cloud-upload-outline" loading={uploading} onPress={() => void submit()} />
+        </>
+      }
     >
-      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.documentCard}>
-        <View style={[styles.documentIcon, { backgroundColor: `${theme.colors.primary}16` }]}>
-          <Ionicons name={getDocumentIcon(document.documentType)} size={23} color={theme.colors.primary} />
-        </View>
-        <View style={styles.documentCopy}>
-          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{document.documentType}</Text>
-          {document.documentNumber ? (
-            <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 3 }]}>
-              #{document.documentNumber}
-            </Text>
-          ) : null}
-          <View style={styles.documentMetaRow}>
-            <StatusPill label={status || 'Uploaded'} color={statusMeta} />
-            {expiryMeta ? <StatusPill label={expiryMeta.label} color={expiryMeta.color} /> : null}
-          </View>
-          {document.fileName ? (
-            <Text numberOfLines={1} style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 6 }]}>
-              {document.fileName}
-            </Text>
-          ) : null}
-        </View>
-        {loading ? (
-          <ActivityIndicator color={theme.colors.primary} size="small" />
-        ) : (
-          <View style={[styles.openButton, { backgroundColor: `${theme.colors.primary}15` }]}>
-            <Ionicons name="open-outline" size={18} color={theme.colors.primary} />
-          </View>
-        )}
-      </GlassSurface>
-    </MotionPressable>
-  );
-}
-
-function StatusPill({ label, color }: { label: string; color: string }) {
-  const { theme } = useTheme();
-  return (
-    <View style={[styles.statusPill, { backgroundColor: `${color}16` }]}>
-      <View style={[styles.statusDot, { backgroundColor: color }]} />
-      <Text style={[theme.typography.micro, { color }]}>{label}</Text>
-    </View>
-  );
-}
-
-function EmptyDocuments({ onUpload }: { onUpload?: () => void }) {
-  const { theme } = useTheme();
-  return (
-    <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
-      <View style={[styles.emptyIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
-        <Ionicons name="folder-open-outline" size={32} color={theme.colors.primary} />
+      <Text style={[theme.typography.footnote, styles.semibold, { color: theme.colors.textSecondary }]}>{t('manager.docs.form.type')}</Text>
+      <View style={styles.chips}>
+        {DOCUMENT_TYPES.map((d) => {
+          const on = d.value === type;
+          return (
+            <MotionPressable
+              key={d.key}
+              haptic="selection"
+              accessibilityRole="button"
+              accessibilityState={{ selected: on }}
+              onPress={() => setType(d.value)}
+              contentStyle={[
+                styles.chip,
+                { backgroundColor: on ? theme.colors.primaryFill : theme.colors.card, borderColor: on ? theme.colors.primaryFill : theme.colors.hairline },
+              ]}
+            >
+              <Text style={[theme.typography.footnote, styles.semibold, { color: on ? theme.colors.onFill : theme.colors.textSecondary }]}>
+                {tx(`manager.docs.types.${d.key}`)}
+              </Text>
+            </MotionPressable>
+          );
+        })}
       </View>
-      <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No documents yet</Text>
-      <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
-        Identity, visa, contract and certificate records will appear here after HR adds or verifies them.
-      </Text>
-      {onUpload ? (
-        <MotionPressable
-          onPress={onUpload}
-          haptic="selection"
-          contentStyle={[styles.emptyAction, { backgroundColor: `${theme.colors.primary}18` }]}
-        >
-          <Ionicons name="cloud-upload-outline" size={17} color={theme.colors.primary} />
-          <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>Upload document</Text>
-        </MotionPressable>
+
+      <Text style={[theme.typography.footnote, styles.semibold, { color: theme.colors.textSecondary }]}>{t('manager.docs.form.number')}</Text>
+      <TextInput
+        value={number}
+        onChangeText={setNumber}
+        placeholder={t('manager.docs.form.numberPlaceholder')}
+        accessibilityLabel={t('manager.docs.form.number')}
+        placeholderTextColor={theme.colors.textMuted}
+        selectionColor={theme.colors.accent}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        style={[theme.typography.callout, styles.input, { color: theme.colors.text, backgroundColor: theme.colors.surfaceInset, borderColor: theme.colors.hairline }]}
+      />
+
+      <Text style={[theme.typography.footnote, styles.semibold, { color: theme.colors.textSecondary }]}>{t('manager.docs.form.expiry')}</Text>
+      <View style={styles.dateRow}>
+        <LiquidButton
+          label={expiry ? f.date(expiry, 'long') : t('manager.docs.form.chooseDate')}
+          icon="calendar-outline"
+          variant="secondary"
+          size="compact"
+          onPress={() => setPickerOpen((o) => !o)}
+          style={styles.flex}
+        />
+        {expiry ? (
+          <MotionPressable
+            accessibilityRole="button"
+            accessibilityLabel={t('manager.docs.form.clearDate')}
+            onPress={() => setExpiry(null)}
+            contentStyle={styles.iconButton}
+          >
+            <Ionicons accessible={false} name="close-circle" size={20} color={theme.colors.textMuted} />
+          </MotionPressable>
+        ) : null}
+      </View>
+      {pickerOpen ? (
+        <DateTimePicker
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          value={expiry ? new Date(`${expiry}T12:00:00`) : new Date()}
+          onChange={onDate}
+          accentColor={theme.colors.accent}
+        />
       ) : null}
-    </GlassSurface>
+
+      <Text style={[theme.typography.footnote, styles.semibold, { color: theme.colors.textSecondary }]}>{t('manager.docs.form.file')}</Text>
+      {file ? (
+        <Surface level={0} contentStyle={styles.fileRow}>
+          <Ionicons accessible={false} name="document-attach-outline" size={20} color={theme.colors.accent} />
+          <Text numberOfLines={1} style={[theme.typography.callout, styles.flex, { color: theme.colors.text }]}>{file.name}</Text>
+          <MotionPressable
+            accessibilityRole="button"
+            accessibilityLabel={t('manager.docs.form.remove', { name: file.name })}
+            onPress={() => setFile(null)}
+            contentStyle={styles.iconButton}
+          >
+            <Ionicons accessible={false} name="close" size={18} color={theme.colors.status.danger.fg} />
+          </MotionPressable>
+        </Surface>
+      ) : (
+        <LiquidButton
+          label={t('manager.docs.form.chooseFile')}
+          icon="folder-open-outline"
+          variant="secondary"
+          size="compact"
+          accessibilityHint={t('manager.docs.form.fileHint')}
+          onPress={() => void pickFile()}
+        />
+      )}
+      {error === 'file' ? (
+        <Text accessibilityLiveRegion="polite" style={[theme.typography.footnote, { color: theme.colors.status.danger.fg }]}>
+          {t('manager.docs.form.fileRequired')}
+        </Text>
+      ) : null}
+    </BottomSheet>
   );
-}
-
-function UploadDocumentModal({
-  visible,
-  data,
-  file,
-  typePickerOpen,
-  uploading,
-  onDataChange,
-  onTypePickerToggle,
-  onTypeSelect,
-  onPickFile,
-  onRemoveFile,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  data: { documentType: string; expiryDate: string; documentNumber: string };
-  file: PickedFile | null;
-  typePickerOpen: boolean;
-  uploading: boolean;
-  onDataChange: React.Dispatch<React.SetStateAction<{ documentType: string; expiryDate: string; documentNumber: string }>>;
-  onTypePickerToggle: () => void;
-  onTypeSelect: (value: string) => void;
-  onPickFile: () => void;
-  onRemoveFile: () => void;
-  onClose: () => void;
-  onSubmit: () => void;
-}) {
-  const { theme } = useTheme();
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.modalBackdrop, { backgroundColor: theme.colors.overlay }]}>
-        <GlassSurface
-          radius={theme.radius.xxl}
-          style={styles.modalSheet}
-          contentStyle={styles.modalContent}
-          tintColor={theme.isDark ? 'rgba(10,26,52,0.95)' : 'rgba(255,255,255,0.95)'}
-        >
-          <View style={[styles.modalHandle, { backgroundColor: theme.colors.border }]} />
-          <Text style={[theme.typography.h2, { color: theme.colors.text }]}>Upload document</Text>
-          <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 5 }]}>
-            PDF, JPG and PNG files are supported.
-          </Text>
-
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.modalScroll}>
-            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Document type</Text>
-            <MotionPressable
-              onPress={onTypePickerToggle}
-              haptic="selection"
-              contentStyle={[styles.selectButton, { backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border }]}
-            >
-              <View style={[styles.selectIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
-                <Ionicons name="document-outline" size={18} color={theme.colors.primary} />
-              </View>
-              <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, flex: 1 }]}>{data.documentType}</Text>
-              <Ionicons name={typePickerOpen ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.textMuted} />
-            </MotionPressable>
-
-            {typePickerOpen ? (
-              <GlassSurface elevated={false} radius={theme.radius.lg} style={styles.typePicker} contentStyle={styles.typePickerContent}>
-                {documentTypes.map((documentType, index) => (
-                  <MotionPressable
-                    key={documentType}
-                    onPress={() => onTypeSelect(documentType)}
-                    haptic="selection"
-                    contentStyle={[
-                      styles.typeOption,
-                      index < documentTypes.length - 1 && {
-                        borderBottomColor: theme.colors.divider,
-                        borderBottomWidth: StyleSheet.hairlineWidth,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        theme.typography.caption,
-                        { color: data.documentType === documentType ? theme.colors.primary : theme.colors.text },
-                      ]}
-                    >
-                      {documentType}
-                    </Text>
-                    {data.documentType === documentType ? (
-                      <Ionicons name="checkmark" size={17} color={theme.colors.primary} />
-                    ) : null}
-                  </MotionPressable>
-                ))}
-              </GlassSurface>
-            ) : null}
-
-            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Document number</Text>
-            <TextInput
-              value={data.documentNumber}
-              onChangeText={(documentNumber) => onDataChange((current) => ({ ...current, documentNumber }))}
-              placeholder="Optional reference number"
-              placeholderTextColor={theme.colors.textMuted}
-              selectionColor={theme.colors.primary}
-              style={[
-                theme.typography.body,
-                styles.input,
-                { color: theme.colors.text, backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border },
-              ]}
-            />
-
-            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>Expiry date</Text>
-            <TextInput
-              value={data.expiryDate}
-              onChangeText={(expiryDate) => onDataChange((current) => ({ ...current, expiryDate }))}
-              placeholder="YYYY-MM-DD (optional)"
-              placeholderTextColor={theme.colors.textMuted}
-              selectionColor={theme.colors.primary}
-              autoCapitalize="none"
-              style={[
-                theme.typography.body,
-                styles.input,
-                { color: theme.colors.text, backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border },
-              ]}
-            />
-
-            <Text style={[theme.typography.caption, styles.fieldLabel, { color: theme.colors.textSecondary }]}>File</Text>
-            {file ? (
-              <View style={[styles.fileSelected, { backgroundColor: theme.colors.surfaceSoft }]}>
-                <View style={[styles.fileIcon, { backgroundColor: `${theme.colors.primary}18` }]}>
-                  <Ionicons name="document-attach-outline" size={21} color={theme.colors.primary} />
-                </View>
-                <View style={styles.fileCopy}>
-                  <Text numberOfLines={1} style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{file.name}</Text>
-                  <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 2 }]}>Ready to upload securely</Text>
-                </View>
-                <MotionPressable onPress={onRemoveFile} haptic="selection" contentStyle={styles.removeFile} accessibilityRole="button" accessibilityLabel={`Remove ${file.name}`}>
-                  <Ionicons name="close" size={19} color={theme.colors.danger} />
-                </MotionPressable>
-              </View>
-            ) : (
-              <MotionPressable
-                onPress={onPickFile}
-                haptic="selection"
-                contentStyle={[styles.filePicker, { backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.border }]}
-              >
-                <Ionicons name="cloud-upload-outline" size={28} color={theme.colors.primary} />
-                <Text style={[theme.typography.bodyStrong, { color: theme.colors.text, marginTop: 8 }]}>Choose document</Text>
-                <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 3 }]}>PDF or image</Text>
-              </MotionPressable>
-            )}
-          </ScrollView>
-
-          <View style={styles.modalActions}>
-            <MotionPressable
-              onPress={onClose}
-              haptic="selection"
-              style={styles.modalSecondaryShell}
-              contentStyle={[styles.modalSecondary, { borderColor: theme.colors.border }]}
-            >
-              <Text style={[theme.typography.bodyStrong, { color: theme.colors.textSecondary }]}>Cancel</Text>
-            </MotionPressable>
-            <LiquidButton
-              label="Upload"
-              icon="cloud-upload-outline"
-              onPress={onSubmit}
-              loading={uploading}
-              disabled={uploading || !file}
-              style={styles.modalPrimary}
-            />
-          </View>
-        </GlassSurface>
-      </View>
-    </Modal>
-  );
-}
-
-function getDocumentIcon(type: string): React.ComponentProps<typeof Ionicons>['name'] {
-  const normalized = type.toLowerCase();
-  if (normalized.includes('passport')) return 'book-outline';
-  if (normalized.includes('visa') || normalized.includes('permit')) return 'earth-outline';
-  if (normalized.includes('certificate')) return 'ribbon-outline';
-  if (normalized.includes('contract')) return 'document-text-outline';
-  if (normalized.includes('medical')) return 'medkit-outline';
-  return 'document-outline';
-}
-
-function getStatusMeta(status: string, theme: ReturnType<typeof useTheme>['theme']) {
-  if (['Verified', 'Approved'].includes(status)) return theme.colors.success;
-  if (status === 'Pending') return theme.colors.warning;
-  if (status === 'Rejected') return theme.colors.danger;
-  if (status === 'Uploaded') return theme.colors.primary;
-  return theme.colors.textMuted;
-}
-
-function getExpiryMeta(date: string | null | undefined, theme: ReturnType<typeof useTheme>['theme']) {
-  const days = daysUntilExpiry(date);
-  if (days === null) return null;
-  if (days < 0) return { label: 'Expired', color: theme.colors.danger };
-  if (days <= 30) return { label: `${days}d left`, color: theme.colors.danger };
-  if (days <= 60) return { label: `${days}d left`, color: theme.colors.warning };
-  return { label: 'Valid', color: theme.colors.success };
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { paddingBottom: 36 },
-  section: { paddingHorizontal: 16, marginTop: 16 },
-  completionWrap: { paddingHorizontal: 16, marginTop: 12 },
-  completionBanner: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
-  completionText: { flex: 1 },
-  completionDismiss: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  metricRail: { gap: 9, paddingRight: 4 },
-  metricCard: { width: 122, minHeight: 126 },
-  metricContent: { padding: 14, justifyContent: 'space-between' },
-  metricIcon: { width: 39, height: 39, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  metricValue: { fontSize: 26, lineHeight: 30, fontWeight: '800', marginTop: 8 },
-  alertCard: { paddingHorizontal: 14 },
-  alertRow: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 10 },
-  alertIcon: { width: 42, height: 42, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  alertCopy: { flex: 1 },
-  list: { gap: 9 },
-  rounded: { borderRadius: 24 },
-  stateCard: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
-  documentCard: { minHeight: 104, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
-  documentIcon: { width: 50, height: 50, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  documentCopy: { flex: 1, minWidth: 0 },
-  documentMetaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 7 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  openButton: { width: 41, height: 41, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  emptyCard: { minHeight: 235, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
-  emptyIcon: { width: 64, height: 64, borderRadius: 22, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
-  emptyText: { textAlign: 'center', maxWidth: 300 },
-  emptyAction: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 13, paddingVertical: 9, borderRadius: 14, marginTop: 5 },
-  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
-  modalSheet: { maxHeight: '92%', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
-  modalContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 30 },
-  modalHandle: { width: 44, height: 5, borderRadius: 999, alignSelf: 'center', marginBottom: 17 },
-  modalScroll: { marginTop: 18 },
-  fieldLabel: { marginTop: 14, marginBottom: 7, fontWeight: '700' },
-  selectButton: { minHeight: 56, borderWidth: StyleSheet.hairlineWidth, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 11 },
-  selectIcon: { width: 37, height: 37, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-  typePicker: { maxHeight: 260, marginTop: 7 },
-  typePickerContent: { paddingHorizontal: 12 },
-  typeOption: { minHeight: 47, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  input: { minHeight: 54, borderWidth: StyleSheet.hairlineWidth, borderRadius: 17, paddingHorizontal: 13 },
-  filePicker: { minHeight: 130, borderWidth: StyleSheet.hairlineWidth, borderStyle: 'dashed', borderRadius: 18, alignItems: 'center', justifyContent: 'center', padding: 16 },
-  fileSelected: { minHeight: 74, borderRadius: 17, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 12 },
-  fileIcon: { width: 43, height: 43, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  fileCopy: { flex: 1, minWidth: 0 },
-  removeFile: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
-  modalSecondaryShell: { flex: 1 },
-  modalSecondary: { minHeight: 56, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
-  modalPrimary: { flex: 1 },
-  bottomSpacer: { height: 12 },
+  flex: { flex: 1 },
+  content: { paddingBottom: 24 },
+  section: { paddingHorizontal: 16, marginBottom: 18, gap: 10 },
+  semibold: { fontWeight: '600' },
+  list: { paddingHorizontal: 14 },
+  row: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 12, minHeight: 64 },
+  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { minHeight: 44, borderRadius: 22, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, justifyContent: 'center' },
+  input: { minHeight: 48, borderRadius: 14, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, textAlign: 'auto' },
+  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  fileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingStart: 12, paddingEnd: 4, minHeight: 52 },
 });

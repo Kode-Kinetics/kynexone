@@ -2,7 +2,18 @@
 // ZAYRA MOBILE — Date Utilities
 // ============================================================
 
-import { format, formatDistanceToNow, parseISO, isValid } from 'date-fns';
+import { format, formatDistanceToNow, parseISO, isValid, type Locale } from 'date-fns';
+import { ar as arLocale, enUS } from 'date-fns/locale';
+import i18n from '@/config/i18n';
+import {
+  DEFAULT_TIME_ZONE,
+  createFormatter,
+  parseDateInput,
+  toZonedWallClock,
+} from './formatCore';
+
+// Legacy helpers used by existing screens. They now print in the UI language and on the
+// company clock (Asia/Riyadh) instead of the device's zone. New code: useFormat() (utils/format.ts).
 
 export type DateFormat =
   | 'date'        // Dec 15, 2024
@@ -17,6 +28,34 @@ export type DateFormat =
   | 'relative'    // 2 hours ago
   | 'iso';        // 2024-12-15
 
+function isArabic(): boolean {
+  return Boolean(i18n.language?.startsWith('ar'));
+}
+
+function dateLocale(): Locale {
+  return isArabic() ? arLocale : enUS;
+}
+
+/**
+ * The value as a Date whose local fields show what the user should read:
+ * instants on the company clock; calendar dates and wall times unchanged.
+ */
+function toDisplayDate(value: string | Date): Date | null {
+  if (value instanceof Date) {
+    if (!isValid(value)) return null;
+    // A Date built at local midnight (date pickers, month grids) is a calendar date.
+    const localMidnight = value.getHours() === 0 && value.getMinutes() === 0
+      && value.getSeconds() === 0 && value.getMilliseconds() === 0;
+    return localMidnight ? value : toZonedWallClock(value, DEFAULT_TIME_ZONE);
+  }
+  const parsed = parseDateInput(value);
+  if (!parsed) return null;
+  const d = parsed.date;
+  if (parsed.kind === 'instant') return toZonedWallClock(d, DEFAULT_TIME_ZONE);
+  // calendar / wall values are stored at UTC: rebuild them as local fields.
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+}
+
 export function formatDate(
   dateStr: string | Date | undefined | null,
   fmt: DateFormat = 'date',
@@ -24,45 +63,51 @@ export function formatDate(
 ): string {
   if (!dateStr) return '—';
 
-  const date = typeof dateStr === 'string' ? parseISO(dateStr) : dateStr;
-  if (!isValid(date)) return '—';
-
-  // TODO: Integrate Hijri calendar library (e.g., @khawarizmus/hijri-moment)
-  // For now, Gregorian display with a placeholder note
-  if (useHijri) {
-    // PLACEHOLDER: Hijri date formatting
-    // return formatHijri(date, fmt);
-    console.log('[TODO] Hijri date formatting not yet implemented');
+  if (fmt === 'relative') {
+    const parsed = dateStr instanceof Date ? dateStr : parseDateInput(dateStr)?.date;
+    if (!parsed || !isValid(parsed)) return '—';
+    return formatDistanceToNow(parsed, { addSuffix: true, locale: dateLocale() });
   }
+
+  if (useHijri && fmt !== 'time' && fmt !== 'iso') {
+    const hijri = createFormatter({ language: isArabic() ? 'ar' : 'en' }).hijri(dateStr);
+    if (hijri) return hijri;
+    // Runtime without the Umm al-Qura calendar: fall through to Gregorian.
+  }
+
+  const date = toDisplayDate(dateStr);
+  if (!date) return '—';
+  const locale = dateLocale();
 
   switch (fmt) {
     case 'date':
-      return format(date, 'MMM d, yyyy');
+    case 'display':
+      return format(date, 'MMM d, yyyy', { locale });
     case 'short':
       return format(date, 'dd/MM/yyyy');
     case 'time':
-      return format(date, 'hh:mm a');
+      return format(date, 'hh:mm a', { locale });
     case 'datetime':
-      return format(date, 'MMM d, yyyy hh:mm a');
+    case 'dateTime':
+      return format(date, 'MMM d, yyyy hh:mm a', { locale });
     case 'month-year':
-      return format(date, 'MMMM yyyy');
+    case 'monthYear':
+      return format(date, 'MMMM yyyy', { locale });
     case 'month-short':
-      return format(date, 'MMM yyyy');
-    case 'relative':
-      return formatDistanceToNow(date, { addSuffix: true });
+      return format(date, 'MMM yyyy', { locale });
     case 'iso':
       return format(date, 'yyyy-MM-dd');
     default:
-      return format(date, 'MMM d, yyyy');
+      return format(date, 'MMM d, yyyy', { locale });
   }
 }
 
+/** "09:30:00" (wall time, shown as written) or an ISO instant (shown on the company clock). */
 export function formatTime(timeStr: string | undefined | null): string {
   if (!timeStr) return '—';
-  // Handles "09:30:00" or ISO datetime
-  const date = timeStr.includes('T') ? parseISO(timeStr) : parseISO(`1970-01-01T${timeStr}`);
-  if (!isValid(date)) return timeStr;
-  return format(date, 'hh:mm a');
+  const date = toDisplayDate(timeStr);
+  if (!date) return timeStr;
+  return format(date, 'hh:mm a', { locale: dateLocale() });
 }
 
 export function formatDuration(minutes: number): string {
@@ -79,8 +124,8 @@ export function formatWorkHours(decimalHours: number): string {
 }
 
 export function getDayOfWeek(dateStr: string): string {
-  const date = parseISO(dateStr);
-  return isValid(date) ? format(date, 'EEE') : '—';
+  const date = toDisplayDate(dateStr);
+  return date ? format(date, 'EEE', { locale: dateLocale() }) : '—';
 }
 
 export function getMonthDays(year: number, month: number): Date[] {

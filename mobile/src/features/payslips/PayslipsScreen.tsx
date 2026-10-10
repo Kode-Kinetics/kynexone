@@ -1,241 +1,254 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { payslipApi } from '@/api/adapters';
-import { formatDate } from '@/utils/date';
-import { useTheme } from '@/theme/ThemeProvider';
+import { useTranslation } from 'react-i18next';
 import {
-  GlassSurface,
+  DirectionalIcon,
   LiquidBackdrop,
   MotionPressable,
   ScreenHero,
   SectionHeader,
+  Skeleton,
+  SkeletonRow,
+  StateCard,
+  StatusPill,
+  Surface,
 } from '@/components/ui';
+import { useTheme } from '@/theme/ThemeProvider';
+import { useFormat } from '@/utils/format';
+import { payslipApi } from '@/api/adapters';
+import { deductionsApi, type DebtBalance } from '@/api/deductions';
 import type { Payslip } from '@/types';
+import { useLeavePayText } from '@/features/leave/useLeavePayText';
+import { payslipStatusKind } from './payslipLogic';
+import { useHijriPeriod, usePayslipPeriod } from './usePayslipPeriod';
 
 export default function PayslipsScreen() {
   const navigation = useNavigation<any>();
   const { theme } = useTheme();
+  const { t } = useTranslation();
+  const f = useFormat();
+  const text = useLeavePayText();
+  const period = usePayslipPeriod();
+  const hijri = useHijriPeriod();
+
   const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [debts, setDebts] = useState<DebtBalance[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchPayslips = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    try {
-      const data = await payslipApi.getList({ page: 1, limit: 24 });
-      setPayslips(data.items ?? []);
-    } catch (error: any) {
-      Alert.alert('Payslips unavailable', error.message ?? 'Failed to load payslips.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (refresh = false) => {
+      if (refresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const [list, deductions] = await Promise.all([
+          payslipApi.getList(),
+          // Release A: loans and advances being repaid. Off for the tenant → nothing shown.
+          deductionsApi.mine(6).catch(() => ({ available: false as const })),
+        ]);
+        setPayslips(list.items);
+        setDebts(deductions.available ? [...deductions.data.loans, ...deductions.data.advances].filter((d) => d.outstanding > 0) : []);
+      } catch (e) {
+        setError(text.error(e));
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [text],
+  );
 
   useEffect(() => {
-    void fetchPayslips();
-  }, [fetchPayslips]);
+    void load();
+  }, [load]);
 
-  const latest = payslips[0];
+  const open = (p: Payslip) => navigation.navigate('PayslipDetail', { id: p.id });
+  const [latest, ...earlier] = payslips;
+
+  let body: React.ReactNode;
+  if (loading) {
+    body = (
+      <>
+        <Surface level={2} contentStyle={styles.hero}>
+          <Skeleton width="40%" height={14} />
+          <Skeleton width="55%" height={34} />
+          <Skeleton width="70%" height={14} />
+        </Surface>
+        <View>
+          <SkeletonRow />
+          <SkeletonRow />
+        </View>
+      </>
+    );
+  } else if (error) {
+    body = <StateCard variant="error" body={error} onRetry={() => void load()} />;
+  } else if (!latest) {
+    body = <StateCard variant="empty" title={t('leavePay.payslips.emptyTitle')} body={t('leavePay.payslips.emptyBody')} />;
+  } else {
+    const net = latest.netPay ?? latest.netSalary;
+    const gross = latest.grossPay ?? latest.grossSalary;
+    const statusKind = payslipStatusKind(latest.status);
+    const latestHijri = hijri(latest.year, latest.month);
+    body = (
+      <>
+        <MotionPressable
+          testID="payslip-latest"
+          accessibilityRole="button"
+          accessibilityLabel={`${t('leavePay.payslips.latest')}, ${t('leavePay.payslips.a11yRow', { period: period(latest), amount: f.money(net, latest.currency || undefined) })}`}
+          accessibilityHint={t('leavePay.payslips.open')}
+          onPress={() => open(latest)}
+        >
+          <Surface level={2} contentStyle={styles.hero}>
+            <View style={styles.heroHead}>
+              <View style={styles.flex}>
+                <Text style={[theme.typography.footnote, styles.strong, { color: theme.colors.accent }]}>
+                  {t('leavePay.payslips.latest')}
+                </Text>
+                <Text style={[theme.typography.title3, { color: theme.colors.text }]}>{period(latest)}</Text>
+                {latestHijri ? (
+                  <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{latestHijri}</Text>
+                ) : null}
+              </View>
+              <DirectionalIcon name="chevron" size={20} color={theme.colors.textMuted} />
+            </View>
+            <View>
+              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('leavePay.payslips.netPay')}</Text>
+              <Text style={[theme.typography.largeTitle, styles.amount, { color: theme.colors.text }]}>
+                {f.money(net, latest.currency || undefined)}
+              </Text>
+            </View>
+            <View style={[styles.heroFigures, { borderTopColor: theme.colors.hairline }]}>
+              <Figure label={t('leavePay.payslips.gross')} value={f.money(gross, latest.currency || undefined)} />
+              <Figure label={t('leavePay.payslips.deductions')} value={f.money(latest.totalDeductions, latest.currency || undefined)} />
+            </View>
+            <View style={styles.heroFoot}>
+              <StatusPill
+                tone={statusKind === 'paid' ? 'success' : 'info'}
+                label={t(`leavePay.payslips.status.${statusKind}`)}
+              />
+              {latest.paymentDate ? (
+                <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>
+                  {t('leavePay.payslips.paidOn', { date: f.date(latest.paymentDate, 'medium') })}
+                </Text>
+              ) : null}
+            </View>
+          </Surface>
+        </MotionPressable>
+
+        {debts.length > 0 ? (
+          <View>
+            <SectionHeader title={t('leavePay.payslips.debts.title')} subtitle={t('leavePay.payslips.debts.subtitle')} />
+            <Surface level={1} contentStyle={styles.rows}>
+              {debts.map((d, i) => (
+                <View
+                  key={d.id}
+                  accessible
+                  style={[styles.debt, i < debts.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.hairline }]}
+                >
+                  <View style={styles.flex}>
+                    <Text style={[theme.typography.subheadline, styles.strong, { color: theme.colors.text }]}>
+                      {text.name(d.type, d.typeAr)} · {d.loanNo}
+                    </Text>
+                    <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>
+                      {[
+                        t('leavePay.payslips.debts.instalment', { amount: f.money(d.instalment, d.currency || undefined) }),
+                        d.remaining !== null ? text.count('instalmentsLeft', d.remaining) : null,
+                        d.nextDueOn ? t('leavePay.payslips.debts.nextDue', { date: f.date(d.nextDueOn, 'medium') }) : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                  <Text style={[theme.typography.subheadline, styles.strong, styles.tabular, { color: theme.colors.text }]}>
+                    {t('leavePay.payslips.debts.outstanding', { amount: f.money(d.outstanding, d.currency || undefined) })}
+                  </Text>
+                </View>
+              ))}
+            </Surface>
+          </View>
+        ) : null}
+
+        {earlier.length > 0 ? (
+          <View>
+            <SectionHeader title={t('leavePay.payslips.earlier')} />
+            <Surface level={1} contentStyle={styles.rows}>
+              {earlier.map((p, i) => {
+                const amount = f.money(p.netPay ?? p.netSalary, p.currency || undefined);
+                return (
+                  <MotionPressable
+                    key={p.id}
+                    testID={`payslip-row-${p.id}`}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('leavePay.payslips.a11yRow', { period: period(p), amount })}
+                    accessibilityHint={t('leavePay.payslips.open')}
+                    onPress={() => open(p)}
+                    contentStyle={[
+                      styles.row,
+                      i < earlier.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.hairline },
+                    ]}
+                  >
+                    <View style={styles.flex}>
+                      <Text style={[theme.typography.subheadline, styles.strong, { color: theme.colors.text }]}>{period(p)}</Text>
+                      {p.paymentDate ? (
+                        <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>
+                          {t('leavePay.payslips.paidOn', { date: f.date(p.paymentDate, 'medium') })}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={[theme.typography.subheadline, styles.tabular, { color: theme.colors.text }]}>{amount}</Text>
+                    <DirectionalIcon name="chevron" size={16} color={theme.colors.textMuted} />
+                  </MotionPressable>
+                );
+              })}
+            </Surface>
+          </View>
+        ) : null}
+      </>
+    );
+  }
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
-      <FlatList
-        data={loading ? [] : payslips}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <View style={styles.listItem}>
-            <PayslipCard
-              payslip={item}
-              onPress={() => navigation.navigate('PayslipDetail', { id: item.id })}
-            />
-          </View>
-        )}
-        ItemSeparatorComponent={() => <View style={styles.listGap} />}
+      <ScrollView
         contentContainerStyle={styles.content}
-        refreshing={refreshing}
-        onRefresh={() => void fetchPayslips(true)}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={theme.colors.accent} />}
         showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <>
-            <ScreenHero
-              eyebrow="Payroll"
-              title="Payslips"
-              subtitle="Private salary statements and payment history"
-            />
-            {loading ? (
-              <View style={styles.section}>
-                <GlassSurface radius={theme.radius.xl} contentStyle={styles.stateCard}>
-                  <ActivityIndicator color={theme.colors.primary} />
-                  <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>Loading payslips…</Text>
-                </GlassSurface>
-              </View>
-            ) : latest ? (
-              <View style={styles.section}>
-                <MotionPressable
-                  onPress={() => navigation.navigate('PayslipDetail', { id: latest.id })}
-                  haptic="selection"
-                  contentStyle={styles.rounded}
-                >
-                  <LinearGradient
-                    colors={theme.gradients.primary}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.latestCard}
-                  >
-                    <View style={styles.latestHeader}>
-                      <View>
-                        <Text style={styles.latestEyebrow}>LATEST PAYSLIP</Text>
-                        <Text style={styles.latestPeriod}>
-                          {latest.periodLabel || formatDate(latest.periodStart, 'monthYear')}
-                        </Text>
-                      </View>
-                      <View style={styles.latestArrow}>
-                        <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-                      </View>
-                    </View>
-                    <Text style={styles.latestAmountLabel}>Net pay</Text>
-                    <Text style={styles.latestAmount}>
-                      {latest.currency} {(latest.netPay ?? latest.netSalary).toLocaleString('en-US', {
-                        minimumFractionDigits: 2,
-                      })}
-                    </Text>
-                    <View style={styles.latestMetrics}>
-                      <SalaryMetric label="Gross" value={latest.currency + ' ' + (latest.grossPay ?? latest.grossSalary).toLocaleString()} />
-                      <View style={styles.latestDivider} />
-                      <SalaryMetric label="Deductions" value={latest.currency + ' ' + latest.totalDeductions.toLocaleString()} />
-                    </View>
-                  </LinearGradient>
-                </MotionPressable>
-              </View>
-            ) : null}
-            <View style={styles.section}>
-              <SectionHeader
-                title="Salary history"
-                subtitle={payslips.length ? payslips.length + ' published statement' + (payslips.length === 1 ? '' : 's') : 'Published statements appear here'}
-              />
-            </View>
-          </>
-        }
-        ListEmptyComponent={
-          !loading ? (
-            <View style={styles.section}>
-              <GlassSurface radius={theme.radius.xl} contentStyle={styles.emptyCard}>
-                <View style={[styles.emptyIcon, { backgroundColor: theme.colors.primary + '18' }]}>
-                  <Ionicons name="wallet-outline" size={29} color={theme.colors.primary} />
-                </View>
-                <Text style={[theme.typography.h3, { color: theme.colors.text }]}>No payslips yet</Text>
-                <Text style={[theme.typography.caption, styles.emptyText, { color: theme.colors.textMuted }]}>
-                  Your salary statements will appear after payroll is finalized and published.
-                </Text>
-              </GlassSurface>
-            </View>
-          ) : null
-        }
-        ListFooterComponent={<View style={styles.bottomSpacer} />}
-      />
-    </View>
-  );
-
-}
-function SalaryMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.salaryMetric}>
-      <Text style={styles.salaryMetricLabel}>{label}</Text>
-      <Text style={styles.salaryMetricValue}>{value}</Text>
+      >
+        <ScreenHero eyebrow={t('leavePay.payslips.eyebrow')} title={t('leavePay.payslips.title')} />
+        <View style={styles.body}>{body}</View>
+      </ScrollView>
     </View>
   );
 }
 
-function PayslipCard({ payslip, onPress }: { payslip: Payslip; onPress: () => void }) {
+function Figure({ label, value }: { label: string; value: string }) {
   const { theme } = useTheme();
-  const period = payslip.periodLabel || formatDate(payslip.periodStart, 'monthYear');
-  const month = payslip.month
-    ? new Date(payslip.year, payslip.month - 1, 1).toLocaleString('en-US', { month: 'short' })
-    : 'PAY';
-  const status = payslip.status || 'Published';
-  const statusColor = status.toLowerCase() === 'published'
-    ? theme.colors.success
-    : status.toLowerCase() === 'pending'
-      ? theme.colors.warning
-      : theme.colors.textSecondary;
-
   return (
-    <MotionPressable
-      onPress={onPress}
-      haptic="selection"
-      contentStyle={styles.rounded}
-      accessibilityRole="button"
-      accessibilityLabel={`${period} payslip`}
-    >
-      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.payslipCard}>
-        <View style={[styles.monthBadge, { backgroundColor: `${theme.colors.primary}18` }]}>
-          <Text style={[theme.typography.micro, { color: theme.colors.primary }]}>{month.toUpperCase()}</Text>
-          <Text style={[styles.monthYear, { color: theme.colors.primary }]}>{payslip.year || '—'}</Text>
-        </View>
-        <View style={styles.payslipCopy}>
-          <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>{period}</Text>
-          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 4 }]}>
-            Net pay · {payslip.currency} {(payslip.netPay ?? payslip.netSalary).toLocaleString('en-US', {
-              minimumFractionDigits: 2,
-            })}
-          </Text>
-          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 4 }]}>
-            Paid {payslip.paymentDate ? formatDate(payslip.paymentDate, 'display') : '—'}
-          </Text>
-        </View>
-        <View style={styles.payslipEnd}>
-          <View style={[styles.statusPill, { backgroundColor: `${statusColor}18` }]}>
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-            <Text style={[theme.typography.micro, { color: statusColor }]}>{status}</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
-        </View>
-      </GlassSurface>
-    </MotionPressable>
+    <View style={styles.figure}>
+      <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{label}</Text>
+      <Text style={[theme.typography.subheadline, styles.strong, styles.tabular, { color: theme.colors.text }]}>{value}</Text>
+    </View>
   );
 }
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { paddingBottom: 34 },
-  section: { paddingHorizontal: 16, marginTop: 16 },
-  listItem: { paddingHorizontal: 16 },
-  listGap: { height: 9 },
-  rounded: { borderRadius: 24 },
-  stateCard: { minHeight: 170, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 22 },
-  latestCard: { borderRadius: 26, padding: 19, minHeight: 230 },
-  latestHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  latestEyebrow: { color: 'rgba(255,255,255,0.72)', fontSize: 11, lineHeight: 15, fontWeight: '800', letterSpacing: 1.1 },
-  latestPeriod: { color: '#FFFFFF', fontSize: 19, lineHeight: 24, fontWeight: '800', marginTop: 4 },
-  latestArrow: { width: 43, height: 43, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.16)', alignItems: 'center', justifyContent: 'center' },
-  latestAmountLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 12, marginTop: 24 },
-  latestAmount: { color: '#FFFFFF', fontSize: 31, lineHeight: 37, fontWeight: '800', letterSpacing: -0.7, marginTop: 3 },
-  latestMetrics: { flexDirection: 'row', alignItems: 'stretch', marginTop: 22, backgroundColor: 'rgba(255,255,255,0.11)', borderRadius: 17, paddingVertical: 12 },
-  salaryMetric: { flex: 1, paddingHorizontal: 14 },
-  salaryMetricLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 11, lineHeight: 15, fontWeight: '600' },
-  salaryMetricValue: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', marginTop: 4 },
-  latestDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.24)' },
-  list: { gap: 9 },
-  payslipCard: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 13, padding: 13 },
-  monthBadge: { width: 54, height: 58, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  monthYear: { fontSize: 15, lineHeight: 18, fontWeight: '800', marginTop: 2 },
-  payslipCopy: { flex: 1, minWidth: 0 },
-  payslipEnd: { alignItems: 'flex-end', gap: 10 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999 },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  emptyCard: { minHeight: 210, alignItems: 'center', justifyContent: 'center', gap: 9, padding: 24 },
-  emptyIcon: { width: 58, height: 58, borderRadius: 21, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
-  emptyText: { textAlign: 'center', maxWidth: 280 },
-  bottomSpacer: { height: 14 },
+  content: { paddingBottom: 28 },
+  body: { paddingHorizontal: 16, gap: 18 },
+  hero: { padding: 18, gap: 14 },
+  heroHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  heroFigures: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth },
+  heroFoot: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
+  figure: { flexGrow: 1, flexBasis: 120, gap: 2 },
+  amount: { fontVariant: ['tabular-nums'] },
+  rows: { paddingHorizontal: 14 },
+  row: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
+  debt: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
+  strong: { fontWeight: '600' },
+  tabular: { fontVariant: ['tabular-nums'] },
+  flex: { flex: 1, minWidth: 0 },
 });

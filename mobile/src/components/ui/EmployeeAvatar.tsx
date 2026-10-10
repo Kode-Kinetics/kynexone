@@ -8,6 +8,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { profileApi } from '@/api/services';
 import { useTheme } from '@/theme/ThemeProvider';
 
@@ -25,7 +26,9 @@ export function EmployeeAvatar({
   size = 44,
   style,
   ring = false,
-}: Props) {  const { theme } = useTheme();
+}: Props) {
+  const { theme } = useTheme();
+  const { t } = useTranslation();
   const [source, setSource] = useState<ImageSourcePropType | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -54,7 +57,8 @@ export function EmployeeAvatar({
       name
         .trim()
         .split(/\s+/)
-        .filter(Boolean)        .slice(0, 2)
+        .filter(Boolean)
+        .slice(0, 2)
         .map((part) => part[0]?.toUpperCase())
         .join('') || '?',
     [name],
@@ -63,7 +67,7 @@ export function EmployeeAvatar({
   return (
     <View
       accessibilityRole="image"
-      accessibilityLabel={name + ' profile photo'}
+      accessibilityLabel={t('kit.profilePhoto', { name })}
       style={[
         styles.shell,
         {
@@ -71,7 +75,7 @@ export function EmployeeAvatar({
           height: size,
           borderRadius: size * 0.34,
           borderColor: ring ? theme.colors.glassBorder : 'transparent',
-          backgroundColor: theme.colors.primary + '1A',
+          backgroundColor: theme.colors.accent + '1A',
         },
         style,
       ]}
@@ -79,7 +83,8 @@ export function EmployeeAvatar({
       {source && !failed ? (
         <Image
           source={source}
-          resizeMode="cover"          style={StyleSheet.absoluteFill}
+          resizeMode="cover"
+          style={StyleSheet.absoluteFill}
           onError={() => setFailed(true)}
         />
       ) : (
@@ -88,7 +93,7 @@ export function EmployeeAvatar({
           style={[
             styles.initials,
             {
-              color: theme.colors.primary,
+              color: theme.colors.accent,
               fontSize: Math.max(12, size * 0.31),
             },
           ]}

@@ -8,19 +8,27 @@ import React, {
 } from 'react';
 import { AccessibilityInfo, useColorScheme } from 'react-native';
 import { STORAGE_KEYS } from '@/config';
+import i18n from '@/config/i18n';
 import { appStorage } from '@/storage';
 import {
   createTheme,
   type KynexTheme,
   type ResolvedThemeMode,
+  type ThemeLanguage,
   type ThemePreference,
 } from './tokens';
+
+function toThemeLanguage(lang: string | undefined): ThemeLanguage {
+  return lang?.startsWith('ar') ? 'ar' : 'en';
+}
 
 interface ThemeContextValue {
   theme: KynexTheme;
   preference: ThemePreference;
   setPreference: (preference: ThemePreference) => Promise<void>;
   reduceMotion: boolean;
+  /** UI language the typography is tuned for (follows i18next). */
+  language: ThemeLanguage;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -30,6 +38,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
   const [reduceTransparency, setReduceTransparency] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
+  const [language, setLanguage] = useState<ThemeLanguage>(() => toThemeLanguage(i18n.language));
+
+  // Typography is locale-aware (Arabic: no tracking, taller lines, no uppercase).
+  useEffect(() => {
+    const onChange = (lng: string) => setLanguage(toThemeLanguage(lng));
+    onChange(i18n.language);
+    i18n.on('languageChanged', onChange);
+    return () => {
+      i18n.off('languageChanged', onChange);
+    };
+  }, []);
   useEffect(() => {
     let active = true;
 
@@ -67,8 +86,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [preference, systemScheme]);
 
   const theme = useMemo(
-    () => createTheme(resolvedMode, reduceTransparency),
-    [reduceTransparency, resolvedMode],
+    () => createTheme(resolvedMode, reduceTransparency, language),
+    [language, reduceTransparency, resolvedMode],
   );
 
   const setPreference = useCallback(async (next: ThemePreference) => {
@@ -77,8 +96,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ theme, preference, setPreference, reduceMotion }),
-    [preference, reduceMotion, setPreference, theme],
+    () => ({ theme, preference, setPreference, reduceMotion, language }),
+    [language, preference, reduceMotion, setPreference, theme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
