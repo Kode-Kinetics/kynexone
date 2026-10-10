@@ -60,6 +60,26 @@ public class JournalExportDoublePostTests
     }
 
     [Fact]
+    public async Task ExportAndConfirmation_RecordTheSignedInPersonsName_FromTheTokensNameClaim()
+    {
+        // Found live: every export read "Exported by Unknown". Real tokens carry the display name as
+        // "name"; only test principals carried ClaimTypes.Name, so the controller never found it.
+        static ClaimsPrincipal AsIssued(ClaimsPrincipal seeded, string displayName) => new(new ClaimsIdentity(
+            seeded.Claims.Where(c => c.Type != ClaimTypes.Name && c.Type != "FullName").Append(new Claim("name", displayName)), "Test"));
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = AsIssued(await CallerAsync(db, tenantId, "Payroll Manager"), "Huda Maker");
+        var checker = AsIssued(await CallerAsync(db, tenantId, "Finance Approver"), "Faisal Checker");
+
+        var id = IdOf(await CreateAsync(db, maker));
+        StatusOf(await Ctrl(db, checker).Confirm(id, new ErpImportConfirmationRequest("SAP-77"), default)).Should().Be(200);
+
+        var saved = await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == id);
+        saved.ExportedByName.Should().Be("Huda Maker");
+        saved.ConfirmedByName.Should().Be("Faisal Checker");
+    }
+
+    [Fact]
     public async Task ReExportWithNothingNew_IsRefused_WithTheDoublePostMessage()
     {
         var (db, tenantId) = await TenantAsync();
