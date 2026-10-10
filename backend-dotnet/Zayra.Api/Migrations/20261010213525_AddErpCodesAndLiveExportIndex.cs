@@ -95,17 +95,17 @@ WHERE id IN (
                 nullable: false,
                 defaultValue: "");
 
-            migrationBuilder.AddColumn<Guid>(
-                name: "company_id",
-                table: "gl_journal_export_lines",
-                type: "uuid",
-                nullable: true);
-
             migrationBuilder.AddColumn<string>(
                 name: "external_account_code",
                 table: "gl_journal_export_lines",
                 type: "character varying(60)",
                 maxLength: 60,
+                nullable: true);
+
+            migrationBuilder.AddColumn<Guid>(
+                name: "source_company_id",
+                table: "gl_journal_export_lines",
+                type: "uuid",
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
@@ -169,11 +169,11 @@ WHERE id IN (
                 table: "gl_journal_export_lines");
 
             migrationBuilder.DropColumn(
-                name: "company_id",
+                name: "external_account_code",
                 table: "gl_journal_export_lines");
 
             migrationBuilder.DropColumn(
-                name: "external_account_code",
+                name: "source_company_id",
                 table: "gl_journal_export_lines");
 
             migrationBuilder.DropColumn(

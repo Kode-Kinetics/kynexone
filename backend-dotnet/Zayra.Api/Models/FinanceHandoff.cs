@@ -182,8 +182,11 @@ public class GlJournalExportLine : ITenantOwned
     public Guid? ReversalOfEntryId { get; set; }
     /// <summary>IsReversed as it stood AT EXPORT TIME.</summary>
     public bool IsReversed { get; set; }
-    /// <summary>The ledger row's legal entity AT EXPORT TIME (null = unattributed row).</summary>
-    public Guid? CompanyId { get; set; }
+    /// <summary>The ledger row's legal entity AT EXPORT TIME (null = unattributed row). A frozen reporting
+    /// dimension of the artifact, deliberately NOT named CompanyId: access to an export's lines is decided by
+    /// its parent <see cref="GlJournalExport"/> (controller ScopeError + unattributed guard), and a company query
+    /// filter on individual lines would silently drop rows from a group artifact and break its hash.</summary>
+    public Guid? SourceCompanyId { get; set; }
     /// <summary>The ERP company code AS EMITTED on this line (companies.erp_company_code, else CR number /
     /// short id). Empty on format-version-1 exports, which stamped one code per file.</summary>
     public string CompanyCode { get; set; } = string.Empty;

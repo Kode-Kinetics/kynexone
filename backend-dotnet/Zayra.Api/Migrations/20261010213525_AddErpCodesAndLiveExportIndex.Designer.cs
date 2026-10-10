@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261010203114_AddErpCodesAndLiveExportIndex")]
+    [Migration("20261010213525_AddErpCodesAndLiveExportIndex")]
     partial class AddErpCodesAndLiveExportIndex
     {
         /// <inheritdoc />
@@ -13600,10 +13600,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("company_code");
 
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("company_id");
-
                     b.Property<string>("Currency")
                         .IsRequired()
                         .HasMaxLength(8)
@@ -13664,6 +13660,10 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(2)
                         .HasColumnType("character varying(2)")
                         .HasColumnName("side");
+
+                    b.Property<Guid?>("SourceCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_company_id");
 
                     b.Property<Guid>("SourceEntityId")
                         .HasColumnType("uuid")

@@ -361,7 +361,7 @@ public sealed class JournalExportService
                 EventType = l.EventType,
                 ReversalOfEntryId = l.ReversalOfEntryId,
                 IsReversed = l.IsReversed,
-                CompanyId = l.CompanyId,
+                SourceCompanyId = l.CompanyId,
                 CompanyCode = l.CompanyCode,
                 ExternalAccountCode = l.ExternalAccountCode,
             });
@@ -453,7 +453,7 @@ public sealed class JournalExportService
                 l.LineNo, l.FinanceGlEntryId, l.ReversalOfEntryId, l.Side, l.AccountCode, l.AccountName,
                 l.Amount, l.Currency, l.AccountingDate, l.SystemPostedDate, l.Period, l.JournalRef,
                 l.Description, l.SourceModule, l.SourceEntityId, l.SourceEntityRef, l.EventType,
-                v1 ? export.CompanyId : l.CompanyId, v1 ? export.CompanyCode : l.CompanyCode, l.IsReversed,
+                v1 ? export.CompanyId : l.SourceCompanyId, v1 ? export.CompanyCode : l.CompanyCode, l.IsReversed,
                 v1 ? null : l.ExternalAccountCode)).ToList(),
         };
     }

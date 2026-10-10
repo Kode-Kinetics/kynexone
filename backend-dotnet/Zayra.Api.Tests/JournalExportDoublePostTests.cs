@@ -118,8 +118,8 @@ public class JournalExportDoublePostTests
 
         db.ChangeTracker.Clear();
         var lines = await db.GlJournalExportLines.AsNoTracking().Where(l => l.GlJournalExportId == IdOf(created)).ToListAsync();
-        lines.Where(l => l.CompanyId == CompanyA).Should().OnlyContain(l => l.CompanyCode == "SA01", "erp_company_code wins");
-        lines.Where(l => l.CompanyId == CompanyB).Should().OnlyContain(l => l.CompanyCode == "1010-555", "CR number is the fallback");
+        lines.Where(l => l.SourceCompanyId == CompanyA).Should().OnlyContain(l => l.CompanyCode == "SA01", "erp_company_code wins");
+        lines.Where(l => l.SourceCompanyId == CompanyB).Should().OnlyContain(l => l.CompanyCode == "1010-555", "CR number is the fallback");
         lines.Single(l => l.AccountCode == "5000").ExternalAccountCode.Should().Be("6100-SAL");
 
         var csv = await DownloadTextAsync(db, tenantId, IdOf(created));
