@@ -352,6 +352,24 @@ const ar: Record<string, string> = {
   'When this override must be justified again or lapse.': 'التاريخ الذي يجب فيه تبرير هذا التعديل مجددًا وإلا انتهى.',
   'Why the statutory value is being overridden for this entity.': 'سبب تعديل القيمة النظامية لهذا الكيان.',
   'For example: free-zone entity with a social-insurance exemption, ruling reference…': 'مثال: كيان في منطقة حرة لديه إعفاء من التأمينات الاجتماعية، مرجع القرار…',
+
+  // ── Request kinds, retirement and floor notices ──
+  'Retirement': 'إنهاء التعديل',
+  'New override': 'تعديل جديد',
+  'Value change': 'تغيير القيمة',
+  'Return to the statutory value': 'العودة إلى القيمة النظامية',
+  'Return to the statutory value from {date}': 'العودة إلى القيمة النظامية اعتبارًا من {date}',
+  'Retirement approved. Payroll returns to the statutory value from its effective date.': 'تمت الموافقة على إنهاء التعديل. يعود مسير الرواتب إلى القيمة النظامية من تاريخ السريان.',
+  'This asks for {rule} to go back to the platform statutory value for this company. A second person must approve it; payroll keeps the override until then, and the change applies from tomorrow at the earliest.': 'هذا طلب بإعادة {rule} إلى القيمة النظامية للمنصة لهذه الشركة. يجب أن يوافق عليه شخص آخر، ويستمر مسير الرواتب في تطبيق التعديل حتى ذلك الحين، ويسري التغيير من الغد على أقرب تقدير.',
+  'Retirement requested — awaiting approval. Payroll keeps the override until a second person approves it.': 'تم طلب إنهاء التعديل — بانتظار الموافقة. يستمر مسير الرواتب في تطبيق التعديل حتى يوافق عليه شخص آخر.',
+  'This override had already ended. Nothing changed.': 'كان هذا التعديل قد انتهى بالفعل. لم يتغير شيء.',
+  'Group value below the legal minimum — not applied': 'قيمة المجموعة أقل من الحد النظامي الأدنى — لا تُطبَّق',
+  'The group-wide value is below the legal minimum, so payroll ignores it and pays the statutory value. Retire it in Statutory rules.': 'قيمة المجموعة أقل من الحد النظامي الأدنى، لذا يتجاهلها مسير الرواتب ويطبق القيمة النظامية. أنهِها من القواعد النظامية.',
+  'Payroll and unpaid-leave deductions use this company value. Leave encashment still uses the group or statutory value.': 'يستخدم مسير الرواتب وخصومات الإجازة غير المدفوعة قيمة هذه الشركة. أما صرف بدل الإجازات فما زال يستخدم قيمة المجموعة أو القيمة النظامية.',
+  'Saved, never applied — payroll uses the GOSI-published rate.': 'محفوظ ولم يُطبَّق — يستخدم مسير الرواتب النسبة المنشورة من التأمينات الاجتماعية.',
+  'Saved, never applied — it is below the legal minimum, so payroll pays the statutory value.': 'محفوظ ولم يُطبَّق — القيمة أقل من الحد النظامي الأدنى، لذا يطبق مسير الرواتب القيمة النظامية.',
+  'Saved, never applied — payroll does not use a company value for this rule.': 'محفوظ ولم يُطبَّق — لا يستخدم مسير الرواتب قيمة خاصة بالشركة لهذه القاعدة.',
+  'Nothing was imported. Fix the rows below and apply again.': 'لم يُستورد شيء. صحّح الصفوف أدناه ثم طبّق الاستيراد مجددًا.',
 };
 
 export const glSetup = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

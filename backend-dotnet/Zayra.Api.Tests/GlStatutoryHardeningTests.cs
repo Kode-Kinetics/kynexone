@@ -548,7 +548,7 @@ public class GlStatutoryHardeningTests
         StatutoryOverridePolicy.DirectionFor("ot.holiday_multiplier").Should().Be("floor");
         StatutoryOverridePolicy.DirectionFor("workhours.ramadan_minutes_per_day").Should().Be("ceiling");
         StatutoryOverridePolicy.DirectionFor("ot.standard_monthly_hours").Should().Be("ceiling");
-        StatutoryOverridePolicy.DirectionFor("ot.hourly_base").Should().BeNull();
+        StatutoryOverridePolicy.DirectionFor("ot.hourly_base").Should().Be("floor", "basic → wage only: wage → basic cuts KSA overtime ~30%");
         StatutoryOverridePolicy.DisplayUnitFor("gosi.saudi_employee_rate").Should().Be("percent");
         StatutoryOverridePolicy.DisplayUnitFor("leave.annual_base_days").Should().Be("days");
         StatutoryOverridePolicy.IsVerified("Value NOT independently confirmed").Should().BeFalse();

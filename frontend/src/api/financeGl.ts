@@ -146,6 +146,16 @@ export interface GlAccountImportResult {
   errors: { row: number; code: string; message: string }[];
 }
 
+/**
+ * Applying an import that fails validation is refused with 422 and the SAME body as a dry run
+ * (per-row errors, nothing written). True when an error response body has that shape.
+ */
+export function isGlAccountImportResult(value: unknown): value is GlAccountImportResult {
+  const v = value as Partial<GlAccountImportResult> | null;
+  return !!v && typeof v === 'object' && Array.isArray(v.errors)
+    && typeof v.created === 'number' && typeof v.updated === 'number';
+}
+
 export interface GlSeedResult {
   accounts: number;
   mappings: number;

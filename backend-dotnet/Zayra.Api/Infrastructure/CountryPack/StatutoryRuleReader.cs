@@ -87,9 +87,7 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         if (value is not null)
         {
             var platformRaw = await FetchAsync(countryCode, jurisdiction, ruleKey, effectiveDate, null, ct);
-            decimal? platform = decimal.TryParse(platformRaw, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : null;
-            if (StatutoryOverridePolicy.ViolatesDirection(ruleKey, value, platform)) value = null;
+            if (StatutoryOverridePolicy.ViolatesDirection(ruleKey, value, ParseDecimal(platformRaw), platformRaw)) value = null;
         }
 
         _companyMemo[key] = value;
@@ -112,7 +110,7 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         // per-call scope restriction (tenantId == null ? platform-only : tenant-or-platform fallback).
         // SYSTEM CONTEXT: tenant scope intentionally bypassed — reads platform-default rates AND
         // the calling tenant's overrides; never reads another tenant's rows (see WHERE predicate).
-        var row = await _db.StatutoryRules
+        var rows = await _db.StatutoryRules
             .IgnoreQueryFilters()
             .Where(r => r.CountryCode == countryCode
                      && r.Jurisdiction == jurisdiction
@@ -122,13 +120,26 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
                      && (tenantId == null
                          ? r.TenantId == null
                          : r.TenantId == tenantId || r.TenantId == null))
-            // Tenant-specific rows rank above platform defaults; newest effective date wins.
-            .OrderByDescending(r => r.TenantId != null)
-            .ThenByDescending(r => r.EffectiveFrom)
-            .Select(r => r.RuleValue)
-            .FirstOrDefaultAsync(ct);
+            .Select(r => new { IsTenant = r.TenantId != null, r.EffectiveFrom, r.RuleValue })
+            .ToListAsync(ct);
+
+        // Tenant-specific rows rank above platform defaults; newest effective date wins.
+        var platformRow = rows.Where(r => !r.IsTenant).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault()?.RuleValue;
+        var tenantRow = rows.Where(r => r.IsTenant).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault()?.RuleValue;
+        var row = tenantRow ?? platformRow;
+
+        // READ-TIME FLOOR for tenant values, as for company overrides: a tenant row written before the
+        // write-time floor check existed (the old one-person PUT/POST) that is below a statutory floor
+        // — overtime at 1.0×, LOP at basic/26, ot.hourly_base = 'basic' in KSA — is never paid. The
+        // platform value on that date wins. RatesController flags such a row as belowFloorIgnored.
+        if (tenantRow is not null && platformRow is not null
+            && StatutoryOverridePolicy.ViolatesDirection(ruleKey, tenantRow, ParseDecimal(platformRow), platformRow))
+            row = platformRow;
 
         _memo[memoKey] = row;
         return row;
     }
+
+    private static decimal? ParseDecimal(string? raw) =>
+        decimal.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
 }

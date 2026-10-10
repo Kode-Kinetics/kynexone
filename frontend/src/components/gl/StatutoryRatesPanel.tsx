@@ -179,6 +179,18 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
 
   const ruleName = (r: StatutoryRateRow) => r.label || knownRuleName(t, r.ruleKey) || r.ruleKey;
 
+  // What a pending request DOES, in words a checker signs off on. A retirement carries the live value
+  // in `value`, so showing that value as "requested" would invert its meaning.
+  const isRetire = (p: StatutoryPendingOverride) => p.kind === 'retire';
+  const kindLabel = (p: StatutoryPendingOverride) =>
+    isRetire(p) ? t('Retirement') : p.isNew ? t('New override') : t('Value change');
+  const requestedText = (row: StatutoryRateRow, p: StatutoryPendingOverride) =>
+    isRetire(p)
+      ? p.effectiveFrom
+        ? t('Return to the statutory value from {date}', { date: f.date(p.effectiveFrom) })
+        : t('Return to the statutory value')
+      : formatValue(row, p.value);
+
   const formatValue = (r: StatutoryRateRow, value: number | string | null | undefined): string => {
     if (value == null || value === '') return '—';
     const n = typeof value === 'number' ? value : Number(value);
@@ -225,6 +237,11 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
           {r.appliedByPayroll === false && (
             <Badge tone="slate" title={t('Shown for reference. Payroll does not read this value.')}>
               {t('Reference only')}
+            </Badge>
+          )}
+          {r.belowFloorIgnored && (
+            <Badge tone="rose" title={r.notice ? t(r.notice) : undefined}>
+              {t('Group value below the legal minimum — not applied')}
             </Badge>
           )}
         </div>
@@ -318,12 +335,16 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
       return next;
     });
 
-  const approve = async (id: string, ruleKey: string) => {
+  const approve = async (id: string, ruleKey: string, request?: StatutoryPendingOverride) => {
     setBusyKey(ruleKey);
     try {
       await financeRatesApi.approveOverride(id);
       forget(ruleKey);
-      toast.success(t('Override approved. Payroll uses it from its effective date.'));
+      toast.success(
+        request && isRetire(request)
+          ? t('Retirement approved. Payroll returns to the statutory value from its effective date.')
+          : t('Override approved. Payroll uses it from its effective date.'),
+      );
       await refreshAll();
     } catch (e) {
       notifyApiError(e);
@@ -337,16 +358,20 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
       title: pending ? t('Withdraw this override request?') : t('Revert to the statutory value?'),
       message: pending
         ? t('The request for {rule} will be withdrawn. Nothing changes in payroll.', { rule: name })
-        : t('{rule} goes back to the platform statutory value for this company from today.', { rule: name }),
-      confirmLabel: pending ? t('Withdraw request') : t('Revert'),
+        : t('This asks for {rule} to go back to the platform statutory value for this company. A second person must approve it; payroll keeps the override until then, and the change applies from tomorrow at the earliest.', { rule: name }),
+      confirmLabel: pending ? t('Withdraw request') : t('Request retirement'),
       tone: 'danger',
     });
     if (!ok) return;
     setBusyKey(ruleKey);
     try {
-      await financeRatesApi.revertOverride(id);
+      const result = await financeRatesApi.revertOverride(id);
       forget(ruleKey);
-      toast.success(pending ? t('Request withdrawn.') : t('Override reverted.'));
+      if (result.retirementRequested) {
+        toast.info(t('Retirement requested — awaiting approval. Payroll keeps the override until a second person approves it.'));
+      } else {
+        toast.success(pending ? t('Request withdrawn.') : t('This override had already ended. Nothing changed.'));
+      }
       await refreshAll();
     } catch (e) {
       notifyApiError(e);
@@ -378,11 +403,12 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
       </p>
       <PanelState loading={pendingRes.loading && !pendingRes.data} error={pendingRes.error} onRetry={() => void pendingRes.reload()} empty={false} emptyLabel="">
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
-          <table className="w-full min-w-[820px] text-sm">
+          <table className="w-full min-w-[900px] text-sm">
             <thead className={theadClass}>
               <tr>
                 <th scope="col" className={thClass}>{t('Company')}</th>
                 <th scope="col" className={thClass}>{t('Rule')}</th>
+                <th scope="col" className={thClass}>{t('Request')}</th>
                 <th scope="col" className={thClass}>{t('Requested value')}</th>
                 <th scope="col" className={thClass}>{t('Effective')}</th>
                 <th scope="col" className={thClass}>{t('Requested by')}</th>
@@ -400,7 +426,10 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
                       <p className="text-slate-800 dark:text-slate-100">{ruleName(asRow)}</p>
                       <p className="text-[11px] text-slate-500"><span className="font-mono">{p.ruleKey}</span></p>
                     </td>
-                    <td className="px-3 py-2 tabular-nums">{formatValue(asRow, p.value)}</td>
+                    <td className="px-3 py-2 text-xs">
+                      <Badge tone={isRetire(p) ? 'rose' : p.isNew ? 'violet' : 'amber'}>{kindLabel(p)}</Badge>
+                    </td>
+                    <td className="px-3 py-2 tabular-nums">{requestedText(asRow, p)}</td>
                     <td className="px-3 py-2 text-xs">{p.effectiveFrom ? f.date(p.effectiveFrom) : '—'}</td>
                     <td className="px-3 py-2 text-xs">
                       {p.requestedByName || '—'}
@@ -410,7 +439,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1.5">
                         {canApprove && p.canApprove === true ? (
-                          <button type="button" onClick={() => approve(p.id, p.ruleKey)} disabled={busyKey === p.ruleKey} className="btn-primary h-7 px-2 text-xs disabled:opacity-60">
+                          <button type="button" onClick={() => approve(p.id, p.ruleKey, p)} disabled={busyKey === p.ruleKey} className="btn-primary h-7 px-2 text-xs disabled:opacity-60">
                             <CheckCircle2 className="h-3 w-3" aria-hidden /> {t('Approve')}
                           </button>
                         ) : (
@@ -527,9 +556,10 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
                                       <Badge tone="rose" title={t('The platform value changed after this override was set. Review it.')}>{t('Platform value changed')}</Badge>
                                     )}
                                     {r.neverApplied && (
-                                      <Badge tone="rose" title={t('Payroll uses the GOSI-published rate.')}>{t('Saved, never applied')}</Badge>
+                                      <Badge tone="rose" title={r.notice ? t(r.notice) : t('Payroll uses the GOSI-published rate.')}>{t('Saved, never applied')}</Badge>
                                     )}
                                   </div>
+                                  {r.notice && !r.neverApplied && <p className="text-[11px] text-amber-700 dark:text-amber-300">{t(r.notice)}</p>}
                                   <p className="text-[11px] text-slate-500">
                                     {r.reason}
                                     {r.effectiveFrom && <span> · {t('From {date}', { date: f.date(r.effectiveFrom) })}</span>}
@@ -541,7 +571,8 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
                                 <div className="space-y-0.5">
                                   <div className="flex flex-wrap items-center gap-1.5">
                                     <Badge tone="amber">{t('Pending approval')}</Badge>
-                                    <span className="text-xs tabular-nums">{formatValue(r, pend.value)}</span>
+                                    <Badge tone={isRetire(pend) ? 'rose' : pend.isNew ? 'violet' : 'slate'}>{kindLabel(pend)}</Badge>
+                                    <span className="text-xs tabular-nums">{requestedText(r, pend)}</span>
                                   </div>
                                   <p className="text-[11px] text-slate-500">
                                     {pend.reason}
@@ -562,7 +593,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
                               {pend ? (
                                 <>
                                   {canApprove && pend.canApprove === true && (
-                                    <button type="button" onClick={() => approve(pend.id, r.ruleKey)} disabled={busy} className="btn-primary h-7 px-2 text-xs disabled:opacity-60">
+                                    <button type="button" onClick={() => approve(pend.id, r.ruleKey, pend)} disabled={busy} className="btn-primary h-7 px-2 text-xs disabled:opacity-60">
                                       <CheckCircle2 className="h-3 w-3" aria-hidden /> {t('Approve')}
                                     </button>
                                   )}

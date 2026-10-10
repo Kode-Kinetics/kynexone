@@ -6,6 +6,7 @@ import { notifyApiError } from '../../api/client';
 import {
   financeGlApi,
   GL_ACCOUNT_TYPES,
+  isGlAccountImportResult,
   type GlAccount,
   type GlAccountImportResult,
   type GlMappingRow,
@@ -20,6 +21,7 @@ import {
   ActiveBadge,
   Badge,
   driverCategoryLabel,
+  errorStatus,
   Field,
   FieldError,
   InheritedBadge,
@@ -268,6 +270,14 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
       closeImport();
       await reloadAll();
     } catch (e) {
+      // Apply refuses an invalid file with 422 and the dry-run body (per-row errors, nothing
+      // written) — no top-level message. Show those rows in the preview table, not a generic error.
+      const body = (e as { response?: { data?: unknown } })?.response?.data;
+      if (errorStatus(e) === 422 && isGlAccountImportResult(body) && body.errors.length > 0) {
+        setPreview(body);
+        setImportError(t('Nothing was imported. Fix the rows below and apply again.'));
+        return;
+      }
       setImportError(serverMessage(e, t));
     } finally {
       setImportBusy(false);

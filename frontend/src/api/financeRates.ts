@@ -88,6 +88,8 @@ export interface StatutoryRateRow {
   /** An override exists for a statutory GOSI key: it was saved but payroll never applied it. */
   neverApplied?: boolean;
   notice?: string | null;
+  /** A tenant-level value below the statutory floor: payroll ignores it and pays the platform value. */
+  belowFloorIgnored?: boolean | null;
   // ── Newer servers (all optional so an older API still renders) ──
   /** Plain-language rule name, when the server sends one. */
   label?: string | null;
@@ -110,8 +112,15 @@ export interface StatutoryRateRow {
 
 export type StatutoryDisplayUnit = 'percent' | 'multiplier' | 'days' | 'hours' | 'amount' | 'text';
 
+/** What a pending request does: set a value, or retire (return to the statutory value). */
+export type StatutoryRequestKind = 'change' | 'retire';
+
 export interface StatutoryPendingOverride {
   id: string;
+  /** Absent on older servers: treat as 'change'. */
+  kind?: StatutoryRequestKind | null;
+  /** True when no value of this scope is in force today, so approving it adds a first override. */
+  isNew?: boolean | null;
   value: string;
   effectiveFrom: string | null;
   effectiveTo: string | null;
@@ -125,7 +134,8 @@ export interface StatutoryPendingOverride {
 }
 
 export interface StatutoryPendingListItem extends StatutoryPendingOverride {
-  companyId: string;
+  /** Null for a tenant-level request (all companies). */
+  companyId: string | null;
   companyName?: string | null;
   ruleKey: string;
   countryCode?: string | null;
@@ -161,6 +171,18 @@ export interface StatutoryOverride {
   overridesStatutoryDefault: string;
   approvedBy: string | null;
   approvedAtUtc: string | null;
+  kind?: StatutoryRequestKind | null;
+}
+
+/**
+ * DELETE on an override. 204 = a pending request was withdrawn (or nothing was left to end);
+ * 202 = an ACTIVE override: only a RETIREMENT REQUEST was filed, payroll keeps the override until a
+ * second person approves it.
+ */
+export interface RevertOverrideResult {
+  status: number;
+  retirementRequested: boolean;
+  request: StatutoryOverride | null;
 }
 
 export const financeRatesApi = {
@@ -189,5 +211,12 @@ export const financeRatesApi = {
     client.post<StatutoryOverride>('/api/finance/rates/statutory/override', data).then((r) => r.data),
   approveOverride: (id: string) =>
     client.post<StatutoryOverride>(`/api/finance/rates/statutory/override/${id}/approve`, {}).then((r) => r.data),
-  revertOverride: (id: string) => client.delete(`/api/finance/rates/statutory/override/${id}`),
+  revertOverride: (id: string): Promise<RevertOverrideResult> =>
+    client
+      .delete<StatutoryOverride | ''>(`/api/finance/rates/statutory/override/${id}`)
+      .then((r) => ({
+        status: r.status,
+        retirementRequested: r.status === 202,
+        request: r.status === 202 && r.data ? (r.data as StatutoryOverride) : null,
+      })),
 };

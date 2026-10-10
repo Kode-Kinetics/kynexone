@@ -218,11 +218,87 @@ public class RatesController : ControllerBase
                 message = $"This rate has been in effect since {row.EffectiveFrom:yyyy-MM-dd}, so payroll may already have used it. " +
                           "End-date it instead (send the same value and start date with an end date) — deleting it would rewrite history.",
             });
+        var deletedStatus = row.Status;
         row.IsDeleted = true; row.Status = CompanyPolicyStatuses.Archived; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = this.GetUserId();
+        // Cancelling a SCHEDULED change must give the period back to the value it replaced. The
+        // supersede end-dated the predecessor the day before this row starts; left alone, the rate
+        // would simply stop on that day and payroll would fall back to a value nobody chose.
+        var restored = await RestorePredecessorAsync(tid.Value, row, deletedStatus, ct);
         await WriteAudit("payroll.rate.company.deleted", "CompanyRatePolicy", row.Id.ToString(), row.CompanyId,
-            new { row.RateKey, value = row.RateValue, companyId = row.CompanyId, row.EffectiveFrom }, ct);
+            new { row.RateKey, value = row.RateValue, companyId = row.CompanyId, row.EffectiveFrom, restored }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Re-opens the version that <paramref name="deleted"/> superseded: the Superseded row of the same
+    /// key and scope that ends the day before it starts. Its end date goes back to what it was before
+    /// the supersede (read from that supersede's audit record), or to the deleted row's end when no
+    /// record exists; a later Active version of the key caps it so no two Active rows overlap. If the
+    /// deleted row was itself superseded, the predecessor just takes over its window and stays
+    /// Superseded. Returns what changed, for the audit, or null when there was no predecessor.
+    /// </summary>
+    private async Task<object?> RestorePredecessorAsync(Guid tid, CompanyRatePolicy deleted, string deletedStatus, CancellationToken ct)
+    {
+        var dayBefore = deleted.EffectiveFrom.AddDays(-1);
+        var versions = ScopedBypass.TenantWide(_db.CompanyRatePolicies, tid,
+            "Rate versions of the deleted row's own key and scope; the caller's scope over that company was checked by DeleteCompanyRate.");
+        var prior = await versions
+            .Where(p => p.TenantId == tid && !p.IsDeleted && p.Id != deleted.Id && p.CompanyId == deleted.CompanyId
+                     && p.RateKey == deleted.RateKey && p.Status == Superseded && p.EffectiveTo == dayBefore)
+            .OrderByDescending(p => p.EffectiveFrom)
+            .FirstOrDefaultAsync(ct);
+        if (prior is null) return null;
+
+        var before = new { prior.Status, prior.EffectiveTo };
+        if (deletedStatus != CompanyPolicyStatuses.Active)
+        {
+            prior.EffectiveTo = deleted.EffectiveTo;
+        }
+        else
+        {
+            var recorded = await EndBeforeSupersedeAsync(tid, deleted.Id, prior.Id, ct);
+            prior.EffectiveTo = recorded.Found ? recorded.End : deleted.EffectiveTo;
+            var nextActiveStart = await ScopedBypass.TenantWide(_db.CompanyRatePolicies, tid,
+                    "Later Active version of the same key and scope, so the restored row cannot overlap it.").AsNoTracking()
+                .Where(p => p.TenantId == tid && !p.IsDeleted && p.Id != deleted.Id && p.Id != prior.Id
+                         && p.CompanyId == deleted.CompanyId && p.RateKey == deleted.RateKey
+                         && p.Status == CompanyPolicyStatuses.Active && p.EffectiveFrom > prior.EffectiveFrom)
+                .OrderBy(p => p.EffectiveFrom)
+                .Select(p => (DateOnly?)p.EffectiveFrom)
+                .FirstOrDefaultAsync(ct);
+            if (nextActiveStart is { } next && (prior.EffectiveTo is null || prior.EffectiveTo >= next))
+                prior.EffectiveTo = next.AddDays(-1);
+            prior.Status = CompanyPolicyStatuses.Active;
+        }
+        prior.UpdatedAtUtc = DateTime.UtcNow;
+        prior.UpdatedBy = this.GetUserId();
+        return new { restoredId = prior.Id, before, after = new { prior.Status, prior.EffectiveTo } };
+    }
+
+    /// <summary>The predecessor's end date before <paramref name="successorId"/> superseded it, from the
+    /// supersede's own audit record. Null when no such record exists.</summary>
+    private async Task<(bool Found, DateOnly? End)> EndBeforeSupersedeAsync(Guid tid, Guid successorId, Guid priorId, CancellationToken ct)
+    {
+        var successor = successorId.ToString();
+        var metadata = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tid,
+                "The supersede audit record of a rate version in the caller's own tenant, read to undo that supersede.")
+            .AsNoTracking()
+            .Where(a => a.Action == "payroll.rate.company.updated" && a.EntityId == successor)
+            .OrderByDescending(a => a.CreatedAtUtc)
+            .Select(a => a.Metadata)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(metadata)) return (false, null);
+        try
+        {
+            using var doc = JsonDocument.Parse(metadata);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("supersededId", out var sid) || sid.GetString() != priorId.ToString()) return (false, null);
+            if (!root.TryGetProperty("priorEffectiveTo", out var window) || !window.TryGetProperty("before", out var b)) return (false, null);
+            if (b.ValueKind == JsonValueKind.Null) return (true, null);
+            return DateOnly.TryParse(b.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? (true, d) : (false, null);
+        }
+        catch (JsonException) { return (false, null); }
     }
 
     // ═══ SURFACE B — statutory rates (bounded per-company override) ═════════════════
@@ -298,12 +374,33 @@ public class RatesController : ControllerBase
             .Where(c => c.TenantId == tid && companyIds.Contains(c.Id))
             .ToDictionaryAsync(c => c.Id, c => string.IsNullOrWhiteSpace(c.TradeName) ? c.LegalNameEn : c.TradeName, ct);
 
+        // isNew: nothing of the request's own scope is in force today, so approving it ADDS a value
+        // rather than changing one. A checker reads "New override" vs "Value change" from it.
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var todayUtc = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var keys = rows.Select(r => r.RuleKey).Distinct().ToList();
+        var liveCompanyValues = (await Overrides(tid.Value).AsNoTracking()
+                .Where(o => !o.IsDeleted && o.CompanyId != null && o.Status == CompanyPolicyStatuses.Active
+                         && o.DataType != StatutoryOverridePolicy.RetireRequest && keys.Contains(o.RuleKey)
+                         && o.EffectiveFrom <= today && (o.EffectiveTo == null || o.EffectiveTo >= today))
+                .Select(o => new { o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey })
+                .ToListAsync(ct))
+            .Select(o => (o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey)).ToHashSet();
+        var liveTenantValues = (await ScopedBypass.NullableTenantWide(_db.StatutoryRules, tid.Value,
+                    "The caller's own tenant-level statutory values (platform rows excluded by the tenant predicate).")
+                .AsNoTracking()
+                .Where(r => keys.Contains(r.RuleKey) && r.EffectiveFrom <= todayUtc && (r.EffectiveTo == null || r.EffectiveTo > todayUtc))
+                .Select(r => new { r.CountryCode, r.Jurisdiction, r.RuleKey })
+                .ToListAsync(ct))
+            .Select(r => ((Guid?)null, r.CountryCode, r.Jurisdiction, r.RuleKey)).ToHashSet();
+
         return Ok(rows.Select(o =>
         {
-            var p = PendingDto(o, names);
+            var live = o.CompanyId is null ? liveTenantValues : liveCompanyValues;
+            var p = PendingDto(o, names, isNew: !live.Contains((o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey)));
             return new
             {
-                p.id, p.kind, p.value, p.effectiveFrom, p.effectiveTo, p.reason, p.reviewBy,
+                p.id, p.kind, p.isNew, p.value, p.effectiveFrom, p.effectiveTo, p.reason, p.reviewBy,
                 p.requestedById, p.requestedByName, p.requestedAt, p.canApprove,
                 companyId = o.CompanyId,
                 companyName = o.CompanyId is { } cid
@@ -349,8 +446,9 @@ public class RatesController : ControllerBase
         var cc = req.CountryCode.Trim().ToUpperInvariant();
         var jur = req.Jurisdiction ?? "";
         var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
+        var platformText = await _reader.GetStringAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
         // ruleKey must resolve to a known statutory rule (no inventing statutory keys).
-        if (platformDefault is null)
+        if (platformText is null)
         {
             // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
             var exists = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
@@ -360,7 +458,7 @@ public class RatesController : ControllerBase
         // Approved-but-never-applied is refused at the door: only keys payroll reads per company.
         if (StatutoryOverridePolicy.NotAppliedRefusal(key) is { } notApplied)
             return UnprocessableEntity(notApplied);
-        if (StatutoryOverridePolicy.DirectionRefusal(key, req.OverrideValue, platformDefault) is { } floor)
+        if (StatutoryOverridePolicy.DirectionRefusal(key, req.OverrideValue, platformDefault, platformText) is { } floor)
             return UnprocessableEntity(floor);
         if (await LockedPeriodProblemAsync(tid.Value, req.CompanyId, req.EffectiveFrom, ct) is { } locked)
             return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
@@ -415,8 +513,13 @@ public class RatesController : ControllerBase
                 return UnprocessableEntity(notApplied);
             if (row.CompanyId is null && StatutoryRulesController.TenantWriteRefusal(row.RuleKey) is { } platformOnly)
                 return UnprocessableEntity(platformOnly);
+            // The same unit gate as the request: a value filed before a key's word list existed
+            // (ot.hourly_base = 'full') is refused here rather than paid as basic.
+            if (StatutoryValueUnits.Validate(row.RuleKey, row.DataType, row.OverrideValue) is { } unitError)
+                return BadRequest(StatutoryValueUnits.Refusal(unitError));
             var platform = await _reader.GetDecimalAsync(row.CountryCode, row.Jurisdiction, row.RuleKey, row.EffectiveFrom, tenantId: null, ct);
-            if (StatutoryOverridePolicy.DirectionRefusal(row.RuleKey, row.OverrideValue, platform) is { } floor)
+            var platformText = await _reader.GetStringAsync(row.CountryCode, row.Jurisdiction, row.RuleKey, row.EffectiveFrom, tenantId: null, ct);
+            if (StatutoryOverridePolicy.DirectionRefusal(row.RuleKey, row.OverrideValue, platform, platformText) is { } floor)
                 return UnprocessableEntity(floor);
             if (await LockedPeriodProblemAsync(tid.Value, row.CompanyId, row.EffectiveFrom, ct) is { } locked)
                 return Conflict(new { code = "RATE_PERIOD_LOCKED", message = locked });
@@ -502,13 +605,19 @@ public class RatesController : ControllerBase
 
         if (row.Status == PendingApproval)
         {
-            row.Status = StatutoryOverridePolicy.Withdrawn;
-            row.UpdatedAtUtc = DateTime.UtcNow;
-            row.UpdatedBy = me;
-            await WriteAudit("payroll.rate.statutory_override.withdrawn", "CompanyStatutoryOverride", row.Id.ToString(), row.CompanyId,
-                new { row.RuleKey, overrideValue = row.OverrideValue, companyId = row.CompanyId, withdrawnBy = me, maker = row.CreatedBy }, ct);
-            await _db.SaveChangesAsync(ct);
-            return NoContent();
+            // Withdrawn by the same conditional claim as approve/reject: UPDATE … WHERE status =
+            // 'PendingApproval'. A tracked load-then-save would overwrite an approval that committed
+            // between the read and the write, leaving an applied value labelled Withdrawn.
+            var snapshot = new { row.Id, row.RuleKey, row.OverrideValue, row.CompanyId, row.CreatedBy };
+            return await DecideAtomicallyAsync(async () =>
+            {
+                if (!await WithdrawPendingAsync(tid.Value, snapshot.Id, me, DateTime.UtcNow, ct))
+                    return (Conflict(new { code = "STATUTORY_REQUEST_NOT_PENDING", message = "This request was decided a moment ago, so it can no longer be withdrawn. Reload the queue." }), false);
+                await WriteAudit("payroll.rate.statutory_override.withdrawn", "CompanyStatutoryOverride", snapshot.Id.ToString(), snapshot.CompanyId,
+                    new { snapshot.RuleKey, overrideValue = snapshot.OverrideValue, companyId = snapshot.CompanyId, withdrawnBy = me, maker = snapshot.CreatedBy }, ct);
+                await _db.SaveChangesAsync(ct);
+                return (NoContent(), true);
+            }, ct);
         }
         if (row.Status != CompanyPolicyStatuses.Active || row.CompanyId is null || row.DataType == StatutoryOverridePolicy.RetireRequest)
             return NoContent(); // already retired, withdrawn or applied — nothing to switch off
@@ -544,6 +653,23 @@ public class RatesController : ControllerBase
             .Where(r => (r.TenantId == null || r.TenantId == tid) && r.CountryCode == cc && r.Jurisdiction == jur)
             .Select(r => new RuleRowView(r.TenantId, r.RuleKey, r.RuleValue, r.Description, r.EffectiveFrom, r.EffectiveTo))
             .ToListAsync(ct);
+
+    /// <summary>
+    /// True when the tenant-level value in force on the date is below a statutory floor (or above a
+    /// ceiling, or not an admissible word) against the platform value. StatutoryRuleReader ignores such
+    /// a row and pays the platform value; the screen says so instead of showing it as in force.
+    /// </summary>
+    private static bool TenantValueBelowFloor(RuleRowView? effective, RuleRowView? platformRow, decimal? platformDefault, string key)
+        => effective?.TenantId is not null && platformRow is not null
+           && StatutoryOverridePolicy.ViolatesDirection(key, effective.RuleValue, platformDefault, platformRow.RuleValue);
+
+    private const string TenantBelowFloorNotice =
+        "The group-wide value is below the legal minimum, so payroll ignores it and pays the statutory value. Retire it in Statutory rules.";
+
+    /// <summary>Where a company value is applied by payroll but not yet by every calculation that reads the key.</summary>
+    private static string? PartialApplicationNotice(string key) => key == StatutoryOverridePolicy.LopMonthlyDayDivisor
+        ? "Payroll and unpaid-leave deductions use this company value. Leave encashment still uses the group or statutory value."
+        : null;
 
     private static (RuleRowView? Effective, RuleRowView? Platform) PickRules(IEnumerable<RuleRowView> rows, string key, DateOnly onDate)
     {
@@ -581,8 +707,9 @@ public class RatesController : ControllerBase
             // company saved, so the resolved value IS the platform default and an override is flagged.
             var gosiStatutory = GosiStatutoryValues.IsStatutory(key);
             var appliedByPayroll = !gosiStatutory && StatutoryOverridePolicy.IsAppliedForCompany(key);
-            var belowFloor = active is not null && StatutoryOverridePolicy.ViolatesDirection(key, active.OverrideValue, platformDefault);
+            var belowFloor = active is not null && StatutoryOverridePolicy.ViolatesDirection(key, active.OverrideValue, platformDefault, platformRow?.RuleValue);
             var neverApplied = active is not null && (!appliedByPayroll || belowFloor);
+            var tenantBelowFloor = TenantValueBelowFloor(effective, platformRow, platformDefault, key);
             result.Add(new
             {
                 ruleKey = key,
@@ -591,10 +718,14 @@ public class RatesController : ControllerBase
                 resolvedValue = gosiStatutory ? platformDefault : resolved,
                 statutoryLocked = gosiStatutory,
                 neverApplied,
-                notice = !neverApplied ? null
-                    : gosiStatutory ? "Saved, never applied — payroll uses the GOSI-published rate."
+                notice = neverApplied
+                    ? gosiStatutory ? "Saved, never applied — payroll uses the GOSI-published rate."
                     : belowFloor ? "Saved, never applied — it is below the legal minimum, so payroll pays the statutory value."
-                    : "Saved, never applied — payroll does not use a company value for this rule.",
+                    : "Saved, never applied — payroll does not use a company value for this rule."
+                    : tenantBelowFloor && active is null ? TenantBelowFloorNotice
+                    : active is not null ? PartialApplicationNotice(key)
+                    : null,
+                belowFloorIgnored = tenantBelowFloor,
                 platformDefault,
                 isOverride = active is not null,
                 overrideId = active?.Id,
@@ -611,7 +742,7 @@ public class RatesController : ControllerBase
                 appliedByPayroll,
                 direction = StatutoryOverridePolicy.DirectionFor(key),
                 displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
-                pendingOverride = pending is null ? null : PendingDto(pending, names),
+                pendingOverride = pending is null ? null : PendingDto(pending, names, isNew: active is null),
             });
         }
         return result;
@@ -647,8 +778,10 @@ public class RatesController : ControllerBase
                 jurisdiction = jur,
                 resolvedValue = gosiStatutory ? platformDefault : resolved,
                 statutoryLocked = gosiStatutory,
-                neverApplied = false,
-                notice = (string?)null,
+                // A tenant value below the floor is ignored by payroll (StatutoryRuleReader) — say so.
+                neverApplied = TenantValueBelowFloor(effective, platformRow, platformDefault, key),
+                notice = TenantValueBelowFloor(effective, platformRow, platformDefault, key) ? TenantBelowFloorNotice : null,
+                belowFloorIgnored = TenantValueBelowFloor(effective, platformRow, platformDefault, key),
                 platformDefault,
                 isOverride = false,
                 isTenantValue = effective?.TenantId is not null,
@@ -661,22 +794,23 @@ public class RatesController : ControllerBase
                 appliedByPayroll = !gosiStatutory && StatutoryOverridePolicy.IsAppliedForCompany(key),
                 direction = StatutoryOverridePolicy.DirectionFor(key),
                 displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
-                pendingOverride = pending is null ? null : PendingDto(pending, names),
+                pendingOverride = pending is null ? null : PendingDto(pending, names, isNew: effective?.TenantId is null),
             });
         }
         return result;
     }
 
     private sealed record PendingView(
-        Guid id, string kind, string value, DateOnly effectiveFrom, DateOnly? effectiveTo, string reason, DateOnly? reviewBy,
+        Guid id, string kind, bool isNew, string value, DateOnly effectiveFrom, DateOnly? effectiveTo, string reason, DateOnly? reviewBy,
         Guid? requestedById, string? requestedByName, DateTime requestedAt, bool canApprove);
 
-    private PendingView PendingDto(CompanyStatutoryOverride o, IReadOnlyDictionary<Guid, string> names)
+    private PendingView PendingDto(CompanyStatutoryOverride o, IReadOnlyDictionary<Guid, string> names, bool isNew)
     {
         var me = this.GetUserId();
         var mayDecide = HasPermission("payroll.rates.statutory_override") && DecideScopeError(o.CompanyId) is null;
         return new PendingView(
-            o.Id, o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change", o.OverrideValue,
+            o.Id, o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change",
+            isNew && o.DataType != StatutoryOverridePolicy.RetireRequest, o.OverrideValue,
             o.EffectiveFrom, o.EffectiveTo, o.Reason, o.ReviewBy, o.CreatedBy,
             o.CreatedBy is { } u && names.TryGetValue(u, out var n) ? n : null,
             o.CreatedAtUtc,
@@ -708,6 +842,26 @@ public class RatesController : ControllerBase
         if (tracked is null || tracked.Status != PendingApproval || tracked.CreatedBy == decider) return false;
         tracked.Status = toStatus; tracked.ApprovedBy = decider; tracked.ApprovedAtUtc = now;
         tracked.UpdatedAtUtc = now; tracked.UpdatedBy = decider;
+        return true;
+    }
+
+    /// <summary>The requester (or a scoped colleague) takes a request back. Same conditional claim as
+    /// <see cref="ClaimPendingAsync"/>, without the maker exclusion and without stamping an approver.</summary>
+    private async Task<bool> WithdrawPendingAsync(Guid tid, Guid id, Guid? by, DateTime now, CancellationToken ct)
+    {
+        if (_db.Database.IsRelational())
+        {
+            var n = await Overrides(tid)
+                .Where(o => o.Id == id && !o.IsDeleted && o.Status == PendingApproval)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.Status, StatutoryOverridePolicy.Withdrawn)
+                    .SetProperty(o => o.UpdatedAtUtc, (DateTime?)now)
+                    .SetProperty(o => o.UpdatedBy, by), ct);
+            return n == 1;
+        }
+        var tracked = await Overrides(tid).FirstOrDefaultAsync(o => o.Id == id && !o.IsDeleted, ct);
+        if (tracked is null || tracked.Status != PendingApproval) return false;
+        tracked.Status = StatutoryOverridePolicy.Withdrawn; tracked.UpdatedAtUtc = now; tracked.UpdatedBy = by;
         return true;
     }
 
@@ -969,7 +1123,10 @@ public class RatesController : ControllerBase
         var unit = string.IsNullOrWhiteSpace(p.Unit) ? def?.Unit ?? "" : p.Unit;
         return new
         {
-            p.Id, p.CompanyId, p.RateKey, p.RateCategory, p.RateValue, p.DataType, p.Unit,
+            // ONE "unit": the row's own unit, or the registry's when the row has none. Listing p.Unit
+            // here as well serialises two properties to the same camelCase name, and System.Text.Json
+            // throws — every company-rate read and write returned 500 (RatesHttpSerializationTests).
+            p.Id, p.CompanyId, p.RateKey, p.RateCategory, p.RateValue, p.DataType,
             p.EffectiveFrom, p.EffectiveTo, p.Status, p.Notes,
             inherited,
             label = def?.Description,
