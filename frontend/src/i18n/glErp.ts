@@ -111,6 +111,19 @@ const ar: Record<string, string> = {
   'Request retirement': 'طلب إنهاء السريان',
   'Retiring takes effect only after a second administrator approves it.': 'لا يسري إنهاء السريان إلا بعد موافقة مسؤول ثانٍ.',
   'A second administrator must approve each change before payroll uses it.': 'يجب أن يوافق مسؤول ثانٍ على كل تغيير قبل أن يستخدمه نظام الرواتب.',
+  // Group-scope period actions (GlPeriodsPanel) and per-company export defaults (JournalExportsPanel).
+  'Company {id}': 'الشركة {id}',
+  'Close for all companies': 'إغلاق لجميع الشركات',
+  'Close {period} for all companies?': 'إغلاق {period} لجميع الشركات؟',
+  'No payroll, loan, advance or bonus posting dated in {period} will be accepted for any of these companies until the month is reopened: {companies}.':
+    'لن يُقبل أي ترحيل رواتب أو قرض أو سلفة أو مكافأة بتاريخ {period} لأي من هذه الشركات حتى يُعاد فتح الشهر: {companies}.',
+  'No payroll, loan, advance or bonus posting dated in {period} will be accepted for any company in the group until the month is reopened.':
+    'لن يُقبل أي ترحيل رواتب أو قرض أو سلفة أو مكافأة بتاريخ {period} لأي شركة في المجموعة حتى يُعاد فتح الشهر.',
+  'Reopen for all companies': 'إعادة الفتح لجميع الشركات',
+  'Loading companies…': 'جارٍ تحميل الشركات…',
+  'This format holds one company per file: choose a company above.': 'تحمل هذه الصيغة شركة واحدة لكل ملف: اختر شركة أعلاه.',
+  'ERP settings for this format': 'إعدادات نظام تخطيط الموارد لهذه الصيغة',
+  '{label} (required)': '{label} (مطلوب)',
 };
 
 export const glErp = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };
