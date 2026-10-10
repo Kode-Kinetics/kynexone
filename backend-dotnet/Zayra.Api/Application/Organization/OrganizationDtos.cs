@@ -20,7 +20,10 @@ public record CompanyDto(
     string ApprovalStatus = CompanyApprovalStatuses.Active,
     // Work-email auto-derivation config (empty EmailDomain ⇒ manual work-email entry for this company).
     string EmailDomain = "",
-    string WorkEmailPattern = WorkEmailPatterns.FirstLast);
+    string WorkEmailPattern = WorkEmailPatterns.FirstLast,
+    // The legal entity's company code in the client's ERP (SAP company code, Oracle balancing segment,
+    // D365 legal entity). Journal exports stamp it on every line; empty ⇒ the CR-number fallback.
+    string ErpCompanyCode = "");
 
 public record CompanyRequest(
     [Required, MaxLength(180)] string LegalNameEn,
@@ -39,7 +42,10 @@ public record CompanyRequest(
     // one of WorkEmailPatterns (coerced to first.last if unrecognized).
     [MaxLength(255)] string? EmailDomain = null,
     [MaxLength(20)] string? WorkEmailPattern = null,
-    bool IsActive = true);
+    bool IsActive = true,
+    // null ⇒ leave the stored ERP company code unchanged (callers that predate the field — the CSV
+    // importer, the setup assistant — must not wipe it); "" ⇒ clear it.
+    [MaxLength(30), RegularExpression(@"^[A-Za-z0-9._\-]*$", ErrorMessage = "ERP company code may contain only letters, digits, '.', '_' and '-'.")] string? ErpCompanyCode = null);
 
 public record BranchDto(
     Guid Id,
@@ -176,7 +182,8 @@ public static class OrganizationMappings
         company.IsActive,
         company.ApprovalStatus,
         company.EmailDomain,
-        company.WorkEmailPattern);
+        company.WorkEmailPattern,
+        company.ErpCompanyCode ?? string.Empty);
 
     public static BranchDto ToDto(this Branch branch) => new(
         branch.Id,

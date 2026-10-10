@@ -26,7 +26,7 @@ const ar: Record<string, string> = {
   'Job titles': 'المسميات الوظيفية',
   'Grades & salary bands': 'الدرجات ونطاقات الرواتب',
   'Fiscal years': 'السنوات المالية',
-  'GL & rates': 'دفتر الأستاذ العام والأسعار',
+  'GL & rates': 'دفتر الأستاذ العام والمعدلات',
   'GCC compliance': 'الامتثال الخليجي',
   'Master data': 'البيانات الرئيسية',
   'Numbering': 'الترقيم',

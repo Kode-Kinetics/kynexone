@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, BookOpen, Building2, CheckCircle2, Coins, Landmark, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, Landmark, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -12,9 +12,10 @@ import { AccountsMappingsPanel } from './AccountsMappingsPanel';
 import { DriverManagerPanel } from './DriverManagerPanel';
 import { CompanyRatesPanel } from './CompanyRatesPanel';
 import { StatutoryRatesPanel, type StatutoryCountry } from './StatutoryRatesPanel';
+import { GlPeriodsPanel } from './GlPeriodsPanel';
 import { problemLabel, problemRank, routeRowId, useScopedResource } from './glUi';
 
-type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory';
+type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods';
 
 interface Props {
   companies: CompanyDto[];
@@ -70,6 +71,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
           { id: 'drivers' as const, label: t('Posting Drivers'), icon: Landmark, show: driversRead },
           { id: 'companyRates' as const, label: t('Company Rates'), icon: Coins, show: ratesRead },
           { id: 'statutory' as const, label: t('Statutory Rates'), icon: ShieldCheck, show: statutoryRead },
+          { id: 'periods' as const, label: t('Accounting periods'), icon: CalendarCheck, show: glRead },
         ] as const
       ).filter((x) => x.show),
     [t, glRead, driversRead, ratesRead, statutoryRead],
@@ -292,6 +294,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
             canApprove={canApprove}
           />
         )}
+        {activeTab === 'periods' && <GlPeriodsPanel companyId={scope} />}
       </div>
     </div>
   );

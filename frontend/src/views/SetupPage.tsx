@@ -165,7 +165,7 @@ function CompaniesTab() {
   const openNew = () => { setEditing(null); setForm(emptyCompany()); setError(''); setModalOpen(true); };
   const openEdit = (c: CompanyDto) => {
     setEditing(c);
-    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive });
+    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive, erpCompanyCode: c.erpCompanyCode ?? '' });
     setError('');
     setModalOpen(true);
   };
@@ -432,6 +432,10 @@ function CompaniesTab() {
           </FormField>
           <FormField label="GOSI Employer ID">
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
+          </FormField>
+          <FormField label="ERP company code">
+            <input type="text" maxLength={30} value={form.erpCompanyCode ?? ''} onChange={(e) => f('erpCompanyCode', e.target.value.trim())} className="input w-full" placeholder="e.g. 1000" spellCheck={false} />
+            <p className="mt-1 text-xs text-slate-400">The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.</p>
           </FormField>
           <FormField label="Work Email Domain">
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">

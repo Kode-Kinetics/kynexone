@@ -486,6 +486,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         // lowercased so derivation/collision keys are canonical.
         company.EmailDomain = Clean(request.EmailDomain).ToLowerInvariant();
         company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
+        if (request.ErpCompanyCode is not null)
+            company.ErpCompanyCode = Clean(request.ErpCompanyCode) is { Length: > 0 } erp ? erp : null;
         if (applyLifecycle) company.IsActive = request.IsActive;
     }
 
