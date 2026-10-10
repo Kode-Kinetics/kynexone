@@ -8,6 +8,7 @@ import {
   mapDashboardExtras,
   mapDayRecord,
   mapHolidays,
+  unreadCount,
 } from '../src/api/homeMappers.ts';
 import { notificationTarget } from '../src/features/notifications/notificationTarget.ts';
 import { companyWallTimeToUtcIso, validateCorrection } from '../src/features/attendance/companyTime.ts';
@@ -110,4 +111,11 @@ test('a correction needs a day, one time, a real reason, and out after in', () =
     date: 'dateRequired', times: 'timeRequired', reason: 'reasonShort',
   });
   assert.equal(validateCorrection({ date: '2026-10-08', clockIn: '17:00', clockOut: '08:00', reason: 'Wrong order' }).times, 'orderInvalid');
+});
+
+test('the unread badge uses the server count, not the length of a capped list', () => {
+  assert.equal(unreadCount({ unreadNotifications: 57 }), 57);
+  assert.equal(unreadCount({ unreadNotifications: 0 }), 0);
+  assert.equal(unreadCount({}), null);
+  assert.equal(unreadCount(null), null);
 });

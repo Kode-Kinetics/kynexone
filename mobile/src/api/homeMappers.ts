@@ -173,3 +173,9 @@ export function mapDashboardExtras(data: any): EmployeeHomeExtras {
     todayWorkedMinutes: record && Number.isFinite(worked) && worked > 0 ? worked : null,
   };
 }
+
+/** The unread total from GET /mobile/dashboard/{id} — a server-side COUNT, not the length of a capped list. */
+export function unreadCount(mobileDashboard: unknown): number | null {
+  const value = Number((mobileDashboard as { unreadNotifications?: unknown } | null)?.unreadNotifications);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}

@@ -9,11 +9,12 @@
 //   GET /attendance/daily?from&to&employeeId  recent processed days (missing punches, rest days)
 //   GET /leave/holidays/range               public holidays (today + the next one)
 //   GET /ess/payslips                       the latest final payslip (for "your payslip is ready")
-//   GET /mobile/notifications/{id}?unreadOnly=true  unread count (the dashboard caps it at 5)
+//   GET /mobile/dashboard/{id}                     unread count (a server COUNT; the notification lists cap at 5 / 30)
 
 import { apiGet } from './client';
 import { fetchAllPages, type PageOf } from './paging';
 import { holidaysApi } from './holidays';
+import { unreadCount } from './homeMappers';
 import {
   approvedLeaveOn,
   isPendingStatus,
@@ -85,7 +86,7 @@ export const employeeHomeApi = {
         `/attendance/daily?from=${addDays(today, -35)}&to=${today}&employeeId=${employeeId}&page=1&pageSize=62`)),
       settle(holidaysApi.getRange(today, addDays(today, 365))),
       settle(apiGet<any[]>('/ess/payslips')),
-      settle(apiGet<any[]>(`/mobile/notifications/${employeeId}?unreadOnly=true`)),
+      settle(apiGet<any>(`/mobile/dashboard/${employeeId}`)),
       appStorage.get<string>(`${SEEN_PAYSLIP_KEY}:${key}`),
     ]);
 
@@ -115,7 +116,7 @@ export const employeeHomeApi = {
         ? { id: String(latest.id), year: Number(latest.year), month: Number(latest.month), periodLabel: String(latest.periodLabel ?? '') }
         : null,
       seenPayslipId: seen ?? null,
-      unreadNotifications: Array.isArray(unread) ? unread.length : null,
+      unreadNotifications: unreadCount(unread),
     };
   },
 
@@ -125,3 +126,4 @@ export const employeeHomeApi = {
     await appStorage.set(`${SEEN_PAYSLIP_KEY}:${key}`, payslipId);
   },
 };
+

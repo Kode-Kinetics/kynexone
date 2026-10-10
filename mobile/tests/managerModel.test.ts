@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   balanceFacts,
+  decidableOvertime,
   givenName,
   mapLeaveFacts,
   mapOvertimeApproval,
@@ -277,4 +278,18 @@ test('every enum the screens translate has an English and Arabic string', async 
     for (const b of TEAM_BUCKETS) assert.ok(s.status[b], `${lang} status.${b}`);
     for (const v of ['approved', 'rejected', 'returned', 'other']) assert.ok(s.approvals.verb[v], `${lang} verb.${v}`);
   }
+});
+
+test('overtime enters the inbox only when the server names the caller as the approver', () => {
+  const row = (id: string, employeeId: number) =>
+    mapOvertimeApproval({ ...overtimeRow, id, employeeId }, 2)!;
+  const items = [row('a', 3), row('b', 7), row('c', 9)];
+  // 3 = direct report (caller approves), 7 = indirect report (someone else approves), 9 = lookup failed.
+  const verdicts = new Map<number, boolean | null>([[3, true], [7, false], [9, null]]);
+  const manager = decidableOvertime(items, verdicts, false);
+  assert.deepEqual(manager.items.map((i) => i.id), ['a']);
+  assert.equal(manager.unresolved, true, 'an unresolved row must flag the list as possibly incomplete');
+  const clean = decidableOvertime([row('a', 3), row('b', 7)], verdicts, false);
+  assert.equal(clean.unresolved, false, 'a known non-approver is not "incomplete", it is simply not yours');
+  assert.equal(decidableOvertime(items, new Map(), true).items.length, 3, 'an Admin bypasses the manager step');
 });

@@ -8,6 +8,7 @@
 // ============================================================
 
 import { apiGet, apiPost } from './client';
+import { fetchAllPages } from './paging';
 import { userStorage } from '@/storage';
 import { mapLeaveBalanceRow, type LeaveBalanceRow } from './leaveBalanceMapper';
 import { leaveStatusKind, nextApproverFrom, type ApproverKind, type LeaveStatusKind } from '@/features/leave/leaveLogic';
@@ -110,11 +111,13 @@ export const leaveRequestsApi = {
     return (rows ?? []).map(mapLeaveBalanceRow);
   },
 
-  /** GET /leave/requests?employeeId={self} — every status, newest first. */
+  /** GET /leave/requests?employeeId={self} — every status and every page (the server caps a page at 100), newest first. */
   async getMine(): Promise<MyLeaveRequest[]> {
     const employeeId = await ownEmployeeId();
-    const result = await apiGet<Paged<any>>(`/leave/requests?employeeId=${employeeId}&page=1&pageSize=100`);
-    return itemsOf(result).map(mapRequest);
+    const rows = await fetchAllPages<any>((page, pageSize) =>
+      apiGet<Paged<any>>(`/leave/requests?employeeId=${employeeId}&page=${page}&pageSize=${pageSize}`)
+    );
+    return rows.map(mapRequest);
   },
 
   /** GET /leave/requests/{id} — the approval steps, to say who the request is waiting for. */

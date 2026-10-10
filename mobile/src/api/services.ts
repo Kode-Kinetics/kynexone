@@ -55,6 +55,7 @@ import { COMPANY_TIME_ZONE, companyWallTimeToUtcIso } from '@/features/attendanc
 import {
   balanceFacts,
   mapLeaveFacts,
+  decidableOvertime,
   mapOvertimeApproval,
   mapWorkflowApproval,
   mergeInbox,
@@ -1602,9 +1603,28 @@ export const approvalsApi = {
     if (workflow.status === 'rejected') unavailable.push('workflow');
     let overtimeItems: InboxItem[] = [];
     if (overtime.status === 'fulfilled') {
-      overtimeItems = overtime.value
+      const scoped = overtime.value
         .map((row) => mapOvertimeApproval(row, selfId))
         .filter((x): x is InboxItem => x !== null);
+      // The scope includes indirect reports the caller cannot approve (the server checks the
+      // employee's resolved approvers), so ask the server who approves each employee's overtime.
+      const isAdmin = (await userStorage.getUser())?.role === 'SUPER_ADMIN';
+      const approverOf = new Map<number, boolean | null>();
+      if (!isAdmin && selfId !== null) {
+        const employeeIds = [...new Set(scoped.map((i) => i.requesterEmployeeId).filter((id): id is number => id !== null))];
+        await Promise.all(employeeIds.map(async (employeeId) => {
+          try {
+            const resolved = await apiGet<any>(`/employees/${employeeId}/workflow-approvers?workflowType=Overtime`);
+            const approvers: any[] = Array.isArray(resolved?.approvers) ? resolved.approvers : [];
+            approverOf.set(employeeId, approvers.some((a) => Number(a?.employeeId) === selfId));
+          } catch {
+            approverOf.set(employeeId, null);
+          }
+        }));
+      }
+      const decidable = decidableOvertime(scoped, approverOf, isAdmin);
+      overtimeItems = decidable.items;
+      if (decidable.unresolved) unavailable.push('overtime');
     } else if (overtime.reason?.response?.status !== 403) {
       // 403 = this login has no overtime approval rights: nothing is missing, there is nothing to show.
       unavailable.push('overtime');

@@ -223,6 +223,30 @@ export function compareInbox(a: InboxItem, b: InboxItem): number {
     || a.key.localeCompare(b.key);
 }
 
+/**
+ * Keeps only the overtime the caller may actually decide. GET /overtime/requests returns every
+ * PendingManager row in the caller's data scope (indirect reports included), but
+ * OvertimeController.Approve/Reject accept a manager only when they are one of the employee's
+ * RESOLVED approvers (GET /employees/{id}/workflow-approvers). `approverOf` maps employeeId →
+ * true (caller is an approver), false (someone else is), or null (could not be resolved).
+ * Unresolved rows are dropped, never offered: `unresolved` tells the caller to say the list may be
+ * incomplete. An Admin bypasses the manager step on the server, so every row is theirs.
+ */
+export function decidableOvertime(
+  items: InboxItem[],
+  approverOf: ReadonlyMap<number, boolean | null>,
+  isAdmin: boolean,
+): { items: InboxItem[]; unresolved: boolean } {
+  if (isAdmin) return { items, unresolved: false };
+  let unresolved = false;
+  const kept = items.filter((item) => {
+    const verdict = item.requesterEmployeeId === null ? null : approverOf.get(item.requesterEmployeeId) ?? null;
+    if (verdict === null) unresolved = true;
+    return verdict === true;
+  });
+  return { items: kept, unresolved };
+}
+
 export function mergeInbox(...lists: InboxItem[][]): InboxItem[] {
   const seen = new Map<string, InboxItem>();
   for (const list of lists) for (const item of list) if (item.id && !seen.has(item.key)) seen.set(item.key, item);
