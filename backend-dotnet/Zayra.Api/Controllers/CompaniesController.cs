@@ -90,6 +90,12 @@ public class CompaniesController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (!this.HasGroupEntityScope())
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    error = "group_scope_required",
+                    message = "Only a group administrator can create another company."
+                });
 
             // The subscription limit and the three governance gates live in CompanyCreationGate so
             // that the CSV importer further down passes exactly the same four checks this form does.
@@ -200,6 +206,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!this.HasGroupEntityScope()) return Forbid();
         return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
     }
 
@@ -211,6 +218,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        if (!this.HasGroupEntityScope()) return Forbid();
         return await RunCommitAsync(tenantId.Value, req.Csv, ct);
     }
 

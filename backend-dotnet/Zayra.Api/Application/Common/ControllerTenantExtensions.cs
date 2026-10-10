@@ -70,6 +70,29 @@ public static class ControllerTenantExtensions
         => controller.GetRequestScope().ToEntityScopeContext();
 
     /// <summary>
+    /// Whether the token grants tenant-wide company authority before the optional
+    /// <c>X-Company-Id</c> switcher narrows data reads to one company. Shared catalogs and
+    /// tenant settings are governed by this base authority: selecting a company must not
+    /// silently revoke a group administrator's ability to maintain them.
+    /// </summary>
+    public static bool HasGroupEntityScope(this ControllerBase controller)
+    {
+        var services = controller.HttpContext?.RequestServices;
+        var resolver = services?.GetService(typeof(Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver))
+            as Zayra.Api.Infrastructure.Scope.IRequestEntityScopeResolver;
+        if (resolver is not null) return resolver.ResolveFor(controller.User, selectedCompanyHeader: null).IsGroupLevel;
+
+        var scopeOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<EntityScopeOptions>))
+            as Microsoft.Extensions.Options.IOptions<EntityScopeOptions>;
+        var jwtOptions = services?.GetService(typeof(Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>))
+            as Microsoft.Extensions.Options.IOptions<Zayra.Api.Application.Auth.JwtOptions>;
+        return new Zayra.Api.Infrastructure.Scope.RequestEntityScopeResolver(
+                http: null, scopeOptions: scopeOptions, jwtOptions: jwtOptions)
+            .ResolveFor(controller.User, selectedCompanyHeader: null)
+            .IsGroupLevel;
+    }
+
+    /// <summary>
     /// Resolves the tenant's base currency.
     /// Priority: Company.DefaultCurrency (most-active company) →
     ///           TenantLocalizationSettings.CurrencyCode → "USD" fallback.

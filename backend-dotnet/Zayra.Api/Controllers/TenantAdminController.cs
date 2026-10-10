@@ -240,6 +240,7 @@ public class TenantAdminController : ControllerBase
     [HttpPut("localization")]
     public async Task<IActionResult> UpsertLocalization([FromBody] UpsertLocalizationRequest req, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -285,6 +286,7 @@ public class TenantAdminController : ControllerBase
     [HttpPut("branding")]
     public async Task<IActionResult> UpsertBranding([FromBody] UpsertBrandingRequest req, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -333,6 +335,7 @@ public class TenantAdminController : ControllerBase
     [HttpPost("country-rules")]
     public async Task<IActionResult> CreateCountryRule([FromBody] CreateCountryRuleRequest req, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
@@ -372,6 +375,7 @@ public class TenantAdminController : ControllerBase
     [HttpDelete("country-rules/{id:guid}")]
     public async Task<IActionResult> DeleteCountryRule(Guid id, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var rule = await _db.CountryPayrollRules.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
@@ -413,6 +417,7 @@ public class TenantAdminController : ControllerBase
     [HttpDelete("country-rules/country/{countryCode}")]
     public async Task<IActionResult> DeleteCountryPack(string countryCode, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var code = countryCode.ToUpperInvariant();

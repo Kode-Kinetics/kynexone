@@ -41,7 +41,9 @@ public record CreateUserRequest(
     [Required, EmailAddress] string Email,
     [Required] string FullName,
     [Required, MinLength(10)] string Password,
-    IReadOnlyCollection<string> Roles);
+    IReadOnlyCollection<string> Roles,
+    Guid? CompanyId = null,
+    bool IsGroupScope = false);
 
 public record AssignRolesRequest([Required] IReadOnlyCollection<string> Roles);
 

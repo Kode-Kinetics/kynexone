@@ -9,7 +9,7 @@ export default function Page() {
   // those users to the read-only Companies list (no write actions, no config tabs).
   // Suspense is required because SetupPage reads useSearchParams (deep-link focus).
   return (
-    <PermissionGate permissions={['organization.read', 'organization.write', 'organization.establishment.write']}>
+    <PermissionGate permissions={['organization.read', 'organization.write', 'organization.establishment.write', 'payroll.rates.read', 'payroll.rates.statutory_override']}>
       <Suspense>
         <SetupPage />
       </Suspense>

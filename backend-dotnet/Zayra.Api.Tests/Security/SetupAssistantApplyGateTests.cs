@@ -54,6 +54,7 @@ public sealed class SetupAssistantApplyGateTests
                     {
                         new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "organization.setup.apply"),
+                        new Claim("permission", "organization.write"),
                         new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(scopedTo is null
                             ? new { v = 2, m = "group", c = Array.Empty<Guid>() }
                             : new { v = 2, m = "companies", c = scopedTo })),
@@ -136,7 +137,7 @@ public sealed class SetupAssistantApplyGateTests
     }
 
     [Fact]
-    public async Task ABranchCannotBeMovedToAnotherCompany_ThroughTheAssistant()
+    public async Task EachCompanyCanUseTheSameBranchCode_ThroughTheAssistant()
     {
         var (tenant, existing) = await SeedAsync();
         await using (var seed = _fx.CreateDb())
@@ -150,8 +151,11 @@ public sealed class SetupAssistantApplyGateTests
         var result = await Controller(db, tenant).Apply(Request("Other Co", draft: draft), CancellationToken.None);
 
         await using var verify = _fx.CreateDb();
-        Assert.Equal(existing, (await verify.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == tenant && b.Code == "HQ")).CompanyId);
-        Assert.Contains("cannot be moved to another company", Refusal(result));
+        Assert.IsType<OkObjectResult>(result);
+        var branches = await verify.Branches.IgnoreQueryFilters().Where(b => b.TenantId == tenant && b.Code == "HQ").ToListAsync();
+        Assert.Equal(2, branches.Count);
+        Assert.Contains(branches, branch => branch.CompanyId == existing);
+        Assert.Contains(branches, branch => branch.CompanyId != existing && branch.City == "Riyadh");
     }
 
     [Fact]
@@ -180,6 +184,83 @@ public sealed class SetupAssistantApplyGateTests
             Assert.False(await verify.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == tenant && b.CompanyId == other));
             Assert.Contains("outside your company scope", Refusal(result));
         }
+    }
+
+    [Fact]
+    public async Task ExplicitCompanyTarget_RejectsAStaleOrMismatchedLegalName()
+    {
+        var (tenant, existing) = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        var draft = SetupDraft.Empty() with { Branches = [new DraftBranch("JED", "Jeddah", "Jeddah", false)] };
+
+        var result = await Controller(db, tenant).Apply(
+            new ApplySetupRequest(draft, "SA", "SAR", "A renamed or different company", existing), CancellationToken.None);
+
+        Assert.Contains("does not match the selected company", Refusal(result));
+        await using var verify = _fx.CreateDb();
+        Assert.False(await verify.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == tenant && b.Code == "JED"));
+    }
+
+    [Fact]
+    public async Task CompanyAdministrator_CannotApplyGroupSharedCatalogs()
+    {
+        var (tenant, existing) = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        var draft = SetupDraft.Empty() with
+        {
+            Shifts = [new DraftShift("DAY", "Day shift", "08:00", "17:00", 60, "#2563eb")]
+        };
+
+        var result = await Controller(db, tenant, scopedTo: [existing]).Apply(
+            new ApplySetupRequest(draft, "SA", "SAR", "Existing Co", existing), CancellationToken.None);
+
+        Assert.Contains("group-shared shifts and working week", Refusal(result));
+        await using var verify = _fx.CreateDb();
+        Assert.False(await verify.ShiftDefinitions.IgnoreQueryFilters().AnyAsync(s => s.TenantId == tenant));
+    }
+
+    [Fact]
+    public async Task CompanyHolidayDraft_NeverReusesASiblingOrSharedCalendar()
+    {
+        var (tenant, existing) = await SeedAsync();
+        Guid other;
+        Guid existingCalendar;
+        await using (var seed = _fx.CreateDb())
+        {
+            var sibling = new Company
+            {
+                TenantId = tenant, LegalNameEn = "Other Co", CountryCode = "SA", Jurisdiction = "SA",
+                RegistrationNumber = "REG-OTHER-HOLIDAY", DefaultCurrency = "SAR", IsActive = true,
+            };
+            seed.Companies.Add(sibling);
+            var calendar = new PublicHolidayCalendar
+            {
+                TenantId = tenant, CompanyId = existing, CountryCode = "SA", CalendarYear = 2027, Name = "Existing Co Holidays",
+            };
+            seed.PublicHolidayCalendars.Add(calendar);
+            await seed.SaveChangesAsync();
+            other = sibling.Id;
+            existingCalendar = calendar.Id;
+        }
+
+        var draft = SetupDraft.Empty() with
+        {
+            HolidayCalendar = new DraftHolidayCalendar("Other Co Holidays", 2027,
+            [
+                new DraftHoliday("Founding Day", "يوم التأسيس", "2027-02-22", false, false, "National", string.Empty),
+            ]),
+        };
+        await using (var db = _fx.CreateDb())
+        {
+            Assert.IsType<OkObjectResult>(await Controller(db, tenant).Apply(
+                new ApplySetupRequest(draft, "SA", "SAR", "Other Co", other), CancellationToken.None));
+        }
+
+        await using var verify = _fx.CreateDb();
+        Assert.False(await verify.PublicHolidays.IgnoreQueryFilters().AnyAsync(holiday => holiday.CalendarId == existingCalendar));
+        var otherCalendar = await verify.PublicHolidayCalendars.IgnoreQueryFilters().SingleAsync(calendar =>
+            calendar.TenantId == tenant && calendar.CompanyId == other && calendar.CalendarYear == 2027);
+        Assert.True(await verify.PublicHolidays.IgnoreQueryFilters().AnyAsync(holiday => holiday.CalendarId == otherCalendar.Id));
     }
 
     [Fact]

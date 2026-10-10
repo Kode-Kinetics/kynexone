@@ -75,9 +75,8 @@ public class StatutoryRulesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var query = _db.StatutoryRules
-            .AsNoTracking()
-            .Where(r => r.TenantId == null || r.TenantId == tenantId);
+        // System/reference read: explicit predicate includes only platform rows and this tenant.
+        var query = VisibleRules(tenantId.Value).AsNoTracking();
 
         if (!string.IsNullOrWhiteSpace(countryCode))
             query = query.Where(r => r.CountryCode == countryCode.ToUpperInvariant());
@@ -117,10 +116,14 @@ public class StatutoryRulesController : ControllerBase
     public async Task<ActionResult<StatutoryRuleDto>> Create(
         [FromBody] CreateStatutoryRuleRequest req,
         CancellationToken ct)
+        => await SerializeWriteAsync(() => CreateCore(req, ct), ct);
+
+    private async Task<ActionResult<StatutoryRuleDto>> CreateCore(CreateStatutoryRuleRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
 
         if (string.IsNullOrWhiteSpace(req.CountryCode) ||
             string.IsNullOrWhiteSpace(req.RuleKey)     ||
@@ -131,16 +134,16 @@ public class StatutoryRulesController : ControllerBase
         // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
         // only, so a tenant value here would be saved and never applied. Refused with a code.
         // See Infrastructure/Payroll/GosiStatutoryValues.cs.
-        if (GosiStatutoryValues.TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
+        if (TenantWriteRefusal(req.RuleKey) is { } gosiRefusal)
             return UnprocessableEntity(gosiRefusal);
 
-        var cc = req.CountryCode.ToUpperInvariant();
-        var jur = req.Jurisdiction ?? string.Empty;
+        var cc = req.CountryCode.Trim().ToUpperInvariant();
+        var jur = (req.Jurisdiction ?? string.Empty).Trim();
         var key = req.RuleKey.Trim();
         // No inventing statutory keys: the key must resolve to an existing platform/tenant rule.
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        var exists = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
-            .AnyAsync(r => (r.TenantId == null || r.TenantId == tenantId) && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key, ct);
+        var exists = await VisibleRules(tenantId.Value).AsNoTracking()
+            .AnyAsync(r => r.TenantId == null && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key, ct);
         if (!exists) return BadRequest($"Unknown statutory rule key '{key}' for {cc}/{jur}. Overrides may only be created for seeded rules.");
 
         // UNIT GATE. RuleValue is stored as free text, so this is the ONLY place the unit of a
@@ -156,6 +159,11 @@ public class StatutoryRulesController : ControllerBase
         // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
         if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(key, value) is { } renewalError)
             return BadRequest(renewalError);
+
+        if (DateProblem(req.EffectiveFrom, req.EffectiveTo) is { } dateProblem)
+            return BadRequest(new { code = "STATUTORY_DATE_INVALID", message = dateProblem });
+        if (await OverlapsAsync(tenantId.Value, cc, jur, key, req.EffectiveFrom, req.EffectiveTo, null, ct))
+            return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "An override already covers this period. Supersede the current version instead." });
 
         var rule = new StatutoryRule
         {
@@ -192,10 +200,14 @@ public class StatutoryRulesController : ControllerBase
         Guid id,
         [FromBody] UpdateStatutoryRuleRequest req,
         CancellationToken ct)
+        => await SerializeWriteAsync(() => UpdateCore(id, req, ct), ct);
+
+    private async Task<ActionResult<StatutoryRuleDto>> UpdateCore(Guid id, UpdateStatutoryRuleRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
         if (string.IsNullOrWhiteSpace(req.Description))
             return BadRequest("A reason (Description) is required to supersede a statutory override.");
 
@@ -206,7 +218,7 @@ public class StatutoryRulesController : ControllerBase
         // GOSI rates and the contributory-wage ceiling are STATUTORY: payroll reads the platform row
         // only, so a tenant value here would be saved and never applied. Refused with a code.
         // See Infrastructure/Payroll/GosiStatutoryValues.cs.
-        if (GosiStatutoryValues.TenantWriteRefusal(prior.RuleKey) is { } gosiRefusal)
+        if (TenantWriteRefusal(prior.RuleKey) is { } gosiRefusal)
             return UnprocessableEntity(gosiRefusal);
 
         // Same unit gate as Create — a supersede writes a new effective-dated value and is the
@@ -217,6 +229,14 @@ public class StatutoryRulesController : ControllerBase
         // Release A: a renewal lead time or toggle is validated here, on save, so the daily renewal job never meets it.
         if (Zayra.Api.Application.Contracts.RenewalRuleKeys.ValidateOverride(prior.RuleKey, nextValue) is { } renewalError)
             return BadRequest(renewalError);
+
+        if (DateProblem(req.EffectiveFrom, req.EffectiveTo) is { } dateProblem)
+            return BadRequest(new { code = "STATUTORY_DATE_INVALID", message = dateProblem });
+        if (req.EffectiveFrom <= prior.EffectiveFrom || prior.EffectiveTo is not null)
+            return Conflict(new { code = "STATUTORY_VERSION_STALE", message = "Only the open current version can be superseded, at a later date. Reload the rule history." });
+        if (await OverlapsAsync(tenantId.Value, prior.CountryCode, prior.Jurisdiction, prior.RuleKey,
+                req.EffectiveFrom, req.EffectiveTo, prior.Id, ct))
+            return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "Another override already covers the requested period." });
 
         // Supersede (append-only): close the prior row, insert the new effective-dated value.
         var before = prior.RuleValue;
@@ -235,24 +255,93 @@ public class StatutoryRulesController : ControllerBase
         return Ok(ToDto(next, isTenantOverride: true));
     }
 
-    /// <summary>Deletes a tenant-owned statutory rule override. Platform defaults cannot be deleted.</summary>
+    /// <summary>Retires an override from tomorrow UTC. Historical rows are never deleted.</summary>
     [HttpDelete("{id:guid}")]
     [HasPermission("payroll.rates.statutory_override")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+        => await SerializeWriteAsync(() => DeleteCore(id, ct), ct);
+
+    private async Task<IActionResult> DeleteCore(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (!HasPermission("payroll.rates.statutory_override")) return Forbid();
+        if (!this.HasGroupEntityScope()) return Forbid();
 
         var rule = await _db.StatutoryRules
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null) return NotFound();
 
-        _db.StatutoryRules.Remove(rule);
-        await Audit("statutory_rule.override.deleted", rule.Id.ToString(),
-            new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, value = rule.RuleValue }, ct);
+        var retireOn = DateTime.UtcNow.Date.AddDays(1);
+        if (rule.EffectiveTo is { } end && end <= retireOn) return NoContent();
+        if (rule.EffectiveFrom >= retireOn)
+            return Conflict(new { code = "STATUTORY_FUTURE_VERSION", message = "A future version cannot be retired before it starts. No rule history was changed." });
+        var previousEnd = rule.EffectiveTo;
+        rule.EffectiveTo = retireOn;
+        await Audit("statutory_rule.override.retired", rule.Id.ToString(),
+            new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, value = rule.RuleValue,
+                rule.EffectiveFrom, previousEffectiveTo = previousEnd, effectiveTo = retireOn,
+                reason = "Authorized retirement from the next UTC day; historical resolution preserved." }, ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    // Only reject families whose production calculators read platform-only. Employer policy
+    // enhancements belong in their policy modules; storing ignored tenant rows is misleading.
+    private static object? TenantWriteRefusal(string? key)
+    {
+        if (GosiStatutoryValues.TenantWriteRefusal(key) is { } gosi) return gosi;
+        var k = (key ?? "").Trim().ToLowerInvariant();
+        if (new[] { "gpssa.", "grsia.", "dews.", "eosb.", "leave.", "workhours." }.Any(k.StartsWith)
+            || k is "nitaqat.default_target_ratio" or "emiratisation.target_ratio" or "emiratization.target_ratio" or "qatarization.target_ratio")
+            return new { code = "STATUTORY_PLATFORM_ONLY", message = $"'{key}' is resolved from platform statutory rules. Tenant overrides are not applied by its calculator; nothing was saved. Configure employer enhancements in the relevant policy module." };
+        return null;
+    }
+
+    private static string? DateProblem(DateTime from, DateTime? to)
+    {
+        if (from == default || from.Kind != DateTimeKind.Utc || from.TimeOfDay != TimeSpan.Zero
+            || to is { } end && (end.Kind != DateTimeKind.Utc || end.TimeOfDay != TimeSpan.Zero))
+            return "Effective dates must be whole UTC dates (midnight), not timestamps.";
+        if (from < DateTime.UtcNow.Date.AddDays(1))
+            return "New rule versions must start tomorrow UTC or later. Historical and current-day values cannot be rewritten here.";
+        if (to is { } until && until <= from)
+            return "Effective To is exclusive and must be later than Effective From.";
+        return null;
+    }
+
+    // Reference-data actor: authenticated statutory administrator/read role. Preserve the
+    // explicit platform-or-current-tenant boundary while bypassing the nullable-tenant filter.
+    private IQueryable<StatutoryRule> VisibleRules(Guid tenantId)
+    {
+        // IgnoreQueryFilters is intentional: statutory reads combine platform defaults with the
+        // authenticated tenant's overrides; the predicate immediately excludes every other tenant.
+        return _db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == null || r.TenantId == tenantId);
+    }
+
+    private Task<bool> OverlapsAsync(Guid tenantId, string country, string jurisdiction, string key,
+        DateTime from, DateTime? to, Guid? excluding, CancellationToken ct)
+        => VisibleRules(tenantId).AsNoTracking().AnyAsync(r => r.TenantId == tenantId
+            && r.CountryCode == country && r.Jurisdiction == jurisdiction && r.RuleKey == key
+            && (excluding == null || r.Id != excluding)
+            && (to == null || r.EffectiveFrom < to) && (r.EffectiveTo == null || r.EffectiveTo > from), ct);
+
+    private async Task<T> SerializeWriteAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational()) return await action();
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            if (_db.Database.IsNpgsql())
+            {
+                var identity = $"statutory-overrides:{this.GetTenantId()}";
+                await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({identity}, 0))", ct);
+            }
+            var result = await action();
+            await transaction.CommitAsync(ct);
+            return result;
+        });
     }
 
     private bool HasPermission(string permission) =>
@@ -278,4 +367,3 @@ public class StatutoryRulesController : ControllerBase
         new(r.Id, r.CountryCode, r.Jurisdiction, r.RuleKey, r.RuleValue,
             r.DataType, r.Description, r.EffectiveFrom, r.EffectiveTo, isTenantOverride);
 }
-

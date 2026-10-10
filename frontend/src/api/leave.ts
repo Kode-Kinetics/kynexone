@@ -38,6 +38,7 @@ export interface LeavePolicy {
   appliesOnProbation: boolean;
   annualEntitlementDays: number;
   accrualMethod: string;
+  proratePartialMonths?: boolean;
   carryForwardMax: number;
   carryForwardExpiry: number;
   encashmentAllowed: boolean;

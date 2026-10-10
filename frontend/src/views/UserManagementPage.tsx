@@ -3,7 +3,7 @@
 import { InfoTip } from '../components/InfoTip';
 import { useEffect, useState, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Shield, Users, Key, GitBranch, Award, Lock, CheckCircle, XCircle,
   RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
@@ -27,6 +27,7 @@ import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
 import { useLocale } from '../contexts/LocaleContext';
+import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ interface UsageData {
 
 function UsersTab() {
   const { t } = useLocale();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [users, setUsers] = useState<UserListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -179,6 +181,16 @@ function UsersTab() {
     rolesApi.permissions().then(setAllPermissions).catch(() => {});
     rolesApi.ceiling().then(setCeiling).catch(() => setCeiling(null));
   }, []);
+  useEffect(() => {
+    if (searchParams?.get('openCreate') === '1') setShowCreate(true);
+  }, [searchParams]);
+
+  const createdFromGuidedFlow = () => {
+    setShowCreate(false);
+    load();
+    const returnTo = searchParams?.get('returnTo');
+    if (returnTo?.startsWith('/') && !returnTo.startsWith('//')) router.push(returnTo);
+  };
 
   // Opening any action dialog starts from a clean slate: a link issued for one user must never be
   // left on screen over another user's dialog.
@@ -395,7 +407,7 @@ function UsersTab() {
       )}
 
       {/* Create User Modal */}
-      {showCreate && <CreateUserModal roles={roles} ceiling={ceiling} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreateUserModal roles={roles} ceiling={ceiling} onClose={() => setShowCreate(false)} onCreated={createdFromGuidedFlow} />}
 
       {/* Action confirmation modal */}
       {showAction && (
@@ -1024,7 +1036,12 @@ function UserAccessModal({ user, roles, allPermissions, ceiling, onClose }: {
 
 function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleItem[]; ceiling: AccessCeiling | null; onClose: () => void; onCreated: () => void }) {
   const { t, locale } = useLocale();
+  const searchParams = useSearchParams();
+  const { companies, selectedCompanyId, isGroupScope, accountType } = useCompany();
+  const fullNameId = useId();
+  const emailId = useId();
   const passwordId = useId();
+  const dialogTitleId = useId();
   const requirementsId = `${passwordId}-requirements`;
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
@@ -1036,6 +1053,43 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
   const [passwordPolicy, setPasswordPolicy] = useState<PasswordPolicy | null>(null);
   const [policyLoading, setPolicyLoading] = useState(true);
   const [policyAttempt, setPolicyAttempt] = useState(0);
+  const requestedCompanyId = searchParams?.get('companyId') ?? '';
+  const companyAdministratorFlow = searchParams?.get('purpose') === 'companyAdmin';
+  const canGrantGroupAccess = accountType === 'Group' && isGroupScope;
+  const [accessScope, setAccessScope] = useState<'company' | 'group'>('company');
+  const [companyOptions, setCompanyOptions] = useState(() => companies.map(company => ({
+    id: company.id,
+    name: company.name,
+    isActive: company.isActive,
+  })));
+  const [companyId, setCompanyId] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    const contextOptions = companies.map(company => ({ id: company.id, name: company.name, isActive: company.isActive }));
+    if (!canGrantGroupAccess) {
+      setCompanyOptions(contextOptions);
+      return () => { active = false; };
+    }
+    companiesApi.listAll()
+      .then(rows => {
+        if (active) setCompanyOptions(rows.map(company => ({ id: company.id, name: company.legalNameEn, isActive: company.isActive })));
+      })
+      .catch(() => { if (active) setCompanyOptions(contextOptions); });
+    return () => { active = false; };
+  }, [canGrantGroupAccess, companies]);
+
+  useEffect(() => {
+    if (companyAdministratorFlow) {
+      const requested = companyOptions.find(company => company.id === requestedCompanyId && company.isActive);
+      setCompanyId(requested?.id ?? '');
+      return;
+    }
+    if (companyId && companyOptions.some(company => company.id === companyId && company.isActive)) return;
+    const preferred = companyOptions.find(company => company.id === selectedCompanyId && company.isActive)
+      ?? companyOptions.find(company => company.isActive);
+    setCompanyId(preferred?.id ?? '');
+  }, [companyAdministratorFlow, companyId, companyOptions, requestedCompanyId, selectedCompanyId]);
 
   useEffect(() => {
     let active = true;
@@ -1047,17 +1101,41 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
     return () => { active = false; };
   }, [policyAttempt]);
 
+  useEffect(() => {
+    if (!companyAdministratorFlow) return;
+    const adminRole = roles.find(role => role.name.toLowerCase() === 'admin');
+    if (adminRole && !assignBlock(ceiling, adminRole.id, locale)) {
+      setSelectedRoles(current => current.some(role => role.toLowerCase() === 'admin') ? current : [...current, adminRole.name]);
+    }
+  }, [companyAdministratorFlow, roles, ceiling, locale]);
+
   const passwordCheck = passwordPolicy ? evaluatePasswordRequirements(password, passwordPolicy) : null;
   const metCount = passwordCheck?.requirements.filter(requirement => requirement.met).length ?? 0;
+  const createsAdministrator = selectedRoles.some(role => role.toLowerCase() === 'admin');
+  const requiredAdminRole = roles.find(role => role.name.toLowerCase() === 'admin');
+  const requiredAdminRoleBlocked = companyAdministratorFlow
+    ? !requiredAdminRole || !!assignBlock(ceiling, requiredAdminRole.id, locale)
+    : false;
+  const selectedCompany = companyOptions.find(company => company.id === companyId);
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
+    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Setup Studio and try again.')); return; }
+    if (companyAdministratorFlow && (!createsAdministrator || requiredAdminRoleBlocked)) { setErr(t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')); return; }
+    if (accessScope === 'company' && !companyId) { setErr(t('Choose the company this user will support.')); return; }
     if (policyLoading) return;
     if (passwordCheck && !passwordCheck.valid) { setErr('Please meet all password requirements below.'); return; }
     if (Array.from(password).length < 10) { setErr('Password must be at least 10 characters.'); return; }
     setLoading(true); setErr('');
     try {
-      await usersApi.create({ email, fullName, password, roles: selectedRoles });
+      await usersApi.create({
+        email,
+        fullName,
+        password,
+        roles: selectedRoles,
+        companyId: accessScope === 'company' ? companyId : undefined,
+        isGroupScope: accessScope === 'group',
+      });
       onCreated();
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.status;
@@ -1075,10 +1153,43 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4">
-        <h3 className="text-base font-semibold text-slate-800 dark:text-slate-200">Create User</h3>
-        <FormField label="Full Name"><input className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
-        <FormField label="Email"><input type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={dialogTitleId}
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900 space-y-4"
+      >
+        <div>
+          <h3 id={dialogTitleId} className="text-base font-semibold text-slate-800 dark:text-slate-200">{t(companyAdministratorFlow ? 'Create company administrator' : 'Create User')}</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Setup Studio.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
+        </div>
+        <FormField label="Full Name" htmlFor={fullNameId}><input id={fullNameId} className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
+        <FormField label="Email" htmlFor={emailId}><input id={emailId} type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
+        <fieldset className="space-y-2">
+          <legend className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('Access scope')}</legend>
+          <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${accessScope === 'company' ? 'border-violet-400 bg-violet-50/70 dark:border-violet-500 dark:bg-violet-500/10' : 'border-slate-200 dark:border-slate-700'}`}>
+            <input type="radio" name="new-user-scope" value="company" checked={accessScope === 'company'} onChange={() => setAccessScope('company')} className="mt-1 accent-violet-600" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium text-slate-800 dark:text-slate-100">{t('One company')}</span>
+              <span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">{t('Access stays within the selected legal entity.')}</span>
+              {accessScope === 'company' && (
+                <>
+                  <select aria-label={t('Company')} className={inp('mt-2')} value={companyId} onChange={event => setCompanyId(event.target.value)} disabled={companyAdministratorFlow}>
+                    <option value="">{t('Choose a company…')}</option>
+                    {companyOptions.filter(company => company.isActive).map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
+                  </select>
+                  {companyAdministratorFlow && <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{t('Locked to the company you just created.')}</span>}
+                </>
+              )}
+            </span>
+          </label>
+          {canGrantGroupAccess && !companyAdministratorFlow && (
+            <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${accessScope === 'group' ? 'border-amber-400 bg-amber-50/70 dark:border-amber-500 dark:bg-amber-500/10' : 'border-slate-200 dark:border-slate-700'}`}>
+              <input type="radio" name="new-user-scope" value="group" checked={accessScope === 'group'} onChange={() => setAccessScope('group')} className="mt-1 accent-amber-600" />
+              <span><span className="block text-sm font-medium text-slate-800 dark:text-slate-100">{t('Entire group')}</span><span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">{t('Access includes every current and future company. Use only for central group administrators.')}</span></span>
+            </label>
+          )}
+        </fieldset>
         <FormField label="Password" htmlFor={passwordId}>
           <div className="relative">
             <input
@@ -1134,13 +1245,15 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
           <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
             {roles.map(r => {
               const blocked = assignBlock(ceiling, r.id, locale);
+              const requiredByCompanyFlow = companyAdministratorFlow && r.name.toLowerCase() === 'admin';
               return (
                 <label key={r.id} title={blocked ?? undefined} data-testid={`create-role-option-${r.name}`} data-blocked={blocked ? 'true' : 'false'}
                   className={`flex items-start gap-2 text-sm ${blocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                  <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={!!blocked}
+                  <input type="checkbox" className="mt-0.5" checked={selectedRoles.includes(r.name)} disabled={!!blocked || requiredByCompanyFlow}
                     onChange={e => setSelectedRoles(prev => e.target.checked ? [...prev, r.name] : prev.filter(x => x !== r.name))} />
                   <span className="min-w-0">
                     {r.name}
+                    {requiredByCompanyFlow && !blocked && <span className="block text-xs text-slate-500 dark:text-slate-400">{t('Required for this company administrator')}</span>}
                     {blocked && <span className="block text-xs text-amber-700 dark:text-amber-400">{t('Above your access')}</span>}
                   </span>
                 </label>
@@ -1148,11 +1261,23 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
             })}
           </div>
         </FormField>
+        {createsAdministrator && (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+            {accessScope === 'group'
+              ? t('This person will be a group administrator across all companies.')
+              : selectedCompany
+                ? t('This person will administer {company} only.', { company: selectedCompany.name })
+                : t('This person will administer the selected company only.')}
+          </p>
+        )}
+        {companyAdministratorFlow && requiredAdminRoleBlocked && (
+          <ErrMsg msg={t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')} />
+        )}
         {err && <ErrMsg msg={err} />}
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">Cancel</button>
-          <button onClick={submit} disabled={loading || policyLoading} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
-            {loading ? 'Creating…' : 'Create'}
+          <button onClick={submit} disabled={loading || policyLoading || (companyAdministratorFlow && (companyId !== requestedCompanyId || !createsAdministrator || requiredAdminRoleBlocked))} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
+            {t(loading ? 'Creating…' : companyAdministratorFlow ? 'Create administrator and continue' : 'Create')}
           </button>
         </div>
       </div>

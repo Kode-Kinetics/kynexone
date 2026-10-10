@@ -26,6 +26,7 @@ import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
 import { dedupeInsights, insightRoute } from '../components/dashboard/dashboardModel';
 
+import { EmployeePolicyAssistant } from '../components/EmployeePolicyAssistant';
 import { useFormat } from '../hooks/useFormat';
 interface Turn {
   role: 'user' | 'assistant';
@@ -62,6 +63,9 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
   const { isFeatureEnabled } = useFeatureFlags();
   const moduleOn = isFeatureEnabled('ai_assistant');
   const mayQuery = moduleOn && hasPermission('ai.query');
+  const mayAskPolicies = moduleOn && hasPermission('ess.read');
+  const [mode, setMode] = useState<'operations' | 'policies'>('operations');
+  const policyMode = mayAskPolicies && (mode === 'policies' || !mayQuery);
 
   const findings = useWorkforceFindings(open);
   const provider = useAssistantProvider(open && mayQuery);
@@ -252,7 +256,12 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
         {/* Content sits on a solid inner surface: critical red/amber text never rests on glass. */}
         <div className="mx-2 mb-2 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-[color:var(--wg-surface)] wg-safe-bottom">
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
-            {findings.enabled && (
+            {mayAskPolicies && mayQuery && <div className="mb-4 flex gap-2" role="group" aria-label={t('Kody mode')}>
+              <button type="button" className={policyMode ? 'btn-secondary' : 'btn-primary'} aria-pressed={!policyMode} onClick={() => setMode('operations')}>{t('HR operations')}</button>
+              <button type="button" className={policyMode ? 'btn-primary' : 'btn-secondary'} aria-pressed={policyMode} onClick={() => setMode('policies')}>{t('Company policies')}</button>
+            </div>}
+            {policyMode && <EmployeePolicyAssistant />}
+            {!policyMode && findings.enabled && (
               <section aria-labelledby={`${titleId}-rules`} className="mb-5">
                 <div className="mb-2 flex items-baseline justify-between gap-2">
                   <h3 id={`${titleId}-rules`} className="text-sm font-semibold text-slate-900 dark:text-white">{t('Rules check')}</h3>
@@ -290,7 +299,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
               </section>
             )}
 
-            <section aria-labelledby={`${titleId}-chat`}>
+            {!policyMode && <section aria-labelledby={`${titleId}-chat`}>
               <h3 id={`${titleId}-chat`} className="mb-2 text-sm font-semibold text-slate-900 dark:text-white">{t('Ask a question')}</h3>
               {!mayQuery && (
                 <p className="text-[13px] text-slate-700 dark:text-slate-300">{t('Your role does not include the conversational assistant.')}</p>
@@ -341,11 +350,11 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
                   <div ref={endRef} />
                 </>
               )}
-            </section>
+            </section>}
           </div>
 
-          {mayQuery && provider?.enabled && (
-            <form
+          {!policyMode && mayQuery && provider?.enabled && (
+            <form noValidate
               onSubmit={(e) => { e.preventDefault(); void ask(draft); }}
               className="flex shrink-0 items-center gap-2 border-t border-[color:var(--wg-line)] p-3"
             >
@@ -363,9 +372,9 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
               </button>
             </form>
           )}
-          <Link href="/ai-assistant" onClick={onClose} className="flex shrink-0 items-center justify-center gap-1 border-t border-[color:var(--wg-line)] py-2.5 text-xs font-semibold text-slate-600 hover:text-sapphire dark:text-slate-300">
+          {mayQuery && <Link href="/ai-assistant" onClick={onClose} className="flex shrink-0 items-center justify-center gap-1 border-t border-[color:var(--wg-line)] py-2.5 text-xs font-semibold text-slate-600 hover:text-sapphire dark:text-slate-300">
             {t('Open Kody in full view')} <ArrowRight className="h-3 w-3" aria-hidden />
-          </Link>
+          </Link>}
         </div>
       </div>
     </div>,

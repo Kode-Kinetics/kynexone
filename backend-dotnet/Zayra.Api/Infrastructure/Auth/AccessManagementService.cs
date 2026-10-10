@@ -72,9 +72,15 @@ public class AccessManagementService : IAccessManagementService
         var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
         {
             email = canonicalEmail,
-            roles = request.Roles.Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
+            roles = request.Roles.Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            companyId = request.CompanyId,
+            isGroupScope = request.IsGroupScope,
         });
         var isAdminUser = normalizedRoleNames.Contains("ADMIN", StringComparer.Ordinal);
+        if (request.IsGroupScope && request.CompanyId.HasValue)
+            throw new InvalidOperationException("Choose either group-wide access or one company, not both.");
+        if (isAdminUser && !request.IsGroupScope && !request.CompanyId.HasValue)
+            throw new InvalidOperationException("Choose the company this administrator will support, or explicitly grant group-wide access.");
 
         Guid[]? expectedRoleIds = null;
 
@@ -87,6 +93,7 @@ public class AccessManagementService : IAccessManagementService
                 .Include(x => x.Tenant)
                 .Include(x => x.UserRoles).ThenInclude(x => x.Role)
                     .ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+                .Include(x => x.EntityAccesses)
                 .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
             if (committed?.Tenant is null
                 || committed.IsDeleted
@@ -103,12 +110,24 @@ public class AccessManagementService : IAccessManagementService
                 || !string.Equals(committed.NormalizedEmail, normalizedEmail, StringComparison.Ordinal)
                 || !string.Equals(committed.FullName, fullName, StringComparison.Ordinal)
                 || !string.Equals(committed.PasswordHash, passwordHash, StringComparison.Ordinal)
-                || committed.IsGroupScope != isAdminUser)
+                || committed.IsGroupScope != request.IsGroupScope)
                 return null;
 
             var committedRoleIds = committed.UserRoles.Select(x => x.RoleId).OrderBy(x => x).ToArray();
             if (!committedRoleIds.SequenceEqual(expectedRoleIds)) return null;
             if (committed.UserRoles.Any(x => x.Role is not { IsActive: true, IsDeleted: false })) return null;
+            var activeEntityAccess = committed.EntityAccesses.Where(x => x.IsActive).ToList();
+            if (request.CompanyId.HasValue)
+            {
+                if (activeEntityAccess.Count != 1
+                    || activeEntityAccess[0].CompanyId != request.CompanyId
+                    || !string.Equals(activeEntityAccess[0].GrantMode, EntityGrantModes.SelectedCompanies, StringComparison.Ordinal))
+                    return null;
+            }
+            else if (activeEntityAccess.Count != 0)
+            {
+                return null;
+            }
 
             // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
             var markerMetadata = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
@@ -134,6 +153,18 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            if (request.CompanyId.HasValue)
+            {
+                // The grant is part of this transaction. Validate its target under the same lock so
+                // an inactive, deleted or cross-tenant company can never receive an administrator.
+                var companyExists = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                        "Validate the requested administrator company inside the locked tenant transaction.")
+                    .TagWith(RowLockingInterceptor.ForShareTag)
+                    .AnyAsync(x => x.Id == request.CompanyId.Value
+                        && x.IsActive
+                        && !x.IsDeleted, ct);
+                if (!companyExists) throw new InvalidOperationException("Choose an active company in this workspace.");
+            }
 
             // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
             var policy = await _db.SecuritySettings.IgnoreQueryFilters()
@@ -191,7 +222,9 @@ public class AccessManagementService : IAccessManagementService
                 AccessMode = AccessModes.FullPortal,
                 IdentityProvider = "Local",
                 ProvisioningSource = "Local",
-                IsGroupScope = isAdminUser,
+                // Scope is an explicit part of user creation. An Admin role grants capabilities;
+                // it must never silently grant access to every current and future company.
+                IsGroupScope = request.IsGroupScope,
                 IsActive = true,
                 IsEmailConfirmed = true,
                 // The administrator chose this password: stamp it, so a later owner-set password is provably newer.
@@ -201,6 +234,20 @@ public class AccessManagementService : IAccessManagementService
             _db.Users.Add(user);
             foreach (var role in roles)
                 _db.UserRoles.Add(new UserRole { UserId = userId, RoleId = role.Id, User = user, Role = role });
+            if (request.CompanyId.HasValue)
+                _db.UserEntityAccesses.Add(new UserEntityAccess
+                {
+                    TenantId = tenantId,
+                    UserId = userId,
+                    User = user,
+                    CompanyId = request.CompanyId.Value,
+                    GrantMode = EntityGrantModes.SelectedCompanies,
+                    Role = request.Roles.Any(r => string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase)) ? "Company Administrator" : "Company User",
+                    IsActive = true,
+                    CreatedBy = context.UserId,
+                    GrantedBy = context.UserId,
+                    GrantedAt = createdAtUtc,
+                });
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 auditId,
                 createdAtUtc,
@@ -3145,7 +3192,16 @@ public class AccessManagementService : IAccessManagementService
             .Distinct()
             .OrderBy(x => x)
             .ToList();
-        return new AuthUserDto(user.Id, user.TenantId, tenant.Slug, user.Email, user.FullName, roles.Select(x => x.Name).OrderBy(x => x).ToList(), permissions);
+        return new AuthUserDto(
+            user.Id,
+            user.TenantId,
+            tenant.Slug,
+            user.Email,
+            user.FullName,
+            roles.Select(x => x.Name).OrderBy(x => x).ToList(),
+            permissions,
+            AccountType: tenant.AccountType,
+            IsGroupScope: user.IsGroupScope);
     }
 
     private static ApprovalDelegationDto ToDelegationDto(ApprovalDelegation delegation) =>
