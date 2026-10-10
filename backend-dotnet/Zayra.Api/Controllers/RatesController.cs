@@ -77,7 +77,13 @@ public class RatesController : ControllerBase
         if (!HasPermission("payroll.rates.read") && !HasPermission("payroll.rates.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         var defs = await LoadRegistryAsync(tid.Value, ct);
-        return Ok(defs.Select(d => new { d.RateKey, d.RateCategory, d.DataType, d.Unit, d.MinValue, d.MaxValue, d.Description }));
+        return Ok(defs.Select(d => new
+        {
+            d.RateKey, d.RateCategory, d.DataType, d.Unit, d.MinValue, d.MaxValue, d.Description,
+            // False = recorded only: payroll never reads this key, so a new value is refused (COMPANY_RATE_NOT_APPLIED).
+            appliedByPayroll = StatutoryRateGuard.IsAppliedByPayroll(d.RateKey),
+            notAppliedReason = StatutoryRateGuard.IsAppliedByPayroll(d.RateKey) ? null : NotAppliedMessage(d),
+        }));
     }
 
     [HttpPost("company")]
@@ -87,7 +93,7 @@ public class RatesController : ControllerBase
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } err) return err;
 
-        var validation = await ValidateCompanyRateAsync(tid.Value, req, ct);
+        var validation = await ValidateCompanyRateAsync(tid.Value, req, ct, refuseNotApplied: true);
         if (validation.Error is not null) return validation.Error;
         var key = validation.Def!.RateKey; // canonical spelling from the registry, never the caller's casing
         if (DateRangeError(req.EffectiveFrom, req.EffectiveTo) is { } dateErr) return dateErr;
@@ -135,18 +141,21 @@ public class RatesController : ControllerBase
         if (!string.IsNullOrWhiteSpace(req.RateKey) && !string.Equals(req.RateKey.Trim(), prior.RateKey, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { code = "RATE_KEY_IMMUTABLE", message = $"A rate's key cannot be changed ('{prior.RateKey}'). End this rate and create a new one for '{req.RateKey.Trim()}'." });
 
-        var validation = await ValidateCompanyRateAsync(tid.Value, req with { RateKey = prior.RateKey }, ct);
+        var value = (req.RateValue ?? string.Empty).Trim();
+        var endDateOnly = req.EffectiveFrom == prior.EffectiveFrom && string.Equals(value, prior.RateValue, StringComparison.Ordinal);
+        // Ending a recorded-only rate is cleanup and stays allowed; giving it a NEW value is refused,
+        // because payroll would never apply it.
+        var validation = await ValidateCompanyRateAsync(tid.Value, req with { RateKey = prior.RateKey }, ct, refuseNotApplied: !endDateOnly);
         if (validation.Error is not null) return validation.Error;
         if (DateRangeError(req.EffectiveFrom, req.EffectiveTo) is { } dateErr) return dateErr;
-
-        var value = req.RateValue.Trim();
-        var endDateOnly = req.EffectiveFrom == prior.EffectiveFrom && string.Equals(value, prior.RateValue, StringComparison.Ordinal);
         if (endDateOnly)
         {
             if (req.EffectiveTo is not { } end)
                 return BadRequest(new { message = "Nothing changed. Send a later start date to change the value, or an end date to stop the rate." });
             var firstUnpaidDay = end.AddDays(1);
-            if (await LockedPeriodProblemAsync(tid.Value, prior.CompanyId, firstUnpaidDay, ct) is { } lockedEnd)
+            // A recorded-only key was never read by payroll, so ending it cannot rewrite a locked run.
+            if (StatutoryRateGuard.IsAppliedByPayroll(prior.RateKey)
+                && await LockedPeriodProblemAsync(tid.Value, prior.CompanyId, firstUnpaidDay, ct) is { } lockedEnd)
                 return Conflict(new { code = "RATE_PERIOD_LOCKED", message = lockedEnd });
             var beforeEnd = prior.EffectiveTo;
             prior.EffectiveTo = end;
@@ -762,7 +771,23 @@ public class RatesController : ControllerBase
         return rows.Count > 0 ? rows : StatutoryRateGuard.DefaultClientRateDefinitions(tid);
     }
 
-    private async Task<(IActionResult? Error, ClientRateDefinition? Def)> ValidateCompanyRateAsync(Guid tid, CompanyRateRequest req, CancellationToken ct)
+    /// <summary>The plain-language refusal for a recorded-only key, with where that value really belongs.</summary>
+    internal static string NotAppliedMessage(ClientRateDefinition def)
+    {
+        var label = string.IsNullOrWhiteSpace(def.Description) ? def.RateKey : def.Description;
+        var instead = def.RateCategory switch
+        {
+            "Allowance" or "Deduction" =>
+                " Set allowances and deductions per grade under Benefits (Grade benefits), or on the employee's pay package.",
+            "EOSB" =>
+                " To pay more end-of-service than the legal minimum, raise the end-of-service rates in Setup → GCC Settings.",
+            _ => " No payroll or settlement calculation reads it yet.",
+        };
+        return $"Payroll does not use '{label}' yet, so saving it would change nobody's pay.{instead}";
+    }
+
+    private async Task<(IActionResult? Error, ClientRateDefinition? Def)> ValidateCompanyRateAsync(
+        Guid tid, CompanyRateRequest req, CancellationToken ct, bool refuseNotApplied = false)
     {
         if (string.IsNullOrWhiteSpace(req.RateKey)) return (BadRequest(new { message = "rateKey is required." }), null);
         var key = req.RateKey.Trim();
@@ -774,6 +799,15 @@ public class RatesController : ControllerBase
         var def = registry.FirstOrDefault(d => string.Equals(d.RateKey, key, StringComparison.OrdinalIgnoreCase));
         if (def is null) return (BadRequest(new { message = $"'{key}' is not a registered client-configurable rate key." }), null);
         key = def.RateKey;
+        // Recorded-only keys: refused before value checks, since no value of them changes anyone's pay.
+        if (refuseNotApplied && !StatutoryRateGuard.IsAppliedByPayroll(key))
+            return (UnprocessableEntity(new
+            {
+                code = "COMPANY_RATE_NOT_APPLIED",
+                message = NotAppliedMessage(def),
+                rateKey = key,
+                appliedByPayroll = false,
+            }), null);
         // Typed + bounded validation.
         if (string.Equals(def.DataType, "decimal", StringComparison.OrdinalIgnoreCase))
         {
@@ -939,6 +973,8 @@ public class RatesController : ControllerBase
             p.EffectiveFrom, p.EffectiveTo, p.Status, p.Notes,
             inherited,
             label = def?.Description,
+            // False = recorded only: payroll never reads this key. Readable and end-datable, never changeable.
+            appliedByPayroll = StatutoryRateGuard.IsAppliedByPayroll(p.RateKey),
             unit,
             currency = string.Equals(unit, "amount", StringComparison.OrdinalIgnoreCase) ? scopeCurrency : null,
             inEffect = (p.Status == CompanyPolicyStatuses.Active || p.Status == Superseded)

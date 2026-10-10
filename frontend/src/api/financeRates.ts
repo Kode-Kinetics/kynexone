@@ -41,6 +41,8 @@ export interface CompanyRate {
   currency?: string | null;
   /** The row payroll uses today for this key in this scope (newer servers). */
   inEffect?: boolean;
+  /** False = recorded only: payroll never reads this key. The row can be end-dated, never changed. */
+  appliedByPayroll?: boolean | null;
 }
 
 /** Seeded allow-list entry — the ONLY keys that may be created as company rates. */
@@ -52,6 +54,10 @@ export interface RateRegistryEntry {
   minValue: number | null;
   maxValue: number | null;
   description: string;
+  /** False = recorded only: payroll never reads this key, so the server refuses a new value (422 COMPANY_RATE_NOT_APPLIED). */
+  appliedByPayroll?: boolean | null;
+  /** Plain-language reason, set when appliedByPayroll is false. */
+  notAppliedReason?: string | null;
 }
 
 export interface CompanyRateRequest {

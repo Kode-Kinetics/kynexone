@@ -85,6 +85,12 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
   const writable = canManage && res.ready;
 
   const registryFor = useCallback((key: string) => registry.find((d) => d.rateKey === key), [registry]);
+  // Recorded-only keys: saved by an earlier version, never read by payroll. The server refuses new
+  // values for them (422 COMPANY_RATE_NOT_APPLIED); an older server that sends no flag counts as applied.
+  const appliedRegistry = useMemo(() => registry.filter((d) => d.appliedByPayroll !== false), [registry]);
+  const recordedOnlyRegistry = useMemo(() => registry.filter((d) => d.appliedByPayroll === false), [registry]);
+  const isRecordedOnly = (r: { rateKey: string; appliedByPayroll?: boolean | null }) =>
+    r.appliedByPayroll === false || (r.appliedByPayroll == null && registryFor(r.rateKey)?.appliedByPayroll === false);
   const nameFor = (r: { rateKey: string; label?: string | null }) => r.label || registryFor(r.rateKey)?.description || r.rateKey;
 
   const formatRate = (r: CompanyRate) => {
@@ -134,7 +140,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
 
   const openCreate = () => {
     setEditing(null);
-    setDraft({ ...emptyDraft(), rateKey: registry[0]?.rateKey ?? '' });
+    setDraft({ ...emptyDraft(), rateKey: appliedRegistry[0]?.rateKey ?? '' });
     setError('');
     setModalOpen(true);
   };
@@ -268,9 +274,12 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
     if (!canManage || !ownedHere(r) || !isOpenStatus(r)) return <div className="text-end text-[11px] text-slate-400" aria-hidden>—</div>;
     return (
       <div className="flex flex-wrap items-center justify-end gap-1.5">
-        <button type="button" onClick={() => openEdit(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
-          <Pencil className="h-3 w-3" aria-hidden /> {t('Change value')}
-        </button>
+        {/* A recorded-only rate can only be cleaned up: a new value would change nobody's pay. */}
+        {!isRecordedOnly(r) && (
+          <button type="button" onClick={() => openEdit(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+            <Pencil className="h-3 w-3" aria-hidden /> {t('Change value')}
+          </button>
+        )}
         {isFuture(r) ? (
           <button
             type="button"
@@ -299,7 +308,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
           </p>
         </div>
         {canManage && (
-          <button type="button" onClick={openCreate} disabled={!writable || registry.length === 0} className="btn-primary text-xs disabled:opacity-60">
+          <button type="button" onClick={openCreate} disabled={!writable || appliedRegistry.length === 0} className="btn-primary text-xs disabled:opacity-60">
             <Plus className="h-3.5 w-3.5" aria-hidden /> {t('Add rate')}
           </button>
         )}
@@ -327,6 +336,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
             {groups.map((g) => {
               const head = g.current ?? g.scheduled[g.scheduled.length - 1] ?? g.history[0];
               const def = registryFor(g.rateKey);
+              const recordedOnly = head ? isRecordedOnly(head) : def?.appliedByPayroll === false;
               return (
                 <tbody key={g.rateKey} className="border-t border-slate-200 dark:border-white/10">
                   <tr data-rate-key={g.rateKey}>
@@ -334,6 +344,14 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
                       <p className="text-slate-800 dark:text-slate-100">{nameFor({ rateKey: g.rateKey, label: head?.label })}</p>
                       <p className="text-[11px] text-slate-500"><span className="font-mono">{g.rateKey}</span></p>
                       {g.current?.notes && <p className="text-[11px] text-slate-500">{g.current.notes}</p>}
+                      {recordedOnly && (
+                        <div className="mt-1 space-y-0.5">
+                          <Badge tone="amber">{t('Recorded only — payroll does not use this')}</Badge>
+                          <p className="max-w-md text-[11px] text-amber-800 dark:text-amber-300">
+                            {t('Payroll does not read this value, so it changes nobody’s pay. End-date it to tidy up. Set allowances and deductions per grade under Benefits → Grade benefits, or on the employee’s pay package.')}
+                          </p>
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2 align-top text-xs text-slate-600 dark:text-slate-300">
                       {rateCategoryLabel(t, head?.rateCategory ?? def?.rateCategory ?? '')}
@@ -439,11 +457,20 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
               className="select w-full disabled:opacity-60"
             >
               <option value="">{t('Choose a rate…')}</option>
-              {registry.map((d) => (
+              {(editing ? registry : appliedRegistry).map((d) => (
                 <option key={d.rateKey} value={d.rateKey}>
                   {d.description ? `${d.description} (${d.rateKey})` : d.rateKey}
                 </option>
               ))}
+              {!editing && recordedOnlyRegistry.length > 0 && (
+                <optgroup label={t('Recorded only — payroll does not use these')}>
+                  {recordedOnlyRegistry.map((d) => (
+                    <option key={d.rateKey} value={d.rateKey} disabled>
+                      {d.description ? `${d.description} (${d.rateKey})` : d.rateKey}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </Field>
 
@@ -518,6 +545,9 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
       </Modal>
 
       {!canManage && <p className="mt-3 text-[11px] text-slate-500">{t('Read-only. You do not have permission to edit company rates.')}</p>}
+      {canManage && res.ready && registry.length > 0 && appliedRegistry.length === 0 && (
+        <p className="mt-3 text-[11px] text-slate-500">{t('None of the registered rates is used by payroll, so there is nothing to add here.')}</p>
+      )}
       {canManage && res.ready && registry.length === 0 && (
         <p className="mt-3 text-[11px] text-slate-500">{t('No client-configurable rates are registered. Load the standard payroll chart from the Accounts & Mapping tab.')}</p>
       )}
