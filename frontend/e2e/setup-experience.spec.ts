@@ -757,7 +757,7 @@ test('keeps the default Setup Studio steps compact on desktop', async ({ page },
 
 
 test('checks import and every settings entry screen for contained navigation', async ({ page }, info) => {
-  const state = await boot(page, { mfaReminder: info.project.name === 'desktop', settingsSweep: true });
+  const state = await boot(page, { mfaReminder: info.project.name === 'desktop', settingsSweep: true, groupMode: true });
   await page.getByRole('button', { name: 'Import organization', exact: true }).click();
   if (info.project.name === 'desktop') {
     await expect(page.getByRole('button', { name: 'Validate files', exact: true })).toBeInViewport({ ratio: 1 });

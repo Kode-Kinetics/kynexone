@@ -224,6 +224,37 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         return await SealPayrollAuditChainAndSaveAsync(cancellationToken);
     }
 
+    // Share the audit guard's already-detected entry walk. Calling Entries<T>() for each
+    // witness type would re-scan every tracked row on every unrelated save.
+    private static void EnforceBenefitApprovalWitness(EntityEntry entry)
+    {
+        if (entry.State is not (EntityState.Modified or EntityState.Deleted)) return;
+        if (entry.Entity is BenefitEnrollment && entry.State == EntityState.Modified
+            && entry.Property(nameof(BenefitEnrollment.PaymentPolicySnapshotJson)).IsModified)
+            throw new InvalidOperationException("Agreed benefit payment policy is immutable. Create a dated successor for an authorized change.");
+        if (entry.Entity is PayrollAdjustment)
+        {
+            var source = entry.OriginalValues.GetValue<string>(nameof(PayrollAdjustment.SourceType));
+            if (source is not ("BenefitRecurring" or "BenefitClaim")) return;
+            if (entry.State == EntityState.Deleted || new[] { nameof(PayrollAdjustment.TenantId), nameof(PayrollAdjustment.EmployeeId),
+                    nameof(PayrollAdjustment.SourceType), nameof(PayrollAdjustment.SourceId), nameof(PayrollAdjustment.SourceSnapshotJson),
+                    nameof(PayrollAdjustment.Amount), nameof(PayrollAdjustment.AdjustmentType), nameof(PayrollAdjustment.Reason) }
+                .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("Benefit payment authority is immutable; preserve its source and payroll history.");
+        }
+        if (entry.Entity is ApprovalRequest)
+        {
+            if (!string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)),
+                Infrastructure.Benefits.AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)), "BenefitClaim", StringComparison.OrdinalIgnoreCase)) return;
+            if (entry.State == EntityState.Deleted || new[] { nameof(ApprovalRequest.Payload), nameof(ApprovalRequest.PayloadSha256),
+                nameof(ApprovalRequest.EntityName), nameof(ApprovalRequest.EntityId), nameof(ApprovalRequest.RequestedForEmployeeId),
+                nameof(ApprovalRequest.RequestedByUserId), nameof(ApprovalRequest.CompanyId), nameof(ApprovalRequest.WorkflowId) }
+                .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("Submitted benefit request terms and routing are immutable. Withdraw and submit a new request.");
+        }
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
@@ -458,22 +489,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
     private void EnforceAuditLogAppendOnly()
     {
-        var auditMutation = ChangeTracker.Entries<AuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (auditMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
-
-        // POD-A3: the payroll audit trail gets the SAME immutability as the central AuditLog. Its
-        // per-tenant hash chain is the evidentiary control; this ChangeTracker guard is the first,
-        // in-process line of defence (a matching BEFORE UPDATE/DELETE Postgres trigger — added by
-        // the AddPayrollAuditHashChain migration — is the second, and it also stops set-based SQL
-        // that never touches the ChangeTracker). The one legitimate mutation — the boot backfill
-        // sealing legacy rows — runs via ExecuteUpdate (no ChangeTracker entries), so it is not
-        // caught here, and the trigger permits it only while entry_hash is still empty.
-        var payrollMutation = ChangeTracker.Entries<PayrollAuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (payrollMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+        // One DetectChanges pass covers audit rows and financial witnesses, even for large
+        // saves unrelated to benefits. PostgreSQL triggers remain the set-based SQL defence.
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State is not (EntityState.Modified or EntityState.Deleted)) continue;
+            if (entry.Entity is AuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
+            if (entry.Entity is PayrollAuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+            EnforceBenefitApprovalWitness(entry);
+        }
     }
 
     /// <summary>
@@ -1965,6 +1991,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Priority).HasMaxLength(40);
             entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EntityName, x.RequestedForEmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverUserId });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverEmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.DueAtUtc });
@@ -2294,13 +2321,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
-        modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
-        modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
-        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
+        modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.Property(x => x.PaymentPolicyJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.PolicyVersion).IsConcurrencyToken().HasDefaultValue(0); entity.Property(x => x.Classification).HasMaxLength(32).HasDefaultValue(BenefitPlanClassifications.Discretionary); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.GradeMatchMode).HasMaxLength(32).HasDefaultValue(BenefitGradeMatchModes.Exact); entity.Property(x => x.TierName).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaxBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(BenefitLimitPeriods.PerEnrollment); entity.Property(x => x.CustomCriteriaNote).HasMaxLength(1000).HasDefaultValue(""); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.Property(x => x.EntitlementTier).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaximumBenefitAmount).HasPrecision(14,2); entity.Property(x => x.RequestedBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(""); entity.Property(x => x.EligibilitySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.PaymentPolicySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.AssignmentSource).HasMaxLength(32).HasDefaultValue("Manual"); entity.Property(x => x.HasException).HasDefaultValue(false); entity.Property(x => x.ExceptionReason).HasMaxLength(1000); entity.Property(x => x.GrantReason).HasMaxLength(1000); entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId }).IsUnique().HasFilter("approval_request_id IS NOT NULL"); entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitContribution>(entity => { entity.ToTable("benefit_contributions"); entity.HasKey(x => x.Id); entity.Property(x => x.EmployeeAmount).HasPrecision(14,2); entity.Property(x => x.EmployerAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.IsActive }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitPayrollDeductionLink>(entity => { entity.ToTable("benefit_payroll_deduction_links"); entity.HasKey(x => x.Id); entity.Property(x => x.LinkedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.PayrollRunId }); entity.HasIndex(x => new { x.TenantId, x.PayrollDeductionId }).IsUnique(); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
-        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.SourceType).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); entity.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique().HasFilter("\"source_id\" IS NOT NULL"); });
+        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.Property(x => x.SourceSnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.SourceType).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); entity.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique().HasFilter("\"source_id\" IS NOT NULL"); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
         modelBuilder.Entity<PayrollValidationResult>(entity =>
         {

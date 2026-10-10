@@ -847,6 +847,7 @@ public sealed partial class MigrationImportController : ControllerBase
         var plan = await _db.BenefitPlans.FirstOrDefaultAsync(x =>
             x.TenantId == tenantId && x.Code == planCode && !x.IsDeleted
             && (x.CompanyId == employee.CompanyId || x.CompanyId == null), ct);
+        if (plan is { PolicyVersion: > 0 }) throw new InvalidOperationException("Benefit payment policies cannot be overwritten by historical imports.");
         if (plan is null)
         {
             plan = new BenefitPlan
@@ -876,6 +877,9 @@ public sealed partial class MigrationImportController : ControllerBase
         var enrollment = await _db.BenefitEnrollments.FirstOrDefaultAsync(x =>
             x.TenantId == tenantId && x.EmployeeId == employee.Id && x.BenefitPlanId == plan.Id
             && x.EffectiveFrom == effectiveDate, ct);
+        if (enrollment is not null && (enrollment.AssignmentSource != "Manual" || enrollment.ApprovalRequestId.HasValue
+            || Zayra.Api.Infrastructure.Benefits.BenefitPaymentPolicies.ReadSnapshotEnvelope(enrollment.PaymentPolicySnapshotJson) is not null))
+            throw new InvalidOperationException("Governed benefit enrollments must be changed through Benefits approvals, not historical imports.");
         var created = enrollment is null;
         enrollment ??= new BenefitEnrollment
         {
@@ -926,10 +930,13 @@ public sealed partial class MigrationImportController : ControllerBase
     {
         var employee = await Employee(row, tenantId, ct);
         var documentType = Require(row, "DocumentType").Trim();
+        if (documentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType)
+            throw new InvalidOperationException("Benefit receipts must be uploaded using the secure Benefit receipts action.");
         var fileName = Require(row, "FileName").Trim();
         var storageUrl = Require(row, "StorageUrl").Trim();
         var version = Int(row, "VersionNumber", 1);
         var item = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.DocumentType == documentType && x.FileName == fileName && x.StorageUrl == storageUrl && !x.IsDeleted, ct);
+        if (item is not null) await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, item.Id, ct);
         var created = item is null;
         item ??= new EmployeeDocument { TenantId = tenantId, EmployeeId = employee.Id, CompanyId = employee.CompanyId };
         item.DocumentType = documentType;

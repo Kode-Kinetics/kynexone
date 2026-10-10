@@ -2655,6 +2655,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EntityName", "EntityId", "Status");
 
+                    b.HasIndex("TenantId", "EntityName", "RequestedForEmployeeId", "Status");
+
                     b.ToTable("approval_requests", null, t =>
                         {
                             t.HasCheckConstraint("ck_approval_requests__payload_pair", "(payload IS NULL) = (payload_sha256 IS NULL)");
@@ -4755,6 +4757,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<string>("CustomCriteriaNote")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasDefaultValue("")
+                        .HasColumnName("custom_criteria_note");
+
                     b.Property<DateOnly>("EffectiveFrom")
                         .HasColumnType("date")
                         .HasColumnName("effective_from");
@@ -4767,13 +4777,50 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("grade_id");
 
+                    b.Property<string>("GradeMatchMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Exact")
+                        .HasColumnName("grade_match_mode");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
+                    b.Property<string>("LimitPeriod")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("PerEnrollment")
+                        .HasColumnName("limit_period");
+
+                    b.Property<decimal?>("MaxBenefitAmount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("max_benefit_amount");
+
+                    b.Property<int>("MinimumServiceMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("minimum_service_months");
+
+                    b.Property<bool>("RequireProbationCompleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("require_probation_completed");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<string>("TierName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasDefaultValue("")
+                        .HasColumnName("tier_name");
 
                     b.HasKey("Id");
 
@@ -4790,6 +4837,18 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<string>("AssignmentSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Manual")
+                        .HasColumnName("assignment_source");
 
                     b.Property<Guid>("BenefitPlanId")
                         .HasColumnType("uuid")
@@ -4820,6 +4879,17 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("effective_to");
 
+                    b.Property<Guid?>("EligibilityRuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("eligibility_rule_id");
+
+                    b.Property<string>("EligibilitySnapshotJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("eligibility_snapshot_json");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
@@ -4828,6 +4898,63 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("employee_name");
+
+                    b.Property<string>("EntitlementTier")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasDefaultValue("")
+                        .HasColumnName("entitlement_tier");
+
+                    b.Property<string>("ExceptionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("exception_reason");
+
+                    b.Property<string>("GrantReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("grant_reason");
+
+                    b.Property<bool>("HasException")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("has_exception");
+
+                    b.Property<string>("LimitPeriod")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("")
+                        .HasColumnName("limit_period");
+
+                    b.Property<decimal?>("MaximumBenefitAmount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("maximum_benefit_amount");
+
+                    b.Property<Guid?>("OriginalEnrollmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("original_enrollment_id");
+
+                    b.Property<string>("PaymentPolicySnapshotJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payment_policy_snapshot_json");
+
+                    b.Property<decimal?>("RequestedBenefitAmount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("requested_benefit_amount");
+
+                    b.Property<DateOnly?>("ReviewDate")
+                        .HasColumnType("date")
+                        .HasColumnName("review_date");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -4839,6 +4966,7 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("tenant_id");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
@@ -4847,6 +4975,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_by");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ApprovalRequestId")
+                        .IsUnique()
+                        .HasFilter("approval_request_id IS NOT NULL");
 
                     b.HasIndex("TenantId", "CompanyId");
 
@@ -4924,6 +5056,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("Classification")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Discretionary")
+                        .HasColumnName("classification");
+
                     b.Property<string>("Code")
                         .IsRequired()
                         .HasColumnType("text")
@@ -4967,10 +5107,24 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<string>("PaymentPolicyJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payment_policy_json");
+
                     b.Property<string>("PlanType")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("plan_type");
+
+                    b.Property<int>("PolicyVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("policy_version");
 
                     b.Property<bool>("RequiresEnrollment")
                         .HasColumnType("boolean")
@@ -20411,6 +20565,13 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("SourceId")
                         .HasColumnType("uuid")
                         .HasColumnName("source_id");
+
+                    b.Property<string>("SourceSnapshotJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("source_snapshot_json");
 
                     b.Property<string>("SourceType")
                         .IsRequired()

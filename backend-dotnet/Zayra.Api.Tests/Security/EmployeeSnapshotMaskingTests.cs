@@ -1,7 +1,10 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Controllers;
+using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Security;
@@ -194,9 +197,8 @@ public class EmployeeSnapshotMaskingTests
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Migrations{Path.DirectorySeparatorChar}")
                         && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
                         && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
-            .SelectMany(f => File.ReadLines(f).Select((line, i) => (File: f, Line: i + 1, Text: line)))
-            .Where(x => x.Text.Contains("SnapshotJson = JsonSerializer.Serialize(")
-                        || x.Text.Contains("SnapshotJson = System.Text.Json.JsonSerializer.Serialize("))
+            .SelectMany(f => RawSnapshotAssignments(File.ReadAllText(f))
+                .Select(match => (File: f, match.Line, match.Text)))
             // EOSB RulesSnapshotJson serializes a non-PII formula projection, not an Employee.
             .Where(x => !x.Text.Contains("RulesSnapshotJson"))
             // LoanEmploymentSnapshot is a typed, restricted financial projection, not Employee.
@@ -220,11 +222,118 @@ public class EmployeeSnapshotMaskingTests
             "raw JsonSerializer.Serialize(employee) persists unmasked salary/IBAN/Iqama/passport/medical data");
     }
 
+    // Preserve the broad suffix guard: serializing Employee into ANY snapshot can leak secrets.
+    // Keep the entire physical line so the existing loan exemptions remain exact and active.
+    // Whitespace includes line breaks, so splitting an unsafe assignment cannot evade this guard.
+    private static IEnumerable<(int Line, string Text)> RawSnapshotAssignments(string source)
+    {
+        var matches = Regex.Matches(source,
+            @"(?<![\w])\w*SnapshotJson\s*=\s*(?:global::)?(?:System\s*\.\s*Text\s*\.\s*Json\s*\.\s*)?JsonSerializer\s*\.\s*Serialize\s*\(");
+        foreach (Match match in matches)
+        {
+            var start = source.LastIndexOf('\n', match.Index) + 1;
+            var end = source.IndexOf('\n', match.Index);
+            if (end < 0) end = source.Length;
+            yield return (source[..start].Count(c => c == '\n') + 1, source[start..end]);
+        }
+    }
+
+    [Theory]
+    [InlineData("SnapshotJson = JsonSerializer.Serialize(employee);", true)]
+    [InlineData("history.SnapshotJson=JsonSerializer.Serialize(employee);", true)]
+    [InlineData("SnapshotJson = System.Text.Json.JsonSerializer.Serialize(employee);", true)]
+    [InlineData("history.SnapshotJson = global::System.Text.Json.JsonSerializer.Serialize(employee);", true)]
+    [InlineData("SnapshotJson\n =\n JsonSerializer\n .\n Serialize\n (employee);", true)]
+    [InlineData("SnapshotJson = EmployeeSafeSnapshot.Serialize(employee);", false)]
+    [InlineData("EligibilitySnapshotJson = JsonSerializer.Serialize(employee);", true)]
+    [InlineData("EmploymentSnapshotJson = JsonSerializer.Serialize(employee);", true)]
+    [InlineData("SourceSnapshotJson = JsonSerializer.Serialize(employee);", true)]
+    [InlineData("EligibilitySnapshotJson = GradeBenefitDefaultWitness.Serialize(gradeId, benefit);", false)]
+    [InlineData("SourceSnapshotJson = BenefitPayroll.SerializeWitness(witness);", false)]
+    public void SnapshotLint_CoversAllSnapshotSuffixesAcrossFormatting(string source, bool rawAssignment)
+        => RawSnapshotAssignments(source).Any().Should().Be(rawAssignment);
+
+    [Fact]
+    public void BenefitEligibilityWitness_UsesExplicitFieldsWithoutUnrelatedEmployeeSecrets()
+    {
+        var employee = MakeSensitiveEmployee();
+        employee.GradeId = Guid.NewGuid();
+        var ruleId = Guid.NewGuid();
+        var evaluation = new GradeBenefitDefaults.BenefitEligibilityEvaluation(true, null,
+            ruleId, "Gold", 5000m, "Annual", "School invoice required",
+            [new("grade", "Grade", true, "The selected grade meets the rule.")]);
+
+        var json = BenefitEligibilityWitness.Serialize(new DateTime(2026, 10, 9, 0, 0, 0, DateTimeKind.Utc),
+            employee.GradeId, evaluation, 2500m);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        root.EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(new[] {
+            "evaluatedAtUtc", "GradeId", "matchedRuleId", "tierName", "maximumBenefitAmount",
+            "requestedBenefitAmount", "limitPeriod", "customCriteriaNote", "checks" });
+        root.GetProperty("GradeId").GetGuid().Should().Be(employee.GradeId.Value);
+        root.GetProperty("matchedRuleId").GetGuid().Should().Be(ruleId);
+        root.GetProperty("maximumBenefitAmount").GetDecimal().Should().Be(5000m);
+        root.GetProperty("requestedBenefitAmount").GetDecimal().Should().Be(2500m);
+        root.GetProperty("checks")[0].EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "Key", "Label", "Passed", "Detail" });
+        foreach (var secret in new[] { employee.BankIban, employee.PassportNumber, employee.IdNumber,
+                     employee.MedicalInformation, employee.DisciplinaryRecords, "15750.5" })
+            json.Should().NotContain(secret);
+    }
+
+    [Fact]
+    public void GradeDefaultWitness_PreservesTheExactRestrictedJsonContract()
+    {
+        var gradeId = Guid.NewGuid();
+        var benefit = new GradeBenefitDefaultDto(Guid.NewGuid(), "SCHOOL", "Schooling", "Education", "SAR",
+            true, null, Guid.NewGuid(), "Gold", 5000m, "Annual", new DateOnly(2026, 10, 9), new DateOnly(2027, 10, 8));
+        var json = GradeBenefitDefaultWitness.Serialize(gradeId, benefit);
+
+        // Pin compatibility with the former anonymous projection, including property casing.
+        json.Should().Be(JsonSerializer.Serialize(new { GradeId = (Guid?)gradeId, defaultBenefit = benefit }));
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "GradeId", "defaultBenefit" });
+        document.RootElement.GetProperty("defaultBenefit").EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "BenefitPlanId", "Code", "Name", "PlanType", "Currency", "Eligible", "BlockingReason",
+                "EligibilityRuleId", "EntitlementTier", "MaximumBenefitAmount", "LimitPeriod", "EffectiveFrom", "EffectiveTo" });
+    }
+
+    [Fact]
+    public void BenefitPayrollWitness_PreservesTheExactRestrictedJsonContract()
+    {
+        var planId = Guid.NewGuid();
+        var component = new BenefitPayrollComponent(Guid.NewGuid(), "SCHOOL", "Schooling", "Earning", true);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var policy = JsonSerializer.Serialize(new BenefitPayrollPolicyEnvelope(1, planId, "SAR",
+            new BenefitPayrollPolicy("SalaryAllowance", 310m, SalaryComponentId: component.Id), component), options);
+        var witness = new BenefitPayrollWitness(1, planId, Guid.NewGuid(), Guid.NewGuid(), "Schooling", "SAR",
+            new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 31), policy, component);
+        var json = BenefitPayroll.SerializeWitness(witness);
+
+        json.Should().Be(JsonSerializer.Serialize(witness, options));
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        root.EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "version", "benefitPlanId", "enrollmentId", "chainId", "planName", "currency",
+                "periodStart", "periodEnd", "policySnapshot", "component", "glDriverKey" });
+        root.GetProperty("component").EnumerateObject().Select(x => x.Name).Should().BeEquivalentTo(
+            new[] { "id", "code", "name", "componentType", "isTaxable" });
+        root.GetProperty("policySnapshot").GetString().Should().Be(policy);
+        BenefitPayroll.Read(new PayrollAdjustment { SourceType = BenefitPayroll.RecurringSource,
+            SourceSnapshotJson = json }).Should().Be(witness);
+    }
+
     [Fact]
     public void LoanFinancialProjectionExemption_DoesNotPermitOtherFilesOrRawEmployeeAssignments()
     {
         var allowedPath = Path.Combine("root", "Infrastructure", "Finance", "LoanLifecycleService.cs");
         const string allowedLine = "if (current != null) loan.EmploymentSnapshotJson = JsonSerializer.Serialize(current);";
+        // These assertions exercise the scanner, not just the exemption predicate: the suffix
+        // must remain guarded, and changing the typed projection to Employee must be rejected.
+        IsRestrictedLoanFinancialProjection(allowedPath, RawSnapshotAssignments(allowedLine).Single().Text).Should().BeTrue();
+        IsRestrictedLoanFinancialProjection(allowedPath,
+            RawSnapshotAssignments(allowedLine.Replace("Serialize(current)", "Serialize(employee)")).Single().Text).Should().BeFalse();
         IsRestrictedLoanFinancialProjection(allowedPath, allowedLine).Should().BeTrue();
         IsRestrictedLoanFinancialProjection(Path.Combine("root", "EmployeeManagementService.cs"), allowedLine).Should().BeFalse();
         IsRestrictedLoanFinancialProjection(allowedPath, "loan.EmploymentSnapshotJson = JsonSerializer.Serialize(employee);").Should().BeFalse();
@@ -244,6 +353,9 @@ public class EmployeeSnapshotMaskingTests
         const string approve = "loan.EligibilitySnapshotJson = JsonSerializer.Serialize(assessment);";
         foreach (var line in new[] { create, approve })
         {
+            IsRestrictedLoanEligibilityProjection(path, RawSnapshotAssignments(line).Single().Text).Should().BeTrue();
+            IsRestrictedLoanEligibilityProjection(path,
+                RawSnapshotAssignments(line.Replace("Serialize(assessment)", "Serialize(employee)")).Single().Text).Should().BeFalse();
             IsRestrictedLoanEligibilityProjection(path, line).Should().BeTrue();
             IsRestrictedLoanEligibilityProjection(Path.Combine("root", "Controllers", "EmployeesController.cs"), line).Should().BeFalse();
             IsRestrictedLoanEligibilityProjection(path, line.Replace("Serialize(assessment)", "Serialize(employee)")).Should().BeFalse();
