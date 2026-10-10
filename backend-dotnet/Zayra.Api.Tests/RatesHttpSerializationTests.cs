@@ -78,7 +78,9 @@ public class RatesHttpSerializationTests : IClassFixture<RatesHttpFixture>
         using var pending = await _fx.SendAsync(HttpMethod.Get, "/api/finance/rates/statutory/pending");
         var queue = await OkJson(pending);
         queue.EnumerateArray().Should().Contain(q => q.GetProperty("ruleKey").GetString() == "ot.standard_multiplier"
-                                                    && q.GetProperty("kind").GetString() == "change");
+                                                    && q.GetProperty("kind").GetString() == "change"
+                                                    && q.GetProperty("isNew").GetBoolean(),
+            "no override is in force for this rule, so a checker sees a NEW override, not a value change");
     }
 }
 

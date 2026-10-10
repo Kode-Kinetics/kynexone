@@ -31,6 +31,10 @@ interface GlOptions {
   driversDown?: boolean;
   /** POST /rates/company for this key answers 422 COMPANY_RATE_NOT_APPLIED (a registry loaded before the server changed). */
   serverRefusesKey?: string;
+  /** Applying an import (dryRun=false) is refused with 422 and per-row errors, as the server does when the chart moved since the preview. */
+  importApplyRefused?: boolean;
+  /** Masar KSA has an approved, ACTIVE override of ot.standard_multiplier (1.75×). */
+  activeOverride?: boolean;
 }
 
 interface Recorded { method: string; path: string; search: string; body: unknown }
@@ -109,7 +113,8 @@ function companyRates(companyId: string | null) {
 
 interface Pending {
   id: string; companyId: string; companyName: string; ruleKey: string; countryCode: string; value: string; effectiveFrom: string;
-  effectiveTo: string | null; reason: string; reviewBy: string; requestedById: string; requestedByName: string; requestedAt: string; canApprove: boolean;
+  effectiveTo: string | null; reason: string; reviewBy: string | null; requestedById: string; requestedByName: string; requestedAt: string; canApprove: boolean;
+  kind: 'change' | 'retire'; isNew: boolean;
 }
 
 async function boot(page: Page, options: GlOptions = {}) {
@@ -123,6 +128,7 @@ async function boot(page: Page, options: GlOptions = {}) {
       id: 'ovr-other', companyId: 'co-ae', companyName: 'Masar Services UAE', ruleKey: 'ot.standard_multiplier', countryCode: 'AE', value: '1.6',
       effectiveFrom: iso(year, 11, 1), effectiveTo: null, reason: 'Board resolution 14', reviewBy: iso(year + 1, 6, 30),
       requestedById: 'user-layla', requestedByName: 'Layla Haddad', requestedAt: '2026-10-09T09:30:00Z', canApprove: true,
+      kind: 'change', isNew: true,
     },
   ];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -167,6 +173,12 @@ async function boot(page: Page, options: GlOptions = {}) {
     if (p === '/api/finance/gl/accounts/export') return route.fulfill({ status: 200, contentType: 'text/csv', body: 'code,name,type\n5001,Basic Salary Expense,Expense\n' });
     if (p === '/api/finance/gl/accounts/import') {
       const dryRun = url.searchParams.get('dryRun') === 'true';
+      if (!dryRun && options.importApplyRefused) {
+        // The server's real 422 body: the dry-run shape, per-row errors, and no top-level message.
+        return reply({ dryRun: false, created: 2, updated: 1, unchanged: 3, errors: [
+          { row: 3, code: '5002', message: 'Account 5002 has journals posted to it since the preview, so its type cannot change.' },
+        ] }, 422);
+      }
       return reply({ dryRun, created: 2, updated: 1, unchanged: 3, errors: [] });
     }
     if (p.startsWith('/api/finance/gl/accounts/')) return method === 'DELETE' ? route.fulfill({ status: 204 }) : reply({ ...(body as object) });
@@ -198,8 +210,9 @@ async function boot(page: Page, options: GlOptions = {}) {
       const cc = url.searchParams.get('countryCode') ?? url.searchParams.get('country') ?? '';
       const mine = (key: string) => {
         const pend = pending.find((x) => x.companyId === companyId && x.ruleKey === key);
-        return pend ? { id: pend.id, value: pend.value, effectiveFrom: pend.effectiveFrom, effectiveTo: pend.effectiveTo, reason: pend.reason, reviewBy: pend.reviewBy, requestedById: pend.requestedById, requestedByName: pend.requestedByName, requestedAt: pend.requestedAt, canApprove: pend.canApprove } : null;
+        return pend ? { id: pend.id, kind: pend.kind, isNew: pend.isNew, value: pend.value, effectiveFrom: pend.effectiveFrom, effectiveTo: pend.effectiveTo, reason: pend.reason, reviewBy: pend.reviewBy, requestedById: pend.requestedById, requestedByName: pend.requestedByName, requestedAt: pend.requestedAt, canApprove: pend.canApprove } : null;
       };
+      const active = companyId === 'co-sa' && options.activeOverride;
       return reply([
         {
           ruleKey: 'gosi.saudi_employee_rate', resolvedValue: 0.0975, platformDefault: 0.0975, isOverride: false, overrideId: null, overrideValue: null, reason: null,
@@ -209,8 +222,9 @@ async function boot(page: Page, options: GlOptions = {}) {
           ...(companyId ? {} : { countryCode: cc, overriddenInCompanies: 1 }),
         },
         {
-          ruleKey: 'ot.standard_multiplier', resolvedValue: 1.5, platformDefault: 1.5, isOverride: false, overrideId: null, overrideValue: null, reason: null,
-          effectiveFrom: null, effectiveTo: null, reviewBy: null, defaultDriftedSinceOverride: false, statutoryLocked: false, neverApplied: false, notice: null,
+          ruleKey: 'ot.standard_multiplier', resolvedValue: active ? 1.75 : 1.5, platformDefault: 1.5, isOverride: !!active, overrideId: active ? 'ovr-active' : null,
+          overrideValue: active ? '1.75' : null, reason: active ? 'Collective agreement clause 7' : null,
+          effectiveFrom: active ? iso(year, 1, 1) : null, effectiveTo: null, reviewBy: active ? iso(year + 1, 3, 31) : null, defaultDriftedSinceOverride: false, statutoryLocked: false, neverApplied: false, notice: null,
           ruleEffectiveFrom: '2024-01-01', ruleEffectiveTo: null, source: 'Labor Law, Art. 107', verified: false, appliedByPayroll: true,
           direction: 'floor', displayUnit: 'multiplier', pendingOverride: companyId ? mine('ot.standard_multiplier') : null,
           ...(companyId ? {} : { countryCode: cc, overriddenInCompanies: 0 }),
@@ -223,11 +237,24 @@ async function boot(page: Page, options: GlOptions = {}) {
         id: `ovr-${pending.length + 1}`, companyId: b.companyId, companyName: 'Masar Trading KSA', ruleKey: b.ruleKey, countryCode: b.countryCode,
         value: b.overrideValue, effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo, reason: b.reason, reviewBy: b.reviewBy,
         requestedById: 'user-maker', requestedByName: 'Omar Maker', requestedAt: '2026-10-10T10:00:00Z', canApprove: false, // the requester never approves
+        kind: 'change', isNew: true,
       };
       pending.push(created);
       return reply({ id: created.id, companyId: b.companyId, countryCode: b.countryCode, jurisdiction: 'SA', ruleKey: b.ruleKey, overrideValue: b.overrideValue, dataType: 'decimal', effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo, reviewBy: b.reviewBy, reason: b.reason, status: 'PendingApproval', isOverride: true, overridesStatutoryDefault: '1.5', approvedBy: null, approvedAtUtc: null });
     }
 
+    if (p === '/api/finance/rates/statutory/override/ovr-active' && method === 'DELETE') {
+      // An ACTIVE override is never switched off by one person: the server files a retirement
+      // request (202) from tomorrow that a second person must approve.
+      const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+      const retire: Pending = {
+        id: 'ovr-retire', companyId: 'co-sa', companyName: 'Masar Trading KSA', ruleKey: 'ot.standard_multiplier', countryCode: 'SA',
+        value: '1.75', effectiveFrom: tomorrow, effectiveTo: null, reason: 'Return to the statutory value', reviewBy: null,
+        requestedById: 'user-maker', requestedByName: 'Omar Maker', requestedAt: '2026-10-10T11:00:00Z', canApprove: false, kind: 'retire', isNew: false,
+      };
+      pending.push(retire);
+      return reply({ id: retire.id, companyId: 'co-sa', countryCode: 'SA', jurisdiction: 'SA', ruleKey: retire.ruleKey, overrideValue: '1.75', dataType: 'retire', effectiveFrom: tomorrow, effectiveTo: null, reviewBy: null, reason: retire.reason, status: 'PendingApproval', isOverride: true, kind: 'retire', overridesStatutoryDefault: '1.5', approvedBy: null, approvedAtUtc: null }, 202);
+    }
     if (p === '/api/organization/cost-centers' || p === '/api/grades' || p === '/api/branches' || p === '/api/departments') return reply(paged([]));
     if (p.startsWith('/api/admin/') || p.includes('country-packs')) return reply([]);
     return reply(paged([]));
@@ -583,5 +610,66 @@ test('chart of accounts: the ERP account code is shown, set on add, and changed 
     { path: '/api/finance/gl/accounts/acc-5001', externalCode: '' },
     { path: '/api/finance/gl/accounts/acc-5002', externalCode: '6200/HOU' },
   ]);
+  expect(state.errors).toEqual([]);
+});
+
+test('applying an import the server refuses (422) shows its per-row errors in the preview, not a generic error', async ({ page }) => {
+  const state = await boot(page, { groupMode: true, importApplyRefused: true });
+  await page.getByLabel('Choose a CSV file to import').setInputFiles({ name: 'accounts.csv', mimeType: 'text/csv', buffer: Buffer.from('code,name,type\n5002,Housing,Liability\n') });
+  const dialog = page.getByRole('dialog', { name: 'Import chart of accounts' });
+  await expect(dialog.getByRole('row', { name: /Will be created\s+2/ })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Apply import', exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('Nothing was imported. Fix the rows below and apply again.')).toBeVisible();
+  const errors = dialog.getByRole('table', { name: 'Rows with errors' });
+  await expect(errors.getByRole('row').filter({ hasText: '5002' })).toContainText('has journals posted to it since the preview');
+  await expect(dialog.getByRole('button', { name: 'Apply import', exact: true })).toBeDisabled();
+  await expect(page.getByText(/Import applied/)).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('reverting an active statutory override is shown as a retirement request awaiting approval, and the queue says what each request does', async ({ page }, info) => {
+  const state = await boot(page, { groupMode: true, activeOverride: true });
+  await page.getByLabel('Configuration scope').selectOption('co-sa');
+  await tab(page, 'Statutory Rates').click();
+  const statutory = page.getByRole('region', { name: 'Statutory Rates', exact: true });
+  const ot = statutory.getByRole('row').filter({ hasText: 'ot.standard_multiplier' });
+  await expect(ot).toContainText('Override in effect');
+  await ot.getByRole('button', { name: 'Revert to statutory value', exact: true }).click();
+  const confirm = page.getByRole('dialog', { name: 'Revert to the statutory value?' });
+  await expect(confirm).toContainText('A second person must approve it; payroll keeps the override until then');
+  await confirm.getByRole('button', { name: 'Request retirement', exact: true }).click();
+
+  await expect(page.getByText('Retirement requested — awaiting approval. Payroll keeps the override until a second person approves it.')).toBeVisible();
+  await expect(page.getByText('Override reverted.', { exact: true })).toHaveCount(0);
+  expect(state.writes.filter((w) => w.method === 'DELETE').map((w) => w.path)).toEqual(['/api/finance/rates/statutory/override/ovr-active']);
+  // The row: still in effect, and the pending request reads as a retirement, not "1.75× requested".
+  await expect(ot).toContainText('Override in effect');
+  await expect(ot).toContainText('Retirement');
+  await expect(ot).toContainText('Return to the statutory value from');
+
+  // The queue: a checker can tell a retirement from a new value.
+  const queue = page.getByRole('region', { name: 'Pending approvals', exact: true });
+  await expect(queue.getByRole('columnheader', { name: 'Request', exact: true })).toBeVisible();
+  const retirement = queue.getByRole('row').filter({ hasText: 'Omar Maker' });
+  await expect(retirement).toContainText('Retirement');
+  await expect(retirement).toContainText('Return to the statutory value from');
+  await expect(retirement.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+  await expect(queue.getByRole('row').filter({ hasText: 'Layla Haddad' })).toContainText('New override');
+  await shot(page, info, 'gl-en-statutory-retirement');
+  expect(state.errors).toEqual([]);
+});
+
+test('the retirement request and request kinds read in Arabic', async ({ page }) => {
+  const state = await boot(page, { groupMode: true, activeOverride: true, locale: 'ar' });
+  await page.getByLabel('نطاق الإعداد').selectOption('co-sa');
+  await page.getByRole('tab', { name: 'المعدلات النظامية', exact: true }).click();
+  const ot = page.getByRole('region', { name: 'المعدلات النظامية', exact: true }).getByRole('row').filter({ hasText: 'ot.standard_multiplier' });
+  await ot.getByRole('button', { name: 'العودة إلى القيمة النظامية', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'طلب إنهاء السريان', exact: true }).click();
+  await expect(page.getByText('تم طلب إنهاء التعديل — بانتظار الموافقة. يستمر مسير الرواتب في تطبيق التعديل حتى يوافق عليه شخص آخر.')).toBeVisible();
+  const queue = page.getByRole('region', { name: 'الموافقات المعلقة', exact: true });
+  await expect(queue.getByRole('row').filter({ hasText: 'Omar Maker' })).toContainText('إنهاء التعديل');
+  await expect(queue.getByRole('row').filter({ hasText: 'Layla Haddad' })).toContainText('تعديل جديد');
   expect(state.errors).toEqual([]);
 });

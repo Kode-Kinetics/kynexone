@@ -374,12 +374,33 @@ public class RatesController : ControllerBase
             .Where(c => c.TenantId == tid && companyIds.Contains(c.Id))
             .ToDictionaryAsync(c => c.Id, c => string.IsNullOrWhiteSpace(c.TradeName) ? c.LegalNameEn : c.TradeName, ct);
 
+        // isNew: nothing of the request's own scope is in force today, so approving it ADDS a value
+        // rather than changing one. A checker reads "New override" vs "Value change" from it.
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var todayUtc = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var keys = rows.Select(r => r.RuleKey).Distinct().ToList();
+        var liveCompanyValues = (await Overrides(tid.Value).AsNoTracking()
+                .Where(o => !o.IsDeleted && o.CompanyId != null && o.Status == CompanyPolicyStatuses.Active
+                         && o.DataType != StatutoryOverridePolicy.RetireRequest && keys.Contains(o.RuleKey)
+                         && o.EffectiveFrom <= today && (o.EffectiveTo == null || o.EffectiveTo >= today))
+                .Select(o => new { o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey })
+                .ToListAsync(ct))
+            .Select(o => (o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey)).ToHashSet();
+        var liveTenantValues = (await ScopedBypass.NullableTenantWide(_db.StatutoryRules, tid.Value,
+                    "The caller's own tenant-level statutory values (platform rows excluded by the tenant predicate).")
+                .AsNoTracking()
+                .Where(r => keys.Contains(r.RuleKey) && r.EffectiveFrom <= todayUtc && (r.EffectiveTo == null || r.EffectiveTo > todayUtc))
+                .Select(r => new { r.CountryCode, r.Jurisdiction, r.RuleKey })
+                .ToListAsync(ct))
+            .Select(r => ((Guid?)null, r.CountryCode, r.Jurisdiction, r.RuleKey)).ToHashSet();
+
         return Ok(rows.Select(o =>
         {
-            var p = PendingDto(o, names);
+            var live = o.CompanyId is null ? liveTenantValues : liveCompanyValues;
+            var p = PendingDto(o, names, isNew: !live.Contains((o.CompanyId, o.CountryCode, o.Jurisdiction, o.RuleKey)));
             return new
             {
-                p.id, p.kind, p.value, p.effectiveFrom, p.effectiveTo, p.reason, p.reviewBy,
+                p.id, p.kind, p.isNew, p.value, p.effectiveFrom, p.effectiveTo, p.reason, p.reviewBy,
                 p.requestedById, p.requestedByName, p.requestedAt, p.canApprove,
                 companyId = o.CompanyId,
                 companyName = o.CompanyId is { } cid
@@ -643,11 +664,11 @@ public class RatesController : ControllerBase
            && StatutoryOverridePolicy.ViolatesDirection(key, effective.RuleValue, platformDefault, platformRow.RuleValue);
 
     private const string TenantBelowFloorNotice =
-        "The tenant value is below the legal minimum, so payroll ignores it and pays the statutory value. Retire it in Statutory rules.";
+        "The group-wide value is below the legal minimum, so payroll ignores it and pays the statutory value. Retire it in Statutory rules.";
 
     /// <summary>Where a company value is applied by payroll but not yet by every calculation that reads the key.</summary>
     private static string? PartialApplicationNotice(string key) => key == StatutoryOverridePolicy.LopMonthlyDayDivisor
-        ? "Payroll and unpaid-leave deductions use the company value. Leave encashment still uses the tenant/statutory value."
+        ? "Payroll and unpaid-leave deductions use this company value. Leave encashment still uses the group or statutory value."
         : null;
 
     private static (RuleRowView? Effective, RuleRowView? Platform) PickRules(IEnumerable<RuleRowView> rows, string key, DateOnly onDate)
@@ -721,7 +742,7 @@ public class RatesController : ControllerBase
                 appliedByPayroll,
                 direction = StatutoryOverridePolicy.DirectionFor(key),
                 displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
-                pendingOverride = pending is null ? null : PendingDto(pending, names),
+                pendingOverride = pending is null ? null : PendingDto(pending, names, isNew: active is null),
             });
         }
         return result;
@@ -773,22 +794,23 @@ public class RatesController : ControllerBase
                 appliedByPayroll = !gosiStatutory && StatutoryOverridePolicy.IsAppliedForCompany(key),
                 direction = StatutoryOverridePolicy.DirectionFor(key),
                 displayUnit = StatutoryOverridePolicy.DisplayUnitFor(key),
-                pendingOverride = pending is null ? null : PendingDto(pending, names),
+                pendingOverride = pending is null ? null : PendingDto(pending, names, isNew: effective?.TenantId is null),
             });
         }
         return result;
     }
 
     private sealed record PendingView(
-        Guid id, string kind, string value, DateOnly effectiveFrom, DateOnly? effectiveTo, string reason, DateOnly? reviewBy,
+        Guid id, string kind, bool isNew, string value, DateOnly effectiveFrom, DateOnly? effectiveTo, string reason, DateOnly? reviewBy,
         Guid? requestedById, string? requestedByName, DateTime requestedAt, bool canApprove);
 
-    private PendingView PendingDto(CompanyStatutoryOverride o, IReadOnlyDictionary<Guid, string> names)
+    private PendingView PendingDto(CompanyStatutoryOverride o, IReadOnlyDictionary<Guid, string> names, bool isNew)
     {
         var me = this.GetUserId();
         var mayDecide = HasPermission("payroll.rates.statutory_override") && DecideScopeError(o.CompanyId) is null;
         return new PendingView(
-            o.Id, o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change", o.OverrideValue,
+            o.Id, o.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change",
+            isNew && o.DataType != StatutoryOverridePolicy.RetireRequest, o.OverrideValue,
             o.EffectiveFrom, o.EffectiveTo, o.Reason, o.ReviewBy, o.CreatedBy,
             o.CreatedBy is { } u && names.TryGetValue(u, out var n) ? n : null,
             o.CreatedAtUtc,
