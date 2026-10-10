@@ -31,10 +31,16 @@ export interface CompanyRate {
   unit: string; // amount | percent | days | multiplier
   effectiveFrom: string; // yyyy-MM-dd
   effectiveTo: string | null;
-  status: string; // Active | Archived
+  status: string; // Active | PendingApproval | Superseded | Archived
   notes: string;
   /** True when shown in a company view but owned at group level. */
   inherited?: boolean;
+  /** Plain-language name from the rate registry (newer servers). */
+  label?: string | null;
+  /** ISO currency for `amount` rates (newer servers). */
+  currency?: string | null;
+  /** The row payroll uses today for this key in this scope (newer servers). */
+  inEffect?: boolean;
 }
 
 /** Seeded allow-list entry — the ONLY keys that may be created as company rates. */
@@ -76,6 +82,47 @@ export interface StatutoryRateRow {
   /** An override exists for a statutory GOSI key: it was saved but payroll never applied it. */
   neverApplied?: boolean;
   notice?: string | null;
+  // ── Newer servers (all optional so an older API still renders) ──
+  /** Plain-language rule name, when the server sends one. */
+  label?: string | null;
+  ruleEffectiveFrom?: string | null;
+  ruleEffectiveTo?: string | null;
+  /** Legal source citation for the platform value. */
+  source?: string | null;
+  /** False = the platform value has not yet been verified against the law. */
+  verified?: boolean | null;
+  /** False = reference value only; payroll does not read it. */
+  appliedByPayroll?: boolean | null;
+  direction?: 'floor' | 'ceiling' | 'either' | null;
+  displayUnit?: StatutoryDisplayUnit | null;
+  pendingOverride?: StatutoryPendingOverride | null;
+  /** Group scope only. */
+  countryCode?: string | null;
+  /** Group scope only: how many companies have an active override of this rule. */
+  overriddenInCompanies?: number | null;
+}
+
+export type StatutoryDisplayUnit = 'percent' | 'multiplier' | 'days' | 'hours' | 'amount' | 'text';
+
+export interface StatutoryPendingOverride {
+  id: string;
+  value: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  reason: string | null;
+  reviewBy: string | null;
+  requestedById?: string | null;
+  requestedByName?: string | null;
+  requestedAt?: string | null;
+  /** True only when the viewer may approve it (holds the permission and did not request it). */
+  canApprove?: boolean;
+}
+
+export interface StatutoryPendingListItem extends StatutoryPendingOverride {
+  companyId: string;
+  companyName?: string | null;
+  ruleKey: string;
+  countryCode?: string | null;
 }
 
 export interface StatutoryOverrideRequest {
@@ -123,12 +170,15 @@ export const financeRatesApi = {
   deleteCompanyRate: (id: string) => client.delete(`/api/finance/rates/company/${id}`),
 
   // ── Surface B ──────────────────────────────────────────────────────────────
+  // `country` and `countryCode` carry the same value: older servers read the first, newer the second.
   listStatutory: (companyId: string | null | undefined, country: string, jurisdiction: string) =>
     client
       .get<StatutoryRateRow[]>('/api/finance/rates/statutory', {
-        params: { companyId: companyId || undefined, country, jurisdiction },
+        params: { companyId: companyId || undefined, country, countryCode: country, jurisdiction },
       })
       .then((r) => r.data),
+  listPendingOverrides: () =>
+    client.get<StatutoryPendingListItem[]>('/api/finance/rates/statutory/pending').then((r) => r.data),
   createOverride: (data: StatutoryOverrideRequest) =>
     client.post<StatutoryOverride>('/api/finance/rates/statutory/override', data).then((r) => r.data),
   approveOverride: (id: string) =>

@@ -1,28 +1,36 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { CalendarX2, Pencil, Plus } from 'lucide-react';
 import { notifyApiError } from '../../api/client';
-import {
-  financeRatesApi,
-  type CompanyRate,
-  type CompanyRateRequest,
-  type RateRegistryEntry,
-} from '../../api/financeRates';
+import { financeRatesApi, type CompanyRate, type CompanyRateRequest, type RateRegistryEntry } from '../../api/financeRates';
+import { useFormat } from '../../hooks/useFormat';
+import { useT } from '../../hooks/useT';
+import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
-import { Field, FieldError, InheritedBadge, PanelState, StatusBadge, fmtDate, todayIso } from './glUi';
+import {
+  Badge,
+  Field,
+  FieldError,
+  PanelState,
+  rateCategoryLabel,
+  serverMessage,
+  StatusBadge,
+  theadClass,
+  thClass,
+  todayIso,
+  useConfirm,
+  useScopedResource,
+  type Translator,
+} from './glUi';
 
 interface Props {
   scope: string | null;
-  scopeLabel: string;
+  scopeName: string;
   canManage: boolean; // payroll.rates.manage
+  /** The company's operating currency, for amount rates the server does not label itself. */
+  currency: string | null;
 }
-
-const unitSuffix = (unit: string) =>
-  unit === 'percent' ? '%' : unit === 'days' ? ' days' : unit === 'multiplier' ? '×' : '';
-
-const formatValue = (value: string, unit: string) =>
-  unit === 'multiplier' ? `${value}×` : `${value}${unitSuffix(unit)}`;
 
 interface RateDraft {
   rateKey: string;
@@ -34,38 +42,94 @@ interface RateDraft {
 
 const emptyDraft = (): RateDraft => ({ rateKey: '', rateValue: '', effectiveFrom: todayIso(), effectiveTo: '', notes: '' });
 
-export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
-  const inCompanyView = scope !== null;
-  const [rates, setRates] = useState<CompanyRate[]>([]);
-  const [registry, setRegistry] = useState<RateRegistryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+const day = (d: string | null | undefined) => (d ? d.slice(0, 10) : '');
 
+function unitLabel(t: Translator, unit: string): string {
+  switch (unit) {
+    case 'percent': return t('Percent');
+    case 'days': return t('Days');
+    case 'hours': return t('Hours');
+    case 'multiplier': return t('Multiplier');
+    case 'amount': return t('Amount');
+    default: return unit;
+  }
+}
+
+interface Loaded {
+  rates: CompanyRate[];
+  registry: RateRegistryEntry[];
+}
+
+interface KeyGroup {
+  rateKey: string;
+  current: CompanyRate | null;
+  scheduled: CompanyRate[];
+  history: CompanyRate[];
+}
+
+export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Props) {
+  const t = useT();
+  const f = useFormat();
+  const toast = useAppToast();
+  const { confirm, dialog } = useConfirm();
+  const inCompanyView = scope !== null;
+  const today = todayIso();
+
+  const fetcher = useCallback(async (): Promise<Loaded> => {
+    const [rates, registry] = await Promise.all([financeRatesApi.listCompanyRates(scope), financeRatesApi.registry()]);
+    return { rates, registry };
+  }, [scope]);
+  const res = useScopedResource<Loaded>(`rates:${scope ?? 'group'}`, fetcher);
+  const rates = useMemo(() => res.data?.rates ?? [], [res.data]);
+  const registry = useMemo(() => res.data?.registry ?? [], [res.data]);
+  const writable = canManage && res.ready;
+
+  const registryFor = useCallback((key: string) => registry.find((d) => d.rateKey === key), [registry]);
+  const nameFor = (r: { rateKey: string; label?: string | null }) => r.label || registryFor(r.rateKey)?.description || r.rateKey;
+
+  const formatRate = (r: CompanyRate) => {
+    const n = Number(r.rateValue);
+    if (r.rateValue === '' || Number.isNaN(n)) return r.rateValue || '—';
+    switch (r.unit) {
+      case 'amount': return f.money(n, r.currency ?? currency ?? null);
+      case 'percent': return t('{value}%', { value: f.number(n, { maximumFractionDigits: 4 }) });
+      case 'multiplier': return t('{value}×', { value: f.number(n, { maximumFractionDigits: 4 }) });
+      case 'days': return t('{count, plural, one {# day} other {# days}}', { count: n });
+      case 'hours': return t('{count, plural, one {# hour} other {# hours}}', { count: n });
+      default: return f.number(n, { maximumFractionDigits: 4 });
+    }
+  };
+
+  const isOpenStatus = (r: CompanyRate) => r.status === 'Active' || r.status === 'PendingApproval';
+  const ownedHere = (r: CompanyRate) => (inCompanyView ? r.companyId === scope : r.companyId === null);
+  const coversToday = (r: CompanyRate) => day(r.effectiveFrom) <= today && (!r.effectiveTo || day(r.effectiveTo) >= today);
+  const isFuture = (r: CompanyRate) => day(r.effectiveFrom) > today;
+
+  // One group per key: the row payroll uses today (company beats inherited), future-dated rows,
+  // and a history of superseded / archived / expired rows.
+  const groups = useMemo<KeyGroup[]>(() => {
+    const byKey = new Map<string, CompanyRate[]>();
+    for (const r of rates) byKey.set(r.rateKey, [...(byKey.get(r.rateKey) ?? []), r]);
+    const out: KeyGroup[] = [];
+    for (const [rateKey, list] of byKey) {
+      const sorted = [...list].sort((a, b) => (day(a.effectiveFrom) < day(b.effectiveFrom) ? 1 : -1));
+      const flagged = sorted.filter((r) => r.inEffect === true);
+      const candidates = flagged.length > 0 ? flagged : sorted.filter((r) => r.status === 'Active' && coversToday(r));
+      const current = candidates.find((r) => r.companyId === scope) ?? candidates[0] ?? null;
+      const scheduled = sorted.filter((r) => r !== current && isOpenStatus(r) && isFuture(r));
+      const history = sorted.filter((r) => r !== current && !scheduled.includes(r));
+      out.push({ rateKey, current, scheduled, history });
+    }
+    return out.sort((a, b) => nameFor({ rateKey: a.rateKey }).localeCompare(nameFor({ rateKey: b.rateKey })));
+    // nameFor depends on the registry only, which is in the dependency list.
+  }, [rates, registry, scope, today]);
+
+  // ── Create / change ────────────────────────────────────────────────────────
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CompanyRate | null>(null);
   const [draft, setDraft] = useState<RateDraft>(emptyDraft());
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [r, reg] = await Promise.all([financeRatesApi.listCompanyRates(scope), financeRatesApi.registry()]);
-      setRates(r);
-      setRegistry(reg);
-    } catch (e) {
-      notifyApiError(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [scope]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const registryFor = useCallback((key: string) => registry.find((d) => d.rateKey === key), [registry]);
-
   const selectedDef = registryFor(draft.rateKey);
 
   const openCreate = () => {
@@ -77,29 +141,23 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
 
   const openEdit = (r: CompanyRate) => {
     setEditing(r);
-    setDraft({
-      rateKey: r.rateKey,
-      rateValue: r.rateValue,
-      effectiveFrom: r.effectiveFrom.slice(0, 10),
-      effectiveTo: r.effectiveTo ? r.effectiveTo.slice(0, 10) : '',
-      notes: r.notes ?? '',
-    });
+    setDraft({ rateKey: r.rateKey, rateValue: r.rateValue, effectiveFrom: day(r.effectiveFrom), effectiveTo: day(r.effectiveTo), notes: r.notes ?? '' });
     setError('');
     setModalOpen(true);
   };
 
   const validate = (): string | null => {
-    if (!draft.rateKey) return 'Select a rate.';
-    if (!draft.rateValue.trim()) return 'A value is required.';
-    if (!draft.effectiveFrom) return 'An effective-from date is required.';
+    if (!draft.rateKey) return t('Choose a rate.');
+    if (!draft.rateValue.trim()) return t('Enter a value.');
+    if (!draft.effectiveFrom) return t('Enter the date the rate takes effect.');
     const def = registryFor(draft.rateKey);
     if (def && def.dataType === 'decimal') {
       const v = Number(draft.rateValue);
-      if (Number.isNaN(v)) return 'Value must be a number.';
-      if (def.minValue != null && v < def.minValue) return `Value must be at least ${def.minValue}.`;
-      if (def.maxValue != null && v > def.maxValue) return `Value must be at most ${def.maxValue}.`;
+      if (Number.isNaN(v)) return t('The value must be a number.');
+      if (def.minValue != null && v < def.minValue) return t('The value must be at least {min}.', { min: def.minValue });
+      if (def.maxValue != null && v > def.maxValue) return t('The value must be at most {max}.', { max: def.maxValue });
     }
-    if (draft.effectiveTo && draft.effectiveTo < draft.effectiveFrom) return 'Effective-to cannot be before effective-from.';
+    if (draft.effectiveTo && draft.effectiveTo < draft.effectiveFrom) return t('The end date cannot be before the start date.');
     return null;
   };
 
@@ -112,7 +170,8 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
     setSaving(true);
     setError('');
     const body: CompanyRateRequest = {
-      rateKey: draft.rateKey,
+      // The key is immutable on edit: always send the row's own key.
+      rateKey: editing ? editing.rateKey : draft.rateKey,
       rateValue: draft.rateValue.trim(),
       effectiveFrom: draft.effectiveFrom,
       effectiveTo: draft.effectiveTo || null,
@@ -122,20 +181,70 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
       if (editing) await financeRatesApi.updateCompanyRate(editing.id, body);
       else await financeRatesApi.createCompanyRate(body, scope);
       setModalOpen(false);
-      await load();
+      toast.success(editing ? t('Rate changed. The previous value is kept in its history.') : t('Rate added.'));
+      await res.reload();
     } catch (err) {
-      setError((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to save rate.');
+      setError(serverMessage(err, t));
     } finally {
       setSaving(false);
     }
   };
 
+  // ── End-date (rows already in effect) ──────────────────────────────────────
+  const [ending, setEnding] = useState<CompanyRate | null>(null);
+  const [endDate, setEndDate] = useState('');
+  const [endError, setEndError] = useState('');
+  const [endSaving, setEndSaving] = useState(false);
+
+  const openEnd = (r: CompanyRate) => {
+    setEnding(r);
+    setEndDate(todayIso());
+    setEndError('');
+  };
+
+  const saveEnd = async () => {
+    if (!ending) return;
+    if (!endDate) return setEndError(t('Enter the last day the rate applies.'));
+    if (endDate < day(ending.effectiveFrom)) return setEndError(t('The end date cannot be before the start date.'));
+    setEndSaving(true);
+    setEndError('');
+    try {
+      await financeRatesApi.updateCompanyRate(ending.id, {
+        rateKey: ending.rateKey,
+        rateValue: ending.rateValue,
+        effectiveFrom: day(ending.effectiveFrom),
+        effectiveTo: endDate,
+        notes: ending.notes || null,
+      });
+      setEnding(null);
+      toast.success(t('Rate end-dated.'));
+      await res.reload();
+    } catch (err) {
+      setEndError(serverMessage(err, t));
+    } finally {
+      setEndSaving(false);
+    }
+  };
+
+  // ── Delete (future-dated rows only; the server refuses past-dated rows with 409) ──
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const remove = async (r: CompanyRate) => {
-    if (!window.confirm(`Delete rate "${r.rateKey}"? This archives it and removes it from resolution.`)) return;
+    const ok = await confirm({
+      title: t('Delete scheduled rate?'),
+      message: t('{name} at {value} from {date} has not taken effect yet. Deleting it removes it completely.', {
+        name: nameFor(r),
+        value: formatRate(r),
+        date: f.date(r.effectiveFrom),
+      }),
+      confirmLabel: t('Delete'),
+      tone: 'danger',
+    });
+    if (!ok) return;
     setDeletingId(r.id);
     try {
       await financeRatesApi.deleteCompanyRate(r.id);
-      await load();
+      toast.success(t('Scheduled rate deleted.'));
+      await res.reload();
     } catch (e) {
       notifyApiError(e);
     } finally {
@@ -143,104 +252,174 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
     }
   };
 
-  const ownedHere = (r: CompanyRate) => (inCompanyView ? r.companyId === scope : r.companyId === null);
+  const sourceBadge = (r: CompanyRate) =>
+    inCompanyView ? (
+      r.companyId === null ? <Badge tone="slate">{t('Inherited from group')}</Badge> : <Badge tone="violet">{t('Company')}</Badge>
+    ) : (
+      <Badge tone="sapphire">{t('Group')}</Badge>
+    );
 
-  const sorted = useMemo(
-    () => [...rates].sort((a, b) => a.rateKey.localeCompare(b.rateKey) || (a.effectiveFrom < b.effectiveFrom ? 1 : -1)),
-    [rates],
-  );
+  const period = (r: CompanyRate) =>
+    r.effectiveTo
+      ? t('{from} to {to}', { from: f.date(r.effectiveFrom), to: f.date(r.effectiveTo) })
+      : t('From {from}, open-ended', { from: f.date(r.effectiveFrom) });
+
+  const actions = (r: CompanyRate) => {
+    if (!canManage || !ownedHere(r) || !isOpenStatus(r)) return <div className="text-end text-[11px] text-slate-400" aria-hidden>—</div>;
+    return (
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <button type="button" onClick={() => openEdit(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+          <Pencil className="h-3 w-3" aria-hidden /> {t('Change value')}
+        </button>
+        {isFuture(r) ? (
+          <button
+            type="button"
+            onClick={() => remove(r)}
+            disabled={!writable || deletingId === r.id}
+            className="h-7 rounded-md border border-slate-200 px-2 text-xs font-medium text-rose-600 hover:border-rose-300 hover:bg-rose-50 disabled:opacity-40 dark:border-white/10 dark:text-rose-400"
+          >
+            {t('Delete')}
+          </button>
+        ) : (
+          <button type="button" onClick={() => openEnd(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+            <CalendarX2 className="h-3 w-3" aria-hidden /> {t('End-date')}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Company Rates</h3>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Company Rates')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Client-configurable, non-statutory rates for <span className="font-medium">{scopeLabel}</span> — custom allowances, deductions, pay parameters and above-floor EOSB. Effective-dated; a change supersedes rather than overwrites.
+            {t('Client-set, non-statutory rates for {scope}: custom allowances, deductions, pay parameters and end-of-service above the legal minimum. A change starts a new dated row; the old value stays in its history.', { scope: scopeName })}
           </p>
         </div>
         {canManage && (
-          <button type="button" onClick={openCreate} disabled={registry.length === 0} className="btn-primary text-xs disabled:opacity-60">
-            <Plus className="h-3.5 w-3.5" /> Add rate
+          <button type="button" onClick={openCreate} disabled={!writable || registry.length === 0} className="btn-primary text-xs disabled:opacity-60">
+            <Plus className="h-3.5 w-3.5" aria-hidden /> {t('Add rate')}
           </button>
         )}
       </div>
 
-      <PanelState loading={loading} empty={sorted.length === 0} emptyLabel="No company rates configured yet.">
+      <PanelState
+        loading={res.loading && !res.data}
+        error={res.error}
+        onRetry={() => void res.reload()}
+        empty={groups.length === 0}
+        emptyLabel={t('No company rates are set yet.')}
+      >
         <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
-          <table className="w-full min-w-[680px] text-sm">
-            <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead className={theadClass}>
               <tr>
-                <th className="px-3 py-2">Rate</th>
-                <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2 text-end">Value</th>
-                <th className="px-3 py-2">Effective</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2 text-end">Manage</th>
+                <th scope="col" className={thClass}>{t('Rate')}</th>
+                <th scope="col" className={thClass}>{t('Category')}</th>
+                <th scope="col" className={`${thClass} text-end`}>{t('In effect today')}</th>
+                <th scope="col" className={thClass}>{t('Effective')}</th>
+                <th scope="col" className={thClass}>{t('Source')}</th>
+                <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
               </tr>
             </thead>
-            <tbody>
-              {sorted.map((r) => {
-                const editable = canManage && ownedHere(r) && r.status === 'Active';
-                const inherited = inCompanyView && r.companyId === null;
-                return (
-                  <tr key={r.id} className={`border-t border-slate-100 dark:border-white/5 ${r.status === 'Archived' ? 'opacity-50' : ''}`}>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs">{r.rateKey}</span>
-                        {inherited && <InheritedBadge />}
-                      </div>
-                      {r.notes && <p className="text-[11px] text-slate-400">{r.notes}</p>}
+            {groups.map((g) => {
+              const head = g.current ?? g.scheduled[g.scheduled.length - 1] ?? g.history[0];
+              const def = registryFor(g.rateKey);
+              return (
+                <tbody key={g.rateKey} className="border-t border-slate-200 dark:border-white/10">
+                  <tr data-rate-key={g.rateKey}>
+                    <td className="px-3 py-2 align-top">
+                      <p className="text-slate-800 dark:text-slate-100">{nameFor({ rateKey: g.rateKey, label: head?.label })}</p>
+                      <p className="text-[11px] text-slate-500"><span className="font-mono">{g.rateKey}</span></p>
+                      {g.current?.notes && <p className="text-[11px] text-slate-500">{g.current.notes}</p>}
                     </td>
-                    <td className="px-3 py-2 text-slate-500">{r.rateCategory}</td>
-                    <td className="px-3 py-2 text-end font-medium tabular-nums">{formatValue(r.rateValue, r.unit)}</td>
-                    <td className="px-3 py-2 text-xs text-slate-500">
-                      {fmtDate(r.effectiveFrom)} → {r.effectiveTo ? fmtDate(r.effectiveTo) : 'open'}
+                    <td className="px-3 py-2 align-top text-xs text-slate-600 dark:text-slate-300">
+                      {rateCategoryLabel(t, head?.rateCategory ?? def?.rateCategory ?? '')}
                     </td>
-                    <td className="px-3 py-2">
-                      <StatusBadge status={r.status} />
+                    <td className="px-3 py-2 text-end align-top font-medium tabular-nums">
+                      {g.current ? formatRate(g.current) : <span className="text-xs font-normal text-slate-500">{t('Not in effect today')}</span>}
                     </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center justify-end gap-1">
-                        {editable ? (
-                          <>
-                            <button type="button" onClick={() => openEdit(r)} className="btn-secondary h-7 px-2 text-xs" title="Change value (supersedes this row)">
-                              <Pencil className="h-3 w-3" /> Change
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => remove(r)}
-                              disabled={deletingId === r.id}
-                              aria-label="Delete rate"
-                              className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </>
-                        ) : (
-                          <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
-                        )}
-                      </div>
+                    <td className="px-3 py-2 align-top text-xs text-slate-600 dark:text-slate-300">{g.current ? period(g.current) : '—'}</td>
+                    <td className="px-3 py-2 align-top">
+                      {g.current && (
+                        <div className="flex flex-wrap gap-1">
+                          {sourceBadge(g.current)}
+                          {g.current.status !== 'Active' && <StatusBadge status={g.current.status} />}
+                        </div>
+                      )}
                     </td>
+                    <td className="px-3 py-2 align-top">{g.current ? actions(g.current) : null}</td>
                   </tr>
-                );
-              })}
-            </tbody>
+                  {g.scheduled.map((r) => (
+                    <tr key={r.id} className="bg-sapphire/[0.03]">
+                      <td className="px-3 py-1.5 ps-6 text-xs text-slate-600 dark:text-slate-300">{t('Scheduled')}</td>
+                      <td />
+                      <td className="px-3 py-1.5 text-end text-xs tabular-nums">{formatRate(r)}</td>
+                      <td className="px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300">{period(r)}</td>
+                      <td className="px-3 py-1.5">
+                        <div className="flex flex-wrap gap-1">
+                          {sourceBadge(r)}
+                          {r.status !== 'Active' && <StatusBadge status={r.status} />}
+                        </div>
+                      </td>
+                      <td className="px-3 py-1.5">{actions(r)}</td>
+                    </tr>
+                  ))}
+                  {g.history.length > 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-3 pb-2">
+                        <details className="group text-xs">
+                          <summary className="cursor-pointer select-none text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">
+                            {t('{count, plural, one {History (# earlier value)} other {History (# earlier values)}}', { count: g.history.length })}
+                          </summary>
+                          <table className="mt-1.5 w-full">
+                            <caption className="sr-only">{t('Earlier values of {name}', { name: nameFor({ rateKey: g.rateKey }) })}</caption>
+                            <thead className="text-[11px] text-slate-500">
+                              <tr>
+                                <th scope="col" className="px-2 py-1 text-start font-medium">{t('Value')}</th>
+                                <th scope="col" className="px-2 py-1 text-start font-medium">{t('Effective')}</th>
+                                <th scope="col" className="px-2 py-1 text-start font-medium">{t('Status')}</th>
+                                <th scope="col" className="px-2 py-1 text-start font-medium">{t('Notes')}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.history.map((r) => (
+                                <tr key={r.id} className="border-t border-slate-100 text-slate-600 dark:border-white/5 dark:text-slate-300">
+                                  <td className="px-2 py-1 tabular-nums">{formatRate(r)}</td>
+                                  <td className="px-2 py-1">{period(r)}</td>
+                                  <td className="px-2 py-1">
+                                    <StatusBadge status={r.status === 'Active' && r.effectiveTo && day(r.effectiveTo) < today ? 'Archived' : r.status} />
+                                  </td>
+                                  <td className="px-2 py-1">{r.notes || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </details>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              );
+            })}
           </table>
         </div>
       </PanelState>
 
+      {/* Create / change modal */}
       <Modal
         isOpen={modalOpen}
-        title={editing ? `Change ${editing.rateKey}` : 'Add Company Rate'}
+        title={editing ? t('Change {name}', { name: nameFor(editing) }) : t('Add company rate')}
         onClose={() => setModalOpen(false)}
         footer={
           <>
             <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">
-              Cancel
+              {t('Cancel')}
             </button>
-            <button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">
-              {saving ? 'Saving…' : editing ? 'Supersede' : 'Save'}
+            <button type="button" onClick={save} disabled={saving || !writable} className="btn-primary disabled:opacity-60">
+              {saving ? t('Saving…') : editing ? t('Save new value') : t('Save')}
             </button>
           </>
         }
@@ -248,79 +427,101 @@ export function CompanyRatesPanel({ scope, scopeLabel, canManage }: Props) {
         <FieldError error={error} />
         {editing && (
           <p className="mb-3 rounded-lg bg-sapphire/10 px-3 py-2 text-xs text-sapphire dark:bg-sapphire/15 dark:text-cyanAccent">
-            Saving supersedes the current row: it is archived (closed the day before the new date) and a new effective-dated rate is created — historical payroll keeps its original value.
+            {t('A new value starts a new dated row. The current row closes the day before, so payroll already run keeps its original value.')}
           </p>
         )}
         <div className="space-y-3">
-          <Field label="Rate" required>
+          <Field label={t('Rate')} required hint={editing ? t('The rate itself cannot be changed. Add a new rate instead.') : selectedDef?.description || undefined}>
             <select
               value={draft.rateKey}
               disabled={!!editing}
               onChange={(e) => setDraft((d) => ({ ...d, rateKey: e.target.value }))}
               className="select w-full disabled:opacity-60"
             >
-              <option value="">Select a rate…</option>
+              <option value="">{t('Choose a rate…')}</option>
               {registry.map((d) => (
                 <option key={d.rateKey} value={d.rateKey}>
-                  {d.rateKey} · {d.rateCategory}
+                  {d.description ? `${d.description} (${d.rateKey})` : d.rateKey}
                 </option>
               ))}
             </select>
-            {selectedDef?.description && <p className="mt-1 text-[11px] text-slate-400">{selectedDef.description}</p>}
           </Field>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field
-              label="Value"
+              label={t('Value')}
               required
               hint={
                 selectedDef
-                  ? `Unit: ${selectedDef.unit}${selectedDef.minValue != null ? ` · min ${selectedDef.minValue}` : ''}${selectedDef.maxValue != null ? ` · max ${selectedDef.maxValue}` : ''}`
+                  ? selectedDef.minValue != null && selectedDef.maxValue != null
+                    ? t('Unit {unit}, between {min} and {max}', { unit: unitLabel(t, selectedDef.unit), min: selectedDef.minValue, max: selectedDef.maxValue })
+                    : t('Unit {unit}', { unit: unitLabel(t, selectedDef.unit) })
                   : undefined
               }
             >
-              <div className="flex items-center gap-2">
-                <input
-                  type={selectedDef?.dataType === 'decimal' ? 'number' : 'text'}
-                  step="any"
-                  min={selectedDef?.minValue ?? undefined}
-                  max={selectedDef?.maxValue ?? undefined}
-                  value={draft.rateValue}
-                  onChange={(e) => setDraft((d) => ({ ...d, rateValue: e.target.value }))}
-                  className="input w-full"
-                  placeholder="0"
-                />
-                {selectedDef && unitSuffix(selectedDef.unit) && (
-                  <span className="text-sm text-slate-400">{selectedDef.unit === 'multiplier' ? '×' : selectedDef.unit}</span>
-                )}
-              </div>
+              <input
+                type={selectedDef?.dataType === 'decimal' ? 'number' : 'text'}
+                step="any"
+                inputMode="decimal"
+                min={selectedDef?.minValue ?? undefined}
+                max={selectedDef?.maxValue ?? undefined}
+                value={draft.rateValue}
+                onChange={(e) => setDraft((d) => ({ ...d, rateValue: e.target.value }))}
+                className="input w-full"
+                placeholder="0"
+              />
             </Field>
-            <Field label="Category">
-              <input value={selectedDef?.rateCategory ?? ''} disabled className="input w-full opacity-60" title="Set by the rate registry" />
+            <Field label={t('Category')}>
+              <input value={rateCategoryLabel(t, selectedDef?.rateCategory ?? '')} readOnly className="input w-full opacity-70" />
             </Field>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Effective from" required>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('Effective from')} required>
               <input type="date" value={draft.effectiveFrom} onChange={(e) => setDraft((d) => ({ ...d, effectiveFrom: e.target.value }))} className="input w-full" />
             </Field>
-            <Field label="Effective to" hint="Leave blank for open-ended.">
+            <Field label={t('Effective to')} hint={t('Leave blank for open-ended.')}>
               <input type="date" value={draft.effectiveTo} onChange={(e) => setDraft((d) => ({ ...d, effectiveTo: e.target.value }))} className="input w-full" />
             </Field>
           </div>
 
-          <Field label="Notes">
-            <textarea value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} className="input w-full" rows={2} placeholder="Optional context for the record" />
+          <Field label={t('Notes')}>
+            <textarea value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} className="input w-full" rows={2} placeholder={t('Optional context for the record')} />
           </Field>
         </div>
       </Modal>
 
-      {!canManage && (
-        <p className="mt-3 text-[11px] text-slate-400">Read-only — you do not have permission to edit company rates.</p>
+      {/* End-date modal */}
+      <Modal
+        isOpen={!!ending}
+        title={t('End-date {name}', { name: ending ? nameFor(ending) : '' })}
+        onClose={() => setEnding(null)}
+        size="sm"
+        footer={
+          <>
+            <button type="button" onClick={() => setEnding(null)} className="btn-secondary">
+              {t('Cancel')}
+            </button>
+            <button type="button" onClick={saveEnd} disabled={endSaving || !writable} className="btn-primary disabled:opacity-60">
+              {endSaving ? t('Saving…') : t('End-date')}
+            </button>
+          </>
+        }
+      >
+        <FieldError error={endError} />
+        <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">
+          {t('This rate has already been in effect, so it is kept for payroll history. Choose the last day it applies.')}
+        </p>
+        <Field label={t('Last day in effect')} required>
+          <input type="date" value={endDate} min={ending ? day(ending.effectiveFrom) : undefined} onChange={(e) => setEndDate(e.target.value)} className="input w-full" />
+        </Field>
+      </Modal>
+
+      {!canManage && <p className="mt-3 text-[11px] text-slate-500">{t('Read-only. You do not have permission to edit company rates.')}</p>}
+      {canManage && res.ready && registry.length === 0 && (
+        <p className="mt-3 text-[11px] text-slate-500">{t('No client-configurable rates are registered. Load the standard payroll chart from the Accounts & Mapping tab.')}</p>
       )}
-      {canManage && registry.length === 0 && (
-        <p className="mt-3 text-[11px] text-slate-400">No client-configurable rate keys are registered. Seed defaults from the Accounts tab.</p>
-      )}
+      {dialog}
     </div>
   );
 }
