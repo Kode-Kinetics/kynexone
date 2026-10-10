@@ -1768,6 +1768,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // migration backfills existing tenants without a 42703 (migration-discipline rule).
             entity.Property(x => x.EmailDomain).HasMaxLength(255);
             entity.Property(x => x.WorkEmailPattern).HasMaxLength(20).HasDefaultValue(WorkEmailPatterns.FirstLast);
+            // ERP company code stamped on journal export lines (nullable: falls back to CR number).
+            entity.Property(x => x.ErpCompanyCode).HasMaxLength(30);
         });
 
         modelBuilder.Entity<Branch>(entity =>
@@ -1850,6 +1852,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Non-unique helper index; the real UNIQUE (tenant, company, code) NULLS NOT DISTINCT
             // is created via raw SQL in RekeyGlUniquesForCompanyScope (Npgsql 8 can't express it).
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code });
+            // The client's ERP account / segment string, sent by journal exports instead of Code when set.
+            entity.Property(x => x.ExternalCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<GlAccountMapping>(entity =>
@@ -4405,6 +4409,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.Kind).HasMaxLength(16);
+            entity.Property(x => x.FormatOptionsJson).HasColumnType("json");
+            entity.Property(x => x.JournalConfirmationsJson).HasColumnType("json");
+            // Double-post probe: "which exports hold ERP-confirmed journals?" without parsing JSON.
+            entity.HasIndex(x => new { x.TenantId, x.ConfirmedJournalCount });
+            // The real guard against two live exports of one scope is a raw-SQL partial UNIQUE index
+            // (ux_gl_journal_exports_live_scope, NULLS NOT DISTINCT) created in
+            // AddErpCodesAndLiveExportIndex — Npgsql 8 cannot express NULLS NOT DISTINCT in the model.
         });
 
         modelBuilder.Entity<GlJournalExportLine>(entity =>
@@ -4427,6 +4439,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // "which export(s) covered this ledger row?" — drives the ERP confirmation stamp and the
             // reconciliation view's exported-vs-posted coverage.
             entity.HasIndex(x => new { x.TenantId, x.FinanceGlEntryId });
+            entity.Property(x => x.CompanyCode).HasMaxLength(64);
+            entity.Property(x => x.ExternalAccountCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<BankPaymentConfirmation>(entity =>
