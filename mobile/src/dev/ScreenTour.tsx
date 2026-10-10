@@ -298,6 +298,8 @@ export function ScreenTour() {
       }
       if (cancelled) return;
       if (TOUR_MODE === 'shots') {
+        // Sign out so the next pass can run as another persona.
+        await useAuthStore.getState().logout();
         log('DONE');
         return;
       }
