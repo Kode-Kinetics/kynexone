@@ -55,6 +55,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Create(DepartmentRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -69,6 +70,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Update(Guid id, DepartmentRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -83,6 +85,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -143,6 +146,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] DeptImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
@@ -154,6 +158,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] DeptImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunCommitAsync(tenantId.Value, req.Csv, ct);

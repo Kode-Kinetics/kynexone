@@ -9,7 +9,7 @@ const policy: PasswordPolicy = {
   passwordRequireSpecial: true,
 };
 
-async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; failPolicy?: boolean; dark?: boolean } = {}) {
+async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; failPolicy?: boolean; dark?: boolean; guidedCompany?: boolean } = {}) {
   let writes = 0;
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -25,7 +25,8 @@ async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; fa
       writes++;
       return json({}); // Never touch a real account, even if client validation regresses.
     }
-    if (pathname === '/api/auth/me') return json({ id: 'u1', tenantId: 't1', email: 'admin@example.test', fullName: 'Test Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
+    if (pathname === '/api/auth/me') return json({ id: 'u1', tenantId: 't1', email: 'admin@example.test', fullName: 'Test Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [{ id: 'c1', name: 'Existing Company', isActive: true }], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
+    if (pathname === '/api/companies') return json({ items: [{ id: 'c1', legalNameEn: 'Existing Company', countryCode: 'US', defaultCurrency: 'USD', isActive: true }, ...(options.guidedCompany ? [{ id: 'c-new', legalNameEn: 'New Subsidiary', countryCode: 'SA', defaultCurrency: 'SAR', isActive: true }] : [])], total: options.guidedCompany ? 2 : 1 });
     if (pathname === '/api/access/security-settings') return options.failPolicy
       ? route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
       : json(options.policy ?? policy);
@@ -36,9 +37,11 @@ async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; fa
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'America/New_York', currencyCode: 'USD', countryCode: 'US' });
     return json({ items: [], total: 0 });
   });
-  await page.goto('/user-management');
+  await page.goto(options.guidedCompany
+    ? '/user-management?companyId=c-new&openCreate=1&purpose=companyAdmin&returnTo=%2Fsetup%3Ftab%3DaiSetup%26companyId%3Dc-new'
+    : '/user-management');
   await expect(page.getByRole('heading', { name: 'User Management & Access Control' })).toBeVisible();
-  await page.getByRole('button', { name: 'Create User', exact: true }).click();
+  if (!options.guidedCompany) await page.getByRole('button', { name: 'Create User', exact: true }).click();
   const password = page.getByLabel('Password', { exact: true });
   const panel = page.locator(`[id="${await password.getAttribute('aria-describedby')}"]`);
   return { password, panel, getWrites: () => writes, errors };
@@ -65,9 +68,9 @@ test('password checklist updates live, preserves show/hide, and fits the viewpor
   await expect(panel.getByRole('status')).toHaveText('3 of 5 password requirements met.');
   await expect(panel.getByRole('listitem').filter({ hasText: 'One special character' })).not.toHaveClass(/text-emerald-700/);
   // Client-side failure must not send the password or create an account.
-  const modal = page.getByRole('heading', { name: 'Create User', exact: true }).locator('..');
-  await modal.locator('input').nth(0).fill('Test Person');
-  await modal.locator('input[type="email"]').fill('test@example.test');
+  const modal = page.getByRole('dialog', { name: 'Create User' });
+  await modal.getByLabel('Full Name').fill('Test Person');
+  await modal.getByLabel('Email').fill('test@example.test');
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(modal.getByText('Please meet all password requirements below.')).toBeVisible();
   expect(getWrites()).toBe(0);
@@ -109,4 +112,15 @@ test('unavailable rules are explicit and can be retried without losing the passw
   await expect(panel.getByRole('status')).toHaveText('All password requirements met.');
   await expect(password).toHaveValue('Ab1!abcdefgh');
   expect(getWrites()).toBe(0);
+});
+
+test('guided company administrator handoff is locked to the newly created company', async ({ page }) => {
+  await openCreateUser(page, { guidedCompany: true });
+  const dialog = page.getByRole('dialog', { name: 'Create company administrator' });
+  await expect(dialog.getByLabel('Company', { exact: true })).toHaveValue('c-new');
+  await expect(dialog.getByLabel('Company', { exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('radio', { name: /Entire group/ })).toHaveCount(0);
+  await expect(dialog.getByRole('checkbox', { name: /^Admin/ })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: /^Admin/ })).toBeDisabled();
+  await expect(dialog.getByText('Locked to the company you just created.')).toBeVisible();
 });

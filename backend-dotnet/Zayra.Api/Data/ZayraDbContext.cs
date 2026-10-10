@@ -1748,7 +1748,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("branches");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Branch codes are business identifiers within a legal entity. Group tenants
+            // commonly have an HQ in every company, so tenant-wide uniqueness prevents a
+            // valid second company from being configured.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });

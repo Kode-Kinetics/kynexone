@@ -55,6 +55,7 @@ public class DesignationsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DesignationDto>> Create(DesignationRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -69,6 +70,7 @@ public class DesignationsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DesignationDto>> Update(Guid id, DesignationRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -83,6 +85,7 @@ public class DesignationsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await _organization.DeleteDesignationAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -122,6 +125,7 @@ public class DesignationsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] DesigImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
@@ -131,6 +135,7 @@ public class DesignationsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] DesigImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);

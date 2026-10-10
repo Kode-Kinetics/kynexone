@@ -50,6 +50,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<GradeDto>> Create(GradeRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -64,6 +65,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<GradeDto>> Update(Guid id, GradeRequest request, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -78,6 +80,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await _organization.DeleteGradeAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -103,6 +106,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] GradeImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
@@ -112,6 +116,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] GradeImportRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
@@ -252,6 +257,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> SetPayScale(Guid id, [FromBody] List<GradePayScaleComponentRequest> components, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var grade = await _db.Grades.FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == id && !g.IsDeleted, ct);

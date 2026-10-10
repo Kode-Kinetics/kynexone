@@ -630,3 +630,37 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
 .wg-tip { animation: wg-tip-in 140ms cubic-bezier(0.2, 0, 0, 1) both; }
 @media (prefers-reduced-motion: reduce) { .wg-tip { animation: none; } }
 @media (forced-colors: active) { .wg-tip { border: 1px solid CanvasText; } }
+
+/* Setup Studio is frequently used on 768-900px-high enterprise laptops with a security reminder
+ * present. Preserve every control while tightening the surrounding chrome so the current step and
+ * its primary action remain visible together. Taller screens keep the more generous rhythm. */
+@media (min-width: 1024px) and (max-height: 900px) {
+  .setup-page { gap: 0.5rem; }
+  .setup-page-header { display: flex; align-items: baseline; gap: 1rem; }
+  .setup-page-header h1 { flex: none; font-size: 1.25rem; line-height: 1.75rem; }
+  .setup-page-header p { margin-top: 0; max-width: none; line-height: 1.25rem; }
+  .setup-page-nav {
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    padding-bottom: 0.45rem;
+    scrollbar-width: thin;
+  }
+  .setup-page-nav button { padding-block: 0.4rem; }
+  .setup-step-rail { padding: 0.75rem !important; }
+  .setup-step-rail nav button { padding-block: 0.4rem; }
+  .setup-control-note { display: none !important; }
+  .setup-studio-content { padding: 0.75rem; }
+  .setup-studio-heading { margin-bottom: 0.5rem; }
+  .setup-company-grid { row-gap: 0.5rem; }
+  .setup-company-grid > label > span:first-child { margin-bottom: 0.25rem; }
+  .setup-company-grid > label > span:last-child { margin-top: 0.2rem; line-height: 1rem; }
+  .setup-policy-source { margin-bottom: 0.5rem; padding: 0.7rem !important; }
+  .setup-policy-source-panel { margin-top: 0.5rem; padding-top: 0.5rem; }
+  .setup-policy-textarea { height: 7rem; }
+  .setup-policy-guide-footer { margin-top: 0.5rem; padding-top: 0.5rem; }
+  .setup-work-area { gap: 0.6rem; }
+  .setup-work-area p { line-height: 1rem; }
+  .setup-work-area details { padding: 0.7rem; }
+  .setup-work-area > section { padding-top: 0.5rem; }
+  .setup-step-footer { margin-top: 0.5rem; padding-top: 0.5rem; }
+}

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Email;
@@ -34,6 +35,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertNumberingRule([FromBody] NumberingRuleRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var existing = await _db.NumberingRules.FirstOrDefaultAsync(x => x.TenantId == tid && x.EntityType == req.EntityType, ct);
@@ -103,6 +105,7 @@ public class SetupSettingsController : ControllerBase
     public async Task<IActionResult> UpsertSystemSetting([FromBody] SystemSettingRequest req,
         [FromServices] Microsoft.AspNetCore.DataProtection.IDataProtectionProvider protection, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         // Generic settings writes must not bypass the payroll-export company and permission gates.
@@ -158,6 +161,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> TestSmtp([FromServices] IEmailService email, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         // Tenant-explicit overload (POD-D5): the ambient-filter form only happened to be correct
         // because this runs under an HTTP principal.
         if (!await email.IsConfiguredAsync(GetTenantId(), ct))
@@ -201,6 +205,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertGCCSetting([FromBody] GCCSettingRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var existing = await _db.GCCComplianceSettings.FirstOrDefaultAsync(
@@ -251,6 +256,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> CreateFiscalYear([FromBody] FiscalYearRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         if (await _db.FiscalYears.AnyAsync(x => x.TenantId == tid && x.Year == req.Year, ct))
@@ -269,6 +275,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> CloseFiscalYear(Guid id, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var fy = await _db.FiscalYears.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
@@ -293,6 +300,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> CreateLocation([FromBody] LocationRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         if (await _db.Locations.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
@@ -315,6 +323,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateLocation(Guid id, [FromBody] LocationRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var loc = await _db.Locations.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
@@ -333,6 +342,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("organization.write")]
     public async Task<IActionResult> DeleteLocation(Guid id, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var loc = await _db.Locations.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (loc == null) return NotFound();
@@ -346,6 +356,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> DeleteFiscalYear(Guid id, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var fy = await _db.FiscalYears.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (fy == null) return NotFound();
@@ -359,6 +370,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("security.manage")]
     public async Task<IActionResult> DeleteNumberingRule(Guid id, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var rule = await _db.NumberingRules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (rule == null) return NotFound();
@@ -383,6 +395,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("notifications.manage")]
     public async Task<IActionResult> CreateNotificationTemplate([FromBody] NotificationTemplateRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         if (await _db.NotificationTemplates.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && x.Channel == req.Channel && !x.IsDeleted, ct))
@@ -403,6 +416,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("notifications.manage")]
     public async Task<IActionResult> UpdateNotificationTemplate(Guid id, [FromBody] NotificationTemplateRequest req, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var t = await _db.NotificationTemplates.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
@@ -419,6 +433,7 @@ public class SetupSettingsController : ControllerBase
     [HasPermission("notifications.manage")]
     public async Task<IActionResult> DeleteNotificationTemplate(Guid id, CancellationToken ct)
     {
+        if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tid = GetTenantId();
         var t = await _db.NotificationTemplates.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (t == null) return NotFound();

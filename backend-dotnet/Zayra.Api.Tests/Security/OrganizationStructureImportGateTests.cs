@@ -140,7 +140,7 @@ public sealed class OrganizationStructureImportGateTests
     }
 
     [Fact]
-    public async Task ABranchCannotBeMovedToAnotherCompany_ByImport()
+    public async Task EachCompanyCanUseTheSameBranchCode_ByImport()
     {
         var (tenant, existing) = await SeedAsync();
         await using (var seed = _fx.CreateDb())
@@ -155,8 +155,11 @@ public sealed class OrganizationStructureImportGateTests
             DepartmentsCsv: null, GradesCsv: null, GradePayComponentsCsv: null, DesignationsCsv: null), CancellationToken.None);
 
         await using var verify = _fx.CreateDb();
-        Assert.Equal(existing, (await verify.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == tenant && b.Code == "HQ")).CompanyId);
-        Assert.Contains(Errors(result), e => e.Contains("cannot be moved to another company"));
+        Assert.IsType<OkObjectResult>(result.Result);
+        var branches = await verify.Branches.IgnoreQueryFilters().Where(b => b.TenantId == tenant && b.Code == "HQ").ToListAsync();
+        Assert.Equal(2, branches.Count);
+        Assert.Contains(branches, branch => branch.CompanyId == existing);
+        Assert.Contains(branches, branch => branch.CompanyId != existing);
     }
 
     [Fact]
@@ -194,7 +197,7 @@ public sealed class OrganizationStructureImportGateTests
     }
 
     [Fact]
-    public async Task ABranchMovedToACompanyCreatedInTheSameFile_IsARowErrorAtPreview_NotACommitFailure()
+    public async Task ACompanyCreatedInTheSameFile_CanUseAnExistingBranchCode()
     {
         var (tenant, existing) = await SeedAsync();
         await using (var seed = _fx.CreateDb())
@@ -210,11 +213,12 @@ public sealed class OrganizationStructureImportGateTests
         {
             var preview = Assert.IsType<OkObjectResult>((await Controller(db, tenant).Preview(request, CancellationToken.None)).Result);
             var result = Assert.IsType<OrganizationStructureImportResult>(preview.Value);
-            Assert.True(result.HasBlockingErrors);
-            Assert.Contains(result.Rows.SelectMany(r => r.Errors), e => e.Contains("cannot be moved to another company"));
+            Assert.False(result.HasBlockingErrors);
         }
         await using (var db = _fx.CreateDb())
-            Assert.Contains(Errors(await Controller(db, tenant).Commit(request, CancellationToken.None)), e => e.Contains("cannot be moved"));
-        Assert.Equal(1, await CompanyCount(tenant));
+            Assert.IsType<OkObjectResult>((await Controller(db, tenant).Commit(request, CancellationToken.None)).Result);
+        Assert.Equal(2, await CompanyCount(tenant));
+        await using var verify = _fx.CreateDb();
+        Assert.Equal(2, await verify.Branches.IgnoreQueryFilters().CountAsync(branch => branch.TenantId == tenant && branch.Code == "HQ"));
     }
 }

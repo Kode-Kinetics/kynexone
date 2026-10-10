@@ -268,7 +268,7 @@ public sealed partial class AdvisoryLockTransactionPoolingPostgresTests : IClass
             {
                 var email = $"admin-{Guid.NewGuid():N}@example.test";
                 await service.CreateUserAsync(tenantId,
-                    new CreateUserRequest(email, "Pooled Admin", "StrongPassword!123", new[] { "Admin" }),
+                    new CreateUserRequest(email, "Pooled Admin", "StrongPassword!123", new[] { "Admin" }, IsGroupScope: true),
                     context, CancellationToken.None);
             }
             else

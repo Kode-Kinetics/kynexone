@@ -67,6 +67,7 @@ import { TransliterateButton } from '../components/TransliterateButton';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
 import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
@@ -121,6 +122,8 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 function CompaniesTab() {
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
+  const { isGroupScope, setSelectedCompany } = useCompany();
+  const router = useRouter();
   // Company mutations require organization write access. organization.read-only viewers
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
   // tab via the /companies redirect and get the same read-only list they had before,
@@ -191,7 +194,15 @@ function CompaniesTab() {
     setSaving(true); setError('');
     try {
       if (editing) await companiesApi.update(editing.id, form);
-      else await companiesApi.create(form);
+      else {
+        const created = await companiesApi.create(form);
+        window.dispatchEvent(new Event('kynexone:companies-changed'));
+        if (created.isActive && created.approvalStatus === 'Active') {
+          setSelectedCompany(created.id);
+          const setupReturn = encodeURIComponent(`/setup?tab=aiSetup&companyId=${created.id}`);
+          router.push(`/user-management?companyId=${created.id}&openCreate=1&purpose=companyAdmin&returnTo=${setupReturn}`, { scroll: false });
+        }
+      }
       setModalOpen(false);
       load();
     } catch (err: unknown) {
@@ -256,7 +267,7 @@ function CompaniesTab() {
       )}
       <TableShell
         columns={['Legal Name', 'Trade Name', 'Country', 'Currency', 'Status']}
-        onAdd={canWrite ? openNew : undefined}
+        onAdd={canWrite && isGroupScope ? openNew : undefined}
         addLabel="Add Company"
         loading={loading}
         empty={items.length === 0}
@@ -2267,16 +2278,20 @@ export function SetupPage() {
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole } = useAuth();
+  const { accountType, isGroupScope } = useCompany();
+  const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
   const canReadCompanies = canWrite || hasPermission('organization.read');
   const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
-  const visibleTabs = canWrite ? tabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
+  const companyOwnedSettingIds = new Set<SettingsTab>(['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
+  const writableTabs = isCompanyScopedGroup ? tabs.filter(tab => companyOwnedSettingIds.has(tab.id)) : tabs;
+  const visibleTabs = canWrite ? writableTabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
   const tabParam = searchParams?.get('tab');
   const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
-  const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || tabParam === 'importOrganization' || (tabParam === 'policyLibrary' && canManagePolicies))
+  const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
       ? (tabParam as SettingsTab)
@@ -2294,11 +2309,14 @@ export function SetupPage() {
   }, [requestedTab]);
 
   useEffect(() => {
-    if (canReadCompanies) companiesApi.listAll().then(setCompanies).catch(() => {});
+    const refreshCompanies = () => { if (canReadCompanies) companiesApi.listAll().then(setCompanies).catch(() => {}); };
+    refreshCompanies();
+    window.addEventListener('kynexone:companies-changed', refreshCompanies);
     if (canWrite) {
       gradesApi.listAll().then(setGrades).catch(() => {});
       costCentersApi.listAll().then(setCostCenters).catch(() => {});
     }
+    return () => window.removeEventListener('kynexone:companies-changed', refreshCompanies);
   }, [canReadCompanies, canWrite]);
 
   const selectTab = (tab: Tab) => {
@@ -2318,8 +2336,8 @@ export function SetupPage() {
   const SelectedSettingIcon = selectedSetting.icon;
   const navigationTabs = canWrite ? [
     { id: 'aiSetup' as const, label: t('Setup Studio'), icon: Sparkles },
-    { id: 'importOrganization' as const, label: t('Import organization'), icon: Upload },
-    ...directSettingsOrder.map((id) => {
+    ...(!isCompanyScopedGroup ? [{ id: 'importOrganization' as const, label: t('Import organization'), icon: Upload }] : []),
+    ...directSettingsOrder.filter(id => !isCompanyScopedGroup || companyOwnedSettingIds.has(id)).map((id) => {
       const tab = tabs.find((item) => item.id === id)!;
       return { id: tab.id, label: t(tab.label), icon: tab.icon };
     }),
@@ -2327,8 +2345,8 @@ export function SetupPage() {
   ] : visibleTabs.map((tab) => ({ id: tab.id, label: t(tab.label), icon: tab.icon }));
 
   return (
-    <div className="space-y-4">
-      <header className="min-w-0">
+    <div className="setup-page space-y-4">
+      <header className="setup-page-header min-w-0">
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
@@ -2337,7 +2355,7 @@ export function SetupPage() {
         </p>
       </header>
 
-      <nav aria-label={t('Setup sections')} className="flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
+      <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
             const selected = selectedTab === id;
             return (
@@ -2366,7 +2384,7 @@ export function SetupPage() {
           <section id="setup-aiSetup" aria-label={t('Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
             <AiSetupAssistant companies={companies} />
           </section>
-          <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={selectedTab !== 'importOrganization'}>
+          <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={isCompanyScopedGroup || selectedTab !== 'importOrganization'}>
             <OrgStructureImportPanel />
           </section>
         </>

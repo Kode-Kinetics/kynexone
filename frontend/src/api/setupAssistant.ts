@@ -6,6 +6,8 @@ export interface SetupSections {
 }
 
 export interface CompanyProfile {
+  /** Immutable target for a reviewed setup draft. Names are display data, not an authorization boundary. */
+  companyId?: string;
   countryCode: string;
   industry: string;
   companySize: string;
@@ -161,9 +163,9 @@ export const setupAssistantApi = {
       configurationVersion: r.data?.configurationVersion,
     })),
 
-  apply: (draft: SetupDraft, countryCode: string, currencyCode: string, legalEntityName?: string) =>
+  apply: (draft: SetupDraft, countryCode: string, currencyCode: string, legalEntityName?: string, companyId?: string) =>
     client.post<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string }> }>(
-      '/api/setup-assistant/apply', { draft, countryCode, currencyCode, legalEntityName },
+      '/api/setup-assistant/apply', { draft, countryCode, currencyCode, legalEntityName, companyId },
     ).then(r => r.data),
 };
 

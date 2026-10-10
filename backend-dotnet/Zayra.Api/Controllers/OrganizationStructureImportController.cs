@@ -357,16 +357,16 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
-        var branches = SavedIndex.Of(await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "branch");
+        var branches = (await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct))
+            .GroupBy(x => (x.CompanyId, Code: x.Code.ToUpperInvariant()))
+            .ToDictionary(g => g.Key, g => g.First());
         foreach (var row in parsed.Branches)
         {
             var code = Val(row, "Code");
             var company = companies[Val(row, "CompanyLegalName").ToUpperInvariant()];
-            if (branches.TryGetValue(code.ToUpperInvariant(), out var branch))
+            var branchKey = (company.Id, Code: code.ToUpperInvariant());
+            if (branches.TryGetValue(branchKey, out var branch))
             {
-                // The Branches importer's rule: a branch stays in its company (validation reports it; this backs it up).
-                if (branch.CompanyId != company.Id)
-                    throw new InvalidOperationException($"Branch '{code}' belongs to another company and cannot be moved to another company by import.");
                 branch.NameEn = Val(row, "NameEn");
                 branch.NameAr = Val(row, "NameAr");
                 branch.CountryCode = Val(row, "CountryCode", company.CountryCode);
@@ -401,7 +401,7 @@ public class OrganizationStructureImportController : ControllerBase
                 };
                 _db.Branches.Add(branch);
                 Audit("organization.branch_created", nameof(Branch), branch.Id, code);
-                branches[code.ToUpperInvariant()] = branch;
+                branches[branchKey] = branch;
                 Bump("branches");
             }
         }
@@ -469,7 +469,10 @@ public class OrganizationStructureImportController : ControllerBase
             department.NameEn = Val(row, "NameEn");
             department.NameAr = Val(row, "NameAr");
             var departmentCompany = string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName")) ? null : companies[Val(row, "CompanyLegalName").ToUpperInvariant()];
-            var departmentBranch = string.IsNullOrWhiteSpace(Val(row, "BranchCode")) ? null : branches[Val(row, "BranchCode").ToUpperInvariant()];
+            var departmentBranchCode = Val(row, "BranchCode").ToUpperInvariant();
+            var departmentBranch = string.IsNullOrWhiteSpace(departmentBranchCode) ? null
+                : departmentCompany is not null ? branches[(departmentCompany.Id, departmentBranchCode)]
+                : branches.Values.Single(x => string.Equals(x.Code, departmentBranchCode, StringComparison.OrdinalIgnoreCase));
             var departmentCostCenter = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()];
             if (departmentCompany is not null && departmentBranch is not null && departmentBranch.CompanyId != departmentCompany.Id)
                 throw new InvalidOperationException($"Department '{code}' branch does not belong to '{departmentCompany.LegalNameEn}'.");
@@ -564,7 +567,10 @@ public class OrganizationStructureImportController : ControllerBase
             }
             position.Title = Val(row, "Title");
             position.CompanyId = string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName")) ? null : companies[Val(row, "CompanyLegalName").ToUpperInvariant()].Id;
-            position.BranchId = string.IsNullOrWhiteSpace(Val(row, "BranchCode")) ? null : branches[Val(row, "BranchCode").ToUpperInvariant()].Id;
+            var positionBranchCode = Val(row, "BranchCode").ToUpperInvariant();
+            position.BranchId = string.IsNullOrWhiteSpace(positionBranchCode) ? null
+                : position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
+                : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
             position.DepartmentId = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
             position.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()].Id;
             position.DesignationId = string.IsNullOrWhiteSpace(Val(row, "DesignationCode")) ? null : designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
@@ -620,7 +626,9 @@ public class OrganizationStructureImportController : ControllerBase
             .ToListAsync(ct);
         var branchCodes = branchRows.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var branchCompanyByCode = branchRows.GroupBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => (Guid?)g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(g => g.Key,
+                g => g.Select(x => x.CompanyId).Distinct().Count() == 1 ? (Guid?)g.First().CompanyId : null,
+                StringComparer.OrdinalIgnoreCase);
         var costCenterRows = await _db.CostCenters.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => new { x.Code, x.CompanyId })
@@ -643,7 +651,9 @@ public class OrganizationStructureImportController : ControllerBase
         var positionCodes = savedPositionCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var ambiguousCompanies = Ambiguous(existingCompanies.Select(x => x.LegalNameEn));
-        var ambiguousBranches = Ambiguous(branchRows.Select(x => x.Code));
+        // A branch code is qualified by CompanyId. Seeing HQ in two legal entities is expected,
+        // not an ambiguous saved identifier.
+        var ambiguousBranches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var ambiguousCostCenters = Ambiguous(costCenterRows.Select(x => x.Code));
         var ambiguousDepartments = Ambiguous(savedDepartmentCodes);
         var ambiguousGrades = Ambiguous(savedGradeCodes);
@@ -692,7 +702,7 @@ public class OrganizationStructureImportController : ControllerBase
         }
         Merge(companyNames, parsed.Companies.Select(x => Val(x, "LegalNameEn")));
         AddRows("branches", parsed.Branches, "Code", "NameEn", required: ["CompanyLegalName", "Code", "NameEn"], known: branchCodes, rows,
-            refs: [("CompanyLegalName", companyNames, "Company")]);
+            refs: [("CompanyLegalName", companyNames, "Company")], duplicateScopeKey: "CompanyLegalName");
         Merge(branchCodes, parsed.Branches.Select(x => Val(x, "Code")));
         AddRows("costCenters", parsed.CostCenters, "Code", "Name", required: ["CompanyLegalName", "Code", "Name"], known: costCenterCodes, rows,
             refs: [("CompanyLegalName", companyNames, "Company")]);
@@ -817,27 +827,12 @@ public class OrganizationStructureImportController : ControllerBase
                 rows.Add(new ImportRowResult(i + 2, $"companies:{name}", name, ImportRowStatus.Error, errors, []));
         }
 
-        var savedBranches = await _db.Branches.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && !x.IsDeleted)
-            .Select(x => new { x.Code, x.CompanyId })
-            .ToListAsync(ct);
-        var branchCompany = savedBranches.GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < parsed.Branches.Count; i++)
         {
             var row = parsed.Branches[i];
             var code = Val(row, "Code");
             var errors = new List<string>();
             if (OrganizationSetupService.CountryCodeProblem(Val(row, "CountryCode")) is { } countryProblem) errors.Add(countryProblem);
-            // The row's company may be a saved one or one this same file creates (it has no id yet, so it is by
-            // definition not the branch's current company). Both are moves; both are refused HERE, at preview,
-            // instead of passing validation and failing inside the commit.
-            var rowCompanyName = Val(row, "CompanyLegalName");
-            if (branchCompany.TryGetValue(code, out var currentCompany) && rowCompanyName.Length > 0
-                && (savedByName.TryGetValue(rowCompanyName, out var rowCompany)
-                        ? rowCompany != currentCompany
-                        : seenNames.Contains(rowCompanyName)))
-                errors.Add($"Branch '{code}' belongs to another company and cannot be moved to another company by import.");
             if (errors.Count > 0)
                 rows.Add(new ImportRowResult(i + 2, $"branches:{code}", Val(row, "NameEn"), ImportRowStatus.Error, errors, []));
         }

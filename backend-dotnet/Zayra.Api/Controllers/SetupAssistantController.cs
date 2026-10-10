@@ -49,6 +49,19 @@ public class SetupAssistantController : ControllerBase
         // against anyone. Refuse rather than spend tokens on an unattributable request.
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId))
             return Unauthorized(new { message = "Tenant context is missing." });
+        if (profile.CompanyId.HasValue)
+        {
+            var target = await _db.Companies.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(c =>
+                c.TenantId == tenantId && c.Id == profile.CompanyId.Value && !c.IsDeleted, ct);
+            if (target is null) return RefuseConfiguration(["The selected company no longer exists in this workspace."]);
+            if (!this.GetEntityScope().CanAccessCompany(target.Id)) return Forbid();
+            if (!target.IsActive || target.ApprovalStatus != CompanyApprovalStatuses.Active)
+                return RefuseConfiguration([$"Company '{target.LegalNameEn}' is not active. Finish its approval before opening Setup Studio."]);
+            if (!string.Equals(target.LegalNameEn.Trim(), profile.LegalEntityName?.Trim(), StringComparison.OrdinalIgnoreCase)
+                || CountryCodeStandard.NormalizeToIso2(target.CountryCode) != CountryCodeStandard.NormalizeToIso2(profile.CountryCode)
+                || !string.Equals(target.DefaultCurrency, profile.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+                return RefuseConfiguration(["The reviewed identity, country or currency does not match the selected company. Refresh Setup Studio before generating a draft."]);
+        }
         var inputProblems = SetupAssistantService.ValidateConfiguration(profile);
         if (inputProblems.Count > 0) return RefuseConfiguration(inputProblems);
         if (profile.Configuration?.PolicyDocumentId is { } policyId)
@@ -62,13 +75,13 @@ public class SetupAssistantController : ControllerBase
         var result = await _assistant.GenerateAsync(new SetupRequester(tenantId, GetUserId(), CallerRole()), profile, ct);
         if (profile.Configuration is not null)
         {
-            var request = new ApplySetupRequest(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName);
+            var request = new ApplySetupRequest(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName, profile.CompanyId);
             var referenceProblems = await ValidatePolicyReferencesAsync(tenantId, request, null, preview: true, ct);
             if (referenceProblems.Count > 0) return RefuseConfiguration(referenceProblems);
         }
         if (result.Draft.AttendancePolicy is not null || result.Draft.OvertimePolicy is not null)
         {
-            var branch = await ResolveSetupBranchAsync(tenantId, new(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName), null, ct);
+            var branch = await ResolveSetupBranchAsync(tenantId, new(result.Draft, profile.CountryCode, profile.CurrencyCode, profile.LegalEntityName, profile.CompanyId), null, ct);
             if (branch.Problem is not null) return RefuseConfiguration([branch.Problem]);
             result = result with { Notes = result.Notes.Append($"Attendance and overtime policies are assigned to branch '{branch.Code}' of the reviewed legal entity.").ToList() };
         }
@@ -201,8 +214,10 @@ public class SetupAssistantController : ControllerBase
         }
         company ??= await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
 
-        var branchByCode = await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted)
-            .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        var branchByCode = company is null
+            ? new Dictionary<string, Branch>()
+            : await _db.Branches.Where(x => x.TenantId == tenantId && x.CompanyId == company.Id && !x.IsDeleted)
+                .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
         foreach (var b in d.Branches)
         {
             if (company is null || string.IsNullOrWhiteSpace(b.Code) || string.IsNullOrWhiteSpace(b.NameEn)) continue;
@@ -531,14 +546,20 @@ public class SetupAssistantController : ControllerBase
         }
 
         // ── Public holidays ──────────────────────────────────────────────────
-        // One calendar per (country, year); its holidays are keyed by date, so re-applying a draft
-        // tops up a partial calendar instead of duplicating the days already in it.
+        // Calendars are owned by the reviewed company (or explicitly tenant-wide when there is no
+        // company target). Re-applying tops up only that exact calendar; it must never discover a
+        // sibling or shared calendar merely because country and year match.
         if (d.HolidayCalendar is not null && d.HolidayCalendar.Holidays.Count > 0)
         {
             var year = d.HolidayCalendar.CalendarYear;
             var countryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant();
+            var calendarCompanyId = company?.Id;
             var calendar = await _db.PublicHolidayCalendars.FirstOrDefaultAsync(
-                x => x.TenantId == tenantId && x.CountryCode == countryCode && x.CalendarYear == year, ct);
+                x => x.TenantId == tenantId
+                    && x.CountryCode == countryCode
+                    && x.CalendarYear == year
+                    && x.CompanyId == calendarCompanyId,
+                ct);
             if (calendar is null)
             {
                 calendar = new PublicHolidayCalendar
@@ -824,6 +845,9 @@ public class SetupAssistantController : ControllerBase
 
     private async Task<BranchSelection> ResolveSetupBranchAsync(Guid tenantId, ApplySetupRequest request, Company? company, CancellationToken ct)
     {
+        if (company is null && request.CompanyId.HasValue)
+            company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c =>
+                c.TenantId == tenantId && c.Id == request.CompanyId.Value && !c.IsDeleted, ct);
         if (company is null && !string.IsNullOrWhiteSpace(request.LegalEntityName))
         {
             var name = request.LegalEntityName.Trim().ToUpperInvariant();
@@ -922,6 +946,9 @@ public class SetupAssistantController : ControllerBase
         var d = req.Draft;
         if (d.LeavePolicies.Count > 0 && string.IsNullOrWhiteSpace(req.LegalEntityName))
             errors.Add("Leave policies require an explicit reviewed legal entity.");
+        if (company is null && req.CompanyId.HasValue)
+            company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c =>
+                c.TenantId == tenantId && c.Id == req.CompanyId.Value && !c.IsDeleted, ct);
         if (company is null && !string.IsNullOrWhiteSpace(req.LegalEntityName))
         {
             var legalName = req.LegalEntityName.Trim().ToUpperInvariant();
@@ -1141,15 +1168,44 @@ public class SetupAssistantController : ControllerBase
         var scope = this.GetEntityScope();
         var d = req.Draft;
         if (OrganizationSetupService.CountryCodeProblem(req.CountryCode) is { } countryProblem) problems.Add(countryProblem);
-        if (!scope.IsGroupLevel && (d.Grades.Count > 0 || d.GradePayComponents.Count > 0))
-            problems.Add("Only a group-scope administrator can configure shared grades and grade pay components.");
-        if (!scope.IsGroupLevel && d.HrConfig is not null)
-            problems.Add("Only a group-scope administrator can change the shared workspace approval and governance settings.");
+        if (!scope.IsGroupLevel)
+        {
+            var sharedAreas = new List<string>();
+            if (d.Departments.Count > 0 || d.Designations.Count > 0) sharedAreas.Add("organization catalogs");
+            if (d.Grades.Count > 0 || d.GradePayComponents.Count > 0) sharedAreas.Add("grades and salary bands");
+            if (d.LeaveTypes.Count > 0) sharedAreas.Add("leave types");
+            if (d.Shifts.Count > 0 || d.WorkingWeek is not null) sharedAreas.Add("shifts and working week");
+            if (d.AttendancePolicy is not null || d.OvertimePolicy is not null) sharedAreas.Add("attendance and overtime policies");
+            if (d.PayComponents.Count > 0 || d.StatutoryRules.Count > 0) sharedAreas.Add("payroll and statutory rules");
+            if (d.HrConfig is not null) sharedAreas.Add("workspace governance");
+            if (d.Localization is not null) sharedAreas.Add("language, time zone and currency defaults");
+            if (sharedAreas.Count > 0)
+                problems.Add("A company administrator cannot change group-shared " + string.Join(", ", sharedAreas) + ". Ask a group administrator to publish the shared baseline, then apply only company-owned policies.");
+        }
 
         Company? company = null;
         var createAsDraft = false;
         var legalName = (req.LegalEntityName ?? string.Empty).Trim();
-        if (legalName.Length > 0)
+        if (req.CompanyId.HasValue)
+        {
+            company = await _db.Companies.IgnoreQueryFilters().FirstOrDefaultAsync(x =>
+                x.TenantId == tenantId && x.Id == req.CompanyId.Value && !x.IsDeleted, ct);
+            if (company is null)
+                problems.Add("The selected company no longer exists in this workspace.");
+            else
+            {
+                if (!company.IsActive || company.ApprovalStatus != CompanyApprovalStatuses.Active)
+                    problems.Add($"Company '{company.LegalNameEn}' is not active. Finish its approval before opening Setup Studio.");
+                if (!scope.CanAccessCompany(company.Id))
+                    problems.Add($"Company '{company.LegalNameEn}' is outside your company scope.");
+                if (legalName.Length > 0 && !string.Equals(company.LegalNameEn.Trim(), legalName, StringComparison.OrdinalIgnoreCase))
+                    problems.Add("The reviewed company name does not match the selected company. Refresh Setup Studio and review the draft again.");
+                if (CountryCodeStandard.NormalizeToIso2(company.CountryCode) != CountryCodeStandard.NormalizeToIso2(req.CountryCode)
+                    || !string.Equals(company.DefaultCurrency, req.CurrencyCode, StringComparison.OrdinalIgnoreCase))
+                    problems.Add("The reviewed country and currency must match the selected company.");
+            }
+        }
+        else if (legalName.Length > 0)
         {
             var upper = legalName.ToUpperInvariant();
             var matches = await _db.Companies
@@ -1181,18 +1237,6 @@ public class SetupAssistantController : ControllerBase
         if (!scope.IsGroupLevel && (d.AttendancePolicy is not null || d.OvertimePolicy is not null)
             && d.Branches.Count == 0 && (company is null || !await _db.Branches.AnyAsync(b => b.TenantId == tenantId && b.CompanyId == company.Id && !b.IsDeleted, ct)))
             problems.Add("Add a branch for the reviewed company before configuring attendance or overtime; a company-scoped user cannot create a workspace-wide policy.");
-
-        if (d.Branches.Count > 0)
-        {
-            var codes = d.Branches.Where(b => !string.IsNullOrWhiteSpace(b.Code)).Select(b => b.Code.Trim().ToUpperInvariant()).ToList();
-            var saved = await _db.Branches.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && !x.IsDeleted && codes.Contains(x.Code.ToUpper()))
-                .Select(x => new { x.Code, x.CompanyId })
-                .ToListAsync(ct);
-            foreach (var branch in saved)
-                if (company is null || branch.CompanyId != company.Id)
-                    problems.Add($"Branch '{branch.Code}' belongs to another company and cannot be moved to another company by the setup assistant.");
-        }
 
         foreach (var g in d.Grades)
         {
@@ -1301,4 +1345,4 @@ public class SetupAssistantController : ControllerBase
         User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 }
 
-public record ApplySetupRequest(SetupDraft Draft, string CountryCode, string CurrencyCode, string? LegalEntityName = null);
+public record ApplySetupRequest(SetupDraft Draft, string CountryCode, string CurrencyCode, string? LegalEntityName = null, Guid? CompanyId = null);

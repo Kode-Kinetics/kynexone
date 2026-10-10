@@ -209,7 +209,7 @@ export function SetupPolicyEditor({
     );
   if (area === "work")
     return (
-      <div className="grid items-start gap-4 xl:grid-cols-2">
+      <div className="setup-work-area grid items-start gap-4 xl:grid-cols-2">
         <div className="space-y-3">
           <Choices
             legend={msg("How is time recorded?")}

@@ -92,7 +92,7 @@ export function SetupPolicySource({
 
   return (
     <section
-      className="mb-4 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30 dark:bg-blue-400/5 sm:p-4"
+      className="setup-policy-source mb-4 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30 dark:bg-blue-400/5 sm:p-4"
       aria-label={t("Existing HR policy")}
     >
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -149,7 +149,7 @@ export function SetupPolicySource({
       <div
         id={panelId}
         hidden={!open}
-        className="mt-3 border-t border-sapphire/20 pt-3 dark:border-blue-400/20"
+        className="setup-policy-source-panel mt-3 border-t border-sapphire/20 pt-3 dark:border-blue-400/20"
       >
         <ol
           className="mb-3 flex flex-wrap gap-x-5 gap-y-2 text-xs"
@@ -201,7 +201,7 @@ export function SetupPolicySource({
                 </label>
                 <textarea
                   id={`${panelId}-text`}
-                  className="input h-36 w-full resize-none"
+                  className="setup-policy-textarea input h-36 w-full resize-none"
                   maxLength={12000}
                   value={text}
                   onChange={(e) => {
@@ -373,7 +373,7 @@ export function SetupPolicySource({
             )}
           </p>
         </div>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-sapphire/20 pt-3 xl:pe-40 dark:border-blue-400/20">
+        <div className="setup-policy-guide-footer mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-sapphire/20 pt-3 xl:pe-40 dark:border-blue-400/20">
           {step > 0 ? (
             <button
               type="button"

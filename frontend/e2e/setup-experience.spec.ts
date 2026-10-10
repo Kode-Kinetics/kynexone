@@ -12,6 +12,10 @@ const company = {
   id: 'setup-company', legalNameEn: 'Setup Fixture Company', legalNameAr: '', tradeName: 'Setup Fixture Company',
   countryCode: 'SA', jurisdiction: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active',
 };
+const groupCompany = {
+  id: 'setup-company-two', legalNameEn: 'Group Services LLC', legalNameAr: '', tradeName: 'Group Services',
+  countryCode: 'AE', jurisdiction: 'UAE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active',
+};
 
 const draft: SetupDraft = {
   branches: [{ code: 'HQ', nameEn: 'Head Office', city: 'Riyadh', isHeadOffice: true }],
@@ -27,6 +31,7 @@ interface ApplyRequest {
   countryCode: string;
   currencyCode: string;
   legalEntityName?: string;
+  companyId?: string;
 }
 
 interface BootOptions {
@@ -42,6 +47,7 @@ interface BootOptions {
   policyEmployee?: boolean;
   employeeOnly?: boolean;
   hrLibrary?: boolean;
+  groupMode?: boolean;
 }
 
 async function boot(page: Page, options: BootOptions = {}) {
@@ -80,14 +86,16 @@ async function boot(page: Page, options: BootOptions = {}) {
       id: 'setup-reviewer', tenantId: 'setup-tenant', tenantSlug: 'setup-fixture', fullName: 'Setup Reviewer',
       roles: options.hrLibrary ? ['HR Manager'] : options.employeeOnly ? ['Employee'] : options.readOnly ? ['Auditor'] : ['Admin'],
       permissions: options.employeeOnly ? ['organization.read', 'ess.read'] : options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'employees.approve', 'leave.policy_manage', 'overtime.policy_manage', ...((options.mfaReminder || (options.policyIntelligence && !options.hrLibrary)) ? ['ai.query'] : []), ...(options.policyEmployee ? ['ess.read'] : []), ...(options.settingsSweep ? ['finance.gl.read', 'payroll.rates.read', 'organization.establishment.read', 'organization.establishment.write'] : [])],
-      companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
+      accountType: options.groupMode ? 'Group' : 'SingleCompany',
+      isGroupScope: options.groupMode,
+      companies: (options.groupMode ? [company, groupCompany] : [company]).map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: item.countryCode, isActive: true })),
     });
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
       ? { countryCode: '', currencyCode: '' }
       : { countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/features/modules' || path === '/api/notifications') return reply([]);
-    if (path === '/api/companies') return reply(paged([company]));
+    if (path === '/api/companies') return reply(paged(options.groupMode ? [company, groupCompany] : [company]));
     if (path === '/api/grades' || path === '/api/branches' || path === '/api/departments' || path === '/api/organization/cost-centers') return reply(paged([]));
     if (path === '/api/setup-assistant/preview') {
       previews.push(request.postDataJSON() as CompanyProfile);
@@ -284,6 +292,61 @@ test('offers import separately from Setup Studio and preserves its organization 
   expect(state.previews).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('a group administrator selects one company before opening its protected setup draft', async ({ page }) => {
+  const state = await boot(page, { groupMode: true });
+
+  await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toBeVisible();
+  await expect(page.getByText('Create the legal entity', { exact: true })).toBeVisible();
+  await expect(page.getByText('Assign its administrator', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: new RegExp(`^${company.legalNameEn}`) }).click();
+
+  await expect(page.getByText(/Protected company scope/)).toBeVisible();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue(company.legalNameEn);
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveAttribute('readonly', '');
+  await expect(page.getByLabel(/^Country/)).toBeDisabled();
+  await expect(page.getByLabel(/^Currency/)).toBeDisabled();
+  await page.getByLabel(/^Industry/).fill('Healthcare');
+  await toReview(page);
+
+  await expect(page.getByRole('checkbox', { name: 'Include Org structure in the generated draft', exact: true })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'Include Benefits in the generated draft', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
+  await expect(page.getByRole('button', { name: `Apply 3 item(s) to ${company.legalNameEn}`, exact: true })).toBeVisible();
+
+  expect(state.previews).toHaveLength(1);
+  expect(state.previews[0]).toMatchObject({
+    companyId: company.id,
+    legalEntityName: company.legalNameEn,
+    countryCode: company.countryCode,
+    currencyCode: company.defaultCurrency,
+    sections: { entity: true, org: false, leave: false, shifts: false, attendance: false, payroll: false, holidays: true, governance: false, localization: false, benefits: true },
+  });
+  expect(state.applies).toHaveLength(0);
+  expect(state.errors).toEqual([]);
+  expect(state.unexpectedWrites).toEqual([]);
+});
+
+test('a resumed company setup URL restores its immutable company target', async ({ page }) => {
+  await boot(page, { groupMode: true, route: `/setup?tab=aiSetup&companyId=${groupCompany.id}` });
+
+  await expect(page.getByText(/Protected company scope/)).toBeVisible();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue(groupCompany.legalNameEn);
+  await expect(page.getByLabel(/^Country/)).toHaveValue(groupCompany.countryCode);
+  await expect(page.getByLabel(/^Currency/)).toHaveValue(groupCompany.defaultCurrency);
+  await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toHaveCount(0);
+});
+
+test('an invalid company setup URL fails closed instead of selecting another company', async ({ page }) => {
+  const state = await boot(page, { groupMode: true, route: '/setup?tab=aiSetup&companyId=missing-company' });
+
+  await expect(page.getByRole('alert').filter({ hasText: 'This company is not available for setup' })).toBeVisible();
+  await expect(page.getByText(/No other company has been selected in its place/)).toBeVisible();
+  await expect(page.getByText(/Protected company scope/)).toHaveCount(0);
+  expect(state.previews).toHaveLength(0);
+  expect(state.applies).toHaveLength(0);
   expect(state.errors).toEqual([]);
 });
 

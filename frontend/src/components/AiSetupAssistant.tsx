@@ -1,14 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CheckCircle2, Eye, Info, Pencil, ShieldCheck, Trash2, Wand2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CheckCircle2, ChevronRight, Eye, Info, Pencil, Plus, ShieldCheck, Trash2, Users, Wand2 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { SetupPolicyEditor } from './SetupPolicyEditor';
 import type { CompanyDto } from '../api/organization';
 import { tenantAdminApi } from '../api/intelligence';
 import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
 import { setupAssistantApi, type CompanyProfile, type SetupDraft, type SetupConfiguration } from '../api/setupAssistant';
+import { useCompany } from '../contexts/CompanyContext';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -81,6 +83,30 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   // neither shown nor sent (the server would skip them and say so).
   const releaseA = useReleaseA();
   const t = useT();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { accountType, isGroupScope, selectedCompanyId, setSelectedCompany } = useCompany();
+  const requestedCompanyId = searchParams?.get('companyId') ?? '';
+  const requestedCompany = requestedCompanyId
+    ? companies.find(company => company.id === requestedCompanyId && company.isActive && company.approvalStatus === 'Active')
+    : undefined;
+  useEffect(() => {
+    if (accountType !== 'Group' || !isGroupScope || !requestedCompanyId) return;
+    if (requestedCompany && selectedCompanyId !== requestedCompanyId) {
+      setSelectedCompany(requestedCompanyId);
+    }
+  }, [accountType, isGroupScope, requestedCompany, requestedCompanyId, selectedCompanyId, setSelectedCompany]);
+  // Single-company workspaces retain the established setup flow. A Group workspace must bind
+  // every draft to an immutable company record before company-owned settings can be edited.
+  const targetCompany = accountType === 'Group'
+    ? requestedCompanyId
+      ? requestedCompany
+      : companies.find(company => company.id === selectedCompanyId && company.isActive && company.approvalStatus === 'Active')
+        ?? (!isGroupScope ? companies.find(company => company.isActive && company.approvalStatus === 'Active') : undefined)
+    : undefined;
+  const requestedCompanyUnavailable = accountType === 'Group' && !!requestedCompanyId && !requestedCompany;
+  const requiresCompanySelection = accountType === 'Group' && isGroupScope && !targetCompany;
+  const canIncludeSharedSetup = accountType !== 'Group';
   // Blank until the workspace answers. These used to be hardcoded 'SA' and 'SAR', which meant the
   // assistant asked an admin to re-key what the workspace already knew and, worse, quietly priced
   // the draft in whatever the boxes happened to say. A currency is not visibly wrong on screen —
@@ -129,6 +155,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const [engine, setEngine] = useState('');
   const [genNotes, setGenNotes] = useState<string[]>([]);
   const [draft, setDraft] = useState<SetupDraft | null>(null);
+  const [draftCompanyId, setDraftCompanyId] = useState<string | null>(null);
   const [done, setDone] = useState<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string; }>; } | null>(null);
 
   // The workspace's own country and currency. Setup - Localization is where a tenant states these;
@@ -149,13 +176,39 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     return () => { cancelled = true; };
   }, []);
 
+  // A setup draft belongs to one immutable company ID. Changing the group switcher changes the
+  // target, prefills legal identity from the authoritative company record, and invalidates any
+  // draft prepared for the prior company.
   useEffect(() => {
     profileRevision.current += 1;
     setDraft(null);
+    setDraftCompanyId(null);
+    setDone(null);
+    setStep(0);
+    if (!targetCompany) return;
+    setLegalEntityName(targetCompany.legalNameEn);
+    setCountry(targetCompany.countryCode || '');
+    setCurrency(targetCompany.defaultCurrency || '');
+  }, [targetCompany?.id]);
+
+  // Company administrators may prepare and apply only records that are company/branch owned.
+  // Shared catalogs and workspace defaults stay under the group administrator's baseline.
+  useEffect(() => {
+    if (canIncludeSharedSetup) return;
+    setSections({
+      entity: true, org: false, leave: false, leavePolicies: true, shifts: false,
+      attendance: false, payroll: false, holidays: true, governance: false, localization: false, benefits: true,
+    });
+  }, [canIncludeSharedSetup]);
+
+  useEffect(() => {
+    profileRevision.current += 1;
+    setDraft(null);
+    setDraftCompanyId(null);
     setError('');
   }, [country, currency, industry, size, legalEntityName, branchCity, operatingModel, payrollModel,
     approvalModel, strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
-    notes, workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays,
+    notes, workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays, targetCompany?.id,
     workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage, sections, configuration]);
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
@@ -173,17 +226,21 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   };
 
   const toggle = (k: SectionKey) => setSections(s => ({ ...s, [k]: !s[k] }));
+  const companyOwnedSections = new Set<SectionKey>(['entity', 'leavePolicies', 'holidays', 'benefits']);
+  const sectionAvailable = (key: SectionKey) => canIncludeSharedSetup || companyOwnedSections.has(key);
   const selectedCount = Object.values(sections).filter(Boolean).length;
   // Full Record<SectionKey, boolean> literal — an Object.fromEntries shortcut would widen
   // to { [k: string]: boolean } and fail the strict Record<SectionKey, boolean> assignment.
   const setAllSections = (value: boolean) =>
     setSections({
-      entity: value, org: value, leave: value, leavePolicies: value, shifts: value,
-      attendance: value, payroll: value, holidays: value, governance: value, localization: value, benefits: value,
+      entity: value && sectionAvailable('entity'), org: value && sectionAvailable('org'), leave: value && sectionAvailable('leave'), leavePolicies: value,
+      shifts: value && sectionAvailable('shifts'), attendance: value && sectionAvailable('attendance'), payroll: value && sectionAvailable('payroll'), holidays: value,
+      governance: value && sectionAvailable('governance'), localization: value && sectionAvailable('localization'), benefits: value && sectionAvailable('benefits'),
     });
   const sectionCount = 11;
 
   const policyProfile: CompanyProfile = {
+    companyId: targetCompany?.id,
     countryCode: country, industry, companySize: size, currencyCode: currency,
     legalEntityName, branchCity, operatingModel, payrollModel, approvalModel,
     strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
@@ -234,9 +291,11 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     if (!currency) { setError('Pick the currency before generating — salary bands are drafted in it, and a wrong currency is not visible on the figures.'); return; }
     if (selectedCount === 0) { setError('Select at least one section to include.'); return; }
     const revision = profileRevision.current;
+    const generatedForCompanyId = targetCompany?.id ?? null;
     setLoading(true); setError(''); setDone(null);
     try {
       const profile: CompanyProfile = {
+        companyId: targetCompany?.id,
         countryCode: country, industry: industry.trim(), companySize: size, currencyCode: currency,
         legalEntityName: legalEntityName.trim() || undefined,
         branchCity: branchCity.trim() || undefined,
@@ -262,9 +321,9 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
         configuration: { ...configuration, grades: configuration.grades?.map(g => ({ ...g, currency })) ?? configuration.grades, benefitPlans: configuration.benefitPlans?.map(b => ({ ...b, currency, gradeCodes: b.gradeCodes.map(code => code.trim()).filter(Boolean) })) },
       };
       const r = await setupAssistantApi.preview(profile);
-      if (revision !== profileRevision.current) return;
+      if (revision !== profileRevision.current || generatedForCompanyId !== (targetCompany?.id ?? null)) return;
       if (r.configurationVersion !== 1) { setError(t('The setup service needs an update to support these policy settings. Your entries are preserved; no configuration has been applied.')); return; }
-      setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
+      setDraft(r.draft); setDraftCompanyId(generatedForCompanyId); setEngine(r.engine); setGenNotes(r.notes);
       requestAnimationFrame(() => headingRef.current?.focus());
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { message?: string; }; }; };
@@ -278,9 +337,13 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
 
   const apply = async () => {
     if (!draft || !legalEntityName.trim()) return;
+    if (draftCompanyId !== (targetCompany?.id ?? null)) {
+      setError('This draft belongs to a different company. Generate a new draft for the selected company before applying.');
+      return;
+    }
     setApplying(true); setError('');
     try {
-      const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined);
+      const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined, targetCompany?.id);
       setDone(r);
     } catch (e: unknown) {
       // Keep the draft in state on 403 so an admin can apply the exact reviewed draft.
@@ -335,6 +398,82 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     (draft.localization ? 1 : 0) + (draft.benefitPlans?.length ?? 0)
     : 0;
 
+  if (requestedCompanyUnavailable) {
+    return (
+      <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10" role="alert">
+        <h2 className="text-base font-semibold text-amber-950 dark:text-amber-100">This company is not available for setup</h2>
+        <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">The link may point to an inactive, removed, or inaccessible company. No other company has been selected in its place.</p>
+        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+      </section>
+    );
+  }
+
+  if (requiresCompanySelection) {
+    const activeCompanies = companies.filter(company => company.isActive && company.approvalStatus === 'Active');
+    const pendingCompanies = companies.filter(company => !company.isActive || company.approvalStatus !== 'Active');
+    return (
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" aria-labelledby="group-setup-heading">
+        <div className="border-b border-slate-200 bg-gradient-to-r from-sapphire/[0.07] to-transparent px-5 py-5 dark:border-white/10 dark:from-cyanAccent/[0.07] sm:px-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sapphire text-white shadow-sm dark:bg-cyanAccent dark:text-slate-950"><Building2 className="h-5 w-5" /></span>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-sapphire dark:text-cyanAccent">Group workspace</p>
+                <h2 id="group-setup-heading" className="mt-1 text-xl font-semibold text-slate-950 dark:text-white">Choose a company to configure</h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">Each draft is locked to one legal entity. Company records stay inside that company; group-wide catalogs and policy baselines remain controlled by group administrators.</p>
+              </div>
+            </div>
+            <Link href="/setup?tab=companies" className="btn-primary"><Plus className="h-4 w-4" />Add company</Link>
+          </div>
+        </div>
+        <div className="grid gap-5 p-5 sm:p-6 xl:grid-cols-[minmax(0,1fr)_300px]">
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Active companies</h3>
+              <span className="text-xs text-slate-500">{activeCompanies.length} ready for setup</span>
+            </div>
+            {activeCompanies.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 px-5 py-10 text-center dark:border-white/15">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100">No active company is available yet.</p>
+                <p className="mt-1 text-xs text-slate-500">Create a legal entity or wait for its activation before starting Setup Studio.</p>
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {activeCompanies.map(company => (
+                  <button key={company.id} type="button" onClick={() => setSelectedCompany(company.id)}
+                    className="group flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 p-4 text-start transition hover:border-sapphire/50 hover:bg-sapphire/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:border-white/10 dark:hover:border-cyanAccent/40 dark:hover:bg-cyanAccent/[0.04]">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-sapphire/10 group-hover:text-sapphire dark:bg-white/[0.06] dark:text-slate-300"><Building2 className="h-4 w-4" /></span>
+                    <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">{company.legalNameEn}</span><span className="mt-1 block truncate text-xs text-slate-500">{company.countryCode} · {company.defaultCurrency} · {company.jurisdiction || 'Jurisdiction pending'}</span></span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 rtl:rotate-180" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <aside className="space-y-3 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.03]" aria-label="Group setup workflow">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Group rollout</h3>
+            {[
+              ['1', 'Create the legal entity', 'Registration, country, currency and activation status.'],
+              ['2', 'Assign its administrator', 'Use User Management after the company is active.'],
+              ['3', 'Configure this company', 'Open a company-bound draft, review and apply.'],
+            ].map(([number, title, detail]) => <div key={number} className="flex gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">{number}</span><div><p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{title}</p><p className="mt-0.5 text-[11px] leading-4 text-slate-500">{detail}</p></div></div>)}
+            <Link href="/user-management" className="btn-secondary mt-2 w-full justify-center"><Users className="h-4 w-4" />Manage administrators</Link>
+            <div className="border-t border-slate-200 pt-3 dark:border-white/10">
+              <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">Shared group baseline</p>
+              <p className="mt-1 text-[11px] leading-4 text-slate-500">Configure shared catalogs once, then let each company use them without copying conflicting versions.</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <Link href="/setup?tab=grades" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Grades</Link>
+                <Link href="/setup?tab=masterData" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Master data</Link>
+                <Link href="/setup?tab=statutoryRules" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Statutory rules</Link>
+              </div>
+            </div>
+          </aside>
+        </div>
+        {pendingCompanies.length > 0 && <div className="border-t border-slate-200 px-5 py-3 text-xs text-amber-700 dark:border-white/10 dark:text-amber-300">{pendingCompanies.length} compan{pendingCompanies.length === 1 ? 'y is' : 'ies are'} awaiting activation and cannot be configured yet.</div>}
+      </section>
+    );
+  }
+
   if (done) {
     return (
       <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center dark:border-white/10 dark:bg-white/[0.03]">
@@ -357,9 +496,9 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
+    <div className="setup-studio overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
       <div className="grid lg:grid-cols-[200px_minmax(0,1fr)]">
-        <aside className="border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
+        <aside className="setup-step-rail border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
           <nav aria-label="Company setup steps">
             <ol className="grid grid-cols-5 gap-1.5 lg:grid-cols-1">
               {SETUP_STEPS.map((item, index) => (
@@ -375,14 +514,24 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
             </ol>
             <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200 lg:hidden">{step + 1} / {SETUP_STEPS.length} · {t(SETUP_STEPS[step].title)}</p>
           </nav>
-          <div className="mt-4 hidden border-t border-slate-200 pt-4 dark:border-white/10 lg:block">
+          <div className="setup-control-note mt-4 hidden border-t border-slate-200 pt-4 dark:border-white/10 lg:block">
             <ShieldCheck className="mb-2 h-5 w-5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">You stay in control</p>
             <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">The assistant prepares a draft. Nothing changes in your workspace until you review and apply it.</p>
           </div>
         </aside>
-        <div className="min-w-0 p-5">
-          <div hidden={step === 0 && policyGuideOpen} className="mb-4">
+        <div className="setup-studio-content min-w-0 p-5">
+          {targetCompany && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] px-4 py-3 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
+              <div className="flex min-w-0 items-center gap-3">
+                <Building2 className="h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
+                <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900 dark:text-white">Setting up {targetCompany.legalNameEn}</p><p className="text-xs text-slate-500">{targetCompany.countryCode} · {targetCompany.defaultCurrency} · Protected company scope</p></div>
+              </div>
+              {accountType === 'Group' && isGroupScope && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Change company</button>}
+              {accountType === 'Group' && <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-500/10 dark:text-blue-200">{isGroupScope ? 'Group admin · Company setup' : 'Company administrator'}</span>}
+            </div>
+          )}
+          <div hidden={step === 0 && policyGuideOpen} className="setup-studio-heading mb-4">
             <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 4 && draft ? 'Review your setup draft' : t(SETUP_STEPS[step].heading)}</h2>
             <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-400 ${step === 0 ? 'xl:sr-only' : ''}`}>{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
           </div>
@@ -390,18 +539,18 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
               <SetupPolicyEditor profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
-              <div className={policyGuideOpen ? 'hidden' : 'grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
+              <div className={policyGuideOpen ? 'hidden' : 'setup-company-grid grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
-                  <input className="input w-full" list="setup-legal-entities" required value={legalEntityName} onChange={e => {
+                  <input className="input w-full" list={targetCompany ? undefined : 'setup-legal-entities'} readOnly={!!targetCompany} required value={legalEntityName} onChange={e => {
                     const name = e.target.value;
                     setLegalEntityName(name);
                     const existing = companies.find(company => company.legalNameEn.trim().toLowerCase() === name.trim().toLowerCase());
                     if (existing) { setCountry(existing.countryCode || ''); setCurrency(existing.defaultCurrency || ''); }
                     setDraft(null);
                   }} placeholder="Choose or enter the registered name" />
-                  <datalist id="setup-legal-entities">{companies.map(company => <option key={company.id} value={company.legalNameEn} />)}</datalist>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">Choose an existing company or a new entity (permission and plan limits apply).</span>
+                  {!targetCompany && <datalist id="setup-legal-entities">{companies.map(company => <option key={company.id} value={company.legalNameEn} />)}</datalist>}
+                  <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">{targetCompany ? 'Locked to the company selected for this setup.' : 'Choose the legal entity this draft belongs to.'}</span>
                 </label>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Industry <span aria-hidden="true" className="text-slate-500">*</span></span>
@@ -409,7 +558,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                 </label>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Country <span aria-hidden="true" className="text-slate-500">*</span></span>
-                  <select className="select w-full" value={country} onChange={e => { setCountry(e.target.value); setDraft(null); }}>
+                  <select className="select w-full" value={country} disabled={!!targetCompany} onChange={e => { setCountry(e.target.value); setDraft(null); }}>
                     <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a country…'}</option>
                     {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
                   </select>
@@ -419,7 +568,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                 </label>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Currency <span aria-hidden="true" className="text-slate-500">*</span></span>
-                  <select className="select w-full" value={currency} onChange={e => { setCurrency(e.target.value); setDraft(null); }}>
+                  <select className="select w-full" value={currency} disabled={!!targetCompany} onChange={e => { setCurrency(e.target.value); setDraft(null); }}>
                     <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a currency…'}</option>
                     {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
@@ -553,7 +702,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
                     <div className="flex flex-wrap items-center gap-3">
                       <span className="text-xs text-slate-600 dark:text-slate-400">{selectedCount} of {sectionCount} selected</span>
-                      <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select all</button>
+                      <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select available</button>
                       <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
                     </div>
                   </div>
@@ -567,12 +716,13 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                       ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'], ['benefits', 'Benefits'],
                     ] as [SectionKey, string][]).map(([k, label]) => (
                       <label key={k}
-                        className={`flex cursor-pointer items-center gap-2 border-b border-slate-100 py-2 text-sm transition dark:border-white/10 ${sections[k]
+                        title={!sectionAvailable(k) ? 'Managed in the group baseline' : undefined}
+                        className={`flex items-center gap-2 border-b border-slate-100 py-2 text-sm transition dark:border-white/10 ${sectionAvailable(k) ? 'cursor-pointer' : 'cursor-not-allowed opacity-55'} ${sections[k]
                             ? 'text-slate-900 dark:text-white'
                             : 'text-slate-600 dark:text-slate-300'
                           }`}>
-                        <input type="checkbox" checked={sections[k]} onChange={() => toggle(k)} aria-label={`Include ${label} in the generated draft`} className="h-4 w-4 accent-sapphire" />
-                        {label}
+                        <input type="checkbox" checked={sections[k]} disabled={!sectionAvailable(k)} onChange={() => toggle(k)} aria-label={`Include ${label} in the generated draft`} className="h-4 w-4 accent-sapphire" />
+                        <span>{label}{!sectionAvailable(k) && <span className="ms-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Group managed</span>}</span>
                       </label>
                     ))}
                   </div>
@@ -592,7 +742,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
                 <Eye className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Company-specific records will use <span className="font-semibold text-slate-900 dark:text-white">{legalEntityName}</span>. Shared policies and master data apply across the workspace. Review all {totalItems} proposed items before applying.
+                  This draft is bound to <span className="font-semibold text-slate-900 dark:text-white">{legalEntityName}</span>. {accountType === 'Group' ? 'Only company-owned records are included; group-shared catalogs and defaults stay unchanged.' : 'Review every proposed company and workspace item before applying.'} Review all {totalItems} proposed items before applying.
                 </p>
               </div>
 
@@ -896,7 +1046,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               )}
             </fieldset>
           )}
-          <div className={`${step === 0 && policyGuideOpen ? 'hidden' : 'flex'} mt-4 flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10`}>
+          <div className={`setup-step-footer ${step === 0 && policyGuideOpen ? 'hidden' : 'flex'} mt-4 flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10`}>
             {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">{t('Step 1 of 5')}</span>}
             {step < 4 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
               <div className="flex flex-wrap items-center gap-3">
@@ -905,7 +1055,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   <Wand2 className="h-4 w-4" />{loading ? 'Generating draft…' : draft ? 'Regenerate draft' : 'Generate draft'}
                 </button>
                 {draft && <button type="button" className="btn-primary" onClick={apply} disabled={applying || loading || totalItems === 0}>
-                  <CheckCircle2 className="h-4 w-4" />{applying ? 'Applying…' : `Apply ${totalItems} item(s) to workspace`}
+                  <CheckCircle2 className="h-4 w-4" />{applying ? 'Applying…' : `Apply ${totalItems} item(s) to ${targetCompany?.legalNameEn ?? 'workspace'}`}
                 </button>}
               </div>
             )}

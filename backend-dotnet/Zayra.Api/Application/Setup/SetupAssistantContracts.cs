@@ -82,7 +82,8 @@ public sealed record CompanyProfile(
 
     /// <summary>en | ar | bilingual. Empty = derive from the country.</summary>
     string? DefaultLanguage = null,
-    SetupConfiguration? Configuration = null);
+    SetupConfiguration? Configuration = null,
+    Guid? CompanyId = null);
 
 /// <summary>Explicit customer choices override generated suggestions. Null lists ask for a
 /// suggestion; empty lists deliberately exclude that kind of record. Source text is context,
