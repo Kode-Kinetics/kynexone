@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { checkUpdatesConfig, loadEffectiveConfig } from '../scripts/updatesConfig.mjs';
 import { CONFIG_ENV_KEY, DOTENV_FILES, dotEnvLeaks, envForProfile, readEasJson } from '../scripts/profileEnv.mjs';
-import { updateCommand } from '../scripts/eas-update.mjs';
+import { dashboardOverrides, parseEnvListNames, updateCommand } from '../scripts/eas-update.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const eas = readEasJson(root);
@@ -141,3 +141,14 @@ test('every build.*.env key reaches the fingerprint via EXPO_PUBLIC_* or is allo
     }
   }
 });
+
+test('dashboard variables that would reach the bundle block the publish', () => {
+  assert.deepEqual(parseEnvListNames('No variables found for this environment.'), []);
+  const listed = parseEnvListNames('Environment: production\nEXPO_PUBLIC_API_URL=https://evil.example\nSENTRY_AUTH_TOKEN=*****\n');
+  assert.deepEqual(listed, ['EXPO_PUBLIC_API_URL', 'SENTRY_AUTH_TOKEN']);
+  assert.deepEqual(dashboardOverrides(listed, Object.keys(PROD_ENV)), ['EXPO_PUBLIC_API_URL']);
+  assert.deepEqual(dashboardOverrides(['SENTRY_AUTH_TOKEN'], Object.keys(PROD_ENV)), [], 'a non-config secret is not an override');
+  const profileKey = Object.keys(PROD_ENV)[0];
+  if (profileKey) assert.deepEqual(dashboardOverrides([profileKey], [profileKey]), [profileKey], 'a key the profile sets is an override');
+});
+
