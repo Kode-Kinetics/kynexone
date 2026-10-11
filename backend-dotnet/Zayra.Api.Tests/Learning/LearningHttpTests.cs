@@ -134,6 +134,31 @@ public sealed class LearningHttpTests(LearningHttpFixture f) : IClassFixture<Lea
         tooBig.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
     }
 
+    [Fact]
+    public async Task StandingRules_AreCreatedAndDeactivatedOnlyByAGroupLevelUser()
+    {
+        var pathId = await f.ActivePathAsync();
+        var body = new { pathId, targetKind = "Company", targetId = f.CompanyA, dueInDays = 30, isMandatory = true };
+        using (var companyCreate = await f.Send(HttpMethod.Post, "/api/learning/rules", f.Token("hrCompany"), body))
+        {
+            companyCreate.StatusCode.Should().Be(HttpStatusCode.Forbidden, await companyCreate.Content.ReadAsStringAsync());
+            (await Json(companyCreate)).GetProperty("error").GetString().Should().Be("group_scope_required");
+        }
+        using var created = await f.Send(HttpMethod.Post, "/api/learning/rules", f.Token("hr"), body);
+        created.StatusCode.Should().Be(HttpStatusCode.Created, await created.Content.ReadAsStringAsync());
+        var ruleId = (await Json(created)).GetProperty("rule").GetProperty("id").GetGuid();
+
+        using (var companyDeactivate = await f.Send(HttpMethod.Post, $"/api/learning/rules/{ruleId}/deactivate", f.Token("hrCompany"), new { }))
+        {
+            companyDeactivate.StatusCode.Should().Be(HttpStatusCode.Forbidden, await companyDeactivate.Content.ReadAsStringAsync());
+            (await Json(companyDeactivate)).GetProperty("error").GetString().Should().Be("group_scope_required");
+        }
+        using (var stillActive = await f.Send(HttpMethod.Get, "/api/learning/rules", f.Token("hr")))
+            (await Json(stillActive)).EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == ruleId).GetProperty("isActive").GetBoolean().Should().BeTrue();
+        using var groupDeactivate = await f.Send(HttpMethod.Post, $"/api/learning/rules/{ruleId}/deactivate", f.Token("hr"), new { });
+        groupDeactivate.StatusCode.Should().Be(HttpStatusCode.OK, await groupDeactivate.Content.ReadAsStringAsync());
+    }
+
     [Theory]
     [InlineData("javascript:alert(1)", null)]
     [InlineData("data:text/html,hi", null)]
@@ -194,12 +219,14 @@ public sealed class LearningHttpFixture : IAsyncLifetime
             db.Employees.Add(employee);
             var users = new Dictionary<string, (User User, string[] Permissions)>
             {
-                ["hr"] = (NewUser(TenantA, "hr", mfa: true), Hr),
-                ["reader"] = (NewUser(TenantA, "reader", mfa: false), ["learning.read"]),
-                ["plain"] = (NewUser(TenantA, "plain", mfa: false), ["employees.read"]),
-                ["learner"] = (NewUser(TenantA, "learner", mfa: false), ["ess.read", "ess.write"]),
-                ["unlinked"] = (NewUser(TenantA, "unlinked", mfa: false), ["ess.read", "ess.write"]),
-                ["hrB"] = (NewUser(TenantB, "hrB", mfa: true), Hr.Append("ess.read").ToArray()),
+                ["hr"] = (NewUser(TenantA, "hr", mfa: true, groupScope: true), Hr),
+                ["reader"] = (NewUser(TenantA, "reader", mfa: false, groupScope: true), ["learning.read"]),
+                ["plain"] = (NewUser(TenantA, "plain", mfa: false, groupScope: true), ["employees.read"]),
+                ["learner"] = (NewUser(TenantA, "learner", mfa: false, groupScope: true), ["ess.read", "ess.write"]),
+                ["unlinked"] = (NewUser(TenantA, "unlinked", mfa: false, groupScope: true), ["ess.read", "ess.write"]),
+                ["hrB"] = (NewUser(TenantB, "hrB", mfa: true, groupScope: true), Hr.Append("ess.read").ToArray()),
+                // learning.manage, but scoped to one company (not group-level).
+                ["hrCompany"] = (NewUser(TenantA, "hrCompany", mfa: true, groupScope: false), Hr),
             };
             db.Users.AddRange(users.Values.Select(u => u.User));
             await db.SaveChangesAsync();
@@ -209,6 +236,10 @@ public sealed class LearningHttpFixture : IAsyncLifetime
                 {
                     TenantId = user.TenantId, UserId = user.Id, PermissionKey = p, Effect = "Allow", IsActive = true, Reason = "learning http test",
                 }));
+            db.Set<UserEntityAccess>().Add(new UserEntityAccess
+            {
+                TenantId = TenantA, UserId = users["hrCompany"].User.Id, CompanyId = CompanyA, Role = "HR Officer", IsActive = true,
+            });
             db.Set<EmployeeUserAccount>().Add(new EmployeeUserAccount
             {
                 TenantId = TenantA, EmployeeId = employee.Id, UserId = users["learner"].User.Id, AccessMode = "FullPortal", Status = "Active",
@@ -218,6 +249,7 @@ public sealed class LearningHttpFixture : IAsyncLifetime
         }
         foreach (var (name, tenant) in new[] { ("hr", TenantA), ("reader", TenantA), ("plain", TenantA), ("learner", TenantA), ("unlinked", TenantA), ("hrB", TenantB) })
             _tokens[name] = await MintAsync(name, tenant);
+        _tokens["hrCompany"] = await MintAsync("hrCompany", TenantA, companyId: CompanyA);
     }
 
     public string? Token(string who) => who == "anonymous" ? null : _tokens[who];
@@ -259,6 +291,33 @@ public sealed class LearningHttpFixture : IAsyncLifetime
         request.Content = new ByteArrayContent(body);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         return await Client.SendAsync(request);
+    }
+
+    /// <summary>HR builds, publishes and activates a one-lesson path over HTTP; returns the path id.</summary>
+    public async Task<Guid> ActivePathAsync()
+    {
+        var hr = Token("hr");
+        var code = "RULE" + Guid.NewGuid().ToString("N")[..6].ToUpperInvariant();
+        using var course = await Send(HttpMethod.Post, "/api/learning/courses", hr, new
+        {
+            code, title = "Induction", contentKind = LearningContentKinds.Lesson, lessonHtml = "<p>Welcome.</p>",
+            completionRule = LearningCompletionRules.Acknowledgement, issuesCertificate = false,
+        });
+        var courseText = await course.Content.ReadAsStringAsync();
+        course.StatusCode.Should().BeOneOf([HttpStatusCode.OK, HttpStatusCode.Created], courseText);
+        var courseId = JsonDocument.Parse(courseText).RootElement.GetProperty("id").GetGuid();
+        using (var publish = await Send(HttpMethod.Post, $"/api/learning/courses/{courseId}/publish", hr, new { }))
+            publish.StatusCode.Should().Be(HttpStatusCode.OK, await publish.Content.ReadAsStringAsync());
+        using var path = await Send(HttpMethod.Post, "/api/learning/paths", hr, new
+        {
+            code, name = "Induction", renewalWindowDays = 30, items = new[] { new { courseId, isRequired = true } },
+        });
+        var pathText = await path.Content.ReadAsStringAsync();
+        path.StatusCode.Should().BeOneOf([HttpStatusCode.OK, HttpStatusCode.Created], pathText);
+        var pathId = JsonDocument.Parse(pathText).RootElement.GetProperty("id").GetGuid();
+        using (var activate = await Send(HttpMethod.Post, $"/api/learning/paths/{pathId}/activate", hr, new { }))
+            activate.StatusCode.Should().Be(HttpStatusCode.OK, await activate.Content.ReadAsStringAsync());
+        return pathId;
     }
 
     /// <summary>HR builds, publishes and assigns a cmi5 unit to the learner, all over HTTP; returns the learner's enrollment id.</summary>
@@ -307,14 +366,14 @@ public sealed class LearningHttpFixture : IAsyncLifetime
         return sessions.OrderBy(s => s.LaunchedAtUtc).Last();
     }
 
-    private static User NewUser(Guid tenantId, string name, bool mfa) => new()
+    private static User NewUser(Guid tenantId, string name, bool mfa, bool groupScope) => new()
     {
         TenantId = tenantId, Email = $"{name}-{tenantId:N}@lrn-http.local", NormalizedEmail = $"{name}-{tenantId:N}@lrn-http.local".ToUpperInvariant(),
         FullName = name, PasswordHash = "no-login-path", Status = "Active", AccessMode = "FullPortal", IsActive = true, IsEmailConfirmed = true,
-        IsGroupScope = true, MFAEnabled = mfa, MfaSecretEncrypted = mfa ? "enrolled-for-test" : null,
+        IsGroupScope = groupScope, MFAEnabled = mfa, MfaSecretEncrypted = mfa ? "enrolled-for-test" : null,
     };
 
-    private async Task<string> MintAsync(string name, Guid tenantId)
+    private async Task<string> MintAsync(string name, Guid tenantId, Guid? companyId = null)
     {
         using var scope = Host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
@@ -323,8 +382,9 @@ public sealed class LearningHttpFixture : IAsyncLifetime
             .Include(u => u.UserRoles).ThenInclude(r => r.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(p => p.Permission)
             .Include(u => u.PermissionOverrides).Include(u => u.EmployeeUserAccounts).Include(u => u.EntityAccesses)
             .SingleAsync(u => u.TenantId == tenantId && u.Email == email);
+        EntityAccessGrant[] grants = companyId is Guid company ? [new EntityAccessGrant(company, "HR Officer")] : [];
         return scope.ServiceProvider.GetRequiredService<ITokenService>().CreateAccessToken(user, AuthService.GetRoles(user),
-            AuthService.GetPermissions(user), user.Tenant!, Array.Empty<EntityAccessGrant>(),
-            EntityScopeClaims.Resolve(true, Array.Empty<EntityAccessGrant>(), Array.Empty<Guid>()), out _);
+            AuthService.GetPermissions(user), user.Tenant!, grants,
+            EntityScopeClaims.Resolve(companyId is null, grants, companyId is Guid c ? [c] : Array.Empty<Guid>()), out _);
     }
 }

@@ -727,7 +727,7 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             var employee = employees.GetValueOrDefault(a.EmployeeId);
             return new AssignmentViewDto(a.Id, a.EmployeeId, employee?.FullName ?? string.Empty, employee?.EmployeeCode ?? string.Empty, a.PathId,
                 path.Name, path.NameAr, a.Status, a.IsMandatory, a.DueDate,
-                LearningOverdue.IsOverdue(a.Status, a.DueDate, today,
+                LearningOverdue.IsOverdue(a.Status, a.IsMandatory, a.DueDate, today,
                     employee is not null && LearningOverdue.IsChased(employee.Status, employee.JoiningDate, today),
                     LearningOverdue.IsAwaitingVerification(mine.Select(e => (e.IsRequired, e.Status)))),
                 a.Cycle, a.Source, required.Count, done, required.Count == 0 ? 0m : Math.Round(done * 100m / required.Count, 2),

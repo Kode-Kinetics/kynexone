@@ -231,11 +231,12 @@ const ar: Record<string, string> = {
   'Assignments of the people you can see, not cancelled, in any state.': 'إسنادات الأشخاص الذين يمكنك رؤيتهم، غير الملغاة، بأي حالة.',
   'Assigned or in progress — not yet completed.': 'مُسندة أو قيد التنفيذ — لم تكتمل بعد.',
   'Assignments whose every required course has completion evidence.': 'إسنادات لكل دورة إلزامية فيها دليل إكمال.',
-  'Open assignments past their due date that still need the employee to act. Suspended people are included; people who have not started yet, and assignments only waiting for HR to verify, are not.':
-    'إسنادات مفتوحة تجاوزت تاريخ استحقاقها وما زالت تتطلب إجراءً من الموظف. يُحتسب الموظفون الموقوفون؛ ولا يُحتسب من لم يباشر عمله بعد، ولا الإسنادات التي تنتظر فقط تحقق الموارد البشرية.',
+  'Open mandatory assignments past their due date that still need the employee to act. Suspended people are included; optional training, people who have not started yet, and assignments only waiting for HR to verify are not.':
+    'إسنادات إلزامية مفتوحة تجاوزت تاريخ استحقاقها وما زالت تتطلب إجراءً من الموظف. يُحتسب الموظفون الموقوفون؛ ولا يُحتسب التدريب الاختياري، ولا من لم يباشر عمله بعد، ولا الإسنادات التي تنتظر فقط تحقق الموارد البشرية.',
   'Suspended': 'موقوف',
   'Current certificates that expire within 30 days.': 'شهادات سارية تنتهي خلال 30 يومًا.',
-  'Courses locked after the last failed assessment attempt, waiting for an HR reset.': 'دورات أُقفلت بعد آخر محاولة اختبار غير ناجحة، بانتظار إعادة تعيين من الموارد البشرية.',
+  'Assignments with a course locked after its last failed assessment attempt, waiting for an HR reset.':
+    'إسنادات فيها دورة أُقفلت بعد آخر محاولة اختبار غير ناجحة، بانتظار إعادة تعيين من الموارد البشرية.',
   'Loading learning reports': 'جارٍ تحميل تقارير التعلّم',
   'Showing everyone in the companies you manage, as of {date}.': 'يعرض كل الموظفين في الشركات التي تديرها، بتاريخ {date}.',
   'Showing the people in your team, as of {date}.': 'يعرض أعضاء فريقك، بتاريخ {date}.',

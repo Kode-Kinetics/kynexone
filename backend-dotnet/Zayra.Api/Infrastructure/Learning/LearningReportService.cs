@@ -110,8 +110,10 @@ public sealed class LearningReportService(ZayraDbContext db, ITenantClock tenant
         var overdue = await Overdue(population, actor.TenantId, today).CountAsync(ct);
         var expiring = (await ExpiringAsync(actor, 30, ct)).Count;
         var populationIds = population.Select(a => a.Id);
+        // Assignments (not items), so the number equals the rows its drill-down lists.
         var locked = await db.LearningEnrollments.AsNoTracking()
-            .CountAsync(e => e.TenantId == actor.TenantId && e.Status == LearningEnrollmentStatuses.Locked && populationIds.Contains(e.AssignmentId), ct);
+            .Where(e => e.TenantId == actor.TenantId && e.Status == LearningEnrollmentStatuses.Locked && populationIds.Contains(e.AssignmentId))
+            .Select(e => e.AssignmentId).Distinct().CountAsync(ct);
         // Assignments (not items), so the number equals the rows its drill-down lists.
         var pending = await db.LearningEnrollments.AsNoTracking()
             .Where(e => e.TenantId == actor.TenantId && e.Status == LearningEnrollmentStatuses.PendingVerification && populationIds.Contains(e.AssignmentId))
@@ -123,7 +125,7 @@ public sealed class LearningReportService(ZayraDbContext db, ITenantClock tenant
             new("completed", completed, "Assignments whose every required course has completion evidence.", "status", LearningAssignmentStatuses.Completed),
             new("overdue", overdue, "Open assignments whose due date has passed and that still need the employee to act (not those only waiting for HR verification).", "overdue", null),
             new("expiring", expiring, "Current certificates that expire within 30 days.", "expiring", "30"),
-            new("locked", locked, "Courses locked after the last failed assessment attempt, waiting for an HR reset.", "status", "locked"),
+            new("locked", locked, "Assignments with a course locked after its last failed assessment attempt, waiting for an HR reset.", "locked", null),
             new("pending", pending, "Assignments with a completion reported by course content, waiting for HR verification before a certificate is issued.", "pending", null),
         ], Rate(completed, assigned), actor.Scope.IsUnrestricted ? "organization" : actor.Scope.Level.ToString().ToLowerInvariant(), today);
     }
@@ -150,7 +152,7 @@ public sealed class LearningReportService(ZayraDbContext db, ITenantClock tenant
     {
         var chased = LearningOverdue.ChasedEmployees(db, tenantId, today);
         var awaiting = LearningOverdue.AwaitingVerification(db, tenantId);
-        return query.Where(a => LearningAssignmentStatuses.Active.Contains(a.Status) && a.DueDate != null && a.DueDate < today
+        return query.Where(a => a.IsMandatory && LearningAssignmentStatuses.Active.Contains(a.Status) && a.DueDate != null && a.DueDate < today
             && chased.Contains(a.EmployeeId) && !awaiting.Contains(a.Id));
     }
 
@@ -196,7 +198,7 @@ public sealed class LearningReportService(ZayraDbContext db, ITenantClock tenant
             return new StatusRow(a.Id, a.EmployeeId, employee?.EmployeeCode ?? string.Empty, employee?.FullName ?? string.Empty, a.DepartmentId,
                 a.DepartmentId is Guid d ? departments.GetValueOrDefault(d, string.Empty) : string.Empty, a.PathId, paths.GetValueOrDefault(a.PathId, string.Empty),
                 a.Cycle, a.Status, a.IsMandatory, a.DueDate,
-                LearningOverdue.IsOverdue(a.Status, a.DueDate, today, chased, awaiting),
+                LearningOverdue.IsOverdue(a.Status, a.IsMandatory, a.DueDate, today, chased, awaiting),
                 required, done, Rate(done, required), a.AssignedAtUtc, a.CompletedAtUtc, employee?.Status ?? string.Empty, awaiting);
         }).ToList();
     }

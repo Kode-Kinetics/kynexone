@@ -181,7 +181,8 @@ internal static class LearningDb
 
 /// <summary>
 /// The one definition of "overdue", shared by the reports, the KPI, the assignment views and the sweep's notices:
-/// an open assignment past its due date, of a person whose training is chased, with something left for THEM to do.
+/// an open MANDATORY assignment past its due date, of a person whose training is chased, with something left for THEM to do.
+/// Optional training (is_mandatory = false) keeps its due date as a target but is never overdue and gets no reminders.
 /// <list type="bullet">
 /// <item>Chased: Active; Suspended (still employed — the obligation stands; reports label the status); Invited once their
 /// start date has come. Leavers are closed by the sweep and never counted.</item>
@@ -220,6 +221,7 @@ public static class LearningOverdue
             && required.All(i => i.Status is LearningEnrollmentStatuses.Completed or LearningEnrollmentStatuses.PendingVerification);
     }
 
-    public static bool IsOverdue(string assignmentStatus, DateOnly? due, DateOnly today, bool chased, bool awaitingVerification) =>
-        LearningAssignmentStatuses.Active.Contains(assignmentStatus) && due is { } d && d < today && chased && !awaitingVerification;
+    /// <summary>Optional (non-mandatory) training is never overdue: its due date is a target, not an obligation.</summary>
+    public static bool IsOverdue(string assignmentStatus, bool isMandatory, DateOnly? due, DateOnly today, bool chased, bool awaitingVerification) =>
+        isMandatory && LearningAssignmentStatuses.Active.Contains(assignmentStatus) && due is { } d && d < today && chased && !awaitingVerification;
 }

@@ -265,6 +265,111 @@ public sealed class LearningLifecycleTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task OptionalTraining_GetsNoRemindersOrOverdueNotices_AndIsNeverCountedOverdue()
+    {
+        await using var w = await CreateAsync(fx);
+        var (pathId, _) = await w.PublishedPathAsync("OPT", [Lesson("O1")]);
+        await w.AssignAsync(pathId, [w.Ops1], w.Clock.Today.AddDays(3));
+        await using (var hr = w.As(w.HrA()))
+            await Get<LearningAssignmentService>(hr).AssignAsync(await ActorAsync(hr, w.TenantA),
+                new AssignInput(pathId, "Employee", [w.Manager], null, w.Clock.Today.AddDays(3), null, false), default);
+
+        (await SweepAsync(w)).DueReminders.Should().Be(1, "only the mandatory assignment is reminded");
+        w.Clock.Advance(TimeSpan.FromDays(6));
+        (await SweepAsync(w)).OverdueNotices.Should().Be(1);
+
+        await using (var hr = w.As(w.HrA()))
+        {
+            var actor = await ActorAsync(hr, w.TenantA);
+            var reports = Get<LearningReportService>(hr);
+            (await reports.SummaryAsync(actor, default)).Kpis.Single(k => k.Key == "overdue").Value.Should().Be(1);
+            (await reports.StatusMatrixAsync(actor, pathId, null, null, true, default)).Select(r => r.EmployeeId).Should().Equal(w.Ops1);
+            (await reports.StatusMatrixAsync(actor, pathId, null, null, null, default)).Single(r => r.EmployeeId == w.Manager).Overdue.Should().BeFalse();
+        }
+        var (scope, _) = w.Employee(w.Manager);
+        await using (scope)
+            (await Get<LearningProgressService>(scope).MyLearningAsync(w.TenantA, w.Manager, default)).Assignments.Single().IsOverdue.Should().BeFalse();
+        await using var db = w.Db();
+        var managerAssignment = await db.LearningAssignments.AsNoTracking().SingleAsync(a => a.PathId == pathId && a.EmployeeId == w.Manager);
+        (await db.NotificationDeliveries.AsNoTracking().CountAsync(d => d.TenantId == w.TenantA && d.EntityId == managerAssignment.Id.ToString())).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TheLockedKpiCountsAssignments_AndEqualsItsDrillDownRows()
+    {
+        await using var w = await CreateAsync(fx);
+        var (pathId, _) = await w.PublishedPathAsync("LOCK2",
+        [
+            Lesson("LK1", LearningCompletionRules.Assessment, maxAttempts: 1),
+            Lesson("LK2", LearningCompletionRules.Assessment, maxAttempts: 1),
+        ]);
+        await w.AssignAsync(pathId, [w.Ops1]);
+        foreach (var sequence in new[] { 1, 2 })
+        {
+            var enrollment = await w.EnrollmentAsync(w.Ops1, pathId, sequence);
+            var (scope, me) = w.Employee(w.Ops1);
+            await using (scope)
+            {
+                var progress = Get<LearningProgressService>(scope);
+                var attempt = await progress.StartAttemptAsync(me, w.Ops1, enrollment.Id, default);
+                (await progress.SubmitAttemptAsync(me, w.Ops1, attempt.Id, new SubmitAttemptInput(Wrong()), default)).EnrollmentStatus
+                    .Should().Be(LearningEnrollmentStatuses.Locked);
+            }
+        }
+        await using var hr = w.As(w.HrA());
+        var actor = await ActorAsync(hr, w.TenantA);
+        var reports = Get<LearningReportService>(hr);
+        var rows = await reports.LockedAsync(actor, default);
+        rows.Should().ContainSingle();
+        (await reports.SummaryAsync(actor, default)).Kpis.Single(k => k.Key == "locked").Value.Should().Be(rows.Count);
+    }
+
+    [Fact]
+    public async Task APublishRetriedAfterATransientCommitFailure_LeavesOnePublishedVersion()
+    {
+        await using var w = await CreateAsync(fx);
+        Guid draftId;
+        await using (var hr = w.As(w.HrA()))
+        {
+            var actor = await ActorAsync(hr, w.TenantA);
+            var catalog = Get<LearningCatalogService>(hr);
+            var v1 = await catalog.CreateCourseAsync(actor, Lesson("RETRY"), default);
+            await catalog.PublishCourseAsync(actor, v1.Id, null, default);
+            draftId = (await catalog.NewVersionAsync(actor, v1.Id, default)).Id;
+        }
+
+        var fault = new TransientCommitFault();
+        w.ExtraInterceptors = [fault];
+        await using (var hr = w.As(w.HrA()))
+        {
+            var published = await Get<LearningCatalogService>(hr).PublishCourseAsync(await ActorAsync(hr, w.TenantA), draftId, null, default);
+            published.Status.Should().Be(LearningCourseStatuses.Published);
+        }
+        w.ExtraInterceptors = [];
+        fault.Faults.Should().BeGreaterThan(0, "the first COMMIT failed and the delegate ran again");
+
+        await using var db = w.Db();
+        var versions = await db.LearningCourses.AsNoTracking().Where(c => c.TenantId == w.TenantA && c.Code == "RETRY")
+            .OrderBy(c => c.VersionNumber).ToListAsync();
+        versions.Select(c => c.Status).Should().Equal(LearningCourseStatuses.Retired, LearningCourseStatuses.Published);
+        versions[1].PublishedAtUtc.Should().NotBeNull();
+    }
+
+    /// <summary>A transient connection loss on the first COMMIT (before it reaches the server); later commits go through.</summary>
+    private sealed class TransientCommitFault : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        public int Faults;
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult> TransactionCommittingAsync(
+            System.Data.Common.DbTransaction transaction, Microsoft.EntityFrameworkCore.Diagnostics.TransactionEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult result, CancellationToken ct = default)
+        {
+            if (Interlocked.Increment(ref Faults) == 1)
+                throw new Npgsql.NpgsqlException("Simulated connection loss during COMMIT", new System.IO.IOException("connection reset by peer"));
+            return base.TransactionCommittingAsync(transaction, eventData, result, ct);
+        }
+    }
+
+    [Fact]
     public async Task APathOutsideItsEffectiveDates_CannotBeAssigned()
     {
         await using var w = await CreateAsync(fx);

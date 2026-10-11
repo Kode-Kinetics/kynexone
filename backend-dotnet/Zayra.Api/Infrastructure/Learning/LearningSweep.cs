@@ -142,11 +142,11 @@ public sealed class LearningSweepService(ZayraDbContext db, TimeProvider clock, 
             }
         }
 
-        // 2. Due within the reminder window, and 3. overdue — people still employed only. One notice each, ever.
+        // 2. Due within the reminder window, and 3. overdue — mandatory training of people still chased only. One notice each, ever.
         var reminderHorizon = today.AddDays(options.Value.DueReminderDays);
         var renewalCycles = new HashSet<Guid>();
         var retryNoRecipientBefore = clock.GetUtcNow().UtcDateTime.AddDays(-1);
-        await ForEachAsync(skip => db.LearningAssignments.Where(a => a.TenantId == tenantId && LearningAssignmentStatuses.Active.Contains(a.Status)
+        await ForEachAsync(skip => db.LearningAssignments.Where(a => a.TenantId == tenantId && a.IsMandatory && LearningAssignmentStatuses.Active.Contains(a.Status)
                 && a.DueDate != null && a.DueDate >= today && a.DueDate <= reminderHorizon && a.DueReminderSentAtUtc == null
                 && (a.NoRecipientAtUtc == null || a.NoRecipientAtUtc <= retryNoRecipientBefore)
                 && stillEmployed.Contains(a.EmployeeId) && !awaitingHr.Contains(a.Id) && !skip.Contains(a.Id)).OrderBy(a => a.DueDate).ThenBy(a => a.Id),
@@ -159,7 +159,7 @@ public sealed class LearningSweepService(ZayraDbContext db, TimeProvider clock, 
                 return sent == NoticeOutcome.Sent;
             }, ct);
 
-        await ForEachAsync(skip => db.LearningAssignments.Where(a => a.TenantId == tenantId && LearningAssignmentStatuses.Active.Contains(a.Status)
+        await ForEachAsync(skip => db.LearningAssignments.Where(a => a.TenantId == tenantId && a.IsMandatory && LearningAssignmentStatuses.Active.Contains(a.Status)
                 && a.DueDate != null && a.DueDate < today && a.OverdueNoticeSentAtUtc == null
                 && (a.NoRecipientAtUtc == null || a.NoRecipientAtUtc <= retryNoRecipientBefore)
                 && stillEmployed.Contains(a.EmployeeId) && !awaitingHr.Contains(a.Id) && !skip.Contains(a.Id)).OrderBy(a => a.DueDate).ThenBy(a => a.Id),

@@ -99,16 +99,27 @@ public sealed class LearningCatalogController(LearningCatalogService catalog) : 
     [HasPermission("learning.manage")]
     public async Task<IActionResult> CreateRule([FromBody] RuleInput input, CancellationToken ct)
     {
-        // A saved rule is applied by the sweep with tenant-wide reach (it catches future hires in every company), so
-        // only a group-scope user may create one. A company-scoped HR user assigns one-off instead.
-        if (!this.HasGroupEntityScope())
-            throw new LearningException(403, "group_scope_required",
-                "Standing rules apply across every company, so only a group-level HR user can create one. Assign the path directly instead.");
+        RequireGroupScope();
         var (rule, applied) = await catalog.CreateRuleAsync(await ActorAsync(ct), input, ct);
         return StatusCode(201, new { rule, applied });
     }
 
     [HttpPost("rules/{id:guid}/deactivate")]
     [HasPermission("learning.manage")]
-    public async Task<IActionResult> DeactivateRule(Guid id, CancellationToken ct) => Ok(await catalog.DeactivateRuleAsync(await ActorAsync(ct), id, ct));
+    public async Task<IActionResult> DeactivateRule(Guid id, CancellationToken ct)
+    {
+        RequireGroupScope();
+        return Ok(await catalog.DeactivateRuleAsync(await ActorAsync(ct), id, ct));
+    }
+
+    /// <summary>
+    /// A saved rule is applied by the sweep with tenant-wide reach (it catches future hires in every company), so only a
+    /// group-scope user may create or deactivate one. A company-scoped HR user assigns one-off instead.
+    /// </summary>
+    private void RequireGroupScope()
+    {
+        if (!this.HasGroupEntityScope())
+            throw new LearningException(403, "group_scope_required",
+                "Standing rules apply across every company, so only a group-level HR user can create or stop one. Assign the path directly instead.");
+    }
 }

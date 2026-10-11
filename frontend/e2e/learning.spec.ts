@@ -167,7 +167,7 @@ test.describe('HR learning screen', () => {
   test('overview: every KPI says what it counts and drills to its rows; CSV is offered', async ({ page }) => {
     const { errors } = await boot(page);
     await page.goto('/learning');
-    await expect(page.getByTestId('kpi-overdue')).toContainText('Open assignments past their due date that still need the employee to act.');
+    await expect(page.getByTestId('kpi-overdue')).toContainText('Open mandatory assignments past their due date that still need the employee to act.');
     await page.getByTestId('kpi-overdue').getByRole('button', { name: /Show the 1 records/ }).click();
     await expect(page.getByTestId('learning-drill')).toContainText('Liu Wei');
     // A suspended person stays counted as overdue, labelled.

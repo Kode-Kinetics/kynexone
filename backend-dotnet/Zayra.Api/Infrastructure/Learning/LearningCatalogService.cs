@@ -112,9 +112,17 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
         var retired = new List<int>();
         // One transaction, two statements: the version it replaces stops being assignable (enrollments pinned to it
         // carry on, LRN-01), then this one is published. Retire first, or the one-Published-per-code index refuses it.
+        var expected = course.Version;
         await LearningDb.InTransactionAsync(db, async () =>
         {
+            // The execution strategy may run this again after a transient failure: start from the database every time,
+            // never from entities an earlier (rolled-back) attempt already changed.
+            db.ChangeTracker.Clear();
             retired.Clear();
+            course = await db.LearningCourses.FirstAsync(c => c.TenantId == actor.TenantId && c.Id == id, ct);
+            if (course.Status != LearningCourseStatuses.Draft)
+                throw LearningException.Conflict("course_not_draft", "Only a draft version can be published.");
+            ExpectVersion(course.Version, expected);
             var previous = await db.LearningCourses.Where(c => c.TenantId == actor.TenantId && c.Code == course.Code
                 && c.Status == LearningCourseStatuses.Published).ToListAsync(ct);
             foreach (var old in previous)

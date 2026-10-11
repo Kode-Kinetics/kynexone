@@ -52,6 +52,8 @@ public sealed class LearningTestWorld : IAsyncDisposable
     private readonly PostgresFixture _fx;
     public ServiceProvider Services { get; }
     public ShiftableClock Clock { get; } = new(new DateTimeOffset(2026, 10, 1, 8, 0, 0, TimeSpan.Zero));
+    /// <summary>Interceptors added to every context created after they are set (e.g. an injected transient fault).</summary>
+    public Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor[] ExtraInterceptors { get; set; } = [];
 
     public Guid TenantA { get; private set; }
     public Guid TenantB { get; private set; }
@@ -102,6 +104,7 @@ public sealed class LearningTestWorld : IAsyncDisposable
                 .UseNpgsql(fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
                 .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
                 .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+                .AddInterceptors(ExtraInterceptors)
                 .Options;
             return new ZayraDbContext(options, sp.GetRequiredService<IHttpContextAccessor>(), null,
                 Options.Create(new EntityScopeOptions { StrictMode = principal.StrictScope }));

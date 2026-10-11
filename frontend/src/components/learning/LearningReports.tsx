@@ -29,9 +29,9 @@ const kpiDefinition: Record<Kpi['key'], string> = {
   assigned: msg('Assignments of the people you can see, not cancelled, in any state.'),
   open: msg('Assigned or in progress — not yet completed.'),
   completed: msg('Assignments whose every required course has completion evidence.'),
-  overdue: msg('Open assignments past their due date that still need the employee to act. Suspended people are included; people who have not started yet, and assignments only waiting for HR to verify, are not.'),
+  overdue: msg('Open mandatory assignments past their due date that still need the employee to act. Suspended people are included; optional training, people who have not started yet, and assignments only waiting for HR to verify are not.'),
   expiring: msg('Current certificates that expire within 30 days.'),
-  locked: msg('Courses locked after the last failed assessment attempt, waiting for an HR reset.'),
+  locked: msg('Assignments with a course locked after its last failed assessment attempt, waiting for an HR reset.'),
   pending: msg('Assignments with a completion reported by course content, waiting for HR to verify it before a certificate is issued.'),
 };
 

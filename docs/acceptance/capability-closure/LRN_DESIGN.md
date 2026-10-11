@@ -203,7 +203,9 @@ registration complete it again (pending HR verification when the version require
 registration can never change the enrollment.
 
 **Overdue — one definition (`LearningOverdue`), used by the KPI, the reports, the assignment views and the sweep's
-notices:** an open assignment past its due date (tenant date), of a person whose training is chased — **Active**;
+notices:** an open **mandatory** assignment past its due date (tenant date) — optional training (`is_mandatory = false`)
+keeps its due date as a target but is never overdue and gets no LEARNING_DUE / LEARNING_OVERDUE, as the Assign screen
+says — of a person whose training is chased — **Active**;
 **Suspended** (still employed, the obligation stands; report rows carry `employeeStatus` and the UI labels them);
 **Invited** only once their start date (`joining_date`) has come — and with something left for the employee to do. An
 assignment whose open required items are all completions waiting for HR verification is shown as **"Waiting for HR to
@@ -224,7 +226,7 @@ spec shape `{ "error-code", "error-text" }`. `DbUpdateConcurrencyException` → 
 | POST `/courses`, PUT `/courses/{id}` | learning.manage | 400 invalid_request; 409 course_code_taken, course_immutable |
 | POST `/courses/{id}/publish[?version]`, `/new-version`, `/retire` | learning.manage | 409 course_not_draft, draft_exists, course_not_published; 422 course_incomplete |
 | GET/POST `/paths`, GET/PUT `/paths/{id}`, POST `/paths/{id}/activate`, `/archive` | read \| manage (\| assign for GET) | 409 path_items_locked, path_archived, path_not_draft; 422 path_incomplete, path_course_unpublished |
-| GET/POST `/rules`, POST `/rules/{id}/deactivate` | read \| manage | 403 group_scope_required; 409 rule_exists, path_not_active; POST returns `{ rule, applied }` |
+| GET/POST `/rules`, POST `/rules/{id}/deactivate` | read \| manage | 403 group_scope_required (create AND deactivate: a rule has tenant-wide reach); 409 rule_exists, path_not_active; POST returns `{ rule, applied }` |
 | POST `/assignments` `{pathId,targetKind:Employee\|Department\|Designation\|Grade,employeeIds?,targetId?,dueDate?,dueInDays?,isMandatory}` | learning.assign | `{created,skipped,refused,results[{employeeId,employeeName,outcome,reasons[]}]}`; single employee duplicate → 409 duplicate_assignment; 409 path_not_active/path_not_effective/path_course_unavailable |
 | GET `/assignments[?pathId&employeeId&status]`, GET `/assignments/{id}`, GET `/enrollments/{id}/attempts` | assign \| report \| records.correct | data-scoped; out of scope → 404 |
 | POST `/assignments/{id}/cancel {reason}` | learning.assign | 409 assignment_not_live |
