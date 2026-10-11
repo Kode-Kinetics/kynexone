@@ -14,8 +14,11 @@ public static class RetentionRuleKeys
     /// <summary>A soft-deleted tenant held beyond the configured recovery window.</summary>
     public const string SoftDeletedTenantExpired = "tenant.soft-deleted-expired";
 
+    /// <summary>SUC: succession records of a person who left more than 3 years ago (anonymised, never deleted).</summary>
+    public const string SuccessionPostEmployment = "succession.post-employment-3y";
+
     public static readonly IReadOnlyList<string> All =
-        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired];
+        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, SuccessionPostEmployment];
 }
 
 /// <summary>

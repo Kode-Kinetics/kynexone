@@ -30,7 +30,32 @@ public class AuthSeeder : IAuthSeeder
     /// <para>employees.access.issue / employees.access.reset are deliberately NOT withheld: an Admin must be able to give
     /// welcome codes and reset an employee's sign-in (employee-access contract §4, Amendment 3 F1).</para>
     /// </summary>
-    public static readonly IReadOnlyList<string> AdminWithheldPermissions = ["attendance.evidence.view"];
+    /// <para>SUC (Integration Owner F2): Admin keeps only the succession CONFIGURATION keys — succession.read (positions and
+    /// pools, which carry no candidate data), succession.positions.manage and succession.pools.manage. Every key that reaches
+    /// a candidate, an assessment, a slate, a development plan or a report is withheld: succession is HR-confidential and
+    /// Admin is the technical role. HR Director and HR Manager receive them by explicit grant below, and an Admin can still
+    /// grant them to anyone (PrivilegeCeiling).</para>
+    public static readonly IReadOnlyList<string> AdminWithheldPermissions =
+        ["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self"];
+
+    /// <summary>
+    /// SUC — the 12 succession keys. Granted ONLY by these explicit lists, never by a prefix bundle (a future succession.*
+    /// key is a decision, not an accident): SuccessionPermissionGrantTests fails if any role bundle's StartsWith prefix
+    /// matches a succession key. HR Director: all. HR Manager: all but calibrate. Manager: nominate and development
+    /// plans for their own reporting line, plus their own plan. Employee: their own plan.
+    /// </summary>
+    public static readonly IReadOnlyList<string> SuccessionPermissionKeys =
+    [
+        "succession.read", "succession.positions.manage", "succession.pools.manage", "succession.nominate",
+        "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage",
+        "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self",
+    ];
+
+    public static readonly IReadOnlyList<string> SuccessionHrManagerKeys =
+        SuccessionPermissionKeys.Where(k => k != "succession.calibrate").ToArray();
+
+    public static readonly IReadOnlyList<string> SuccessionManagerKeys =
+        ["succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self"];
 
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
@@ -52,7 +77,7 @@ public class AuthSeeder : IAuthSeeder
                   FROM roles r
                   CROSS JOIN permissions p
                   WHERE r.name = 'Admin'
-                    AND p.permission_key NOT IN ('attendance.evidence.view')
+                    AND p.permission_key NOT IN ('attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self')
                     AND NOT EXISTS (
                         SELECT 1 FROM role_permissions rp
                         WHERE rp.role_id = r.id AND rp.permission_id = p.id)
@@ -149,7 +174,7 @@ public class AuthSeeder : IAuthSeeder
         // and does not by default open employees' face images; the tenant can still grant the key to anyone, Admin users
         // included, and an Admin can grant it: PrivilegeCeiling treats withheld keys as within an Admin's reach).
         var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access",
-            permissions.Where(x => x.Key is not "attendance.evidence.view").ToList(), 1, false, cancellationToken);
+            permissions.Where(x => x.Key is not "attendance.evidence.view" and not "succession.nominate" and not "succession.assess" and not "succession.calibrate" and not "succession.slates.read" and not "succession.slates.manage" and not "succession.devplans.read" and not "succession.devplans.manage" and not "succession.reports.read" and not "succession.self").ToList(), 1, false, cancellationToken);
 
         // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
         // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
@@ -165,7 +190,11 @@ public class AuthSeeder : IAuthSeeder
             "qiwa.read" or "qiwa.sync" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // LRN: the whole learning module, explicitly (no prefix grant, so a future learning.* key is a decision).
-            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct"
+            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct" ||
+            // SUC: every succession key, by explicit list (no prefix grant; SuccessionPermissionKeys, pinned by tests).
+            x.Key is "succession.read" or "succession.positions.manage" or "succession.pools.manage" or "succession.nominate" or
+            "succession.assess" or "succession.calibrate" or "succession.slates.read" or "succession.slates.manage" or
+            "succession.devplans.read" or "succession.devplans.manage" or "succession.reports.read" or "succession.self"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management.
@@ -188,7 +217,11 @@ public class AuthSeeder : IAuthSeeder
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // LRN: runs the catalogue, assignments and reports, and resets locked attempts / corrects records (audited).
-            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct"
+            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct" ||
+            // SUC: runs the talent review and slates; calibration (moving someone's potential) is the HR Director's.
+            x.Key is "succession.read" or "succession.positions.manage" or "succession.pools.manage" or "succession.nominate" or
+            "succession.assess" or "succession.slates.read" or "succession.slates.manage" or
+            "succession.devplans.read" or "succession.devplans.manage" or "succession.reports.read" or "succession.self"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -262,7 +295,9 @@ public class AuthSeeder : IAuthSeeder
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
             "performance.read", "performance.write",
             // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
-            "learning.report"
+            "learning.report",
+            // SUC: nominate own reports and keep their development plans (data-scoped); never slates or the 9-box.
+            "succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self"
         }), 10, true, cancellationToken);
 
         // Level 11 — Supervisor: front-line supervision
@@ -300,7 +335,9 @@ public class AuthSeeder : IAuthSeeder
         // appeals their own review and records progress on their own goals. Every list there is limited to
         // their own record by data scope. No performance.write: goals are set by the line manager or HR.
         var employeeRole = await EnsureRole(tenantId, "Employee", "Employee self-service user", Ps(new[] {
-            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read", "loans.self"
+            "dashboard.read", "profile.read", "ess.read", "ess.write", "performance.read", "loans.self",
+            // SUC: the employee's own development plan in self-service.
+            "succession.self"
         }), 16, true, cancellationToken);
         // Repair tenants that booted the original loan-governance branch: loans.read exposes the
         // company loan book, reports and staff navigation. Employee self-service uses loans.self.
@@ -472,6 +509,19 @@ public class AuthSeeder : IAuthSeeder
             ("learning.assign", "Learning", "Assign learning paths to employees, departments, designations and grades"),
             ("learning.report", "Learning", "View learning reports for the employees in your scope"),
             ("learning.records.correct", "Learning", "Reset locked assessment attempts, revoke and correct certificates (reason required, audited)"),
+            // SUC — succession and career development (opt-in feature "succession"). Explicit grants only (SuccessionPermissionKeys).
+            ("succession.read", "Succession", "View critical positions and talent pools (no candidate names)"),
+            ("succession.positions.manage", "Succession", "Designate, change and retire critical positions"),
+            ("succession.pools.manage", "Succession", "Create and archive talent pools"),
+            ("succession.nominate", "Succession", "Nominate employees in your scope to a critical position or talent pool"),
+            ("succession.assess", "Succession", "Record talent-review assessments of potential (with evidence)"),
+            ("succession.calibrate", "Succession", "Calibrate potential and confirm readiness in a calibration session (reason required)"),
+            ("succession.slates.read", "Succession", "View candidates, assessments, 9-box placements and succession slates"),
+            ("succession.slates.manage", "Succession", "Review nominations, change readiness, build, submit and revise slates"),
+            ("succession.devplans.read", "Succession", "View development plans of the employees in your scope"),
+            ("succession.devplans.manage", "Succession", "Create and manage development plans of the employees in your scope"),
+            ("succession.reports.read", "Succession", "View bench strength, coverage, gaps and development-plan progress"),
+            ("succession.self", "Succession", "View your own development plan in self-service"),
         };
 
         foreach (var definition in definitions)

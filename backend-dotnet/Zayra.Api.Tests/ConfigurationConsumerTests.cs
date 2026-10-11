@@ -394,6 +394,7 @@ public class ConfigurationConsumerTests
             "LeaveRequest",           // LeaveService.BuildApprovalProjection
             "ManpowerRequisition",    // RequisitionsController submission -> CreateRequestAsync
             "Timesheet",              // TimesheetService submission -> CreateRequestAsync
+            "SuccessionSlate",        // SuccessionSlateService.SubmitAsync -> CreateRequestAsync
         };
         ApprovalEntities.Producers.Should().BeEquivalentTo(expectedProducers,
             "only entities with verified runtime approval producers belong in the registry");

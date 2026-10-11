@@ -92,6 +92,8 @@ DataProtectionKeys
 DepartmentStaffingBudgets
 Departments
 Designations
+DevelopmentPlanActions
+DevelopmentPlans
 DocTypes
 DocumentChunks
 EOSBCalculations
@@ -320,7 +322,12 @@ ShiftDefinitions
 ShiftPolicies
 StaffingLevels
 StatutoryRules
+SuccessionCriticalPositions
+SuccessionNominations
+SuccessionSlateVersions
 SystemSettings
+TalentAssessments
+TalentPools
 TenantAiUsages
 TenantBrandings
 TenantFeatureFlags
