@@ -61,7 +61,8 @@ public class AnalyticsController : ControllerBase
         if (allowed is not null) reviewQuery = reviewQuery.Where(r => allowed.Contains(r.EmployeeId));
         var reviews = await reviewQuery.ToListAsync(ct);
 
-        if (reviews.Count == 0) return Ok(new { message = "No reviews found for this cycle." });
+        // No reviews in scope (an empty cycle, or one whose reviews are all in another company) returns the
+        // normal payload with zeros: the Analytics tab reads summary.* unconditionally.
 
         // Rating distribution
         var distribution = reviews

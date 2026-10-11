@@ -125,6 +125,24 @@ public sealed class PerformanceScopePostgresTests
     }
 
     [Fact]
+    public async Task CycleAnalytics_WhenScopeRemovesEveryReview_ReturnsTheNormalPayloadWithZeros()
+    {
+        var s = await SeedTwoCompaniesAsync();
+        // HR of a company that has no review in this cycle: scope removes every review.
+        var hr = CompanyHrManager(s.TenantId, Guid.NewGuid());
+        await using var db = _fx.CreateDbWithAccessor(Accessor(hr));
+        var controller = Build<PerformanceAnalyticsController>(db, hr);
+
+        var payload = JsonPayload(await controller.CycleAnalytics(s.CycleId, default));
+
+        payload.GetProperty("summary").GetProperty("totalEnrolled").GetInt32().Should().Be(0);
+        payload.GetProperty("summary").GetProperty("completionRate").GetDouble().Should().Be(0);
+        payload.GetProperty("distribution").GetArrayLength().Should().Be(0);
+        payload.GetProperty("topPerformers").GetArrayLength().Should().Be(0);
+        AssertNoForeignNames(payload.GetRawText());
+    }
+
+    [Fact]
     public async Task PerformanceDashboard_ForCompanyScopedHrManager_CountsAndAuditRowsStayInsideItsCompanies()
     {
         var s = await SeedTwoCompaniesAsync();
