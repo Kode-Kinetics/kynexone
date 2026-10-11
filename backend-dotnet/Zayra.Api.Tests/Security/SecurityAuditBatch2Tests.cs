@@ -348,7 +348,8 @@ public class SecurityAuditBatch2Tests
         { ControllerContext = new ControllerContext { HttpContext = EssContext(tenant, attacker.Id) } };
 
         var result = await controller.Get(pip.Id, CancellationToken.None);
-        result.Should().BeOfType<ForbidResult>("a PIP is disciplinary-sensitive and must be scope-checked");
+        // Out of scope is a 404, the same as a wrong id, so the response does not confirm the PIP exists.
+        result.Should().BeOfType<NotFoundResult>("a PIP is disciplinary-sensitive and must be scope-checked");
     }
 
     [Fact]

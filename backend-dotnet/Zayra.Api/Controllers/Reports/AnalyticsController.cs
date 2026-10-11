@@ -348,15 +348,54 @@ public class AnalyticsController : ControllerBase
             var currencyOfRun = period.ToDictionary(r => r.Id, r => PayrollReporting.CurrencyOf(r.CompanyId, currencies));
             var runIds = currencyOfRun.Keys.ToList();
             var slips = await _db.PayrollSlips.Where(x => x.TenantId == tid && runIds.Contains(x.RunId))
-                .Select(x => new { x.RunId, x.Department, x.NetSalary }).ToListAsync(ct);
-            payrollByDept = slips
+                .Select(x => new { x.RunId, x.EmployeeId, x.Department, x.NetSalary }).ToListAsync(ct);
+            payrollByDept = SuppressSmallDepartments(slips
                 .GroupBy(x => new { x.Department, Currency = currencyOfRun[x.RunId] })
-                .Select(g => new { g.Key.Department, currencyCode = g.Key.Currency, TotalNet = g.Sum(x => x.NetSalary) })
-                .OrderBy(x => x.Department).ThenBy(x => x.currencyCode)
-                .ToList();
+                .Select(g => new DepartmentPay(g.Key.Department, g.Key.Currency,
+                    g.Select(x => x.EmployeeId).Distinct().Count(), g.Sum(x => x.NetSalary))));
         }
 
-        return Ok(new { headcountByDept, payrollByDept });
+        return Ok(new { headcountByDept, payrollByDept, minimumCohort = MinimumPayCohort });
+    }
+
+    // ── Minimum-cohort guard for department pay ────────────────────────────────────────────────
+    // TODO(Engagement module): a shared CohortSuppression service is coming with the Engagement module;
+    // this local guard should migrate to it then. Kept deliberately small and local until that lands.
+    //
+    // A department total over fewer than MinimumPayCohort people is a near-individual salary (a
+    // department of one IS that person's net pay). Such departments are merged, per currency, into one
+    // "Other departments (suppressed)" row; when that merged row is itself under the minimum its total is
+    // withheld (null) as well. The headcount series is not pay and is left as it is.
+
+    internal const int MinimumPayCohort = 5;
+    internal const string SuppressedDepartments = "Other departments (suppressed)";
+
+    private sealed record DepartmentPay(string Department, string? CurrencyCode, int EmployeeCount, decimal TotalNet);
+
+    private static List<object> SuppressSmallDepartments(IEnumerable<DepartmentPay> groups)
+    {
+        var all = groups.ToList();
+        var shown = all.Where(g => g.EmployeeCount >= MinimumPayCohort)
+            .OrderBy(g => g.Department).ThenBy(g => g.CurrencyCode)
+            .Select(g => (object)new
+            {
+                g.Department, currencyCode = g.CurrencyCode, TotalNet = (decimal?)g.TotalNet,
+                g.EmployeeCount, Suppressed = false, DepartmentsMerged = 0,
+            });
+        var merged = all.Where(g => g.EmployeeCount < MinimumPayCohort)
+            .GroupBy(g => g.CurrencyCode)
+            .OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var people = g.Sum(x => x.EmployeeCount);
+                return (object)new
+                {
+                    Department = SuppressedDepartments, currencyCode = g.Key,
+                    TotalNet = people >= MinimumPayCohort ? g.Sum(x => x.TotalNet) : (decimal?)null,
+                    EmployeeCount = people, Suppressed = true, DepartmentsMerged = g.Count(),
+                };
+            });
+        return shown.Concat(merged).ToList();
     }
 
     /// <summary>

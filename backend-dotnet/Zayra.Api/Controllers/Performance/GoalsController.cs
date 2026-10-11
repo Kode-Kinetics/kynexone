@@ -7,6 +7,8 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Authorization;
+
 namespace Zayra.Api.Controllers.Performance;
 
 [ApiController]
@@ -26,6 +28,7 @@ public class GoalsController : ControllerBase
     }
 
     [HttpGet]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(
         [FromQuery] int? employeeId,
         [FromQuery] Guid? cycleId,
@@ -57,6 +60,7 @@ public class GoalsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -66,7 +70,7 @@ public class GoalsController : ControllerBase
 
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
-            return Forbid();
+            return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
 
         var updates = await _db.GoalProgressUpdates
             .Where(u => u.TenantId == tenantId && u.GoalId == id)
@@ -131,7 +135,7 @@ public class GoalsController : ControllerBase
         if (goal is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
-            return Forbid();
+            return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
         if (WeightRefusal(req.Weight) is { } weightRefusal) return weightRefusal;
 
         goal.Title           = req.Title;
@@ -155,6 +159,7 @@ public class GoalsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/progress")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> UpdateProgress(Guid id, [FromBody] ProgressUpdateRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -164,7 +169,7 @@ public class GoalsController : ControllerBase
         if (goal is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
-            return Forbid();
+            return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
         if (goal.IsDeleted) return NotFound();
         // R05: progress is measured against an agreed goal. A Draft nobody has approved, or a goal
         // already Completed / OnHold / Cancelled, is not open for progress.
@@ -210,7 +215,7 @@ public class GoalsController : ControllerBase
         if (goal is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
-            return Forbid();
+            return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
         // The same rule as the manager review (ReviewsController.SubmitManagerReview): the caller must be one of
         // the employee's resolved KPI approvers (their direct or second-level manager), unless they hold the
         // rating approver tier or an organisation-wide scope. This used to be skipped for the role NAMES Admin
@@ -272,7 +277,7 @@ public class GoalsController : ControllerBase
         if (goal is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
-            return Forbid();
+            return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
         if (goal.ManagerApproved) return BadRequest("Cannot delete an approved goal. Set it to Cancelled instead.");
         goal.IsDeleted = true; goal.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);

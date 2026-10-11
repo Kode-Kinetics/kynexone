@@ -148,9 +148,9 @@ public sealed class ExecutionStrategyRegressionTests
         }
 
         await using var db = _fixture.CreateRetryingDb();
-        var controller = new CalibrationController(db, new PerformanceService(db))
+        var controller = new CalibrationController(db, new PerformanceService(db), new Zayra.Api.Infrastructure.Common.DataScopeService(db))
         {
-            ControllerContext = TenantContext(tenantId)
+            ControllerContext = TenantContext(tenantId, "employees.write", "performance.approve")
         };
 
         var response = await NoStrategyConflict(
@@ -308,7 +308,9 @@ public sealed class ExecutionStrategyRegressionTests
         }
     }
 
-    private static ControllerContext TenantContext(Guid tenantId)
+    // Calibration resolves the caller's employee scope (PERF_SCOPE_FIX), so its caller carries the HR keys
+    // the real role gate requires; a principal with no permissions has no employees in scope.
+    private static ControllerContext TenantContext(Guid tenantId, params string[] permissions)
     {
         var identity = new ClaimsIdentity(
             new[]
@@ -316,7 +318,7 @@ public sealed class ExecutionStrategyRegressionTests
                 new Claim("tenant_id", tenantId.ToString()),
                 new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                 new Claim("FullName", "Execution Strategy Tester"),
-            },
+            }.Concat(permissions.Select(p => new Claim("permission", p))),
             authenticationType: "test");
 
         return new ControllerContext
