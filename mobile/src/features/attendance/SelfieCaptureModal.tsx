@@ -228,7 +228,13 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
         <View style={styles.flex} />
 
         <View style={[styles.bottom, { paddingBottom: Math.max(insets.bottom, 18) }]}>
-          <GlassSurface glass radius={26} tintColor="rgba(8,15,32,0.72)" contentStyle={styles.panel}>
+          <GlassSurface
+            glass
+            radius={26}
+            tintColor="rgba(8,15,32,0.72)"
+            style={styles.capturePanel}
+            contentStyle={styles.panel}
+          >
             {demoNotice ? (
               <View style={styles.demoRow} accessibilityLabel={demoNotice}>
                 <Ionicons name="warning-outline" size={15} color="#FCD34D" />
@@ -328,6 +334,7 @@ const styles = StyleSheet.create({
   titlePill: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingVertical: 9, flexShrink: 1 },
   titleText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', flexShrink: 1 },
   bottom: { paddingHorizontal: 16 },
+  capturePanel: { width: '100%' },
   panel: { padding: 18, gap: 14 },
   heading: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
   body: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },
