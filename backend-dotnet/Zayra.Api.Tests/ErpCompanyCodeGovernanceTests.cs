@@ -106,6 +106,30 @@ public class ErpCompanyCodeGovernanceTests
     }
 
     [Fact]
+    public async Task ACompanyWithoutACode_IsExportedUnderItsRegistrationNumber_SoThatMayNotCollideEither()
+    {
+        // Review finding on #223: with no ERP code the export labels the company by its registration number
+        // (JournalExportBuilder.CompanyCodeOf), so creating, renumbering or clearing the code of such a company
+        // must not land on a code another company already exports under.
+        var (db, tenantId) = await NewTenantAsync("erp-code-fallback");
+        await SeedCompanyAsync(db, tenantId, "Alpha KSA", "7001", erpCode: "SA01");
+        var beta = await SeedCompanyAsync(db, tenantId, "Beta Services", "SA01X", erpCode: "SA02");
+        var admin = await UserAsync(db, tenantId, "Admin");
+        var svc = Svc(db);
+
+        var create = () => svc.CreateCompanyAsync(tenantId, Req("Delta", "SA01", erpCode: null), Ctx(tenantId, admin), default);
+        (await create.Should().ThrowAsync<EmailDomainRefusedException>()).Which.Message.Should().Contain("Alpha KSA");
+
+        var gamma = await SeedCompanyAsync(db, tenantId, "Gamma Trading", "4030", erpCode: null);
+        var renumber = () => svc.UpdateCompanyAsync(tenantId, gamma.Id, Req("Gamma Trading", "sa02", erpCode: null), Ctx(tenantId, admin), default);
+        (await renumber.Should().ThrowAsync<EmailDomainRefusedException>()).Which.Status.Should().Be(409);
+
+        // Beta clears its code, so it would be exported as "SA01X" — free, so that is allowed.
+        var cleared = await svc.UpdateCompanyAsync(tenantId, beta.Id, Req("Beta Services", "SA01X", erpCode: ""), Ctx(tenantId, admin), default);
+        cleared!.ErpCompanyCode.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ADeletedCompanyReleasesItsCode()
     {
         var (db, tenantId) = await NewTenantAsync("erp-code-deleted");

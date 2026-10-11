@@ -57,6 +57,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             company.IsActive = false;
         }
         _db.Companies.Add(company);
+        await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, cancellationToken);
         await SaveCompanyAsync(company.ErpCompanyCode, cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
         if (company.ErpCompanyCode is not null)
@@ -130,6 +131,7 @@ public class OrganizationSetupService : IOrganizationSetupService
                 company.Id,
                 context with { TenantId = tenantId },
                 ct);
+            await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, ct);
             await SaveCompanyAsync(company.ErpCompanyCode, ct);
             return true;
         }
@@ -754,6 +756,32 @@ public class OrganizationSetupService : IOrganizationSetupService
             throw new EmailDomainRefusedException("erp_company_code_taken", 409,
                 $"ERP company code {next} is already used by {other}. Each company needs its own code, or your ERP would book "
                 + "both companies' journals into one ledger.");
+    }
+
+    /// <summary>
+    /// Journal exports label each company with its ERP code, or — when it has none — its registration number
+    /// (<see cref="Zayra.Api.Infrastructure.Finance.JournalExportBuilder.CompanyCodeOf"/>). The ERP-code check above only
+    /// runs when a code is set; this one runs on every save, on the code the company will ACTUALLY be exported under,
+    /// so creating a company, changing its registration number or clearing its ERP code can never make two legal
+    /// entities export under the same company code (409, naming the other company).
+    /// </summary>
+    private async Task EnsureExportedCompanyCodeUniqueAsync(Guid tenantId, Company company, CancellationToken ct)
+    {
+        var exported = Zayra.Api.Infrastructure.Finance.JournalExportBuilder.CompanyCodeOf(company);
+        if (string.IsNullOrWhiteSpace(exported)) return;
+        var lower = exported.ToLowerInvariant();
+        var other = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "Exported company-code uniqueness across every legal entity of the tenant (only the colliding company's name is read)")
+            .AsNoTracking()
+            .Where(x => !x.IsDeleted && x.Id != company.Id
+                     && ((x.ErpCompanyCode != null && x.ErpCompanyCode != "" && x.ErpCompanyCode.ToLower() == lower)
+                         || ((x.ErpCompanyCode == null || x.ErpCompanyCode == "") && x.RegistrationNumber.ToLower() == lower)))
+            .Select(x => x.LegalNameEn)
+            .FirstOrDefaultAsync(ct);
+        if (other is not null)
+            throw new EmailDomainRefusedException("erp_company_code_taken", 409,
+                $"{company.LegalNameEn} would be exported to your ERP under company code {exported}, which {other} already uses. "
+                + "Give one of them its own ERP company code, or your ERP would book both companies' journals into one ledger.");
     }
 
     /// <summary>Saves, turning a lost race on ux_companies_tenant_erp_company_code into the same 409 the pre-check gives.</summary>

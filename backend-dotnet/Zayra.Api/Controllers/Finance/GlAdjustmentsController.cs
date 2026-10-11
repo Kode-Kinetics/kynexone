@@ -327,16 +327,28 @@ public class GlAdjustmentsController : ControllerBase
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (string.IsNullOrWhiteSpace(req?.Note))
             return BadRequest(new { code = "GL_ADJUSTMENT_REASON_REQUIRED", message = "Say why the request is rejected." });
-        var row = await _db.GlAdjustmentRequests.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id, ct);
+        return await InTransactionAsync(() => RejectCoreAsync(tid.Value, id, req.Note.Trim(), ct), ct);
+    }
+
+    /// <summary>
+    /// Takes the same row lock as <see cref="ApproveCoreAsync"/>, so a concurrent approve and reject are
+    /// serialised: whichever commits second re-reads the decided status and gets 409. Without the lock a
+    /// reject could read the stale Pending row and overwrite an approval whose journal had already posted.
+    /// </summary>
+    private async Task<IActionResult> RejectCoreAsync(Guid tid, Guid id, string note, CancellationToken ct)
+    {
+        var row = await _db.GlAdjustmentRequests
+            .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id, ct);
         if (row is null) return NotFound();
-        if (await CompanyError(tid.Value, row.CompanyId, ct) is { } err) return err;
+        if (await CompanyError(tid, row.CompanyId, ct) is { } err) return err;
         if (row.Status != GlAdjustmentStatuses.Pending)
             return Conflict(new { code = "GL_ADJUSTMENT_NOT_PENDING", message = $"This request is already {row.Status.ToLowerInvariant()}." });
         row.Status = GlAdjustmentStatuses.Rejected;
         row.DecidedByUserId = this.GetUserId();
         row.DecidedByName = UserName();
         row.DecidedAtUtc = DateTime.UtcNow;
-        row.DecisionNote = req.Note.Trim();
+        row.DecisionNote = note;
         row.UpdatedAtUtc = DateTime.UtcNow;
         WriteAudit(AuditPrefix(row) + ".rejected", row, new { row.Amount, note = row.DecisionNote, requestedBy = row.RequestedByUserId });
         await _db.SaveChangesAsync(ct);
