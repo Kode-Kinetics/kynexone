@@ -219,7 +219,7 @@ public class GlJournalExportsController : ControllerBase
         && string.Equals(pg.ConstraintName, LiveScopeIndexName, StringComparison.Ordinal);
 
     /// <summary>Created by migration AddErpCodesAndLiveExportIndex (raw SQL: NULLS NOT DISTINCT).</summary>
-    public const string LiveScopeIndexName = Migrations.AddErpCodesAndLiveExportIndex.LiveScopeIndexName;
+    public const string LiveScopeIndexName = Zayra.Api.Data.DatabaseIndexNames.GlJournalExportLiveScope;
 
     // ── List / read / download ────────────────────────────────────────────────────────────────────
 
