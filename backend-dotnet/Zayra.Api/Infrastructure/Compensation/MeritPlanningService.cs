@@ -23,6 +23,9 @@ public static class CompPermissions
     public const string Approve = "compensation.approve";
     public const string BenchmarksManage = "compensation.benchmarks.manage";
     public const string EquityRead = "compensation.equity.read";
+
+    /// <summary>Every compensation key. Each role is granted these by explicit list only (CompensationRoleGrantTests).</summary>
+    public static readonly IReadOnlyList<string> All = [Read, Plan, Manage, Approve, BenchmarksManage, EquityRead];
 }
 
 /// <summary>Stable notification event codes (outbox dedupe identity).</summary>

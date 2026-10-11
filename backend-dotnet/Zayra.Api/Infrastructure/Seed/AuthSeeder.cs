@@ -164,8 +164,9 @@ public class AuthSeeder : IAuthSeeder
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
             "qiwa.read" or "qiwa.sync" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
-            // CMP: the whole merit programme, including pay equity.
-            x.Key.StartsWith("compensation.")
+            // CMP: the whole merit programme, including pay equity — named key by key, never by prefix
+            // (CompensationRoleGrantTests: no prefix bundle may reach a compensation key).
+            x.Key is "compensation.read" or "compensation.plan" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management.

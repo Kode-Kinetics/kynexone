@@ -455,7 +455,16 @@ Write routes may also return 422 `{ error, message, blockers }`, 409 conflict, 4
      - Re-run the query, then deploy.
 2. **Deploy.** Migrate as usual (approve the CI run). Check `/health/ready` reports `pendingMigrations: 0`.
 3. **Enable for a tenant.** Run `PUT /api/platform/tenants/{id}/features/compensation { isEnabled: true }` as the platform
-   owner. Roles receive the keys on the next AuthSeeder run (boot).
+   owner. **Existing tenants' roles do not receive the keys on deploy.** The boot seeder (`AuthSeeder.SeedAsync`) backfills
+   only the Admin role. `EnsureTenantRolesAsync`, which carries the role table in §3, runs only from PlatformController
+   when a tenant is created (`POST /api/platform/tenants`, `POST /api/platform/leads/{id}/convert`) or when a requested
+   role does not exist yet (`POST /api/platform/tenants/{id}/admins`, `POST /api/platform/tenants/{id}/users`). No
+   platform endpoint re-applies the role table to a tenant whose roles already exist. So, as part of the rollout for
+   each existing tenant, the tenant's security administrator (`security.manage`) grants the keys in **User Management →
+   Roles**: HR Director all six, HR Manager read/manage/approve/benchmarks.manage/equity.read, Finance and Finance
+   Approver read/approve, Manager plan. The screen calls `PUT /api/access/roles/{roleId}/permissions`, which REPLACES the
+   role's whole permission set, so send the existing keys plus the new ones. Tenants created after the deploy get the
+   keys automatically.
 4. **Running a cycle:**
    1. Create the cycle.
    2. Set the guideline matrix, budgets and FX.
