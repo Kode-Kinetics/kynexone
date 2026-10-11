@@ -38,7 +38,7 @@ namespace Zayra.Api.Migrations
     public partial class AddErpCodesAndLiveExportIndex : Migration
     {
         public const string LiveScopeIndexName = Zayra.Api.Application.Finance.GlJournalExportConstraints.LiveScopeIndexName;
-        public const string ErpCompanyCodeIndexName = "ux_companies_tenant_erp_company_code";
+        public const string ErpCompanyCodeIndexName = Zayra.Api.Application.Finance.GlJournalExportConstraints.ErpCompanyCodeIndexName;
 
         /// <summary>Fail fast instead of queueing live traffic behind ALTER TABLE companies (a hot table) while a long
         /// transaction (a payroll lock) holds a lock on it; the deploy can simply be retried. Precedent:
