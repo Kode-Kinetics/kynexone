@@ -5,6 +5,8 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Authorization;
+
 namespace Zayra.Api.Controllers.Performance;
 
 [ApiController]
@@ -16,6 +18,7 @@ public class ScorecardTemplatesController : ControllerBase
     public ScorecardTemplatesController(ZayraDbContext db) => _db = db;
 
     [HttpGet]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -27,6 +30,7 @@ public class ScorecardTemplatesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;

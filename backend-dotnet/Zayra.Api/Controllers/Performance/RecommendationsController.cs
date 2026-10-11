@@ -6,6 +6,9 @@ using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers.Performance;
 
 [ApiController]
@@ -69,6 +72,7 @@ public class RecommendationsController : ControllerBase
     // ── Increment ──────────────────────────────────────────────────────────────
 
     [HttpGet("increments")]
+    [HasPermission(PerformancePermissions.Write, PerformancePermissions.Approve)]
     public async Task<IActionResult> ListIncrements([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -127,8 +131,9 @@ public class RecommendationsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
-        var rec = await _db.IncrementRecommendations
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        // Out of the caller's scope is a 404, the same as a wrong id (ScopedRecordLookup).
+        var rec = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.IncrementRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;
@@ -145,6 +150,7 @@ public class RecommendationsController : ControllerBase
     // ── Promotion ──────────────────────────────────────────────────────────────
 
     [HttpGet("promotions")]
+    [HasPermission(PerformancePermissions.Write, PerformancePermissions.Approve)]
     public async Task<IActionResult> ListPromotions([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -193,8 +199,9 @@ public class RecommendationsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
-        var rec = await _db.PromotionRecommendations
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        // Out of the caller's scope is a 404, the same as a wrong id (ScopedRecordLookup).
+        var rec = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.PromotionRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;
@@ -209,6 +216,7 @@ public class RecommendationsController : ControllerBase
     // ── Bonus ──────────────────────────────────────────────────────────────────
 
     [HttpGet("bonuses")]
+    [HasPermission(PerformancePermissions.Write, PerformancePermissions.Approve)]
     public async Task<IActionResult> ListBonuses([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -251,8 +259,9 @@ public class RecommendationsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
-        var rec = await _db.BonusRecommendations
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        // Out of the caller's scope is a 404, the same as a wrong id (ScopedRecordLookup).
+        var rec = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.BonusRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;

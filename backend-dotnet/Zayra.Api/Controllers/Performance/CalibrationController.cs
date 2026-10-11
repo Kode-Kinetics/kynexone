@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Performance;
@@ -15,9 +16,14 @@ public class CalibrationController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IPerformanceService _svc;
+    private readonly IDataScopeService _scopeService;
 
-    public CalibrationController(ZayraDbContext db, IPerformanceService svc)
-    { _db = db; _svc = svc; }
+    public CalibrationController(ZayraDbContext db, IPerformanceService svc, IDataScopeService scopeService)
+    { _db = db; _svc = svc; _scopeService = scopeService; }
+
+    // Reviews carry no company column, so the company boundary is enforced through the reviewed employee:
+    // IDataScopeService materialises a company-scoped HR Manager's organisation-wide scope into the
+    // employees of their companies.
 
     [HttpGet("{cycleId:guid}")]
     public async Task<IActionResult> GetBoard(
@@ -27,17 +33,25 @@ public class CalibrationController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
 
+        var allowed = await _scopeService.AllowedEmployeesAsync(User, tenantId, ct);
+
         var query = _db.AppraisalReviews.Where(r => r.TenantId == tenantId && r.CycleId == cycleId);
+        if (allowed is not null) query = query.Where(r => allowed.Contains(r.EmployeeId));
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(r => r.DepartmentName == department);
 
         var reviews = await query
             .OrderByDescending(r => r.FinalScore)
             .ToListAsync(ct);
 
+        // Only the calibration history of the reviews on THIS board, and the latest record per review:
+        // every adjustment appends a row, so a review adjusted twice has two.
+        var reviewIds = reviews.Select(r => r.Id).ToList();
         var calibrations = await _db.AppraisalCalibrations
-            .Where(c => c.TenantId == tenantId && c.CycleId == cycleId)
+            .Where(c => c.TenantId == tenantId && c.CycleId == cycleId && reviewIds.Contains(c.ReviewId))
             .ToListAsync(ct);
-        var calibMap = calibrations.ToDictionary(c => c.ReviewId);
+        var calibMap = calibrations
+            .GroupBy(c => c.ReviewId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.CalibratedAtUtc).First());
 
         // Distribution bands
         var distribution = new Dictionary<string, int>
@@ -93,8 +107,11 @@ public class CalibrationController : ControllerBase
         if (req.Adjustment is < -100 or > 100)
             return BadRequest(new { error = "invalid_adjustment", message = "Calibration adjustment must be between -100 and 100 points." });
 
-        var review = await _db.AppraisalReviews
-            .FirstOrDefaultAsync(r => r.Id == req.ReviewId && r.TenantId == tenantId && r.CycleId == cycleId, ct);
+        // Outside the caller's companies the review does not exist for them: same 404 as a wrong id, so
+        // the response does not confirm that another company's review is there (ScopedRecordLookup).
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == req.ReviewId && r.TenantId == tenantId && r.CycleId == cycleId),
+            r => r.EmployeeId, ct);
         if (review is null) return NotFound();
         if (review.Status != "ManagerReviewComplete")
             return Conflict(new { error = "review_not_calibratable", message = $"Manager review must be complete before calibration (current: {review.Status})." });

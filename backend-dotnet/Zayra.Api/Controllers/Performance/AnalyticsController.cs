@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 
 namespace Zayra.Api.Controllers.Performance;
 
@@ -24,8 +25,13 @@ namespace Zayra.Api.Controllers.Performance;
 /// Performance module for their own team and their own review, and nothing here is limited to the
 /// caller's data scope: a line manager or an employee would have read the whole tenant's named low
 /// performers. Every seeded role that held <c>performance.read</c> before (Admin, HR Director) also holds
-/// <c>performance.approve</c>, so none of them loses access. The tenant/company SCOPE gap is a separate,
-/// larger defect and is reported rather than changed here.</para>
+/// <c>performance.approve</c>, so none of them loses access.</para>
+///
+/// <para><b>Scope.</b> Every figure is cut to the caller's employee scope from <see cref="IDataScopeService"/>.
+/// Performance rows carry no company column, so the company boundary is enforced through the employee
+/// each row is about: a company-scoped HR Manager's organisation-wide scope is materialised to the
+/// employees of their companies, and named rows (top/low performers, manager bias, calibrations, audit
+/// activity) never include anyone outside it.</para>
 /// </summary>
 [ApiController]
 [Route("api/performance/analytics")]
@@ -34,18 +40,29 @@ namespace Zayra.Api.Controllers.Performance;
 public class AnalyticsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public AnalyticsController(ZayraDbContext db) => _db = db;
+    private readonly IDataScopeService _scopeService;
+
+    public AnalyticsController(ZayraDbContext db, IDataScopeService scopeService)
+    {
+        _db = db;
+        _scopeService = scopeService;
+    }
+
+    private Task<List<int>?> AllowedEmployeesAsync(Guid tenantId, CancellationToken ct) =>
+        _scopeService.AllowedEmployeesAsync(User, tenantId, ct);
 
     [HttpGet("cycle/{cycleId:guid}")]
     public async Task<IActionResult> CycleAnalytics(Guid cycleId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        var allowed = await AllowedEmployeesAsync(tenantId, ct);
 
-        var reviews = await _db.AppraisalReviews
-            .Where(r => r.TenantId == tenantId && r.CycleId == cycleId)
-            .ToListAsync(ct);
+        var reviewQuery = _db.AppraisalReviews.Where(r => r.TenantId == tenantId && r.CycleId == cycleId);
+        if (allowed is not null) reviewQuery = reviewQuery.Where(r => allowed.Contains(r.EmployeeId));
+        var reviews = await reviewQuery.ToListAsync(ct);
 
-        if (reviews.Count == 0) return Ok(new { message = "No reviews found for this cycle." });
+        // No reviews in scope (an empty cycle, or one whose reviews are all in another company) returns the
+        // normal payload with zeros: the Analytics tab reads summary.* unconditionally.
 
         // Rating distribution
         var distribution = reviews
@@ -91,9 +108,10 @@ public class AnalyticsController : ControllerBase
             .GroupBy(r => r.Status)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        // Calibration adjustments
+        // Calibration adjustments — only those made to the reviews in scope (the record names the employee).
+        var reviewIds = reviews.Select(r => r.Id).ToList();
         var calibrations = await _db.AppraisalCalibrations
-            .Where(c => c.TenantId == tenantId && c.CycleId == cycleId)
+            .Where(c => c.TenantId == tenantId && c.CycleId == cycleId && reviewIds.Contains(c.ReviewId))
             .ToListAsync(ct);
 
         // Manager rating stats (bias detection)
@@ -135,31 +153,70 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> Dashboard(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        var allowed = await AllowedEmployeesAsync(tenantId, ct);
 
-        var activeCycles = await _db.PerformanceCycles
-            .Where(c => c.TenantId == tenantId && c.Status == "Active")
+        // A scoped caller sees only the active cycles they have someone in: a cycle with no in-scope review
+        // is another company's business, name included.
+        var cycleQuery = _db.PerformanceCycles.Where(c => c.TenantId == tenantId && c.Status == "Active");
+        if (allowed is not null)
+            cycleQuery = cycleQuery.Where(c => _db.AppraisalReviews.Any(r =>
+                r.TenantId == tenantId && r.CycleId == c.Id && allowed.Contains(r.EmployeeId)));
+        var activeCycles = await cycleQuery
             .Select(c => new { c.Id, c.Name, c.CycleType, c.ReviewPeriodEnd, c.Status })
             .ToListAsync(ct);
 
+        var reviews = _db.AppraisalReviews.Where(r => r.TenantId == tenantId);
+        var appeals = _db.AppraisalAppeals.Where(a => a.TenantId == tenantId);
+        var increments = _db.IncrementRecommendations.Where(r => r.TenantId == tenantId);
+        var promotions = _db.PromotionRecommendations.Where(r => r.TenantId == tenantId);
+        var bonuses = _db.BonusRecommendations.Where(r => r.TenantId == tenantId);
+        var pips = _db.PerformanceImprovementPlans.Where(p => p.TenantId == tenantId);
+        var probations = _db.ProbationReviews.Where(p => p.TenantId == tenantId);
+        if (allowed is not null)
+        {
+            reviews = reviews.Where(r => allowed.Contains(r.EmployeeId));
+            appeals = appeals.Where(a => allowed.Contains(a.EmployeeId));
+            increments = increments.Where(r => allowed.Contains(r.EmployeeId));
+            promotions = promotions.Where(r => allowed.Contains(r.EmployeeId));
+            bonuses = bonuses.Where(r => allowed.Contains(r.EmployeeId));
+            pips = pips.Where(p => allowed.Contains(p.EmployeeId));
+            probations = probations.Where(p => allowed.Contains(p.EmployeeId));
+        }
+
         var pendingActions = new
         {
-            SelfAssessmentDue    = await _db.AppraisalReviews.CountAsync(r => r.TenantId == tenantId && r.Status == "SelfAssessmentDue", ct),
-            ManagerReviewPending = await _db.AppraisalReviews.CountAsync(r => r.TenantId == tenantId && r.Status == "ManagerReview", ct),
-            CalibrationPending   = await _db.AppraisalReviews.CountAsync(r => r.TenantId == tenantId && r.Status == "Calibration", ct),
-            AppealsPending       = await _db.AppraisalAppeals.CountAsync(a => a.TenantId == tenantId && a.Status == "Submitted", ct),
+            SelfAssessmentDue    = await reviews.CountAsync(r => r.Status == "SelfAssessmentDue", ct),
+            ManagerReviewPending = await reviews.CountAsync(r => r.Status == "ManagerReview", ct),
+            CalibrationPending   = await reviews.CountAsync(r => r.Status == "Calibration", ct),
+            AppealsPending       = await appeals.CountAsync(a => a.Status == "Submitted", ct),
         };
 
-        var recentActivity = await _db.PerformanceAuditLogs
-            .Where(a => a.TenantId == tenantId)
+        // The audit log names an entity, not an employee. A scoped caller sees only the rows whose entity
+        // is a review or recommendation about someone in scope; any other entity type is withheld (fails
+        // closed) rather than shown on trust.
+        var logs = _db.PerformanceAuditLogs.Where(a => a.TenantId == tenantId);
+        if (allowed is not null)
+        {
+            logs = logs.Where(a =>
+                (a.EntityType == "AppraisalReview" && _db.AppraisalReviews.Any(r =>
+                    r.TenantId == tenantId && r.Id.ToString() == a.EntityId && allowed.Contains(r.EmployeeId))) ||
+                (a.EntityType == "IncrementRecommendation" && _db.IncrementRecommendations.Any(r =>
+                    r.TenantId == tenantId && r.Id.ToString() == a.EntityId && allowed.Contains(r.EmployeeId))) ||
+                (a.EntityType == "PromotionRecommendation" && _db.PromotionRecommendations.Any(r =>
+                    r.TenantId == tenantId && r.Id.ToString() == a.EntityId && allowed.Contains(r.EmployeeId))) ||
+                (a.EntityType == "BonusRecommendation" && _db.BonusRecommendations.Any(r =>
+                    r.TenantId == tenantId && r.Id.ToString() == a.EntityId && allowed.Contains(r.EmployeeId))));
+        }
+        var recentActivity = await logs
             .OrderByDescending(a => a.CreatedAtUtc)
             .Take(20)
             .ToListAsync(ct);
 
-        var incrementPending  = await _db.IncrementRecommendations.CountAsync(r => r.TenantId == tenantId && r.Status == "Pending", ct);
-        var promotionPending  = await _db.PromotionRecommendations.CountAsync(r => r.TenantId == tenantId && r.Status == "Pending", ct);
-        var bonusPending      = await _db.BonusRecommendations.CountAsync(r => r.TenantId == tenantId && r.Status == "Pending", ct);
-        var activePips        = await _db.PerformanceImprovementPlans.CountAsync(p => p.TenantId == tenantId && p.Status == "Active", ct);
-        var probationDue      = await _db.ProbationReviews.CountAsync(p => p.TenantId == tenantId && p.Status == "Pending", ct);
+        var incrementPending  = await increments.CountAsync(r => r.Status == "Pending", ct);
+        var promotionPending  = await promotions.CountAsync(r => r.Status == "Pending", ct);
+        var bonusPending      = await bonuses.CountAsync(r => r.Status == "Pending", ct);
+        var activePips        = await pips.CountAsync(p => p.Status == "Active", ct);
+        var probationDue      = await probations.CountAsync(p => p.Status == "Pending", ct);
 
         return Ok(new
         {
@@ -176,7 +233,9 @@ public class AnalyticsController : ControllerBase
     public async Task<IActionResult> GoalsCompletion([FromQuery] Guid? cycleId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        var allowed = await AllowedEmployeesAsync(tenantId, ct);
         var query = _db.EmployeeGoals.Where(g => g.TenantId == tenantId);
+        if (allowed is not null) query = query.Where(g => allowed.Contains(g.EmployeeId));
         if (cycleId.HasValue) query = query.Where(g => g.CycleId == cycleId.Value);
 
         var goals = await query.ToListAsync(ct);

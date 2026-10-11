@@ -133,7 +133,7 @@ public sealed class TalentLifecyclePostgresTests
             EmployeeId = 901, EmployeeName = "Incomplete Reviewer", Status = "SelfAssessmentSubmitted",
         });
         await db.SaveChangesAsync();
-        var controller = new CyclesController(db, new PerformanceService(db));
+        var controller = new CyclesController(db, new PerformanceService(db), new DataScopeService(db));
         SetPrincipal(controller, tenantId, Guid.NewGuid());
 
         (await controller.Advance(cycle.Id, CancellationToken.None)).Should().BeOfType<ConflictObjectResult>();
@@ -153,7 +153,7 @@ public sealed class TalentLifecyclePostgresTests
         };
         db.AddRange(cycle, review);
         await db.SaveChangesAsync();
-        var controller = new CyclesController(db, new PerformanceService(db));
+        var controller = new CyclesController(db, new PerformanceService(db), new DataScopeService(db));
         SetPrincipal(controller, tenantId, Guid.NewGuid());
 
         (await controller.Advance(cycle.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
@@ -177,7 +177,7 @@ public sealed class TalentLifecyclePostgresTests
         };
         db.AddRange(template, actualCycle, routeCycle, review);
         await db.SaveChangesAsync();
-        var controller = new CalibrationController(db, new PerformanceService(db));
+        var controller = new CalibrationController(db, new PerformanceService(db), new DataScopeService(db));
         SetPrincipal(controller, tenantId, Guid.NewGuid());
 
         (await controller.AdjustScore(routeCycle.Id,

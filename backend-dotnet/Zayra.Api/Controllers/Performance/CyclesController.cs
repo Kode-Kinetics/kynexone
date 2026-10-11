@@ -4,10 +4,24 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Performance;
 
+/// <summary>
+/// Performance cycles.
+///
+/// <para><b>Gates.</b> An action with no role or permission metadata is not mapped to a permission by
+/// <c>LegacyRolePermissionResolver</c> (it only infers for role gates), so every read names its key: the
+/// cycle list is the set-up/review/HR screens' picker; the per-cycle detail and stats are HR's view.</para>
+///
+/// <para><b>Scope.</b> Reviews and enrolments are about employees, so they are cut to the caller's employee
+/// scope (<see cref="IDataScopeService"/>), which keeps a company-scoped HR Manager inside their companies.
+/// Cycles themselves have no company: launching, advancing or closing one acts on every company's reviews,
+/// so those transitions are for a group-level (unrestricted) caller only.</para>
+/// </summary>
 [ApiController]
 [Route("api/performance/cycles")]
 [Authorize]
@@ -15,11 +29,30 @@ public class CyclesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IPerformanceService _svc;
+    private readonly IDataScopeService _scopeService;
 
-    public CyclesController(ZayraDbContext db, IPerformanceService svc)
-    { _db = db; _svc = svc; }
+    public CyclesController(ZayraDbContext db, IPerformanceService svc, IDataScopeService scopeService)
+    { _db = db; _svc = svc; _scopeService = scopeService; }
+
+    /// <summary>
+    /// Null when the caller may act on a whole cycle; otherwise the 403 to return. A cycle spans every
+    /// company of the tenant (no CompanyId), so a company-scoped HR Manager launching, advancing or closing
+    /// it would enrol, move or freeze the other companies' reviews.
+    /// </summary>
+    private async Task<IActionResult?> RequireGroupScopeAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (scope.IsUnrestricted) return null;
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            error = "cycle_action_requires_group_scope",
+            message = "A performance cycle covers every company in your organisation, so only a group-level " +
+                      "HR administrator can launch, advance or close it. Ask your group HR administrator.",
+        });
+    }
 
     [HttpGet]
+    [HasPermission(PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
         [FromQuery] string? type,
@@ -63,42 +96,64 @@ public class CyclesController : ControllerBase
     }
 
     [HttpGet("stats")]
+    [HasPermission(PerformancePermissions.Approve)]
     public async Task<IActionResult> Stats(CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var cycles = await _db.PerformanceCycles.Where(c => c.TenantId == tenantId).ToListAsync(ct);
-        var reviews = await _db.AppraisalReviews.Where(r => r.TenantId == tenantId).ToListAsync(ct);
-        var pips    = await _db.PerformanceImprovementPlans.Where(p => p.TenantId == tenantId && p.Status == "Active").CountAsync(ct);
-        var probation = await _db.ProbationReviews.Where(p => p.TenantId == tenantId && p.Status == "Pending").CountAsync(ct);
+        var allowed = await _scopeService.AllowedEmployeesAsync(User, tenantId, ct);
+
+        var reviewQuery = _db.AppraisalReviews.AsNoTracking().Where(r => r.TenantId == tenantId);
+        var pipQuery = _db.PerformanceImprovementPlans.Where(p => p.TenantId == tenantId && p.Status == "Active");
+        var probationQuery = _db.ProbationReviews.Where(p => p.TenantId == tenantId && p.Status == "Pending");
+        var cycleQuery = _db.PerformanceCycles.AsNoTracking().Where(c => c.TenantId == tenantId);
+        if (allowed is not null)
+        {
+            reviewQuery = reviewQuery.Where(r => allowed.Contains(r.EmployeeId));
+            pipQuery = pipQuery.Where(p => allowed.Contains(p.EmployeeId));
+            probationQuery = probationQuery.Where(p => allowed.Contains(p.EmployeeId));
+            // A scoped caller counts only the cycles they have someone in.
+            cycleQuery = cycleQuery.Where(c => _db.AppraisalReviews.Any(r =>
+                r.TenantId == tenantId && r.CycleId == c.Id && allowed.Contains(r.EmployeeId)));
+        }
+        var cycles = await cycleQuery.Select(c => c.Status).ToListAsync(ct);
+        var reviews = await reviewQuery.Select(r => r.Status).ToListAsync(ct);
+        var pips    = await pipQuery.CountAsync(ct);
+        var probation = await probationQuery.CountAsync(ct);
 
         return Ok(new
         {
-            activeCycles        = cycles.Count(c => c.Status == "Active"),
-            inReviewCycles      = cycles.Count(c => c.Status == "InReview"),
+            activeCycles        = cycles.Count(c => c == "Active"),
+            inReviewCycles      = cycles.Count(c => c == "InReview"),
             totalReviews        = reviews.Count,
-            pendingSelfAssessment = reviews.Count(r => r.Status == "SelfAssessmentDue"),
-            pendingManagerReview  = reviews.Count(r => r.Status == "ManagerReview"),
-            published           = reviews.Count(r => r.Status == "Published"),
+            pendingSelfAssessment = reviews.Count(r => r == "SelfAssessmentDue"),
+            pendingManagerReview  = reviews.Count(r => r == "ManagerReview"),
+            published           = reviews.Count(r => r == "Published"),
             activePips          = pips,
             pendingProbation    = probation,
         });
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Approve)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var cycle = await _db.PerformanceCycles
+        var cycle = await _db.PerformanceCycles.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
+        var allowed = await _scopeService.AllowedEmployeesAsync(User, tenantId, ct);
 
-        var employees = await _db.PerformanceCycleEmployees
-            .Where(e => e.TenantId == tenantId && e.CycleId == id)
-            .ToListAsync(ct);
-
-        var reviews = await _db.AppraisalReviews
-            .Where(r => r.TenantId == tenantId && r.CycleId == id)
-            .ToListAsync(ct);
+        var employeeQuery = _db.PerformanceCycleEmployees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CycleId == id);
+        var reviewQuery = _db.AppraisalReviews.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.CycleId == id);
+        if (allowed is not null)
+        {
+            employeeQuery = employeeQuery.Where(e => allowed.Contains(e.EmployeeId));
+            reviewQuery = reviewQuery.Where(r => allowed.Contains(r.EmployeeId));
+        }
+        var employees = await employeeQuery.ToListAsync(ct);
+        var reviews = await reviewQuery.ToListAsync(ct);
 
         var statusCounts = reviews
             .GroupBy(r => r.Status)
@@ -175,6 +230,7 @@ public class CyclesController : ControllerBase
     public async Task<IActionResult> Launch(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        if (await RequireGroupScopeAsync(tenantId, ct) is { } refused) return refused;
         var cycle = await _db.PerformanceCycles
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
@@ -198,6 +254,7 @@ public class CyclesController : ControllerBase
     public async Task<IActionResult> Advance(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        if (await RequireGroupScopeAsync(tenantId, ct) is { } refused) return refused;
         var cycle = await _db.PerformanceCycles
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
@@ -243,6 +300,7 @@ public class CyclesController : ControllerBase
     public async Task<IActionResult> Close(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        if (await RequireGroupScopeAsync(tenantId, ct) is { } refused) return refused;
         var cycle = await _db.PerformanceCycles
             .FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId, ct);
         if (cycle is null) return NotFound();
