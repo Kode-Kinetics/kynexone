@@ -372,7 +372,8 @@ public class GlStatutoryHardeningTests
         PlatformRule(db, "ot.standard_multiplier", "1.5");
         PlatformRule(db, "eosb.days_per_year_1to5", "15");
         var maker = Guid.NewGuid();
-        var notApplied = new CompanyStatutoryOverride { TenantId = tid, CompanyId = company, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "eosb.days_per_year_1to5", OverrideValue = "20", EffectiveFrom = new DateOnly(2026, 1, 1), ReviewBy = new DateOnly(2027, 1, 1), Reason = "legacy", Status = "PendingApproval", CreatedBy = maker };
+        const string eosbTier1Rule = "eosb.days_per_year_1to5";
+        var notApplied = new CompanyStatutoryOverride { TenantId = tid, CompanyId = company, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = eosbTier1Rule, OverrideValue = "20", EffectiveFrom = new DateOnly(2026, 1, 1), ReviewBy = new DateOnly(2027, 1, 1), Reason = "legacy", Status = "PendingApproval", CreatedBy = maker };
         var belowFloor = new CompanyStatutoryOverride { TenantId = tid, CompanyId = company, CountryCode = "SAU", Jurisdiction = "KSA-mainland", RuleKey = "ot.standard_multiplier", OverrideValue = "1.25", EffectiveFrom = new DateOnly(2026, 1, 1), ReviewBy = new DateOnly(2027, 1, 1), Reason = "legacy", Status = "PendingApproval", CreatedBy = maker };
         db.AddRange(notApplied, belowFloor); await db.SaveChangesAsync();
 
