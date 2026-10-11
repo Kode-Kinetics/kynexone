@@ -94,54 +94,52 @@ export function GlassSurface({
 
   if (!solid && nativeGlass) {
     return (
-      <View style={style} {...viewProps}>
-        <GlassView
-          style={[styles.fill, { borderRadius: resolvedRadius }]}
-          glassEffectStyle={variant}
-          colorScheme={theme.mode}
-          tintColor={tintColor}
-          isInteractive={interactive}
-        >
-          <View style={[styles.fill, contentStyle]}>{children}</View>
-        </GlassView>
-      </View>
+      <GlassView
+        style={[style, { borderRadius: resolvedRadius }]}
+        glassEffectStyle={variant}
+        colorScheme={theme.mode}
+        tintColor={tintColor}
+        isInteractive={interactive}
+        {...viewProps}
+      >
+        <View style={contentStyle}>{children}</View>
+      </GlassView>
     );
   }
 
   return (
-    <View style={[solid && elevated ? theme.shadows.raised : undefined, style]} {...viewProps}>
-      <View
-        style={[
-          styles.clip,
-          {
-            borderRadius: resolvedRadius,
-            borderColor: theme.colors.hairline,
-            backgroundColor: solid ? theme.colors.chromeSolid : 'transparent',
-          },
-        ]}
-      >
-        {!solid ? (
-          <BlurView
-            pointerEvents="none"
-            style={StyleSheet.absoluteFill}
-            intensity={intensity}
-            tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
-          />
-        ) : null}
-        {tintColor && !solid ? (
-          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
-        ) : null}
-        <View style={[styles.fill, contentStyle]}>{children}</View>
-      </View>
+    <View
+      style={[
+        styles.clip,
+        solid && elevated ? theme.shadows.raised : undefined,
+        {
+          borderRadius: resolvedRadius,
+          borderColor: theme.colors.hairline,
+          backgroundColor: solid ? theme.colors.chromeSolid : 'transparent',
+        },
+        style,
+      ]}
+      {...viewProps}
+    >
+      {!solid ? (
+        <BlurView
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+          intensity={intensity}
+          tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
+        />
+      ) : null}
+      {tintColor && !solid ? (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
+      ) : null}
+      <View style={contentStyle}>{children}</View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   clip: {
-    flex: 1,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
   },
-  fill: { flex: 1 },
 });
