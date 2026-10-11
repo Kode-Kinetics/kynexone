@@ -7,10 +7,20 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { dotEnvLeaks, envForProfile, profileEnv, readEasJson } from './profileEnv.mjs';
 
+/** EAS environments are development / preview / production; build profiles map onto them by name. */
+export function easEnvironment(profile) {
+  return profile === 'production' || profile === 'preview' ? profile : 'development';
+}
+
 export function updateCommand({ eas, profile, baseEnv, message }) {
   if (!message || !message.trim()) throw new Error('Set MSG to a short description of the update.');
   const { channel, env } = profileEnv(eas, profile);
-  const args = ['eas', 'update', '--channel', channel, '--message', message, '--non-interactive'];
+  // `npx --yes eas-cli`, not `npx eas`: eas-cli is not a project dependency (adding it would move the
+  // runtime fingerprint), and `npx eas` fails with "could not determine executable" without a global install.
+  // eas-cli 16+ refuses --non-interactive without --environment. The EAS dashboard holds no variables for
+  // these environments (see scripts/profileEnv.mjs): the profile env passed below stays the only config.
+  const args = ['--yes', 'eas-cli', 'update', '--channel', channel, '--environment', easEnvironment(profile),
+    '--message', message, '--non-interactive'];
   if (env.EXPO_UPDATES_CODE_SIGNING_CERT) {
     const key = baseEnv.EXPO_UPDATES_CODE_SIGNING_KEY;
     if (!key) throw new Error('This profile signs updates: set EXPO_UPDATES_CODE_SIGNING_KEY to the private key path (kept outside the repo).');
