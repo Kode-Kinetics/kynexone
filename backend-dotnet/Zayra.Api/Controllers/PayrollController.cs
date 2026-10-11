@@ -3160,6 +3160,14 @@ public class PayrollController : ControllerBase
             // gosi.new_entrant_scheme_acknowledged flag that used to silence it is no longer read.)
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 packCc, packJur, "gosi.retirement_age_years", eff, tenantId, cancellationToken) ?? 0m),
+            // GOSI minimum contributory wage — a non-blocking warning only. Platform rows (tenantId: null):
+            // GOSI values are statutory and never tenant-specific. /validate reads the same rows.
+            GosiMinContributoryWageAnnuities        = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageAnnuitiesSar,
+                eff, null, cancellationToken) ?? 0m,
+            GosiMinContributoryWageOccupationalHazards = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageOccupationalHazardsSar,
+                eff, null, cancellationToken) ?? 0m,
         };
         foreach (var r in PayrollValidationEngine.Run(validationCtx))
             _db.PayrollValidationResults.Add(r);
@@ -4134,6 +4142,13 @@ public class PayrollController : ControllerBase
             GosiRetirementAgeYears                  = (int)(await _ruleReader.GetDecimalAsync(
                 "SAU", "KSA-mainland", "gosi.retirement_age_years",
                 new DateOnly(run.Year, run.Month, 1), tenantId, cancellationToken) ?? 0m),
+            // Same platform rows as Process — /validate replaces the stored results wholesale.
+            GosiMinContributoryWageAnnuities        = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageAnnuitiesSar,
+                new DateOnly(run.Year, run.Month, 1), null, cancellationToken) ?? 0m,
+            GosiMinContributoryWageOccupationalHazards = await _ruleReader.GetDecimalAsync(
+                "SAU", "KSA-mainland", Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageOccupationalHazardsSar,
+                new DateOnly(run.Year, run.Month, 1), null, cancellationToken) ?? 0m,
         };
         var results = PayrollValidationEngine.Run(ctx);
 

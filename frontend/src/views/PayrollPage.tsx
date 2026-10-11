@@ -30,6 +30,7 @@ import client, { notifyApiError } from '../api/client';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
+import { useT } from '../hooks/useT';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -1691,11 +1692,15 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
 /** Mirrors PayrollValidationOverridePolicy.MinimumReasonLength. "ok" is not accountability. */
 const MIN_OVERRIDE_REASON = 10;
 
-/** F02 — PayrollValidationEngine.GosiCohortNotRecorded / GosiNewEntrantScheduleNotModelled. */
+/** F02 — PayrollValidationEngine.GosiCohortNotRecorded / GosiNewEntrantScheduleNotModelled /
+ *  GosiNewEntrantScheduleApplied / GosiBelowMinimumContributoryWage. */
 const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
 const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
+const GOSI_NEW_ENTRANT_APPLIED = 'GOSI_NEW_ENTRANT_SCHEDULE_APPLIED';
+const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
 
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
+  const t = useT();
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
@@ -1742,9 +1747,11 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
   const cohortNotRecorded = results.filter(r => r.code === GOSI_COHORT_NOT_RECORDED);
   const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
+  const cohortApplied = results.filter(r => r.code === GOSI_NEW_ENTRANT_APPLIED);
+  const belowMinimumWage = results.filter(r => r.code === GOSI_BELOW_MINIMUM_WAGE);
   const [cohortOnly, setCohortOnly] = useState(false);
-  const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length > 0
-    ? [...cohortBlocked, ...cohortNotRecorded]
+  const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length + cohortApplied.length > 0
+    ? [...cohortBlocked, ...cohortNotRecorded, ...cohortApplied]
     : results;
 
   return (
@@ -1769,7 +1776,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         </div>
       )}
 
-      {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0) && (
+      {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0 || cohortApplied.length > 0 || belowMinimumWage.length > 0) && (
         <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort — checked per employee</p>
@@ -1780,8 +1787,18 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
           {cohortBlocked.length > 0 && (
             <p className="text-sm text-rose-700 dark:text-rose-400">
               {cohortBlocked.length} employee{cohortBlocked.length === 1 ? '' : 's'} first registered with GOSI on or after
-              3 July 2024. The new-entrant schedule is not modelled yet, so their GOSI on this run is wrong and approval
-              is blocked. Correct the date if it is wrong, or reopen the run and exclude them.
+              3 July 2024, but their GOSI on this run was not computed on the new-entrant schedule, so approval is
+              blocked. Reopen the run and process it again; correct the date first if it is wrong.
+            </p>
+          )}
+          {cohortApplied.length > 0 && (
+            <p className="text-sm text-sky-700 dark:text-sky-400" data-testid="gosi-new-entrant-applied">
+              {t('{count} new entrant(s) (first registered with GOSI on or after 3 July 2024) are on the new-entrant annuities schedule of the New Social Insurance Law (Royal Decree M/273). Each finding states the rate used. No action needed.', { count: cohortApplied.length })}
+            </p>
+          )}
+          {belowMinimumWage.length > 0 && (
+            <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="gosi-below-minimum-wage">
+              {t('{count} employee(s) are below the GOSI minimum contributory wage. GOSI may assess on the minimum; payroll still calculated on the actual wage. This does not block the run.', { count: belowMinimumWage.length })}
             </p>
           )}
           {cohortNotRecorded.length > 0 && (

@@ -85,9 +85,10 @@ public static class PayrollValidationOverridePolicy
         // No company ⇒ no country pack ⇒ the statutory figures on the slips are not merely doubtful,
         // they were never computed.
         "COMPANY_NOT_RESOLVED",
-        // F02 — a post-3-July-2024 GOSI new entrant, whose schedule is not modelled: the slip's GOSI is
-        // known to be computed on the wrong schedule. Exit = correct the first-registration date and
-        // re-process, or exclude the person from the run. Overriding would file a known-wrong figure.
+        // F02 — a post-3-July-2024 GOSI new entrant whose slip was NOT computed on the new-entrant schedule
+        // (processed before it was modelled, or no rate on record for the month): the slip's GOSI is known to
+        // be wrong. Exit = re-process (or correct the first-registration date and re-process). Overriding
+        // would file a known-wrong figure.
         PayrollValidationEngine.GosiNewEntrantScheduleNotModelled,
     };
 

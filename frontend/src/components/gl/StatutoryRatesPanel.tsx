@@ -61,6 +61,10 @@ function knownRuleName(t: Translator, key: string): string | null {
   switch (key) {
     case 'gosi.saudi_employee_rate': return t('GOSI contribution, Saudi employee share');
     case 'gosi.saudi_employer_rate': return t('GOSI contribution, Saudi employer share');
+    case 'gosi.new_entrant_employee_rate': return t('GOSI annuities, new entrant (registered from 3 July 2024), employee share');
+    case 'gosi.new_entrant_employer_rate': return t('GOSI annuities, new entrant (registered from 3 July 2024), employer share');
+    case 'gosi.covered_wage_min_annuities_sar': return t('GOSI minimum contributory wage, annuities (warning only)');
+    case 'gosi.covered_wage_min_occupational_hazards_sar': return t('GOSI minimum contributory wage, occupational hazards (warning only)');
     case 'gosi.employee_rate': return t('GOSI contribution, employee share');
     case 'gosi.saned_rate': return t('SANED unemployment insurance contribution');
     case 'gosi.expat_occupational_hazard_rate': return t('GOSI occupational hazards, non-Saudi employees');

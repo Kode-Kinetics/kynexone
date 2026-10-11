@@ -10,11 +10,13 @@ namespace Zayra.Api.Application.CountryPack;
 /// records through the approval-gated change path. It is never inferred from anything else (joining date,
 /// age, nationality), because none of those is the fact the schedule is keyed on.</para>
 ///
-/// <para>The boundary date is the one this repository already states in three places (the payroll
-/// validator's former run-wide warning, the V2 baseline's <c>statutory_rules.cohort</c> comment and
-/// TARGET_SCHEMA.md §E). It is flagged for the Saudi payroll SME to confirm against the official source,
-/// together with how a person who re-registers, or who was previously insured under the civil pension
-/// system, is classified — see the PR that introduced this type.</para>
+/// <para>The boundary is the New Social Insurance Law (Royal Decree M/273; Council of Ministers Resolution
+/// 1022 dated 26/12/1445H), in force 3 July 2024. Its new-entrant provisions apply only to a person with NO
+/// prior contribution period in civil retirement or social insurance before that date, which payroll reads
+/// from the first GOSI registration date. A null date is Unknown and is computed on the existing schedule
+/// with a warning (Oracle HCM 25B treats a missing date as the old scheme too). How a person who
+/// re-registers, or who was insured under the civil pension system first, is classified is still for HR to
+/// record correctly as that person's first-registration date.</para>
 /// </summary>
 public static class GosiCohorts
 {
@@ -27,7 +29,7 @@ public static class GosiCohorts
     /// <summary>First registered with GOSI ON OR AFTER <see cref="NewEntrantSchemeStart"/> — the new-entrant schedule.</summary>
     public const string NewEntrant = "NewEntrant";
 
-    /// <summary>3 July 2024 — first registration on or after this date is a new entrant. [SME] confirm.</summary>
+    /// <summary>3 July 2024 — first registration on or after this date is a new entrant (Royal Decree M/273).</summary>
     public static readonly DateOnly NewEntrantSchemeStart = new(2024, 7, 3);
 
     /// <summary>The cohort a first-registration date places a person in. Null ⇒ <see cref="Unknown"/>.</summary>
