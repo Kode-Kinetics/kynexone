@@ -562,6 +562,7 @@ public class RatesController : ControllerBase
     private async Task<List<object>> CompanyStatutoryRowsAsync(Guid tid, Guid companyId, string cc, string jur, DateOnly onDate, CancellationToken ct)
     {
         var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        await PrimeReaderAsync(tid, cc, jur, onDate, ct);
         var overrides = await Overrides(tid).AsNoTracking()
             .Where(o => !o.IsDeleted && o.CompanyId == companyId && o.CountryCode == cc && o.Jurisdiction == jur)
             .ToListAsync(ct);
@@ -621,9 +622,18 @@ public class RatesController : ControllerBase
         return result;
     }
 
+    /// <summary>The pack has ~440 rules and each row reads the platform and the tenant value: one query
+    /// per read made the Statutory Rates tab take 13-37 s on a live stack. Two reads load them all.</summary>
+    private async Task PrimeReaderAsync(Guid tid, string cc, string jur, DateOnly onDate, CancellationToken ct)
+    {
+        await _reader.PrimeAsync(cc, jur, onDate, tenantId: null, ct);
+        await _reader.PrimeAsync(cc, jur, onDate, tid, ct);
+    }
+
     private async Task<List<object>> GroupStatutoryRowsAsync(Guid tid, string cc, string jur, IReadOnlySet<Guid> visibleCompanyIds, DateOnly onDate, CancellationToken ct)
     {
         var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        await PrimeReaderAsync(tid, cc, jur, onDate, ct);
         var overrides = await Overrides(tid).AsNoTracking()
             .Where(o => !o.IsDeleted && o.CountryCode == cc && o.Jurisdiction == jur
                      && (o.Status == CompanyPolicyStatuses.Active || o.Status == PendingApproval))

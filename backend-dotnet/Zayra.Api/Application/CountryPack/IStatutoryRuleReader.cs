@@ -54,4 +54,11 @@ public interface IStatutoryRuleReader
         CancellationToken ct,
         Guid? companyId)
         => GetStringAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tenantId, ct);
+
+    /// <summary>
+    /// Loads every rule of one pack for one date in a single read, so a screen that lists the whole pack
+    /// does not issue one query per rule. Values afterwards are exactly what the per-key reads return.
+    /// </summary>
+    Task PrimeAsync(string countryCode, string jurisdiction, DateOnly effectiveDate, Guid? tenantId, CancellationToken ct = default)
+        => Task.CompletedTask;
 }

@@ -83,6 +83,55 @@ public class StatutoryPackKeyTests
         Assert.Equal(1.5m, await new StatutoryRuleReader(db).GetDecimalAsync("SA", "", "ot.standard_multiplier", today, tenant, default, sibling.Id));
     }
 
+    [Fact]
+    public async Task PrimingThePack_ReturnsExactlyWhatThePerKeyReadsReturn()
+    {
+        // The Statutory Rates tab read ~440 rules one query at a time (13-37 s live); it now primes the
+        // reader with one read per scope. The primed values must be the per-key values, ranking included.
+        var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        var tenant = Guid.NewGuid();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var now = DateTime.UtcNow.Date;
+        StatutoryRule R(Guid? t, string key, string value, int fromDaysAgo, int? toDaysAgo = null, string cc = "SAU") => new()
+        {
+            TenantId = t, CountryCode = cc, Jurisdiction = "KSA-mainland", RuleKey = key, RuleValue = value, DataType = "decimal",
+            EffectiveFrom = now.AddDays(-fromDaysAgo), EffectiveTo = toDaysAgo is { } d ? now.AddDays(-d) : null,
+        };
+        await using (var seed = new ZayraDbContext(options))
+        {
+            seed.AddRange(
+                R(null, "a", "1", 400), R(null, "a", "2", 100),          // newer platform row wins
+                R(null, "b", "3", 400), R(tenant, "b", "4", 500),        // tenant row outranks a newer platform row
+                R(null, "c", "5", 400, toDaysAgo: 10),                   // expired: no value
+                R(null, "d", "6", -5),                                   // not yet in force
+                R(Guid.NewGuid(), "e", "7", 400), R(null, "e", "8", 400), // another tenant's row is never read
+                R(null, "f", "9", 400, cc: "ARE"));                      // another pack
+            await seed.SaveChangesAsync();
+        }
+        string[] keys = { "a", "b", "c", "d", "e", "f" };
+        foreach (var t in new Guid?[] { null, tenant })
+        {
+            await using var plainDb = new ZayraDbContext(options);
+            var plain = new StatutoryRuleReader(plainDb);
+            var expected = new List<string?>();
+            foreach (var k in keys) expected.Add(await plain.GetStringAsync("SA", "", k, today, t));
+
+            await using var primedDb = new ZayraDbContext(options);
+            var primed = new StatutoryRuleReader(primedDb);
+            await primed.PrimeAsync("SA", "", today, t);
+            var actual = new List<string?>();
+            foreach (var k in keys) actual.Add(await primed.GetStringAsync("SA", "", k, today, t));
+
+            Assert.Equal(expected, actual);
+        }
+        // And the expectations themselves, so a shared bug in both paths cannot pass.
+        await using var db = new ZayraDbContext(options);
+        var reader = new StatutoryRuleReader(db);
+        await reader.PrimeAsync("SAU", "KSA-mainland", today, tenant);
+        Assert.Equal(new string?[] { "2", "4", null, null, "8", null },
+            await Task.WhenAll(keys.Select(k => reader.GetStringAsync("SAU", "KSA-mainland", k, today, tenant))));
+    }
+
     private static DefaultHttpContext Http(Guid tenant) => new()
     {
         User = new(new ClaimsIdentity(new[]
