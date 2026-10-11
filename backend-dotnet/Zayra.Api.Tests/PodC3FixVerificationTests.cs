@@ -326,6 +326,9 @@ public class PodC3FixVerificationTests
             MatchComponentCode = PayrollArrearsComponents.Basic,
             IsSystem = false, IsActive = true, SortOrder = 5,
         });
+        // The account the driver names must be in the chart (the API refuses a default that is not, and
+        // Lock refuses to post to a code missing from the chart).
+        db.GlAccounts.Add(new GlAccount { TenantId = tid, CompanyId = null, Code = "5011", Name = "Retro Pay Expense", AccountType = "Expense" });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 

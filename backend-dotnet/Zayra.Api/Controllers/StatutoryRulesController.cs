@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -44,8 +45,12 @@ public sealed record UpdateStatutoryRuleRequest(
 /// <summary>
 /// Admin view of the StatutoryRule engine.
 /// Platform defaults (TenantId=null) are visible but not editable by tenants.
-/// Tenant overrides (TenantId=caller's tenantId) are CRUD.
-/// All writes are RBAC-gated to Admin only.
+/// Tenant-level values (TenantId=caller's tenantId) are changed by REQUEST, never written directly:
+/// create, supersede and retire each file a pending request (202 Accepted) in the same maker-checker
+/// queue as company overrides (company_statutory_overrides with CompanyId = null), and a SECOND person
+/// with payroll.rates.statutory_override approves it at
+/// POST api/finance/rates/statutory/override/{id}/approve — only then does payroll see the value.
+/// The owner rule is strict: the requester never decides, and each request has exactly one decider.
 /// </summary>
 [ApiController]
 [Route("api/statutory-rules")]
@@ -106,10 +111,11 @@ public class StatutoryRulesController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a tenant-level statutory rule override. HARDENED (compliance boundary): this is a
-    /// bounded override, NOT free CRUD — it requires the higher-trust payroll.rates.statutory_override
-    /// permission, a non-empty reason (Description), and the (country, jurisdiction, ruleKey) must
-    /// already exist as a seeded platform default (no inventing statutory keys). Every write is audited.
+    /// REQUESTS a tenant-level statutory rule override (202 Accepted with the pending request). HARDENED
+    /// (compliance boundary): bounded, NOT free CRUD — it requires the higher-trust
+    /// payroll.rates.statutory_override permission, a non-empty reason (Description), a seeded
+    /// (country, jurisdiction, ruleKey), and a value that does not weaken a statutory floor. Nothing
+    /// reaches statutory_rules until a different person approves it. Every step is audited.
     /// </summary>
     [HttpPost]
     [HasPermission("payroll.rates.statutory_override")]
@@ -165,34 +171,29 @@ public class StatutoryRulesController : ControllerBase
         if (await OverlapsAsync(tenantId.Value, cc, jur, key, req.EffectiveFrom, req.EffectiveTo, null, ct))
             return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "An override already covers this period. Supersede the current version instead." });
 
-        var rule = new StatutoryRule
-        {
-            TenantId     = tenantId,
-            CountryCode  = cc,
-            Jurisdiction = jur,
-            RuleKey      = key,
-            RuleValue    = value,
-            DataType     = string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType,
-            Description  = req.Description.Trim(),
-            EffectiveFrom = req.EffectiveFrom,
-            EffectiveTo   = req.EffectiveTo,
-            CreatedBy     = this.GetUserId(),
-            CreatedAtUtc  = DateTime.UtcNow,
-        };
+        // A statutory floor may only be raised, a ceiling only lowered (StatutoryOverridePolicy).
+        var platformText = await PlatformRawAsync(cc, jur, key, req.EffectiveFrom, ct);
+        var platform = ParsePlatform(platformText);
+        if (StatutoryOverridePolicy.DirectionRefusal(key, value, platform, platformText) is { } floor)
+            return UnprocessableEntity(floor);
+        if (await PendingRequestFor(tenantId.Value, cc, jur, key, ct) is not null)
+            return Conflict(new { code = "STATUTORY_CHANGE_PENDING", message = "A change to this rule is already waiting for approval. Approve, decline or withdraw it first." });
 
-        _db.StatutoryRules.Add(rule);
-        await Audit("statutory_rule.override.created", rule.Id.ToString(),
-            new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, overrideValue = rule.RuleValue, reason = rule.Description, rule.EffectiveFrom, rule.EffectiveTo }, ct);
+        var request = NewRequest(tenantId.Value, cc, jur, key, value,
+            string.IsNullOrWhiteSpace(req.DataType) ? "decimal" : req.DataType, req.Description.Trim(),
+            req.EffectiveFrom, req.EffectiveTo, platform);
+        _db.CompanyStatutoryOverrides.Add(request);
+        await Audit("statutory_rule.override.requested", request.Id.ToString(),
+            new { request.CountryCode, request.Jurisdiction, ruleKey = key, overrideValue = value, reason = request.Reason,
+                  effectiveFrom = req.EffectiveFrom, effectiveTo = req.EffectiveTo, status = request.Status }, ct);
         await _db.SaveChangesAsync(ct);
-
-        var dto = ToDto(rule, isTenantOverride: true);
-        return CreatedAtAction(nameof(List), new { }, dto);
+        return Accepted(PendingResponse(request));
     }
 
     /// <summary>
-    /// Supersedes a tenant-owned statutory rule override. HARDENED: statutory changes are append-only
-    /// for audit — the value/effective-from are NOT mutated in place. The prior row is closed
-    /// (EffectiveTo set) and a new effective-dated row is inserted. Platform defaults are not editable.
+    /// REQUESTS a supersede of a tenant-owned statutory rule override (202 Accepted). Append-only for
+    /// audit: on approval the prior row is closed (EffectiveTo set) and a new effective-dated row is
+    /// inserted; nothing is mutated in place. Platform defaults are not editable.
     /// </summary>
     [HttpPut("{id:guid}")]
     [HasPermission("payroll.rates.statutory_override")]
@@ -238,24 +239,27 @@ public class StatutoryRulesController : ControllerBase
                 req.EffectiveFrom, req.EffectiveTo, prior.Id, ct))
             return Conflict(new { code = "STATUTORY_INTERVAL_OVERLAP", message = "Another override already covers the requested period." });
 
-        // Supersede (append-only): close the prior row, insert the new effective-dated value.
-        var before = prior.RuleValue;
-        prior.EffectiveTo = req.EffectiveFrom;
-        var next = new StatutoryRule
-        {
-            TenantId = tenantId, CountryCode = prior.CountryCode, Jurisdiction = prior.Jurisdiction,
-            RuleKey = prior.RuleKey, RuleValue = nextValue, DataType = prior.DataType,
-            Description = req.Description.Trim(), EffectiveFrom = req.EffectiveFrom, EffectiveTo = req.EffectiveTo,
-            CreatedBy = this.GetUserId(), CreatedAtUtc = DateTime.UtcNow,
-        };
-        _db.StatutoryRules.Add(next);
-        await Audit("statutory_rule.override.superseded", next.Id.ToString(),
-            new { next.CountryCode, next.Jurisdiction, ruleKey = next.RuleKey, before, after = next.RuleValue, reason = next.Description, supersededId = prior.Id, next.EffectiveFrom, next.EffectiveTo }, ct);
+        var platformTextAtStart = await PlatformRawAsync(prior.CountryCode, prior.Jurisdiction, prior.RuleKey, req.EffectiveFrom, ct);
+        var platformAtStart = ParsePlatform(platformTextAtStart);
+        if (StatutoryOverridePolicy.DirectionRefusal(prior.RuleKey, nextValue, platformAtStart, platformTextAtStart) is { } floor)
+            return UnprocessableEntity(floor);
+        if (await PendingRequestFor(tenantId.Value, prior.CountryCode, prior.Jurisdiction, prior.RuleKey, ct) is not null)
+            return Conflict(new { code = "STATUTORY_CHANGE_PENDING", message = "A change to this rule is already waiting for approval. Approve, decline or withdraw it first." });
+
+        // Supersede is requested, not written: on approval the open version is closed at the new start
+        // date and the new value inserted (TenantStatutoryChange.ApplySetAsync), append-only as before.
+        var request = NewRequest(tenantId.Value, prior.CountryCode, prior.Jurisdiction, prior.RuleKey, nextValue,
+            prior.DataType, req.Description.Trim(), req.EffectiveFrom, req.EffectiveTo, platformAtStart);
+        _db.CompanyStatutoryOverrides.Add(request);
+        await Audit("statutory_rule.override.supersede_requested", request.Id.ToString(),
+            new { request.CountryCode, request.Jurisdiction, ruleKey = request.RuleKey, before = prior.RuleValue, after = nextValue,
+                  reason = request.Reason, supersedesId = prior.Id, effectiveFrom = req.EffectiveFrom, effectiveTo = req.EffectiveTo }, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(ToDto(next, isTenantOverride: true));
+        return Accepted(PendingResponse(request));
     }
 
-    /// <summary>Retires an override from tomorrow UTC. Historical rows are never deleted.</summary>
+    /// <summary>REQUESTS retirement of an override from tomorrow UTC (202 Accepted); a second person
+    /// approves it. Historical rows are never deleted.</summary>
     [HttpDelete("{id:guid}")]
     [HasPermission("payroll.rates.statutory_override")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
@@ -276,19 +280,26 @@ public class StatutoryRulesController : ControllerBase
         if (rule.EffectiveTo is { } end && end <= retireOn) return NoContent();
         if (rule.EffectiveFrom >= retireOn)
             return Conflict(new { code = "STATUTORY_FUTURE_VERSION", message = "A future version cannot be retired before it starts. No rule history was changed." });
-        var previousEnd = rule.EffectiveTo;
-        rule.EffectiveTo = retireOn;
-        await Audit("statutory_rule.override.retired", rule.Id.ToString(),
+        var pending = await PendingRequestFor(tenantId.Value, rule.CountryCode, rule.Jurisdiction, rule.RuleKey, ct);
+        if (pending is not null)
+            return pending.DataType == StatutoryOverridePolicy.RetireRequest
+                ? Accepted(PendingResponse(pending))
+                : Conflict(new { code = "STATUTORY_CHANGE_PENDING", message = "A change to this rule is already waiting for approval. Approve, decline or withdraw it first." });
+
+        var request = NewRequest(tenantId.Value, rule.CountryCode, rule.Jurisdiction, rule.RuleKey, rule.RuleValue,
+            StatutoryOverridePolicy.RetireRequest, "Retire the tenant value and return to the platform default",
+            retireOn, null, platform: null);
+        _db.CompanyStatutoryOverrides.Add(request);
+        await Audit("statutory_rule.override.retire_requested", request.Id.ToString(),
             new { rule.CountryCode, rule.Jurisdiction, ruleKey = rule.RuleKey, value = rule.RuleValue,
-                rule.EffectiveFrom, previousEffectiveTo = previousEnd, effectiveTo = retireOn,
-                reason = "Authorized retirement from the next UTC day; historical resolution preserved." }, ct);
+                rule.EffectiveFrom, previousEffectiveTo = rule.EffectiveTo, retireFrom = retireOn, ruleId = rule.Id }, ct);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return Accepted(PendingResponse(request));
     }
 
     // Only reject families whose production calculators read platform-only. Employer policy
     // enhancements belong in their policy modules; storing ignored tenant rows is misleading.
-    private static object? TenantWriteRefusal(string? key)
+    internal static object? TenantWriteRefusal(string? key)
     {
         if (GosiStatutoryValues.TenantWriteRefusal(key) is { } gosi) return gosi;
         var k = (key ?? "").Trim().ToLowerInvariant();
@@ -309,6 +320,49 @@ public class StatutoryRulesController : ControllerBase
             return "Effective To is exclusive and must be later than Effective From.";
         return null;
     }
+
+    /// <summary>The platform value on the date, as stored: a word-valued key (ot.hourly_base) is bounded
+    /// by its text, every numeric key by <see cref="ParsePlatform"/> of it.</summary>
+    private Task<string?> PlatformRawAsync(string cc, string jur, string key, DateTime on, CancellationToken ct)
+        => VisibleRules(Guid.Empty).AsNoTracking()
+            .Where(r => r.TenantId == null && r.CountryCode == cc && r.Jurisdiction == jur && r.RuleKey == key
+                     && r.EffectiveFrom <= on && (r.EffectiveTo == null || r.EffectiveTo > on))
+            .OrderByDescending(r => r.EffectiveFrom)
+            .Select(r => r.RuleValue)
+            .FirstOrDefaultAsync(ct);
+
+    private static decimal? ParsePlatform(string? raw)
+        => decimal.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
+
+    /// <summary>The tenant-level request (CompanyId = null) already waiting for this rule, if any.</summary>
+    private Task<CompanyStatutoryOverride?> PendingRequestFor(Guid tenantId, string cc, string jur, string key, CancellationToken ct)
+        => ScopedBypass.TenantWide(_db.CompanyStatutoryOverrides, tenantId,
+                "Tenant-level statutory requests of the caller's own tenant (CompanyId = null by predicate).")
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.CompanyId == null && !o.IsDeleted && o.Status == StatutoryOverridePolicy.PendingApproval
+                                   && o.CountryCode == cc && o.Jurisdiction == jur && o.RuleKey == key, ct);
+
+    private CompanyStatutoryOverride NewRequest(Guid tenantId, string cc, string jur, string key, string value, string dataType,
+        string reason, DateTime from, DateTime? exclusiveTo, decimal? platform) => new()
+    {
+        TenantId = tenantId, CompanyId = null, CountryCode = cc, Jurisdiction = jur, RuleKey = key,
+        OverrideValue = value, DataType = dataType, Reason = reason,
+        EffectiveFrom = DateOnly.FromDateTime(from),
+        EffectiveTo = TenantStatutoryChange.InclusiveEnd(exclusiveTo),
+        PlatformDefaultAtCreation = platform?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+        Status = StatutoryOverridePolicy.PendingApproval, CreatedBy = this.GetUserId(), CreatedAtUtc = DateTime.UtcNow,
+    };
+
+    private static object PendingResponse(CompanyStatutoryOverride r) => new
+    {
+        status = r.Status,
+        requestId = r.Id,
+        kind = r.DataType == StatutoryOverridePolicy.RetireRequest ? "retire" : "change",
+        r.CountryCode, r.Jurisdiction, r.RuleKey, value = r.OverrideValue, r.EffectiveFrom, r.EffectiveTo, r.Reason,
+        requestedById = r.CreatedBy, requestedAt = r.CreatedAtUtc,
+        message = "Saved as a request. A second person with statutory-override rights must approve it before payroll uses it.",
+        approveUrl = $"/api/finance/rates/statutory/override/{r.Id}/approve",
+    };
 
     // Reference-data actor: authenticated statutory administrator/read role. Preserve the
     // explicit platform-or-current-tenant boundary while bypassing the nullable-tenant filter.

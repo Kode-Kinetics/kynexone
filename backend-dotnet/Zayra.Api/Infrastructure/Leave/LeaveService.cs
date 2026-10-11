@@ -141,34 +141,26 @@ public class LeaveService : ILeaveService
     /// ABSENCE at the configured divisor — two day-rates for the same economic fact on one payslip.
     /// Falls back to 30 (the shipped default), so a tenant that never configured a divisor is unaffected.
     /// </summary>
-    private async Task<decimal> ResolveLopDayDivisorAsync(Guid tenantId, int employeeId, DateOnly onDate, CancellationToken ct)
+    internal async Task<decimal> ResolveLopDayDivisorAsync(Guid tenantId, int employeeId, DateOnly onDate, CancellationToken ct)
     {
         const decimal fallback = 30m;
         // IgnoreQueryFilters is intentional: resolving the employee's legal entity is a SYSTEM/config
         // read that must succeed regardless of the approver's own company claims; the explicit TenantId
         // predicate on BOTH sides re-applies exact tenant scope and never reads another tenant.
-        var cc = await _db.Employees.AsNoTracking()
+        var company = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.Id == employeeId)
             .Join(_db.Companies.IgnoreQueryFilters().AsNoTracking().Where(c => c.TenantId == tenantId),
-                  e => e.CompanyId, c => (Guid?)c.Id, (e, c) => c.CountryCode)
+                  e => e.CompanyId, c => (Guid?)c.Id, (e, c) => new { c.Id, c.CountryCode, c.Jurisdiction })
             .FirstOrDefaultAsync(ct);
-        if (string.IsNullOrWhiteSpace(cc)) return fallback;
-        var eff = onDate.ToDateTime(TimeOnly.MinValue);
-        // Tenant override wins over the seeded platform default (TenantId == null) — the same rule
-        // StatutoryRuleReader applies for the payroll run.
-        // IgnoreQueryFilters is intentional: StatutoryRule platform defaults are stored with TenantId ==
-        // null, which the per-tenant global filter excludes; this reads the tenant's own rows PLUS those
-        // platform defaults and nothing else.
-        var raw = await _db.StatutoryRules.IgnoreQueryFilters().AsNoTracking()
-            .Where(r => (r.TenantId == tenantId || r.TenantId == null)
-                     && r.CountryCode == cc && r.RuleKey == "lop.monthly_day_divisor"
-                     && r.EffectiveFrom <= eff && (r.EffectiveTo == null || r.EffectiveTo >= eff))
-            .OrderByDescending(r => r.TenantId != null).ThenByDescending(r => r.EffectiveFrom)
-            .Select(r => r.RuleValue)
-            .FirstOrDefaultAsync(ct);
-        return decimal.TryParse(raw, System.Globalization.NumberStyles.Any,
-                                System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0m
-            ? v : fallback;
+        if (company is null || string.IsNullOrWhiteSpace(company.CountryCode)) return fallback;
+        // The SAME read PayrollController.Process makes for attendance LOP: the company's pack country
+        // and jurisdiction, and the company-aware reader, so an approved company override of
+        // lop.monthly_day_divisor prices an unpaid-leave day exactly as it prices an absent day.
+        // (The reader also ranks the tenant row over the platform default and refuses a tenant or
+        // company value below the statutory floor.)
+        var v = await _rules.GetDecimalAsync(company.CountryCode, company.Jurisdiction ?? string.Empty,
+            Zayra.Api.Infrastructure.Payroll.StatutoryOverridePolicy.LopMonthlyDayDivisor, onDate, tenantId, ct, company.Id);
+        return v is > 0m ? v.Value : fallback;
     }
 
     public async Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default)

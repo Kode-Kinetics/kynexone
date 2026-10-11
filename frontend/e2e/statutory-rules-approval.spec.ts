@@ -1,0 +1,248 @@
+import { expect, test, type Page, type Request } from '@playwright/test';
+
+/**
+ * Setup → Statutory Rules is maker-checker: POST/PUT/DELETE /api/statutory-rules answer 202 Accepted
+ * with a pending request, and a SECOND administrator approves it through
+ * /api/finance/rates/statutory/override/{id}/approve. Against synthetic intercepted API responses:
+ *   npx next dev -p 5197 &
+ *   STATUTORY_RULES_BASE_URL=http://127.0.0.1:5197 npx playwright test -c e2e/playwright.statutory-rules.config.ts
+ * Proves the UI contract (nothing applied optimistically, server-decided approve rights), not server authorization.
+ */
+
+interface Recorded { method: string; path: string; body: unknown }
+
+interface PendingRow {
+  id: string; kind: 'change' | 'retire'; value: string; effectiveFrom: string; effectiveTo: string | null; reason: string;
+  reviewBy: null; requestedById: string; requestedByName: string; requestedAt: string; canApprove: boolean;
+  companyId: string | null; companyName: string; ruleKey: string; countryCode: string; jurisdiction: string; platformDefault: string;
+}
+
+const future = (() => { const d = new Date(); d.setUTCDate(d.getUTCDate() + 30); return d.toISOString().slice(0, 10); })();
+
+const rule = (id: string, ruleKey: string, ruleValue: string, isTenantOverride: boolean, effectiveFrom: string, description: string) => ({
+  id, countryCode: 'SA', jurisdiction: 'SA', ruleKey, ruleValue, dataType: 'decimal', description,
+  effectiveFrom: `${effectiveFrom}T00:00:00Z`, effectiveTo: null, isTenantOverride,
+});
+
+const pendingRow = (over: Partial<PendingRow> & Pick<PendingRow, 'id' | 'ruleKey' | 'value'>): PendingRow => ({
+  kind: 'change', effectiveFrom: future, effectiveTo: null, reason: 'Board resolution 14', reviewBy: null,
+  requestedById: 'user-layla', requestedByName: 'Layla Haddad', requestedAt: '2026-10-09T09:30:00Z', canApprove: true,
+  companyId: null, companyName: 'All companies (tenant default)', countryCode: 'SA', jurisdiction: 'SA', platformDefault: '1.5',
+  ...over,
+});
+
+async function boot(page: Page, options: { locale?: 'en' | 'ar'; pending?: PendingRow[] } = {}) {
+  const writes: Recorded[] = [];
+  const errors: string[] = [];
+  // Server state survives reloads because this closure does.
+  const rules = [
+    rule('plat-std', 'ot.standard_multiplier', '1.5', false, '2024-01-01', 'Labor Law, Art. 107'),
+    rule('plat-wkd', 'ot.weekend_multiplier', '1.5', false, '2024-01-01', 'Labor Law, Art. 107'),
+    rule('ovr-wkd', 'ot.weekend_multiplier', '2', true, '2025-01-01', 'CFO policy 2025-03'),
+  ];
+  const pending: PendingRow[] = [...(options.pending ?? [])];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.addInitScript(({ locale }) => {
+    localStorage.setItem('zayra_access_token', 'statutory-browser-fixture');
+    localStorage.setItem('kynexone-locale-choice-v2', locale);
+  }, { locale: options.locale ?? 'en' });
+
+  await page.route('**/api/**', async (route) => {
+    const request: Request = route.request();
+    const url = new URL(request.url());
+    const p = url.pathname;
+    const method = request.method();
+    const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
+    const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
+    const body = (() => { try { return request.postDataJSON(); } catch { return request.postData(); } })();
+    if (method !== 'GET') writes.push({ method, path: p, body });
+
+    if (p === '/api/auth/me') {
+      return reply({
+        id: 'user-maker', tenantId: 'st-tenant', tenantSlug: 'st-fixture', fullName: 'Omar Maker', roles: ['Admin'],
+        permissions: ['organization.read', 'organization.write', 'dashboard.read', 'payroll.rates.read', 'payroll.rates.statutory_override'],
+        accountType: 'SingleCompany', isGroupScope: true,
+        companies: [{ id: 'co-sa', name: 'Masar Trading KSA', code: 'co-sa', countryCode: 'SA', isActive: true }],
+      });
+    }
+    if (p === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
+    if (p === '/api/tenant-admin/localization') return reply({ countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh' });
+    if (p === '/api/features/disabled-keys') return reply(['release_a']);
+    if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
+    if (p === '/api/country-packs/available') {
+      return reply([{ countryCode: 'SA', nameEn: 'Saudi Arabia', nameAr: 'السعودية', jurisdictions: [{ code: 'SA', label: 'Saudi Arabia' }] }]);
+    }
+
+    // ── Statutory rules: every write is a request (202), never the saved rule ──
+    if (p === '/api/statutory-rules' && method === 'GET') return reply(rules);
+    const fileRequest = (kind: 'change' | 'retire', ruleKey: string, value: string, effectiveFrom: string, reason: string) => {
+      const created = pendingRow({
+        id: `req-${pending.length + 1}`, kind, ruleKey, value, effectiveFrom, reason,
+        requestedById: 'user-maker', requestedByName: 'Omar Maker', requestedAt: '2026-10-10T10:00:00Z', canApprove: false, // the requester never approves
+      });
+      pending.push(created);
+      return reply({
+        status: 'PendingApproval', requestId: created.id, kind, countryCode: 'SA', jurisdiction: 'SA', ruleKey, value,
+        effectiveFrom, effectiveTo: null, reason, requestedById: 'user-maker', requestedAt: created.requestedAt,
+        message: 'Saved as a request. A second person with statutory-override rights must approve it before payroll uses it.',
+        approveUrl: `/api/finance/rates/statutory/override/${created.id}/approve`,
+      }, 202);
+    };
+    if (p === '/api/statutory-rules' && method === 'POST') {
+      const b = body as { ruleKey: string; ruleValue: string; effectiveFrom: string; description: string };
+      return fileRequest('change', b.ruleKey, b.ruleValue, b.effectiveFrom.slice(0, 10), b.description);
+    }
+    if (p.startsWith('/api/statutory-rules/') && method === 'PUT') {
+      const prior = rules.find((r) => r.id === p.split('/').pop())!;
+      const b = body as { ruleValue: string; effectiveFrom: string; description: string };
+      return fileRequest('change', prior.ruleKey, b.ruleValue, b.effectiveFrom.slice(0, 10), b.description);
+    }
+    if (p.startsWith('/api/statutory-rules/') && method === 'DELETE') {
+      const prior = rules.find((r) => r.id === p.split('/').pop())!;
+      return fileRequest('retire', prior.ruleKey, prior.ruleValue, future, 'Retire the tenant value and return to the platform default');
+    }
+
+    // ── The approval queue (RatesController) ──
+    if (p === '/api/finance/rates/statutory/pending') return reply(pending);
+    const decided = p.match(/^\/api\/finance\/rates\/statutory\/override\/([^/]+)(?:\/(approve|reject))?$/);
+    if (decided) {
+      const index = pending.findIndex((x) => x.id === decided[1]);
+      const [row] = pending.splice(index, 1);
+      if (decided[2] === 'approve') rules.push(rule(`applied-${row.id}`, row.ruleKey, row.value, true, row.effectiveFrom, row.reason));
+      return reply({ id: row.id, status: decided[2] === 'approve' ? 'Applied' : 'Withdrawn' });
+    }
+
+    if (p === '/api/companies') return reply(paged([]));
+    if (p.startsWith('/api/admin/')) return reply([]);
+    return reply(paged([]));
+  });
+
+  await page.goto('/setup?tab=statutoryRules');
+  await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'الإعداد والإدارة' : 'Setup & Administration', exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('cell', { name: 'CFO policy 2025-03' })).toBeVisible();
+  return { writes, errors, rules, pending };
+}
+
+const SENT = 'Sent for approval — a second administrator must approve this before payroll uses it.';
+const queue = (page: Page) => page.getByRole('region', { name: 'Changes waiting for a second administrator' });
+const tableRows = (page: Page) => page.locator('table tbody tr');
+
+test('a new override is sent for approval: the table is unchanged and the requester cannot approve it', async ({ page }) => {
+  const state = await boot(page);
+  await expect(tableRows(page)).toHaveCount(3);
+  await expect(queue(page)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'New override', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New statutory override' });
+  await expect(dialog.getByText('A second administrator must approve each change before payroll uses it.')).toBeVisible();
+  await dialog.getByLabel(/^Rule/).selectOption('ot.standard_multiplier');
+  await dialog.getByLabel(/^Override value/).fill('1.75');
+  await dialog.getByLabel(/^Approved reason and source/).fill('Board resolution 22');
+  await dialog.getByRole('button', { name: 'Send for approval', exact: true }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: SENT })).toBeVisible();
+  expect(state.writes.map((w) => `${w.method} ${w.path}`)).toEqual(['POST /api/statutory-rules']);
+  // Nothing was applied: the table still shows exactly the server's three rows, none with 1.75.
+  await expect(tableRows(page)).toHaveCount(3);
+  await expect(page.locator('table').getByText('1.75', { exact: true })).toHaveCount(0);
+
+  const pendingQueue = queue(page);
+  await expect(pendingQueue).toContainText('Change ot.standard_multiplier to 1.75 from');
+  await expect(pendingQueue).toContainText('Requested by Omar Maker on');
+  await expect(pendingQueue.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  await expect(page.locator('table tbody tr').filter({ hasText: 'ot.standard_multiplier' })).toContainText('Pending approval');
+
+  // The requester can withdraw their own request.
+  await pendingQueue.getByRole('button', { name: 'Withdraw my request', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Request withdrawn. Nothing changed in payroll.' })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({ method: 'DELETE', path: '/api/finance/rates/statutory/override/req-1' });
+  await expect(queue(page)).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('approve and reject appear only when the server says canApprove, and company requests are not listed here', async ({ page }) => {
+  const state = await boot(page, {
+    pending: [
+      pendingRow({ id: 'req-layla', ruleKey: 'ot.weekend_multiplier', value: '2.25' }),
+      pendingRow({ id: 'req-sara', ruleKey: 'ot.standard_multiplier', value: '1.6', requestedById: 'user-sara', requestedByName: 'Sara Ali', canApprove: false }),
+      pendingRow({ id: 'req-company', ruleKey: 'ot.night_multiplier', value: '1.4', companyId: 'co-sa', companyName: 'Masar Trading KSA' }),
+    ],
+  });
+  const pendingQueue = queue(page);
+  await expect(pendingQueue.getByRole('listitem')).toHaveCount(2);
+  await expect(pendingQueue).not.toContainText('ot.night_multiplier');
+  const layla = pendingQueue.getByRole('listitem').filter({ hasText: 'Layla Haddad' });
+  const sara = pendingQueue.getByRole('listitem').filter({ hasText: 'Sara Ali' });
+  await expect(sara.getByRole('button')).toHaveCount(0);
+  await expect(sara).toContainText('Waiting for another administrator');
+
+  // A pending request hides Supersede/Retire on the override it would change.
+  const override = page.locator('table tbody tr').filter({ hasText: 'CFO policy 2025-03' });
+  await expect(override).toContainText('Pending approval');
+  await expect(override.getByRole('button', { name: /Supersede/ })).toHaveCount(0);
+
+  // Reject with a reason.
+  await layla.getByRole('button', { name: 'Reject', exact: true }).click();
+  let dialog = page.getByRole('dialog', { name: 'Reject this change?' });
+  await dialog.getByLabel('Reason for rejecting (optional)').fill('Not in the approved budget');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(state.writes).toHaveLength(0);
+
+  // Approve: the endpoint is called once, and the table is whatever the server now reports.
+  await layla.getByRole('button', { name: 'Approve', exact: true }).click();
+  dialog = page.getByRole('dialog', { name: 'Approve this change?' });
+  await expect(dialog).toContainText('Change ot.weekend_multiplier to 2.25 from');
+  await dialog.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Change approved. Payroll uses it from its start date.' })).toBeVisible();
+  expect(state.writes).toEqual([{ method: 'POST', path: '/api/finance/rates/statutory/override/req-layla/approve', body: {} }]);
+  await expect(tableRows(page)).toHaveCount(4);
+  await expect(page.locator('table tbody tr').filter({ hasText: '2.25' })).toContainText('Scheduled');
+  expect(state.errors).toEqual([]);
+});
+
+test('reject sends the reason; supersede and retire on an override are requests too', async ({ page }) => {
+  const state = await boot(page, { pending: [pendingRow({ id: 'req-layla', ruleKey: 'ot.standard_multiplier', value: '1.6' })] });
+  await queue(page).getByRole('button', { name: 'Reject', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Reject this change?' });
+  await dialog.getByLabel('Reason for rejecting (optional)').fill('Not in the approved budget');
+  await dialog.getByRole('button', { name: 'Reject', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Change rejected. Nothing changed in payroll.' })).toBeVisible();
+  expect(state.writes).toEqual([{ method: 'POST', path: '/api/finance/rates/statutory/override/req-layla/reject', body: { reason: 'Not in the approved budget' } }]);
+  await expect(queue(page)).toHaveCount(0);
+
+  // Supersede → 202 → notice; the override row keeps its value and loses its actions while pending.
+  const override = () => page.locator('table tbody tr').filter({ hasText: 'CFO policy 2025-03' });
+  await override().getByRole('button', { name: /Supersede/ }).click();
+  const supersede = page.getByRole('dialog', { name: 'Supersede ot.weekend_multiplier' });
+  await supersede.getByLabel(/^Override value/).fill('2.5');
+  await supersede.getByLabel(/^Approved reason and source/).fill('CFO policy 2026-01');
+  await supersede.getByRole('button', { name: 'Send for approval', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: SENT })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({ method: 'PUT', path: '/api/statutory-rules/ovr-wkd' });
+  await expect(override()).toContainText('2');
+  await expect(override()).not.toContainText('2.5');
+  await expect(override().getByRole('button', { name: /Retire/ })).toHaveCount(0);
+
+  // Withdraw it, then request retirement instead.
+  await queue(page).getByRole('button', { name: 'Withdraw my request', exact: true }).click();
+  await expect(queue(page)).toHaveCount(0);
+  await override().getByRole('button', { name: /Retire/ }).click();
+  const retire = page.getByRole('dialog', { name: 'Retire statutory override' });
+  await expect(retire).toContainText('Retiring takes effect only after a second administrator approves it.');
+  await retire.getByRole('button', { name: 'Request retirement', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: SENT })).toBeVisible();
+  expect(state.writes.at(-1)).toMatchObject({ method: 'DELETE', path: '/api/statutory-rules/ovr-wkd' });
+  await expect(queue(page)).toContainText('Retire ot.weekend_multiplier from');
+  await expect(tableRows(page)).toHaveCount(3);
+  expect(state.errors).toEqual([]);
+});
+
+test('the approval queue and notice render in Arabic', async ({ page }) => {
+  await boot(page, { locale: 'ar', pending: [pendingRow({ id: 'req-layla', ruleKey: 'ot.weekend_multiplier', value: '2.25' })] });
+  const pendingQueue = page.getByRole('region', { name: 'تغييرات بانتظار موافقة مسؤول ثانٍ' });
+  await expect(pendingQueue).toContainText('تغيير ot.weekend_multiplier إلى 2.25 اعتبارًا من');
+  await expect(pendingQueue.getByRole('button', { name: 'موافقة', exact: true })).toBeVisible();
+  await expect(pendingQueue.getByRole('button', { name: 'رفض', exact: true })).toBeVisible();
+  await expect(page.locator('table tbody tr').filter({ hasText: 'CFO policy 2025-03' })).toContainText('بانتظار الموافقة');
+});

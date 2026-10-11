@@ -1248,11 +1248,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── POD-D4 (month-end hand-off) — additive only; no existing table is altered ───────────────
     public DbSet<GlJournalExport> GlJournalExports => Set<GlJournalExport>();
     public DbSet<GlJournalExportLine> GlJournalExportLines => Set<GlJournalExportLine>();
+    // ERP machine access (wave 3): tenant API keys the client's ERP uses to pull and confirm journal exports.
+    public DbSet<ErpApiKey> ErpApiKeys => Set<ErpApiKey>();
     public DbSet<BankPaymentConfirmation> BankPaymentConfirmations => Set<BankPaymentConfirmation>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
     public DbSet<GlPeriodClose> GlPeriodCloses => Set<GlPeriodClose>();
+    // POD-C2 — per-employee EOSB obligation witness behind the monthly provision movement.
+    public DbSet<EosbProvisionSnapshot> EosbProvisionSnapshots => Set<EosbProvisionSnapshot>();
+    // Maker-checker finance journals: EOSB actuarial true-up, legacy 2104/2105 reclassification.
+    public DbSet<GlAdjustmentRequest> GlAdjustmentRequests => Set<GlAdjustmentRequest>();
     public DbSet<PayComponent> PayComponents => Set<PayComponent>();
     public DbSet<CompanyRatePolicy> CompanyRatePolicies => Set<CompanyRatePolicy>();
     public DbSet<CompanyStatutoryOverride> CompanyStatutoryOverrides => Set<CompanyStatutoryOverride>();
@@ -1768,6 +1774,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // migration backfills existing tenants without a 42703 (migration-discipline rule).
             entity.Property(x => x.EmailDomain).HasMaxLength(255);
             entity.Property(x => x.WorkEmailPattern).HasMaxLength(20).HasDefaultValue(WorkEmailPatterns.FirstLast);
+            // ERP company code stamped on journal export lines (nullable: falls back to CR number).
+            entity.Property(x => x.ErpCompanyCode).HasMaxLength(30);
         });
 
         modelBuilder.Entity<Branch>(entity =>
@@ -1850,6 +1858,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Non-unique helper index; the real UNIQUE (tenant, company, code) NULLS NOT DISTINCT
             // is created via raw SQL in RekeyGlUniquesForCompanyScope (Npgsql 8 can't express it).
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code });
+            // The client's ERP account / segment string, sent by journal exports instead of Code when set.
+            entity.Property(x => x.ExternalCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<GlAccountMapping>(entity =>
@@ -1884,6 +1894,54 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // NULLS NOT DISTINCT is created via raw SQL in AddGlPeriodClose (Npgsql 8 can't express it) so
             // one scope cannot hold two rows for the same period.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+        });
+
+        modelBuilder.Entity<EosbProvisionSnapshot>(entity =>
+        {
+            entity.ToTable("eosb_provision_snapshots");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            entity.Property(x => x.Obligation).HasPrecision(18, 2);
+            entity.Property(x => x.CarriedBefore).HasPrecision(18, 2);
+            entity.Property(x => x.Movement).HasPrecision(18, 2);
+            entity.Property(x => x.WageBase).HasPrecision(18, 2);
+            entity.Property(x => x.ServiceYears).HasPrecision(9, 4);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.Rule).HasMaxLength(80).IsRequired();
+            // One measurement per employee per month — also what makes a retried Lock unable to provide twice.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Period })
+                  .IsUnique().HasDatabaseName("ux_eosb_provision_snapshots_tenant_employee_period");
+            // Serves the void (delete the run's rows) and the panel's per-company drill-down.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+            // Cascade: a snapshot is meaningless without its run, and a tenant purge removes runs first.
+            entity.HasOne<PayrollRun>().WithMany().HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GlAdjustmentRequest>(entity =>
+        {
+            entity.ToTable("gl_adjustment_requests", t =>
+            {
+                t.HasCheckConstraint("ck_gl_adjustment_requests__kind",
+                    "kind IN ('EosbTrueUp','LegacyAbsenceReclass')");
+                t.HasCheckConstraint("ck_gl_adjustment_requests__status",
+                    "status IN ('Pending','Approved','Rejected')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            entity.Property(x => x.Amount).HasPrecision(18, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.SourceAccount).HasMaxLength(250);
+            entity.Property(x => x.TargetAccount).HasMaxLength(250);
+            entity.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+            entity.Property(x => x.ReportReference).HasMaxLength(200);
+            entity.Property(x => x.RequestedByName).HasMaxLength(200);
+            entity.Property(x => x.DecidedByName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            // Serves the panel's list (company, kind, newest first).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Kind, x.Status });
         });
 
         modelBuilder.Entity<PayComponent>(entity =>
@@ -4398,6 +4456,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ErpDocumentNumber).HasMaxLength(120);
             entity.Property(x => x.RejectionReason).HasMaxLength(1000);
             entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.SupersedeReason).HasMaxLength(300);
             entity.Property(x => x.FilterJson).HasColumnType("json");
             entity.Property(x => x.TotalDebits).HasColumnType("decimal(18,4)");
             entity.Property(x => x.TotalCredits).HasColumnType("decimal(18,4)");
@@ -4405,6 +4464,37 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.Kind).HasMaxLength(16);
+            entity.Property(x => x.FormatOptionsJson).HasColumnType("json");
+            entity.Property(x => x.JournalConfirmationsJson).HasColumnType("json");
+            // Double-post probe: "which exports hold ERP-confirmed journals?" without parsing JSON.
+            entity.HasIndex(x => new { x.TenantId, x.ConfirmedJournalCount });
+            // The real guard against two live exports of one scope is a raw-SQL partial UNIQUE index
+            // (ux_gl_journal_exports_live_scope, NULLS NOT DISTINCT) created in
+            // AddErpCodesAndLiveExportIndex — Npgsql 8 cannot express NULLS NOT DISTINCT in the model.
+        });
+
+        // ERP machine access — one row per issued key. Plaintext is never stored (KeyHash = SHA-256).
+        modelBuilder.Entity<ErpApiKey>(entity =>
+        {
+            entity.ToTable("erp_api_keys", t =>
+            {
+                t.HasCheckConstraint("ck_erp_api_keys__scopes_present", "scopes <> ''");
+                t.HasCheckConstraint("ck_erp_api_keys__expiry_after_creation", "expires_at_utc > created_at_utc");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Prefix).HasMaxLength(24).IsRequired();
+            entity.Property(x => x.KeyHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Scopes).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.IpAllowList).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.CreatedByName).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.LastUsedIp).HasMaxLength(64);
+            entity.Property(x => x.RevokedByName).HasMaxLength(200);
+            // Serves the authentication lookup: WHERE key_hash = $1 (one row per key, platform-wide).
+            entity.HasIndex(x => x.KeyHash).IsUnique();
+            // Serves the management list: WHERE tenant_id = $1 ORDER BY created_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
         });
 
         modelBuilder.Entity<GlJournalExportLine>(entity =>
@@ -4427,6 +4517,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // "which export(s) covered this ledger row?" — drives the ERP confirmation stamp and the
             // reconciliation view's exported-vs-posted coverage.
             entity.HasIndex(x => new { x.TenantId, x.FinanceGlEntryId });
+            entity.Property(x => x.CompanyCode).HasMaxLength(64);
+            entity.Property(x => x.ExternalAccountCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<BankPaymentConfirmation>(entity =>

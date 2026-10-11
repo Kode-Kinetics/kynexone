@@ -1,0 +1,2 @@
+# Golden ERP files are byte-exact contracts (CRLF IIF, Windows-1252): never normalise line endings.
+* -text

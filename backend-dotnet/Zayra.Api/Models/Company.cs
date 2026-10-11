@@ -18,6 +18,10 @@ public class Company : ITenantOwned
     public string CountryCode { get; set; } = string.Empty;
     public string Jurisdiction { get; set; } = string.Empty;
     public string RegistrationNumber { get; set; } = string.Empty;
+    /// <summary>The company code this legal entity carries in the client's ERP (SAP BUKRS, Oracle balancing
+    /// segment, NetSuite subsidiary, D365 legal entity…). Stamped on every journal export line; when null the
+    /// export falls back to RegistrationNumber, then a short id.</summary>
+    public string? ErpCompanyCode { get; set; }
     public string TaxNumber { get; set; } = string.Empty;
     public string WpsEmployerId { get; set; } = string.Empty;
     public string GosiEmployerId { get; set; } = string.Empty;

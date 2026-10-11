@@ -76,8 +76,13 @@ public class StatutoryRateUnitTests
         var result = await StatutoryRulesControllerFor(db).Create(new CreateStatutoryRuleRequest(
             CountryCodes.Saudi, Jurisdictions.KsaMainland, "ot.standard_multiplier",
             "1.75", "decimal", "Reviewed policy", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None);
-        Assert.IsType<CreatedAtActionResult>(result.Result);
-        Assert.Equal("1.75", Assert.Single(await db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == TenantId).ToListAsync()).RuleValue);
+        // Accepted as a REQUEST: nothing reaches statutory_rules until a second person approves it.
+        Assert.IsType<AcceptedResult>(result.Result);
+        Assert.Empty(await db.StatutoryRules.IgnoreQueryFilters().Where(r => r.TenantId == TenantId).ToListAsync());
+        var pending = Assert.Single(await db.CompanyStatutoryOverrides.IgnoreQueryFilters().Where(r => r.TenantId == TenantId).ToListAsync());
+        Assert.Equal("1.75", pending.OverrideValue);
+        Assert.Null(pending.CompanyId);
+        Assert.Equal(StatutoryOverridePolicy.PendingApproval, pending.Status);
     }
 
     [Theory]

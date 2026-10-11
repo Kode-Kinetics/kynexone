@@ -214,10 +214,10 @@ public class PilotPayrollCorrectnessPostgresTests
         AssertGosiRefusal((await stat.Update(legacy.Id, new UpdateStatutoryRuleRequest("0.012", "again", ef.AddMonths(1), null),
             CancellationToken.None)).Result);
 
-        // A non-GOSI statutory key is still overridable.
+        // A non-GOSI statutory key is still overridable — as a request a second person approves.
         (await stat.Create(new CreateStatutoryRuleRequest(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "ot.standard_multiplier", "1.75", "decimal", "company policy above statute", DateTime.UtcNow.Date.AddDays(1), null), CancellationToken.None))
-            .Result.Should().BeOfType<CreatedAtActionResult>();
+            .Result.Should().BeOfType<AcceptedResult>();
 
         // 2. Company statutory override (maker-checker): refused at request…
         var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
@@ -257,7 +257,9 @@ public class PilotPayrollCorrectnessPostgresTests
             .Should().Be(1);
         (await db.CountryPayrollRules.IgnoreQueryFilters().AnyAsync(r => r.TenantId == tenantId && r.RuleKey.StartsWith("gosi.")))
             .Should().BeFalse();
-        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId)).Should().Be(1);
+        // The legacy company row only; the second row is the pending (unapplied) tenant-level ot.* request above.
+        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId && r.CompanyId != null)).Should().Be(1);
+        (await db.CompanyStatutoryOverrides.IgnoreQueryFilters().CountAsync(r => r.TenantId == tenantId && r.CompanyId == null && r.Status == "PendingApproval")).Should().Be(1);
     }
 
     /// <summary>
@@ -314,7 +316,7 @@ public class PilotPayrollCorrectnessPostgresTests
 
         // The Rates screen shows the GOSI-published value as resolved and flags the override as never applied.
         var rates = WithUser(new RatesController(db, reader, new StatutoryRateResolver(db, reader)), tenantId);
-        var listed = (await rates.ListStatutory(company.Id, CountryCodes.Saudi, Jurisdictions.KsaMainland, CancellationToken.None))
+        var listed = (await rates.ListStatutory(company.Id, CountryCodes.Saudi, null, Jurisdictions.KsaMainland, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>().Subject.Value!;
         var ceilingRow = ((System.Collections.IEnumerable)listed).Cast<object>()
             .Single(r => Prop<string>(r, "ruleKey") == KsaGosiWageBounds.CeilingRuleKey);
@@ -694,8 +696,9 @@ public class PilotPayrollCorrectnessPostgresTests
 
     /// <summary>
     /// For each cohort the run treats specially, readiness shows the SAME code at the SAME severity the
-    /// run raises: a new entrant and a GCC national with no home-scheme rates are Not ready (the run
-    /// blocks them); a Saudi with no first-registration date is Ready with the cohort warning. The
+    /// run raises: a GCC national with no home-scheme rates is Not ready (the run blocks them); a new
+    /// entrant is Ready with the new-entrant-schedule notice (Royal Decree M/273 rows are seeded, so the run
+    /// no longer blocks them); a Saudi with no first-registration date is Ready with the cohort warning. The
     /// report and the preview both carry the cohort and the engine's basis.
     /// </summary>
     [Fact]
@@ -721,7 +724,6 @@ public class PilotPayrollCorrectnessPostgresTests
 
         foreach (var (emp, code) in new[]
                  {
-                     (newEntrant, PayrollValidationEngine.GosiNewEntrantScheduleNotModelled),
                      (bahraini, PayrollValidationEngine.GosiGccSchemeNotConfigured),
                  })
         {
@@ -741,6 +743,13 @@ public class PilotPayrollCorrectnessPostgresTests
         Row(existing).Cohort.Should().Be(GosiCohorts.PreJuly2024);
         Row(existing).Basis.Should().Contain("existing subscriber");
         Row(newEntrant).Cohort.Should().Be(GosiCohorts.NewEntrant);
+        // The new entrant: priced on the new-entrant schedule by the seeded rows, so neither the run nor
+        // readiness blocks them; both carry the same non-blocking notice with the rate used.
+        runFindings.Should().NotContain(f => f.EmployeeId == newEntrant.Id && f.Code == PayrollValidationEngine.GosiNewEntrantScheduleNotModelled);
+        runFindings.Should().Contain(f => f.EmployeeId == newEntrant.Id && f.Code == PayrollValidationEngine.GosiNewEntrantScheduleApplied && f.Severity == "Warning");
+        Row(newEntrant).IsReady.Should().BeTrue("the run no longer blocks a new entrant once the schedule is seeded");
+        Row(newEntrant).Warnings.Should().Contain(w => w.Code == PayrollValidationEngine.GosiNewEntrantScheduleApplied);
+        Row(newEntrant).Basis.Should().Contain(KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker);
 
         // The preview carries the cohort and the basis too.
         var gosi = new GosiController(db, new GosiReconciliationService(db, new _PilotKsaResolver(reader)), reader)
@@ -750,8 +759,11 @@ public class PilotPayrollCorrectnessPostgresTests
         var body = (await gosi.GetEmployeeReadiness(unknown.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
         Prop<string>(body, "cohort").Should().Be(GosiCohorts.Unknown);
         Prop<string>(body, "basis").Should().Contain("unverified");
-        var blockedBody = (await gosi.GetEmployeeReadiness(newEntrant.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        var blockedBody = (await gosi.GetEmployeeReadiness(bahraini.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
         Prop<bool>(blockedBody, "IsReady").Should().BeFalse();
+        var entrantBody = (await gosi.GetEmployeeReadiness(newEntrant.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        Prop<bool>(entrantBody, "IsReady").Should().BeTrue();
+        Prop<string>(entrantBody, "basis").Should().Contain(KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker);
     }
 
     /// <summary>

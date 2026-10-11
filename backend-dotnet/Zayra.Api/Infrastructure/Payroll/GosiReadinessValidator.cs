@@ -7,13 +7,16 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// Validates whether an employee is ready for GOSI, using the SAME findings the payroll run raises.
 ///
 /// <para><b>One verdict.</b> "Ready" used to mean "has a GOSI reference and a basic salary, and some row
-/// exists in gosi_contribution_rules". The run, meanwhile, BLOCKED a new entrant (the post-3-July-2024
-/// schedule is not modelled) and a GCC national whose home-state scheme is not configured. So the
-/// readiness screen said Ready for exactly the people payroll would refuse. The verdict is now taken from
-/// the payslip engine's own result (<see cref="GosiCalculationService.CalculateAsync"/>) with the run's
+/// exists in gosi_contribution_rules". The run, meanwhile, BLOCKED people it could not price (a GCC
+/// national whose home-state scheme is not configured; a new entrant with no new-entrant rate on record).
+/// So the readiness screen said Ready for exactly the people payroll would refuse. The verdict is now taken
+/// from the payslip engine's own result (<see cref="GosiCalculationService.CalculateAsync"/>) with the run's
 /// own codes and severities:</para>
 /// <list type="bullet">
-/// <item><see cref="PayrollValidationEngine.GosiNewEntrantScheduleNotModelled"/> — blocking, as in the run.</item>
+/// <item><see cref="PayrollValidationEngine.GosiNewEntrantScheduleApplied"/> — a notice: the new-entrant
+/// schedule (Royal Decree M/273) was applied, with the rate.</item>
+/// <item><see cref="PayrollValidationEngine.GosiNewEntrantScheduleNotModelled"/> — blocking, as in the run,
+/// only when no new-entrant rate is on record for the month.</item>
 /// <item><see cref="PayrollValidationEngine.GosiGccSchemeNotConfigured"/> — blocking, as in the run.</item>
 /// <item><see cref="PayrollValidationEngine.GosiCohortNotRecorded"/> — a warning, as in the run.</item>
 /// </list>
@@ -87,19 +90,29 @@ public static class GosiReadinessValidator
 
         if (computed is not null && classification == GosiClassifications.Saudi)
         {
-            if (computed.Cohort == GosiCohorts.NewEntrant)
+            var onNewEntrantSchedule = (computed.Basis ?? string.Empty).Contains(
+                Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker, StringComparison.Ordinal);
+            if (computed.Cohort == GosiCohorts.NewEntrant && onNewEntrantSchedule)
+                warnings.Add(new GosiReadinessIssue(
+                    Code:       PayrollValidationEngine.GosiNewEntrantScheduleApplied,
+                    Message:    "First registered with GOSI on or after 3 July 2024, so this employee is a NEW ENTRANT under " +
+                                "the New Social Insurance Law (Royal Decree M/273). Payroll applies the new-entrant " +
+                                $"annuities schedule. {computed.Basis}",
+                    IsBlocking: false));
+            else if (computed.Cohort == GosiCohorts.NewEntrant)
                 blocking.Add(new GosiReadinessIssue(
                     Code:       PayrollValidationEngine.GosiNewEntrantScheduleNotModelled,
-                    Message:    "First registered with GOSI on or after 3 July 2024, so this employee is a NEW ENTRANT on the " +
-                                "separate new-entrant schedule, which this product does not model yet. Payroll blocks this " +
-                                "employee; exclude them from the run and calculate their GOSI outside the system, or correct " +
-                                "the first-registration date if it is wrong.",
+                    Message:    "First registered with GOSI on or after 3 July 2024, so this employee is a NEW ENTRANT, but no " +
+                                "new-entrant annuities rate is on record for this month. Payroll blocks this employee until " +
+                                "the statutory rates are present — contact support — or correct the first-registration " +
+                                "date if it is wrong.",
                     IsBlocking: true));
             else if (computed.Cohort != GosiCohorts.PreJuly2024)
                 warnings.Add(new GosiReadinessIssue(
                     Code:       PayrollValidationEngine.GosiCohortNotRecorded,
                     Message:    "GOSI cohort not recorded: there is no GOSI first-registration date, so the pre-3-July-2024 " +
-                                "schedule is assumed. Record the date from the employee's GOSI record.",
+                                "schedule (9%) is assumed. Enter the GOSI registration date; if it is on or after " +
+                                "3 July 2024 the new-entrant rate applies.",
                     IsBlocking: false));
         }
 

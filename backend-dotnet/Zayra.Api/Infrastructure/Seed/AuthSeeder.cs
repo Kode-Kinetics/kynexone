@@ -447,6 +447,10 @@ public class AuthSeeder : IAuthSeeder
             ("finance.gl.manage", "Finance", "Manage GL accounts, mappings and per-company overrides"),
             ("finance.gl.drivers.manage", "Finance", "Manage custom GL posting drivers"),
             ("finance.gl.drivers.author_predicates", "Finance", "Author non-Exact GL driver predicates and employer-expense pairs (Admin/vendor)"),
+            // Reopening a closed GL period un-freezes finalised books. Admin-only by default (Admin holds every
+            // catalog key); never granted to a role bundle here, and FinanceGlController refuses the person
+            // who closed the period (strict maker≠checker).
+            ("finance.gl.period.reopen", "Finance", "Reopen a closed GL period (never the person who closed it)"),
             // Finance — GL / ERP hand-off checker. Separate from finance.gl.manage (which produces the export)
             // so the person who exports a journal is not the person who attests the ERP posted it.
             ("finance.erp.confirm", "Finance", "Confirm or reject that the client's ERP imported a GL journal export"),

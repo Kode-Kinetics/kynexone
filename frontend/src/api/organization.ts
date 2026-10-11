@@ -72,6 +72,8 @@ export interface CompanyDto {
   workEmailPattern: string;
   isActive: boolean;
   approvalStatus: 'Active' | 'Draft' | 'PendingActivation';
+  /** Company code in the client's ERP; stamped on every journal-export line. Empty ⇒ CR-number fallback. */
+  erpCompanyCode?: string;
 }
 
 export interface CompanyRequest {
@@ -91,6 +93,8 @@ export interface CompanyRequest {
   /** One of WORK_EMAIL_PATTERNS; server coerces anything invalid back to the default. */
   workEmailPattern?: string;
   isActive: boolean;
+  /** Omit to leave unchanged; empty string clears it. */
+  erpCompanyCode?: string;
 }
 
 /**
