@@ -103,6 +103,11 @@ public static class StatutoryRateGuard
         Def(tenantId, "payparameter.arrears_gosi_treatment",     "PayParameter", "string",  "enum",  null, null, "Statutory treatment of retro arrears: PeriodPaid (default) | None | PeriodEarned (refused — needs an amended-declaration workflow)"),
         Def(tenantId, "payparameter.arrears_max_lookback_months","PayParameter", "decimal", "months",   0m,  120m, "How many past periods a retro/arrears settlement may reach back over (default 24)"),
         Def(tenantId, "payparameter.prorated_components",        "PayParameter", "string",  "list",  null, null, "Comma-separated components proration applies to. Default BASIC,HOUSING,TRANSPORT,OTHER_ALLOWANCES,FIXED_DEDUCTION"),
+        // ── POD-C2: monthly end-of-service provision ──────────────────────────────────────────────
+        // Under payparameter.* (not eosb.*) on purpose: it is an ACCOUNTING policy choice, not the
+        // statutory award, so it belongs on Surface A. Default Off; the effective date of the
+        // StatutoryMonthly row is when provisioning starts.
+        Def(tenantId, EosbProvisioningRateKeys.Mode,             "PayParameter", "string",  "enum",  null, null, "Monthly end-of-service provision at payroll Lock: Off (default) | StatutoryMonthly"),
     };
 
     /// <summary>
@@ -122,6 +127,8 @@ public static class StatutoryRateGuard
         ProrationRateKeys.ArrearsGosiTreatment,
         ProrationRateKeys.ArrearsMaxLookback,
         ProrationRateKeys.ProratedComponents,
+        // POD-C2 — read by PayrollController.BuildEosbProvisionAsync at every Lock.
+        EosbProvisioningRateKeys.Mode,
     };
 
     /// <summary>True only for a client-rate key some payroll calculation reads (see <see cref="PayrollAppliedKeys"/>).

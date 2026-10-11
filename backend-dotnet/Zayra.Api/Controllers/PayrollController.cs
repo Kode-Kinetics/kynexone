@@ -30,7 +30,7 @@ namespace Zayra.Api.Controllers;
 // Reads keep their exact original role list (re-applied per GET method) — deferred to a later module.
 // WPS/payment/ERP-export mutations retain their in-body HasPermission("payroll.export") gate unchanged.
 [Authorize]
-public class PayrollController : ControllerBase
+public partial class PayrollController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
@@ -3801,6 +3801,8 @@ public class PayrollController : ControllerBase
         }
         IReadOnlyList<PayrollGlCatchAll> lockCatchAlls = Array.Empty<PayrollGlCatchAll>();
         decimal lockRounding = 0m;
+        decimal lockEosbMovement = 0m;
+        var lockEosbEmployees = 0;
         if (!alreadyPosted)
         {
             // POD-B1 — a closed GL period rejects NEW postings. Dated into the accrual (run) period, so
@@ -3834,6 +3836,13 @@ public class PayrollController : ControllerBase
                         driverKey = p.DriverKey, label = p.Label, kind = p.Kind,
                         accountCode = p.AccountCode, accountName = p.AccountName, message = p.Message,
                     }),
+                }), false);
+            if (plan.EosbRefusal is { } eosbRefusal)
+                return new(UnprocessableEntity(new
+                {
+                    error   = eosbRefusal.Code,
+                    message = eosbRefusal.Message,
+                    companyId = run.CompanyId,
                 }), false);
             var glLines = plan.Lines;
             var totalDebits = plan.TotalDebits;
@@ -3878,6 +3887,10 @@ public class PayrollController : ControllerBase
             lockCatchAlls = plan.CatchAlls;
             lockRounding = plan.RoundingAdjustment;
             _db.FinanceGlEntries.AddRange(glLines);
+            // POD-C2 — the obligation witnesses commit with the journal they explain, or not at all.
+            if (plan.EosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.AddRange(plan.EosbSnapshots);
+            lockEosbMovement = plan.EosbSnapshots.Sum(x => x.Movement);
+            lockEosbEmployees = plan.EosbSnapshots.Count;
         }
 
         run.Status = "Locked";
@@ -3911,6 +3924,7 @@ public class PayrollController : ControllerBase
             // posting rule names them. Non-blocking, but recorded where the month was sealed.
             catchAllComponents = lockCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }).ToList(),
             roundingAdjustment = lockRounding,
+            eosbProvisionMovement = lockEosbMovement, eosbProvisionEmployees = lockEosbEmployees,
         }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         // JSON superset of the previous `Ok(run)` body — every PayrollRun property is still present at the
@@ -3937,6 +3951,9 @@ public class PayrollController : ControllerBase
             // Sub-unit rounding booked to Payroll Rounding Differences so the stored journal balances
             // exactly (positive = debit, negative = credit; 0 = none needed).
             roundingAdjustment  = lockRounding,
+            // POD-C2 — the end-of-service provision movement this Lock booked (0 when provisioning is off).
+            eosbProvisionMovement = lockEosbMovement,
+            eosbProvisionEmployees = lockEosbEmployees,
         }), true, run);
     }
 
@@ -7894,15 +7911,24 @@ public class PayrollController : ControllerBase
     private async Task<EosbWageBasis> ResolveEosbWageBasisAsync(
         Guid tenantId, Guid? companyId, EmployeeSalaryStructure? salary, Employee employee, CancellationToken ct)
     {
+        // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
+        return EosbWageBasisFrom(components, salary, employee);
+    }
+
+    /// <summary>The pure half of <see cref="ResolveEosbWageBasisAsync"/>: the same wage-basis rule over a
+    /// catalog the caller already loaded, so the monthly provision (POD-C2) measures every employee on
+    /// exactly the base a settlement would, without reloading the catalog once per employee.</summary>
+    private static EosbWageBasis EosbWageBasisFrom(
+        IEnumerable<PayComponent> components, EmployeeSalaryStructure? salary, Employee employee)
+    {
         var basic = salary?.BasicSalary ?? employee.Salary ?? 0m;
         var housing = salary?.HousingAllowance ?? 0m;
         var transport = salary?.TransportAllowance ?? 0m;
         var other = (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
         var gross = basic + housing + transport + other;
         var package = new SalaryBreakdown(basic, housing, transport, other);
-        // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
         var included = components
             .Where(c => c.ComponentType == PayComponentTypes.Earning && c.EosbIncluded && c.IsActive && !c.IsDeleted)
             .ToList();
@@ -7968,9 +7994,19 @@ public class PayrollController : ControllerBase
             .Select(r => new { r.StartDate, r.EndDate, r.TotalDays })
             .ToListAsync(ct);
 
+        return UnpaidLeaveDaysWithin(requests.Select(r => (r.StartDate, r.EndDate, r.TotalDays)), windowStart, windowEnd);
+    }
+
+    /// <summary>The apportioning arithmetic of <see cref="ResolveUnpaidLeaveDaysAsync"/>, over requests the
+    /// caller already loaded (POD-C2 loads them once for the whole run).</summary>
+    private static int UnpaidLeaveDaysWithin(
+        IEnumerable<(DateOnly StartDate, DateOnly EndDate, decimal TotalDays)> requests, DateOnly windowStart, DateOnly windowEnd)
+    {
+        if (windowEnd < windowStart) return 0;
         decimal days = 0m;
         foreach (var r in requests)
         {
+            if (r.StartDate > windowEnd || r.EndDate < windowStart) continue;
             var span = r.EndDate.DayNumber - r.StartDate.DayNumber + 1;
             if (span <= 0) continue;
             var from = r.StartDate > windowStart ? r.StartDate : windowStart;
@@ -8037,13 +8073,20 @@ public class PayrollController : ControllerBase
     private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
         Guid tenantId, Employee employee, CancellationToken ct)
     {
-        var joining = DateOnly.FromDateTime(employee.JoiningDate);
         var carried = await _db.EmployeeEosbOpeningBalances.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.PriorServiceStartDate != null)
             .OrderByDescending(x => x.AsAtDate)
             .ThenBy(x => x.PriorServiceStartDate)
             .Select(x => x.PriorServiceStartDate)
             .FirstOrDefaultAsync(ct);
+        return PickEosbServiceStart(employee, carried);
+    }
+
+    /// <summary>The rule of <see cref="ResolveEosbServiceStartAsync"/> once the carried date is known:
+    /// the EARLIER of the two, never the sum.</summary>
+    private static (DateOnly Start, DateOnly? Carried) PickEosbServiceStart(Employee employee, DateOnly? carried)
+    {
+        var joining = DateOnly.FromDateTime(employee.JoiningDate);
         return carried is DateOnly prior && prior < joining ? (prior, prior) : (joining, carried);
     }
 
@@ -8552,7 +8595,13 @@ public class PayrollController : ControllerBase
     private sealed record PayrollLockJournal(
         List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits,
         IReadOnlyList<PayrollGlCatchAll> CatchAlls, IReadOnlyList<GlResolutionProblem> Problems,
-        decimal RoundingAdjustment, IReadOnlyList<PayrollEarning> Earnings, IReadOnlyList<PayrollDeduction> Deductions);
+        decimal RoundingAdjustment, IReadOnlyList<PayrollEarning> Earnings, IReadOnlyList<PayrollDeduction> Deductions)
+    {
+        /// <summary>POD-C2 — the per-employee obligation witnesses Lock persists beside the provision lines.</summary>
+        public IReadOnlyList<EosbProvisionSnapshot> EosbSnapshots { get; init; } = Array.Empty<EosbProvisionSnapshot>();
+        /// <summary>POD-C2 — set when provisioning is on but cannot be measured; Lock refuses rather than skip it.</summary>
+        public EosbProvisionRefusal? EosbRefusal { get; init; }
+    }
 
     /// <summary>One earning/deduction group and the posting rule it routes to.</summary>
     private sealed record RoutedGlGroup(
@@ -8608,6 +8657,16 @@ public class PayrollController : ControllerBase
         var rounding = AppendRoundingLine(lines, employeeCount, glCtx, tenantId, id, period, currency, postedBy, postedByName);
         if (rounding != 0m) used.Add(PayrollRoundingDriverKey);
 
+        // POD-C2 — the monthly end-of-service provision movement, when the company has switched it on.
+        // Appended AFTER the rounding line: it balances on its own, so it can never move the rounding.
+        var eosb = await BuildEosbProvisionAsync(tenantId, run, period, currency, glCtx, earnings, postedBy, postedByName, ct);
+        if (eosb.Lines.Count > 0)
+        {
+            lines.AddRange(eosb.Lines);
+            used.Add(EosbProvisionExpenseDriver);
+            used.Add(EosbProvisionLedger.ProvisionDriverKey);
+        }
+
         // A switched-off SYSTEM rule blocks only when this run would have used it: route the run again
         // as if those rules were on, and any pay item (or employer pair) that lands on one of them is a
         // component that is being silently re-routed (usually to a catch-all) because it is off. A rule
@@ -8636,7 +8695,11 @@ public class PayrollController : ControllerBase
 
         var totalDebits = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
         var totalCredits = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
-        return new PayrollLockJournal(lines, totalDebits, totalCredits, catchAlls, problems, rounding, earnings, dedxns);
+        return new PayrollLockJournal(lines, totalDebits, totalCredits, catchAlls, problems, rounding, earnings, dedxns)
+        {
+            EosbSnapshots = eosb.Snapshots,
+            EosbRefusal = eosb.Refusal,
+        };
     }
 
     /// <summary>The routing every earning/deduction group takes — the same calls BuildPayrollGlEntries makes.</summary>
@@ -8758,6 +8821,7 @@ public class PayrollController : ControllerBase
     {
         if (line.EventType == GlEventTypes.BonusPayrollClearing) return ("BONUS_PAYABLE", line.Description);
         if (line.EventType == GlEventTypes.SettlementPayrollClearing) return ("SETTLEMENT_PAYABLE", line.Description);
+        if (line.EventType == GlEventTypes.EosbProvisionAccrual) return ("EOSB_PROVISION", line.Description);
         if (line.Description == PayrollGlDescriptions.NetPayable) return ("NET_SALARY", "Net Salary Payable");
         if (line.Description == PayrollGlDescriptions.EmployerStatutory) return ("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense");
         if (line.Description == PayrollGlDescriptions.Rounding) return ("ROUNDING", "Payroll rounding difference");
@@ -10101,10 +10165,20 @@ public class PayrollController : ControllerBase
         var provisionCursor = await EosbProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
         var (provisionPosition, provisionTaken) =
             provisionCursor.Take(s.EmployeeId, s.CompanyId, s.GratuityAmount);
+        // POD-C2 — whatever is still provided for this leaver after the award is RELEASED with them
+        // (DR 2310 / CR 5110), so 2310 never carries provision for someone who has left. See BuildAccrual.
+        var provisionReleases = new List<(string Account, decimal Amount)>();
+        while (provisionCursor.PositionFor(s.EmployeeId, s.CompanyId) is { } leftover)
+        {
+            var (releasedFrom, released) = provisionCursor.Take(
+                s.EmployeeId, s.CompanyId, provisionCursor.RemainingOn(leftover));
+            if (releasedFrom is null || released <= 0m) break;
+            provisionReleases.Add((releasedFrom.ProvisionAccount, released));
+        }
 
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
             tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
-            provisionTaken, provisionPosition?.ProvisionAccount);
+            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new
             {
@@ -10137,6 +10211,7 @@ public class PayrollController : ControllerBase
             gross = s.GrossPayable, deductions = s.TotalDeductions, net = s.NetPayable,
             glPeriod, totalDebits = dr, totalCredits = cr,
             provisionConsumed = provisionTaken, provisionAccount = provisionPosition?.ProvisionAccount,
+            provisionReleased = provisionReleases.Sum(r => r.Amount),
             wageBaseDelta = s.WageBaseDeltaAmount,
             wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
             wagesAcknowledgedUnpaid = s.WagesAcknowledgedUnpaid,

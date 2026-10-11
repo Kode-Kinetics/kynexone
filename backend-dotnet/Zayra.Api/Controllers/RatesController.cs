@@ -990,7 +990,8 @@ public class RatesController : ControllerBase
         {
             var value = (req.RateValue ?? string.Empty).Trim();
             if (value.Length == 0) return (BadRequest(new { message = $"'{key}' expects a non-empty value." }), null);
-            if (ProrationRateKeys.AllowedValues.TryGetValue(key, out var allowed))
+            if (ProrationRateKeys.AllowedValues.TryGetValue(key, out var allowed)
+                || EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out allowed))
             {
                 if (!allowed.Contains(value, StringComparer.OrdinalIgnoreCase))
                     return (BadRequest(new

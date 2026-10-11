@@ -148,6 +148,10 @@ GlDrivers
 GlJournalExportLines
 GlJournalExports
 GlPeriodCloses
+# POD-C2 — per-employee EOSB obligation witness behind the monthly provision (owner-approved 2026-10-10)
+EosbProvisionSnapshots
+# Maker-checker finance journals: EOSB actuarial true-up + legacy 2104/2105 reclass (one table, two kinds)
+GlAdjustmentRequests
 GoalProgressUpdates
 GosiContributionRules
 GradeEntitlements

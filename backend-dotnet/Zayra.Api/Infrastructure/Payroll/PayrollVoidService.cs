@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
@@ -551,6 +552,16 @@ public sealed class PayrollVoidService
 
         foreach (var orig in reversedLines) orig.IsReversed = true;
         _db.FinanceGlEntries.AddRange(contras);
+        // POD-C2 — the run's end-of-service provision lines are originating payroll journals, so the
+        // contras above already reverse them; the obligation snapshots that explained them go in the SAME
+        // unit of work, so the month can be measured again by a Replacement run and the per-employee
+        // drill-down never shows a movement the ledger no longer carries.
+        var eosbSnapshots = await ScopedBypass.TenantWide(_db.EosbProvisionSnapshots, tenantId,
+                "Run void is a system correction over the whole run: every company's provision snapshot for " +
+                "this run must go with the reversed provision lines, whatever the caller's company claims.")
+            .Where(x => x.PayrollRunId == runId)
+            .ToListAsync(ct);
+        if (eosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.RemoveRange(eosbSnapshots);
         var glReversed = contras.Count;
         // POD-C3 — the sub-ledger is written in the SAME unit of work as the 1420 debit it explains, so
         // the aggregate and the attribution can never disagree.

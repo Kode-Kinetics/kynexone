@@ -8,6 +8,7 @@ import { setupExperience } from './setupExperience';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
+import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
@@ -1391,6 +1392,7 @@ const en: Dict = {
   ...glSetup.en,
   ...glErp.en,
   ...glApiKeys.en,
+  ...glEosb.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -2766,6 +2768,7 @@ const ar: Dict = {
   ...glSetup.ar,
   ...glErp.ar,
   ...glApiKeys.ar,
+  ...glEosb.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 
