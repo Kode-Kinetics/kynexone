@@ -218,3 +218,48 @@ test('renders the panel in Arabic', async ({ page }) => {
   await boot(page, { locale: 'ar' });
   await expect(page.getByRole('button', { name: 'إنشاء ملف التصدير' })).toBeVisible();
 });
+
+test('a double-clicked Lock sends one request, shows no error, and each run names its company', async ({ page }) => {
+  // Found live: double-clicking Lock fired two requests. The server posted the journal once and refused the
+  // second (409), and that refusal then showed as an error under a run that had just locked. At group scope the
+  // run cards also gave no company, so four "Sep 2026 Draft" cards were indistinguishable.
+  const run = {
+    id: 'run-oct', companyId: 'co-b', year: 2026, month: 10, status: 'Approved', runType: 'Regular', totalGrossSalary: 25730.21,
+    totalDeductions: 3119.43, totalNetSalary: 22610.78, totalEmployerStatutoryCost: 2820, employeeCount: 3,
+    createdAtUtc: '2026-10-10T00:00:00Z', processedAtUtc: '2026-10-10T00:00:00Z', lockedAtUtc: null,
+  };
+  const lockCalls: string[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem('zayra_access_token', 'gl-export-browser-fixture');
+    localStorage.setItem('kynexone-locale-choice-v2', 'en');
+  });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
+    if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
+    if (path === '/api/auth/me') return reply({
+      id: 'gl-reviewer', tenantId: 'gl-tenant', tenantSlug: 'gl-fixture', fullName: 'Finance Reviewer',
+      roles: ['Admin'], permissions: ['payroll.read', 'payroll.lock', 'dashboard.read'], accountType: 'Group', isGroupScope: true,
+      companies: [companyA, companyB].map(c => ({ id: c.id, name: c.name, code: c.id, countryCode: 'SA', isActive: true })),
+    });
+    if (path === '/api/payroll/companies') return reply([companyA, companyB]);
+    if (path === '/api/payroll/runs') return reply({ items: [run], total: 1, page: 1, pageSize: 100 });
+    if (path === '/api/payroll/runs/run-oct/lock') {
+      lockCalls.push(request.method());
+      await new Promise(r => setTimeout(r, 400));
+      if (lockCalls.length > 1) return reply({ error: 'run_already_locked', message: 'This payroll run is already locked and its journal is already posted. Nothing was posted again.' }, 409);
+      return reply({ ...run, status: 'Locked', lockedAtUtc: '2026-10-10T01:00:00Z' });
+    }
+    if (path.startsWith('/api/payroll/')) return reply({ message: 'Not part of this fixture.' }, 404);
+    return reply({ items: [], total: 0, page: 1, pageSize: 100 });
+  });
+  await page.goto('/payroll');
+  await page.getByRole('tab', { name: 'Payroll Runs', exact: true }).click();
+  const card = page.locator('main [role="button"]').filter({ hasText: 'Oct 2026' }).first();
+  await expect(card).toContainText('Beta Services');
+  await card.getByRole('button', { name: 'Lock' }).dblclick();
+  await expect(card).toContainText('Locked');
+  expect(lockCalls).toEqual(['POST']);
+  await expect(page.getByText(/already locked/)).toHaveCount(0);
+});
