@@ -93,6 +93,9 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
     public const string CancelledAction = "employee.change_effective_cancelled";
     public const string DeferredAction = "employee.change_effective_deferred";
     public const string ExpiredAction = "employee.change_effective_expired";
+    public const string GateFailedAction = "employee.change_effective_gate_failed";
+    /// <summary>A gate that throws is retried on later runs; after this many attempts the change is cancelled (HR told).</summary>
+    public const int MaxGateAttempts = 5;
 
     public const string AppliedEventType = EmployeeChangeBaseline.AppliedEventType;
     public const string ReturnedForReviewEventType = EmployeeChangeBaseline.ReturnedForReviewEventType;
@@ -268,10 +271,27 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                 $"The employee's status is now {employee.Status}. Confirm the change should still take effect.", ct);
         // The module that raised the change has the last word on whether it still applies (e.g. a merit award for
         // someone who went on notice after it was scheduled). Nothing has been written yet.
-        foreach (var gate in services.GetServices<IEffectiveChangeGate>())
+        var gates = services.GetServices<IEffectiveChangeGate>().ToList();
+        if (gates.Count > 0)
         {
-            if (await gate.CheckAsync(db, tenantId, change, employee, localToday, ct) is { } refusal)
-                return Cancel(context, refusal.ReasonCode, refusal.Reason) with { NotifyUserId = refusal.NotifyUserId ?? change.ApprovedByUserId };
+            // A savepoint, so a gate that fails (even on a database error, which aborts the transaction) can be undone
+            // and the failure still recorded in this item's transaction.
+            const string savepoint = "effective_change_gates";
+            var tx = db.Database.CurrentTransaction;
+            if (tx is not null) await tx.CreateSavepointAsync(savepoint, ct);
+            EffectiveChangeRefusal? refusal;
+            try
+            {
+                refusal = await EffectiveChangeGateRunner.CheckAsync(gates, db, tenantId, change, employee, localToday, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (tx is not null) await tx.RollbackToSavepointAsync(savepoint, ct);
+                DiscardStagedExcept(db, change, employee, profile);
+                return await GateFailedAsync(context, ex, ct);
+            }
+            if (refusal is not null)
+                return Cancel(context, refusal.ReasonCode, refusal.Reason) with { NotifyUserId = refusal.NotifyUserId ?? change.RequestedByUserId ?? change.ApprovedByUserId };
         }
         if (changes is null)
             return await ReturnForReviewAsync(context, "unreadable_change", "the stored change could not be read",
@@ -496,6 +516,41 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         var profile = await LockProfileAsync(d.Db, d.TenantId, change.EmployeeId, ct);
         var employee = await LockEmployeeAsync(d.Db, d.TenantId, change.EmployeeId, ct);
         return await ReturnForReviewAsync(d with { Change = change, Employee = employee, Profile = profile }, reasonCode, headline, reason, ct);
+    }
+
+    /// <summary>
+    /// A gate threw. The change stays approved and pending and is retried on the next run, up to
+    /// <see cref="MaxGateAttempts"/> attempts (each one audited); then it is cancelled — never applied unchecked — and
+    /// the user who raised it is told. Only the error TYPE is recorded: a message can carry personal data.
+    /// </summary>
+    private async Task<EffectiveChangeResult> GateFailedAsync(Decision d, Exception ex, CancellationToken ct)
+    {
+        const string reasonCode = "gate_failed";
+        var key = d.Change.Id.ToString();
+        var attempt = 1 + await d.Db.AuditLogs.AsNoTracking()
+            .CountAsync(a => a.TenantId == d.TenantId && a.EntityName == nameof(EmployeeChangeRequest) && a.EntityId == key && a.Action == GateFailedAction, ct);
+        AddAudit(d, GateFailedAction, new { employeeId = d.Employee!.Id, attempt, maxAttempts = MaxGateAttempts, errorType = ex.GetType().Name, d.JobId });
+        _log.LogWarning("A gate could not check approved employee change {ChangeId} (tenant {TenantId}), attempt {Attempt} of {Max} ({ErrorType}).",
+            d.Change.Id, d.TenantId, attempt, MaxGateAttempts, ex.GetType().Name);
+        if (attempt >= MaxGateAttempts)
+            return Cancel(d, reasonCode,
+                $"The module that raised this change could not confirm it still applies after {attempt} attempts ({ex.GetType().Name}), so it was not applied. Raise it again if it is still wanted.")
+                with { NotifyUserId = d.Change.RequestedByUserId ?? d.Change.ApprovedByUserId };
+        return new EffectiveChangeResult(d.Change.Id, EffectiveChangeOutcome.Deferred, reasonCode,
+            $"The module that raised this change could not check it (attempt {attempt} of {MaxGateAttempts}); it is retried on the next run.",
+            d.Employee.Id, d.Employee.EmployeeCode, d.Fields, d.Change.ApprovedByUserId);
+    }
+
+    /// <summary>Drops whatever a failed gate staged, keeping the locked change, employee and profile rows as loaded.</summary>
+    private static void DiscardStagedExcept(ZayraDbContext db, params object?[] keep)
+    {
+        foreach (var entry in db.ChangeTracker.Entries().Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted).ToList())
+        {
+            if (keep.Contains(entry.Entity)) continue;
+            if (entry.State == EntityState.Added) { entry.State = EntityState.Detached; continue; }
+            entry.CurrentValues.SetValues(entry.OriginalValues);
+            entry.State = EntityState.Unchanged;
+        }
     }
 
     private EffectiveChangeResult Cancel(Decision d, string reasonCode, string reason) =>

@@ -159,7 +159,8 @@ internal static class MeritTestKit
         new(db, new AuditService(db), Approvals(db), null, Keys, NullLogger<MeritPlanningService>.Instance);
 
     public static ApprovalWorkflowService Approvals(ZayraDbContext db) =>
-        new(db, new AuditService(db), new HrmHierarchyService(db, new AuditService(db)), dataProtection: Keys);
+        new(db, new AuditService(db), new HrmHierarchyService(db, new AuditService(db)), dataProtection: Keys,
+            effectiveChangeGates: [new MeritEffectiveChangeGate()]); // as the app's DI resolves it (AddCompensation)
 
     public static RequestContext Context(Guid tenant, Guid? user, IEnumerable<string> roles, IEnumerable<string> permissions) =>
         new("127.0.0.1", "cmp-test", user, tenant, roles.ToList(), permissions.ToList());
@@ -276,7 +277,7 @@ internal static class MeritTestKit
     }
 
     /// <summary>The effective-date job's own decision for one change, in its own transaction (as the queue runs it).</summary>
-    public static async Task<EffectiveChangeResult> RunJobAsync(PostgresFixture fx, Guid tenant, Guid changeId, DateOnly localToday)
+    public static async Task<EffectiveChangeResult> RunJobAsync(PostgresFixture fx, Guid tenant, Guid changeId, DateOnly localToday, IEffectiveChangeGate[]? gates = null)
     {
         await using var db = fx.CreateDb();
         var handler = new EffectiveChangeJobHandler(new EffectiveChangeOptions(), NullLogger<EffectiveChangeJobHandler>.Instance, Keys);
@@ -284,7 +285,9 @@ internal static class MeritTestKit
         {
             await using var tx = await db.Database.BeginTransactionAsync();
             // The services the app registers for the job: CMP's effective-date gate (AddCompensation) included.
-            var services = new ServiceCollection().AddSingleton<IEffectiveChangeGate, MeritEffectiveChangeGate>().BuildServiceProvider();
+            var collection = new ServiceCollection();
+            foreach (var gate in gates ?? [new MeritEffectiveChangeGate()]) collection.AddSingleton(gate);
+            var services = collection.BuildServiceProvider();
             var result = await handler.ProcessAsync(db, services, tenant, changeId, localToday, null, default);
             await db.SaveChangesAsync();
             await tx.CommitAsync();

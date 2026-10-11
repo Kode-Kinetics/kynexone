@@ -39,6 +39,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
     private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
+    // The modules that raised an approved change re-check it before it is written (e.g. a merit award for someone who
+    // went on notice). Run here when a decision applies a change immediately, as the effective-date job does.
+    private readonly IReadOnlyList<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate> _effectiveChangeGates;
+
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
     {
@@ -53,9 +57,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IApprovalRouter? router = null,
         IDataProtectionProvider? dataProtection = null,
         IDataScopeService? dataScopes = null,
-        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null)
+        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null,
+        IEnumerable<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate>? effectiveChangeGates = null)
     {
         _db = db;
+        _effectiveChangeGates = effectiveChangeGates?.ToList() ?? [];
         _audit = audit;
         _changeBaselineProtector = dataProtection is null ? null : EmployeeChangeBaseline.CreateProtector(dataProtection);
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
@@ -1052,6 +1058,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
+        // The date has passed, so this decision writes the change now — the effective-date job will not see it. The
+        // originating module gets the same last word here as it gets in the job (a re-review approved late must not pay
+        // a merit award to someone who has since resigned). Refused ⇒ Cancelled with the reason; nothing is written.
+        if (await Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.CheckAsync(
+                _effectiveChangeGates, _db, approval.TenantId, change, employee, today, cancellationToken) is { } refusal)
+        {
+            Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.StageRefusal(_db, approval.TenantId, change, employee,
+                refusal with { NotifyUserId = refusal.NotifyUserId ?? change.RequestedByUserId }, approverId, "approval_decision");
+            return;
+        }
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         // A change the effective-date job sent back for review: the reviewer approved what the re-review showed,
         // so a value that moved since is refused, not overwritten (throws => nothing saved, request stays Pending;
