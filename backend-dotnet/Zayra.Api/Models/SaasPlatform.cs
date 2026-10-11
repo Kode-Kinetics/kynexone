@@ -137,6 +137,11 @@ public static class FeatureKeys
     /// selfies (not biometric, so no DPIA gate); settings in ConfigJson (PunchGeofenceConfig). Platform-switched.
     /// </summary>
     public const string PunchGeofence = "attendance_geofence";
+    /// <summary>
+    /// Engagement surveys (ENG): templates, anonymous/confidential/identified surveys, suppressed results, actions.
+    /// OPT-IN: an absent row means OFF. Switched on per tenant by the platform team. See OptInFeatures.
+    /// </summary>
+    public const string Engagement = "engagement";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

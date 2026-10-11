@@ -78,9 +78,13 @@ public static class PrivilegedMfaPolicy
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
+        // Engagement: suppressed aggregate results cut to the caller's scope (no person, no comment).
+        "engagement.read",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
         "performance.write",
+        // Follow-up actions from survey results, given to people in the caller's own scope.
+        "engagement.actions.manage",
     };
 
     /// <summary>
@@ -118,6 +122,9 @@ public static class PrivilegedMfaPolicy
         // Release A: packages and renewal cases show each employee's pay terms (like payroll.read), and the manage keys
         // change contract terms — all four are privileged, the read keys included.
         "entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage",
+        // Engagement: running surveys and setting the minimum group size, reading free-text comments, and per-person
+        // answers of identified surveys.
+        "engagement.manage", "engagement.comments.read", "engagement.identified.read",
     };
 
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);

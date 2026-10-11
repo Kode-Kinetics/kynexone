@@ -80,6 +80,13 @@ public sealed class PostgresFixture : IAsyncLifetime
             command.CommandText = ddl;
             await command.ExecuteNonQueryAsync();
         }
+        // ENG (AddEngagementSurveys): published-template immutability and append-only responses — the migration's own text.
+        foreach (var ddl in Zayra.Api.Migrations.AddEngagementSurveys.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     /// <summary>

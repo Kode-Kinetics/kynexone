@@ -597,6 +597,10 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
 
+// ENG — engagement surveys (services, the survey worker and the comment retention rule). Gated per tenant by the
+// opt-in `engagement` flag (OptInFeatures): off unless the platform enables it.
+Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEngagement(builder.Services);
+
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
 // back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.

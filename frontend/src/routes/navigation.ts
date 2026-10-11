@@ -73,6 +73,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
+      // Engagement surveys (engagement opt-in flag). Respondents answer in Self-Service → Surveys.
+      { label: 'Engagement', icon: MessageSquareText, path: '/engagement', requiredPermissions: ['engagement.read', 'engagement.manage', 'engagement.actions.manage'], requiredFeatureKey: 'engagement' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
   },
@@ -138,6 +140,7 @@ export const navigationHints: Record<string, string> = {
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
+  '/engagement': 'Engagement surveys, results that protect small groups, and follow-up actions.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
   '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',
   '/reports': 'Standard and custom reports, with scheduled delivery.',

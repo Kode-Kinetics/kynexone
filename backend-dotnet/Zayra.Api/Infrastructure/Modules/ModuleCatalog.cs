@@ -393,8 +393,9 @@ public static class ModuleCatalog
             LabelEn = "Performance",
             LabelAr = "الأداء",
             Description = "Goals, review cycles, appraisals, probation and calibration.",
-            RoutePrefixes = ["/api/performance"],
-            NavPaths = ["/performance"],
+            // Engagement surveys (/api/engagement, /engagement) are opt-in on top of this module (OptInFeatures).
+            RoutePrefixes = ["/api/performance", "/api/engagement"],
+            NavPaths = ["/performance", "/engagement"],
         },
         new ModuleDefinition
         {
@@ -516,6 +517,10 @@ public static class ModuleCatalog
                 "Selfie attendance collects a face image, so it is an opt-in feature only the platform team can switch "
                 + "on, and only once the owner's DPIA sign-off and KSA data-residency confirmation are recorded on the "
                 + "flag. Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.Engagement] =
+                "Engagement surveys are an opt-in feature the platform team switches on per tenant while they are being "
+                + "rolled out. They are off unless enabled, and Tenant Admin cannot switch them. Their routes sit under the "
+                + "Performance module, so switching Performance off also closes them. See OptInFeatures.",
             [FeatureKeys.PunchGeofence] =
                 "The attendance geofence is an opt-in setting the platform team switches on per tenant with its "
                 + "accuracy and mock-location rules. It is enforced inside every self-punch, not a module of its own.",

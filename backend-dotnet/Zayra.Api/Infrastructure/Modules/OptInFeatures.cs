@@ -41,6 +41,13 @@ public static class OptInFeatures
             ],
             // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
             [FeatureKeys.PunchGeofence] = [],
+            // Engagement surveys: HR's side and the respondent's Self-Service side. The scheduled results report
+            // (engagement.results) checks the flag in its own arm, as it runs under /api/reports.
+            [FeatureKeys.Engagement] =
+            [
+                "/api/engagement",
+                "/api/ess/surveys",
+            ],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

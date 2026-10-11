@@ -93,7 +93,14 @@ public class TableBudgetRatchetTests
         // EosbProvisionSnapshots + GlAdjustmentRequests (POD-C2, owner-approved): the per-employee EOSB obligation
         // witness behind the monthly provision, and one maker-checker table for the EOSB true-up and the legacy
         // 2104/2105 reclass. Finance owns both; kept as long as the GL lines they explain.
-        DeclaredDbSets().Should().HaveCount(335,
+        // ENG — engagement surveys (AddEngagementSurveys, ENG cap 7, six used; the orphan employee_sentiment_pulses is
+        // left in place — no DROP in this release). SurveyTemplates: versioned questionnaires, published versions frozen.
+        // Surveys: one cycle (mode, audience, dates, k, recurrence). SurveyInvitations: the participation ledger (who was
+        // invited, submitted flag/date, encrypted draft) — never an answer. SurveyResponses + SurveyAnswers: the
+        // anonymous side, no identity column, date-truncated, cohort snapshot (EngagementPrivacyRatchetTests).
+        // SurveyActions: follow-up actions with owner, due date and progress. HR owns all six; responses/answers are
+        // deleted with their survey, comment text purged after the tenant's retention (EngagementFreeTextRetentionRule).
+        DeclaredDbSets().Should().HaveCount(341,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

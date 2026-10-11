@@ -143,6 +143,7 @@ public class ReportsController : ControllerBase
             new { key = "attendance.corrections", name = "Attendance Corrections", category = "Attendance", description = "Submitted, approved, and rejected attendance correction requests" },
             new { key = "compliance.document-compliance", name = "Document Compliance", category = "Compliance", description = "Employee document status: verified, pending, rejected, expired, and missing required docs" },
             new { key = "qiwa.readiness", name = "Qiwa Readiness", category = "Compliance", description = "Employees missing Iqama, Work Permit, National ID, or Passport required for Qiwa" },
+            new { key = "engagement.results", name = "Engagement Survey Results", category = "Engagement", description = "One survey's results, suppressed for small groups exactly as on the Engagement page (set the survey in the filters)" },
             new { key = "compliance.saudization", name = "Saudization / Nitaqat Standing", category = "Compliance", description = "Weighted Nitaqat position per Saudi establishment: Saudi units, total units, achieved percentage, band, and hires to the next band" },
         }
             .Where(x => ReportAccessPolicy.CanAccess(x.key, HasPermission, User.IsInRole))
@@ -319,8 +320,48 @@ public class ReportsController : ControllerBase
             "compliance.document-compliance" => await RunDocumentCompliance(tid, req, employeeIds, ct),
             "qiwa.readiness" => await RunQiwaReadiness(tid, req, employeeIds, ct),
             "compliance.saudization" => await RunSaudizationStanding(tid, scope, ct),
+            "engagement.results" => await RunEngagementResults(tid, req, scope, ct),
             _ => null,
         };
+    }
+
+    // ── Engagement (ENG-10) ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// One survey's results through <see cref="Zayra.Api.Infrastructure.Engagement.EngagementResultsService"/> — the
+    /// dashboard's own computation and suppression — as report sections. The scope's companies become the company cut
+    /// and its employee set (a team-scoped interactive caller) the team cut, so a delivery can never show more than
+    /// the dashboard would. Comments are never included here.
+    /// </summary>
+    private async Task<object> RunEngagementResults(Guid tid, RunReportRequest req, ReportDataScope scope, CancellationToken ct)
+    {
+        // Nothing to show is said in words, never as an empty table that reads as "no results".
+        static object Note(string text) => new { summary = new[] { new { metric = "Note", value = text } } };
+        var enabled = await _db.TenantFeatureFlags.AsNoTracking()
+            .AnyAsync(f => f.TenantId == tid && f.FeatureKey == FeatureKeys.Engagement && f.IsEnabled, ct);
+        if (!enabled) return Note("Engagement surveys are not enabled for this account.");
+        if (req.Filters?.SurveyId is not Guid surveyId) return Note("Choose the survey whose results to show (filters.surveyId).");
+        var survey = await _db.EngagementSurveys.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tid && s.Id == surveyId, ct);
+        if (survey is null || survey.Status is not (EngagementSurveyStatuses.Open or EngagementSurveyStatuses.Closed))
+            return Note("The survey was not found, or it has not opened yet.");
+        // Confidential and Anonymous results exist only once the survey closes — a delivery is no exception.
+        if (!Zayra.Api.Infrastructure.Engagement.EngagementResultsService.ResultsAvailable(survey))
+            return Note(Zayra.Api.Infrastructure.Engagement.EngagementResultsService.NotYetMessage(survey));
+        // The scope's employee list is a TEAM cut only when it is narrower than everyone in the scope's companies
+        // (an organisation-level, company-scoped caller's list is simply every employee of their companies).
+        IReadOnlyCollection<int>? team = null;
+        if (scope.EmployeeIds is { } employees)
+        {
+            var everyone = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tid && !e.IsDeleted
+                            && (scope.CompanyIds == null || (e.CompanyId != null && scope.CompanyIds.Contains(e.CompanyId.Value))))
+                .Select(e => e.Id).ToListAsync(ct);
+            if (!everyone.All(employees.Contains)) team = employees;
+        }
+        var results = await new Zayra.Api.Infrastructure.Engagement.EngagementResultsService(_db).ComputeAsync(
+            survey, new Zayra.Api.Infrastructure.Engagement.EngagementResultsScope(scope.CompanyIds, team),
+            new Dictionary<string, string?>(), null, ct);
+        return Zayra.Api.Infrastructure.Engagement.EngagementResultsService.ToReportSections(results);
     }
 
     // ── Saudization / Nitaqat ─────────────────────────────────────────────────
@@ -1307,6 +1348,8 @@ public class ReportFilters
     public string? Status { get; set; }
     public string? Period { get; set; }
     public int? DaysAhead { get; set; }
+    /// <summary>engagement.results only: the survey whose suppressed results to deliver.</summary>
+    public Guid? SurveyId { get; set; }
 }
 
 public record RunReportRequest(string ReportKey, ReportFilters? Filters);

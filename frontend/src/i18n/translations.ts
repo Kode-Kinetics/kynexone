@@ -12,6 +12,7 @@ import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
+import { engagement } from './engagement';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1392,6 +1393,8 @@ const en: Dict = {
   ...glSetup.en,
   ...glErp.en,
   ...glApiKeys.en,
+  // Engagement surveys — see ./engagement.
+  ...engagement.en,
   ...glEosb.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
@@ -2768,6 +2771,7 @@ const ar: Dict = {
   ...glSetup.ar,
   ...glErp.ar,
   ...glApiKeys.ar,
+  ...engagement.ar,
   ...glEosb.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,

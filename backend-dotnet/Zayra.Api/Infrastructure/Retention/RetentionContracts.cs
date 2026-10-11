@@ -14,8 +14,11 @@ public static class RetentionRuleKeys
     /// <summary>A soft-deleted tenant held beyond the configured recovery window.</summary>
     public const string SoftDeletedTenantExpired = "tenant.soft-deleted-expired";
 
+    /// <summary>An engagement survey closed longer ago than the tenant's comment retention: its free text is removed.</summary>
+    public const string EngagementFreeTextExpired = "engagement.free-text-expired";
+
     public static readonly IReadOnlyList<string> All =
-        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired];
+        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired];
 }
 
 /// <summary>

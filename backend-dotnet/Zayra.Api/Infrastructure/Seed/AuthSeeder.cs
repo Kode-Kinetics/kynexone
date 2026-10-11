@@ -32,6 +32,7 @@ public class AuthSeeder : IAuthSeeder
     /// </summary>
     public static readonly IReadOnlyList<string> AdminWithheldPermissions = ["attendance.evidence.view"];
 
+
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
         await EnsurePermissions(cancellationToken);
@@ -163,7 +164,9 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
             "qiwa.read" or "qiwa.sync" ||
-            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // Engagement surveys, by name (no prefix): everything, including identified surveys' per-person answers.
+            x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.identified.read" or "engagement.actions.manage"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management.
@@ -184,7 +187,9 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
-            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // Engagement surveys, by name: runs surveys and reads comments; NOT identified per-person answers.
+            x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.actions.manage"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -254,7 +259,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
-            "performance.read", "performance.write"
+            "performance.read", "performance.write",
+            // Engagement: the team's results (suppressed, cut to their reporting line) and the team's actions.
+            "engagement.read", "engagement.actions.manage"
         }), 10, true, cancellationToken);
 
         // Level 11 — Supervisor: front-line supervision
@@ -396,6 +403,12 @@ public class AuthSeeder : IAuthSeeder
             ("performance.write", "Performance", "Create and update performance reviews"),
             ("performance.approve", "Performance", "Approve performance ratings and recommendations"),
             ("performance.cycle_manage", "Performance", "Manage performance cycles and templates"),
+            // Engagement surveys (opt-in feature). Explicit keys, granted by name below — never through a prefix.
+            ("engagement.read", "Engagement", "View engagement survey results (suppressed for small groups, cut to your scope)"),
+            ("engagement.manage", "Engagement", "Create survey templates and surveys, launch and close them, set the minimum group size"),
+            ("engagement.comments.read", "Engagement", "Read survey comments (only for groups at or above the minimum size, never with names)"),
+            ("engagement.identified.read", "Engagement", "Read per-person answers of IDENTIFIED surveys"),
+            ("engagement.actions.manage", "Engagement", "Create and manage follow-up actions from survey results"),
             // Compliance
             ("compliance.read", "Compliance", "Read compliance and contract records"),
             ("compliance.write", "Compliance", "Manage compliance documents"),
