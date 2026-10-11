@@ -226,6 +226,28 @@ public sealed class ErpApiKeyHttpTests : IClassFixture<ErpApiKeyHostFixture>
     // ── Audit, last used ─────────────────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task AKey_StopsWhenTheAdministratorWhoCreatedItIsDeactivated()
+    {
+        var (id, key) = await _f.CreateKeyAsync(_f.TokenAdminA, "Creator leaves", null, confirm: false);
+        using (var before = await _f.Send(HttpMethod.Get, "/api/finance/gl/journal-exports/formats", apiKey: key))
+            before.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await _f.SetCreatorActiveAsync(id, active: false);
+        try
+        {
+            using var after = await _f.Send(HttpMethod.Get, "/api/finance/gl/journal-exports/formats", apiKey: key);
+            after.StatusCode.Should().Be(HttpStatusCode.Unauthorized, "an integration must not outlive its owner's access");
+        }
+        finally
+        {
+            await _f.SetCreatorActiveAsync(id, active: true);
+        }
+
+        using var restored = await _f.Send(HttpMethod.Get, "/api/finance/gl/journal-exports/formats", apiKey: key);
+        restored.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task EveryCall_IsAuditedWithKeyEndpointStatusAndAddress_AndLastUsedIsRecorded()
     {
         var (id, key) = await _f.CreateKeyAsync(_f.TokenAdminA, "Audited", null, confirm: false);
@@ -462,6 +484,17 @@ public sealed class ErpApiKeyHostFixture : IAsyncLifetime, IAsyncDisposable
         var key = await db.ErpApiKeys.IgnoreQueryFilters().SingleAsync(k => k.Id == id);
         key.CreatedAtUtc = DateTime.UtcNow.AddDays(-2);
         key.ExpiresAtUtc = DateTime.UtcNow.AddDays(-1);
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Activates or deactivates the administrator who created the key.</summary>
+    public async Task SetCreatorActiveAsync(Guid keyId, bool active)
+    {
+        using var scope = Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var key = await db.ErpApiKeys.IgnoreQueryFilters().SingleAsync(k => k.Id == keyId);
+        var user = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == key.CreatedByUserId);
+        user.IsActive = active;
         await db.SaveChangesAsync();
     }
 

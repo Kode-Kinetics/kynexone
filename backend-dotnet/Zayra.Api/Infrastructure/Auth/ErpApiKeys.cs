@@ -314,6 +314,16 @@ public sealed class ErpApiKeyValidator
         var tenantActive = await db.Tenants.AsNoTracking()
             .Where(t => t.Id == key.TenantId).Select(t => (bool?)t.IsActive).FirstOrDefaultAsync(ct);
         if (tenantActive != true) return new(false, key, "tenant_inactive");
+        // The key acts as the administrator who created it (audit, segregation of duties). When that
+        // person is deactivated or removed, their keys stop with them — an integration must not outlive
+        // the access of the human who answers for it. Re-issue under an active administrator.
+        var creatorActive = await ScopedBypass.TenantWide(db.Users, key.TenantId,
+                "ERP API key authentication: is the key's creating administrator still active in the key's own tenant.")
+            .AsNoTracking()
+            .Where(u => u.Id == key.CreatedByUserId)
+            .Select(u => (bool?)(u.IsActive && !u.IsDeleted))
+            .FirstOrDefaultAsync(ct);
+        if (creatorActive != true) return new(false, key, "creator_inactive");
 
         // Throttled: at most one write per key per minute, or when the address changes.
         if (key.LastUsedAtUtc is null || nowUtc - key.LastUsedAtUtc.Value >= ErpApiKeyDefaults.LastUsedThrottle
