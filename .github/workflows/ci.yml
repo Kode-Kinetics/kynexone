@@ -1228,7 +1228,16 @@ jobs:
             got=$(echo "$live" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || echo "")
             if [ "$got" = "$EXPECTED" ]; then
               echo "Deployed commit verified: $got (attempt $attempt)"
-              ready=$(curl -s -m 60 -o /tmp/ready.json -w '%{http_code}' "$BASE_URL/health/ready" || echo 000)
+              # Render swaps instances with no overlap (~40 s of 502 on a good deploy), so the new commit can
+              # answer /health/live while the switchover still 502s /health/ready. Retry for up to 2 minutes
+              # before calling it "not serving" — on 2026-10-11 a healthy #228 deploy was marked failed this way.
+              ready=000
+              for r in $(seq 1 8); do
+                ready=$(curl -s -m 60 -o /tmp/ready.json -w '%{http_code}' "$BASE_URL/health/ready" || echo 000)
+                [ "$ready" = "200" ] && break
+                echo "readiness attempt $r: $ready — retrying in 15 s"
+                sleep 15
+              done
               if [ "$ready" != "200" ]; then
                 echo "::error::Commit $EXPECTED is live but /health/ready returned $ready — not serving."
                 python3 -c 'import json;d=json.load(open("/tmp/ready.json"));print("pendingMigrations:",d.get("pendingMigrations"))' 2>/dev/null || true
