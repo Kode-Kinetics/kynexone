@@ -94,22 +94,25 @@ export function GlassSurface({
 
   if (!solid && nativeGlass) {
     return (
-      <View style={style} {...viewProps}>
-        <GlassView
-          style={[styles.fill, { borderRadius: resolvedRadius }]}
-          glassEffectStyle={variant}
-          colorScheme={theme.mode}
-          tintColor={tintColor}
-          isInteractive={interactive}
-        >
-          <View style={[styles.fill, contentStyle]}>{children}</View>
-        </GlassView>
-      </View>
+      <GlassView
+        style={[style, { borderRadius: resolvedRadius }]}
+        glassEffectStyle={variant}
+        colorScheme={theme.mode}
+        tintColor={tintColor}
+        isInteractive={interactive}
+        {...viewProps}
+      >
+        <View style={[styles.content, contentStyle]}>{children}</View>
+      </GlassView>
     );
   }
 
+  // The shadow sits on an outer view and the clipping (overflow: hidden) on an inner one: iOS clips a
+  // view's own shadow when that view clips its content, so the raised fallback would otherwise lose it.
+  // The inner views use flexGrow (not flex: 1) so they fill a fixed-size caller yet keep their natural
+  // height inside an auto-height parent — flex: 1's zero basis collapsed the selfie capture panel.
   return (
-    <View style={[solid && elevated ? theme.shadows.raised : undefined, style]} {...viewProps}>
+    <View style={[solid && elevated ? theme.shadows.raised : undefined, { borderRadius: resolvedRadius }, style]} {...viewProps}>
       <View
         style={[
           styles.clip,
@@ -131,7 +134,7 @@ export function GlassSurface({
         {tintColor && !solid ? (
           <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
         ) : null}
-        <View style={[styles.fill, contentStyle]}>{children}</View>
+        <View style={[styles.content, contentStyle]}>{children}</View>
       </View>
     </View>
   );
@@ -139,9 +142,13 @@ export function GlassSurface({
 
 const styles = StyleSheet.create({
   clip: {
-    flex: 1,
+    flexGrow: 1,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
   },
-  fill: { flex: 1 },
+  // flexGrow, not flex: 1. `flex: 1` sets flexBasis 0, which collapses the content to nothing inside an
+  // auto-height parent (the selfie capture panel lost its controls). flexGrow keeps the content's natural
+  // height there, yet still fills a fixed-height surface so callers that centre content (GlassIconButton's
+  // 44×44 circle, LiquidTabBar's row) stay vertically centred.
+  content: { flexGrow: 1 },
 });
