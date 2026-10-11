@@ -365,6 +365,8 @@ public class GlJournalExportsController : ControllerBase
             .Where(l => l.TenantId == tid && l.GlJournalExportId == id)
             .Select(l => l.FinanceGlEntryId).Distinct().ToListAsync(ct);
 
+        if (await PostedUnderAnotherDocumentAsync(export, entryIds, reference, ct) is { } twice) return twice;
+
         var nowUtc = DateTime.UtcNow;
         var stamp = await ErpPostingEvidence.StampAsync(_db, tid.Value, entryIds, ErpPostingStatuses.Posted, reference, nowUtc, ct);
 
@@ -519,6 +521,8 @@ public class GlJournalExportsController : ControllerBase
             }
 
             var doc = documents[item.JournalRef!];
+            if (await PostedUnderAnotherDocumentAsync(export, doc.Lines.Select(l => l.EntryId).Distinct().ToList(), reference, ct) is { } twice)
+                return twice;
             var stamp = await ErpPostingEvidence.StampAsync(_db, export.TenantId,
                 doc.Lines.Select(l => l.EntryId).Distinct().ToList(), ErpPostingStatuses.Posted, reference, nowUtc, ct);
             decisions.Add(new GlJournalConfirmation
@@ -934,6 +938,35 @@ public class GlJournalExportsController : ControllerBase
                 : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
                   "with ERP confirmation rights must record the rejection.",
             exportId = export.Id,
+        });
+    }
+
+    /// <summary>
+    /// Ledger rows another export already recorded as posted under a DIFFERENT ERP document. Two exports in
+    /// different formats can carry the same rows (only a same-format export supersedes the earlier one), so
+    /// without this a second confirmation recorded the journal as imported twice and overwrote the first
+    /// document number on the ledger rows. A Replacement export names the confirmed export it re-sends and
+    /// is the sanctioned way to post confirmed rows again, so it is exempt.
+    /// </summary>
+    private async Task<IActionResult?> PostedUnderAnotherDocumentAsync(
+        GlJournalExport export, IReadOnlyCollection<Guid> entryIds, string reference, CancellationToken ct)
+    {
+        if (export.ReplacesExportId is not null || entryIds.Count == 0) return null;
+        var clash = await _db.FinanceGlEntries.AsNoTracking()
+            .Where(e => e.TenantId == export.TenantId && entryIds.Contains(e.Id)
+                     && e.ErpPostingStatus == ErpPostingStatuses.Posted
+                     && e.ErpDocumentNumber != null && e.ErpDocumentNumber != reference)
+            .Select(e => e.ErpDocumentNumber!)
+            .Distinct().ToListAsync(ct);
+        if (clash.Count == 0) return null;
+        return Conflict(new
+        {
+            error = "rows_already_posted",
+            message = $"These ledger rows are already recorded as posted in your ERP under document {string.Join(", ", clash)}. "
+                    + "Recording them again would mean the journal was imported twice. Reverse the duplicate in your ERP and "
+                    + "record that export as rejected instead.",
+            existingReferences = clash,
+            submittedReference = reference,
         });
     }
 
