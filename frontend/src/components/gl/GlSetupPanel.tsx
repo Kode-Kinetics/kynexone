@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, KeyRound, Landmark, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, HandCoins, KeyRound, Landmark, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -14,9 +14,10 @@ import { CompanyRatesPanel } from './CompanyRatesPanel';
 import { StatutoryRatesPanel, type StatutoryCountry } from './StatutoryRatesPanel';
 import { GlPeriodsPanel } from './GlPeriodsPanel';
 import { ErpApiKeysPanel } from './ErpApiKeysPanel';
+import { EosbProvisionPanel } from './EosbProvisionPanel';
 import { problemLabel, problemRank, routeRowId, useScopedResource } from './glUi';
 
-type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'erpApi';
+type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'eosb' | 'erpApi';
 
 interface Props {
   companies: CompanyDto[];
@@ -75,6 +76,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
           { id: 'companyRates' as const, label: t('Company Rates'), icon: Coins, show: ratesRead },
           { id: 'statutory' as const, label: t('Statutory Rates'), icon: ShieldCheck, show: statutoryRead },
           { id: 'periods' as const, label: t('Accounting periods'), icon: CalendarCheck, show: glRead },
+          { id: 'eosb' as const, label: t('End-of-service provision'), icon: HandCoins, show: glRead },
           { id: 'erpApi' as const, label: t('ERP API access'), icon: KeyRound, show: erpApiManage },
         ] as const
       ).filter((x) => x.show),
@@ -299,6 +301,15 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
           />
         )}
         {activeTab === 'periods' && <GlPeriodsPanel companyId={scope} />}
+        {activeTab === 'eosb' && (
+          <EosbProvisionPanel
+            companyId={scope}
+            companyName={scopeName}
+            currency={selectedCompany?.defaultCurrency || null}
+            canManage={glManage}
+            canManageRates={ratesManage}
+          />
+        )}
         {activeTab === 'erpApi' && <ErpApiKeysPanel companies={companies} />}
       </div>
     </div>

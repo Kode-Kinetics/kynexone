@@ -502,18 +502,21 @@ public class GlAdjustmentsController : ControllerBase
             .Take(100)
             .ToListAsync(ct);
         var me = this.GetUserId();
-        return rows.Select(r => ToDto(r, me)).ToList();
+        var mayDecide = HasPermission("finance.gl.manage");
+        return rows.Select(r => ToDto(r, me, mayDecide)).ToList();
     }
 
-    private object ToDto(GlAdjustmentRequest r) => ToDto(r, this.GetUserId());
+    private object ToDto(GlAdjustmentRequest r) => ToDto(r, this.GetUserId(), HasPermission("finance.gl.manage"));
 
-    private static object ToDto(GlAdjustmentRequest r, Guid? me) => new
+    private static object ToDto(GlAdjustmentRequest r, Guid? me, bool mayDecide) => new
     {
         r.Id, r.CompanyId, r.Kind, r.Status, r.Period, r.AccountingDate, r.Amount, r.Currency,
         r.SourceAccount, r.TargetAccount, r.Reason, r.ReportReference,
         r.RequestedByName, r.RequestedAtUtc, r.DecidedByName, r.DecidedAtUtc, r.DecisionNote,
         // The panel hides Approve for the requester rather than letting them hit the SoD refusal.
         requestedByMe = me is not null && r.RequestedByUserId == me,
+        // The server's answer to "may THIS viewer approve it?" — pending, not theirs, and allowed to decide.
+        canApprove = mayDecide && me is not null && r.Status == GlAdjustmentStatuses.Pending && r.RequestedByUserId != me,
     };
 
     private static string AuditPrefix(GlAdjustmentRequest r) => r.Kind == GlAdjustmentKinds.EosbTrueUp

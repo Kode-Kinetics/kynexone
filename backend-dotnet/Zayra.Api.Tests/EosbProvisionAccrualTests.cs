@@ -494,6 +494,10 @@ public class EosbProvisionAccrualTests
         JsonSerializer.Serialize(((ObjectResult)self).Value).Should().Contain("GL_ADJUSTMENT_SOD");
         db.ChangeTracker.Clear();
         (await db.GlAdjustmentRequests.AsNoTracking().SingleAsync()).Status.Should().Be(GlAdjustmentStatuses.Pending);
+        JsonSerializer.Serialize(((OkObjectResult)await Gl(db, fx.TenantId, maker).ListTrueUps(fx.Company.Id, CancellationToken.None)).Value)
+            .Should().Contain("\"canApprove\":false", "the server tells the requester they may not approve");
+        JsonSerializer.Serialize(((OkObjectResult)await Gl(db, fx.TenantId, checker).ListTrueUps(fx.Company.Id, CancellationToken.None)).Value)
+            .Should().Contain("\"canApprove\":true");
 
         (await Gl(db, fx.TenantId, checker, "checker").Approve(request.Id, new GlAdjustmentDecisionRequest("agreed to report"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
