@@ -180,8 +180,9 @@ public static class PayrollGlCatalog
         // balance sheet. It credits a CONTRA-EXPENSE instead, so net employment cost is right and every
         // account this pod touches provably returns to zero.
         new Driver("DED:SETTLEMENT_RECOVERY","Deduction — Final Settlement Recovery","5113","Final Settlement Deductions (contra)","Expense"),
-        // The gratuity PROVISION POD-C2 will accrue monthly. C1 only CONSUMES it (see EosbProvisionLedger)
-        // and posts nothing to it until C2 exists, so today every settlement expenses the full gratuity.
+        // The gratuity PROVISION. POD-C2 accrues it monthly at payroll Lock for companies that switch
+        // payparameter.eosb_provisioning on; settlement approval consumes it (see EosbProvisionLedger) and
+        // releases any remainder. With provisioning off, a settlement expenses the full gratuity as before.
         new Driver("EOSB_PROVISION",        "End of Service Benefit Provision","2310","End of Service Benefit Provision","Liability"),
         // What the leaver is owed between approval and disbursement. Cleared by the payroll run's own
         // Lock journal, exactly the way POD-B1b clears Bonus Payable.
@@ -397,12 +398,18 @@ public static class GlEventTypes
     public static readonly string[] SettlementClearingEvents =
         { SettlementPayrollClearing, SettlementExternalPayment, SettlementAccrualReversal };
 
-    // ── POD-C2 SEAM — the monthly EOSB liability accrual ─────────────────────────────────────────
-    // C1 builds and READS this sub-ledger; it never WRITES an accrual. POD-C2 posts
-    // EosbProvisionAccrual (DR 5110 expense / CR 2310 provision) monthly per employee, and this pod's
-    // approve path then consumes the position first and expenses only the shortfall — with no rework.
-    /// <summary>POD-C2 (not written here): DR EOSB expense / CR 2310 provision, per employee per month.</summary>
+    // ── POD-C2 — the monthly EOSB liability accrual ──────────────────────────────────────────────
+    // Written INSIDE the payroll Lock journal (SourceEntityId = run) for a company whose
+    // payparameter.eosb_provisioning is StatutoryMonthly: per employee, CR 2310 for a rise in the
+    // obligation or DR 2310 for a fall (SourceEntityRef = employee id), against 5110 expense lines
+    // (SourceEntityRef = period). Settlement approval consumes the per-employee position first.
+    /// <summary>POD-C2: the monthly provision movement — DR 5110 / CR 2310 (or the reverse), per employee.</summary>
     public const string EosbProvisionAccrual = "EosbProvisionAccrual";
+    /// <summary>Approved actuarial true-up of the company's EOSB provision (DR/CR 5110 / 2310).</summary>
+    public const string EosbActuarialTrueUp = "EosbActuarialTrueUp";
+    /// <summary>Approved move of a legacy 2104/2105 absence-deduction balance to its contra-expense
+    /// (or a retained-earnings account chosen by the accountant).</summary>
+    public const string LegacyAbsenceReclass = "LegacyAbsenceReclass";
     /// <summary>POD-C1: DR 2310 provision — the settlement CONSUMES what C2 provided for this employee.</summary>
     public const string EosbProvisionConsumption = "EosbProvisionConsumption";
     /// <summary>Contra of a consumption when the settlement that took it is cancelled (re-opens the

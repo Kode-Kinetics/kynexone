@@ -27,6 +27,8 @@ public class CompanyRateAppliedByPayrollTests
     {
         ProrationRateKeys.Basis, ProrationRateKeys.GosiBase, ProrationRateKeys.ArrearsGosiTreatment,
         ProrationRateKeys.ArrearsMaxLookback, ProrationRateKeys.ProratedComponents,
+        // POD-C2 — read at every payroll Lock (PayrollController.BuildEosbProvisionAsync).
+        EosbProvisioningRateKeys.Mode,
     };
 
     public static readonly TheoryData<string, string> RecordedOnly = new()
@@ -92,7 +94,7 @@ public class CompanyRateAppliedByPayrollTests
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var ok = (await Rates(db, Guid.NewGuid()).ListRateRegistry(default)).Should().BeOfType<OkObjectResult>().Subject;
         var items = Items(ok.Value!);
-        items.Should().HaveCount(13);
+        items.Should().HaveCount(14);
         foreach (var i in items)
         {
             var key = (string)Prop(i, "RateKey")!;
@@ -101,6 +103,21 @@ public class CompanyRateAppliedByPayrollTests
             if (applied) Prop(i, "notAppliedReason").Should().BeNull();
             else ((string)Prop(i, "notAppliedReason")!).Should().StartWith("Payroll does not use '");
         }
+    }
+
+    /// <summary>POD-C2 — the provisioning switch takes exactly its two modes; anything else 400s at the write
+    /// surface instead of silently resolving Off at every Lock.</summary>
+    [Fact]
+    public async Task EosbProvisioningSwitch_AcceptsItsModes_AndRefusesAnythingElse()
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        (await Rates(db, tid).CreateCompanyRate(Guid.NewGuid(),
+                new CompanyRateRequest(EosbProvisioningRateKeys.Mode, "Monthly", new DateOnly(2026, 1, 1)), default))
+            .Should().BeOfType<BadRequestObjectResult>();
+        (await Rates(db, tid).CreateCompanyRate(Guid.NewGuid(),
+                new CompanyRateRequest(EosbProvisioningRateKeys.Mode, EosbProvisioningRateKeys.StatutoryMonthly, new DateOnly(2026, 1, 1)), default))
+            .Should().BeOfType<OkObjectResult>();
     }
 
     [Theory]

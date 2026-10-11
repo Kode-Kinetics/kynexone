@@ -86,7 +86,7 @@ public class TableBudgetRatchetTests
         // it; class E — blob purged by the selfie retention rule, envelope and sha256 kept.
         // BiometricConsents: per-version consent to selfie attendance with withdrawal; nothing records consent today. HR
         // owns it (DPO approves retention); kept for employment + the statutory minimum as the lawful basis.
-        DeclaredDbSets().Should().HaveCount(332,
+        DeclaredDbSets().Should().HaveCount(334,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
