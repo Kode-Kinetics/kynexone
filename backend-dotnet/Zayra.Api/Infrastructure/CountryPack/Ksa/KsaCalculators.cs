@@ -6,8 +6,10 @@ namespace Zayra.Api.Infrastructure.CountryPack.Ksa;
 
 // ── KSA GOSI deduction calculator ────────────────────────────────────────────
 // Saudi nationals: Annuities + SANED + Occupational Hazard (employer only) on covered wage.
-//   Employee: 9% Annuities + 0.75% SANED = 9.75%
+//   Employee: 9% Annuities + 0.75% SANED = 9.75%           (existing subscriber, pre-3-July-2024)
 //   Employer: 9% Annuities + 0.75% SANED + 2% OH = 11.75%
+//   New entrant (first registered on/after 3 July 2024, Royal Decree M/273): annuities 9% rising half a
+//   point each July to 11% from July 2028, each side — see KsaGosiCohortSchedule.
 // Non-Saudi: Occupational Hazard employer contribution only (2%).
 // Sources: GOSI Regulation 2016 (Royal Decree M/33); rates VERIFY annually.
 
@@ -182,14 +184,18 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 $"GOSI cohort: existing subscriber ({since}before 3 July 2024). Rate basis: pre-3-July-2024 " +
                 $"schedule — {rates}.",
             GosiCohortRateStatus.CohortSchedule =>
-                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: new-entrant schedule — {rates}.",
-            GosiCohortRateStatus.NewEntrantScheduleNotModelled =>
-                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: NOT MODELLED — the new-entrant " +
-                $"schedule is not in this product, so the pre-3-July-2024 schedule was applied ({rates}) and is wrong " +
-                "for this person. Payroll validation blocks approval of a run that computes GOSI for them.",
+                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). " +
+                $"{KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker} (New Social Insurance Law, Royal Decree " +
+                $"M/273, from 3 July 2024) — {rates}.",
+            GosiCohortRateStatus.NewEntrantRateNotFound =>
+                $"GOSI cohort: new entrant ({since}on or after 3 July 2024). Rate basis: NOT MODELLED — no new-entrant " +
+                "annuities rate is on record for this month, so the pre-3-July-2024 schedule was applied " +
+                $"({rates}) and is wrong for this person. Payroll validation blocks approval of a run that computes " +
+                "GOSI for them.",
             _ =>
                 "GOSI cohort: unverified — no GOSI first-registration date on record. Rate basis: pre-3-July-2024 " +
-                $"schedule ASSUMED — {rates}. Record the first-registration date to verify it.",
+                $"schedule ASSUMED — {rates}. Enter the GOSI registration date; if it is on or after 3 July 2024 " +
+                "the new-entrant rate applies.",
         };
     }
 
@@ -539,6 +545,16 @@ internal static class RuleKeys
     public const string GosiCoveredWageCeilingSar = KsaGosiWageBounds.CeilingRuleKey;
     public const string GosiSaudiEmployeeRate     = "gosi.saudi_employee_rate";
     public const string GosiSaudiEmployerRate     = "gosi.saudi_employer_rate";
+    // New Social Insurance Law (Royal Decree M/273), in force 3 July 2024 — the annuities rates for a NEW
+    // ENTRANT (first GOSI registration on or after 3 July 2024), one effective-dated row per July step.
+    // Read only by KsaGosiCohortSchedule. Platform rows; a tenant cannot override them (GosiStatutoryValues).
+    public const string GosiNewEntrantEmployeeRate = "gosi.new_entrant_employee_rate";
+    public const string GosiNewEntrantEmployerRate = "gosi.new_entrant_employer_rate";
+    // GOSI minimum contributory wage (SAR 1,500 annuities / SAR 400 occupational hazards, SECONDARY sources).
+    // Read ONLY by the payroll validator for a non-blocking warning — never by a calculation, and never as the
+    // clamping floor (that is KsaGosiWageBounds.FloorRuleKey, deliberately unseeded).
+    public const string GosiMinContributoryWageAnnuitiesSar = "gosi.covered_wage_min_annuities_sar";
+    public const string GosiMinContributoryWageOccupationalHazardsSar = "gosi.covered_wage_min_occupational_hazards_sar";
     public const string GosiSanedRate             = "gosi.saned_rate";
     public const string GosiExpOhRate             = "gosi.expat_occupational_hazard_rate";
     // S1/A4 — GCC Unified Insurance Extension Scheme. A GCC national employed in KSA is insured under
