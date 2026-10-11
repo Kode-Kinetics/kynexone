@@ -12,7 +12,7 @@ Skills applied: kynexone-schema, system-design-review, state-machine, localizati
 |---|---|
 | Entities + vocabularies | `backend-dotnet/Zayra.Api/Models/Succession.cs` |
 | EF mapping (named CHECKs, explicit ON DELETE, commented indexes, generated column) | `Models/SuccessionModelConfiguration.cs` (one call from `ZayraDbContext`) |
-| Migration | `Migrations/20261011193451_AddSuccession.cs` (after `20261011135144_AddLearning`) — CREATE-only, 7 tables; `PostgresOnlyDdl` (deferred exclusion + 2 triggers) mirrored into `PostgresFixture` |
+| Migration | `Migrations/20261011210200_AddSuccession.cs` (after `20261011194628_AddLearning`) — CREATE-only, 7 tables; `PostgresOnlyDdl` (deferred exclusion + 2 triggers) mirrored into `PostgresFixture` |
 | Band authority | `Infrastructure/Performance/PerformanceBands.cs` (shared; reads the default `PerformanceRatingScale`/options, else 75/60) |
 | Services | `Infrastructure/Succession/*`: positions + pools, nominations, talent assessments + 9-box, slates + snapshot, approval sync, development plans, reports, eligibility sweep + worker, retention rule, access/SoD, candidate facts |
 | Registration | `SuccessionServiceCollectionExtensions.AddSuccession()` — one line in `Program.cs` |
@@ -228,7 +228,7 @@ Notifications (stable EventCodes, ids only, no candidate named to a manager or e
 - Verify a snapshot: `GET slates/{id}` → `hashVerified` (re-serialises the stored snapshot and compares `snapshot_sha256`).
 
 ## 8. Rollback
-Code: revert the branch's commits. Schema: `dotnet ef database update 20261011135144_AddLearning` runs `AddSuccession.Down`
+Code: revert the branch's commits. Schema: only while AddSuccession is the latest landed migration, `dotnet ef database update <the migration landed immediately before it>` runs `AddSuccession.Down` (re-derive the target from the landed list; migrations are regenerated at landing)
 (drops triggers, functions incl. `succession_snapshot_skeleton`, the exclusion constraint and the 7 tables; nothing else is touched). Data: succession rows
 are lost on rollback — export first if any tenant used it. Forward recovery without data loss: switch `succession` off.
 
