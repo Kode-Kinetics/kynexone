@@ -1,11 +1,13 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
@@ -50,6 +52,7 @@ public class GlJournalExportsController : ControllerBase
     // ── Formats ───────────────────────────────────────────────────────────────────────────────────
 
     [HttpGet("journal-exports/formats")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public IActionResult Formats()
     {
         if (!CanRead()) return Forbid();
@@ -221,6 +224,7 @@ public class GlJournalExportsController : ControllerBase
     // ── List / read / download ────────────────────────────────────────────────────────────────────
 
     [HttpGet("journal-exports")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> List(
         [FromQuery] string? period, [FromQuery] Guid? runId, [FromQuery] Guid? companyId,
         [FromQuery] string? status, CancellationToken ct = default)
@@ -258,6 +262,7 @@ public class GlJournalExportsController : ControllerBase
     }
 
     [HttpGet("journal-exports/{id:guid}")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         if (!CanRead()) return Forbid();
@@ -315,6 +320,7 @@ public class GlJournalExportsController : ControllerBase
     /// reproducible byte-for-byte forever.
     /// </summary>
     [HttpGet("journal-exports/{id:guid}/download")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
     {
         if (!CanRead()) return Forbid();
@@ -349,6 +355,7 @@ public class GlJournalExportsController : ControllerBase
     /// twice.</para>
     /// </summary>
     [HttpPost("journal-exports/{id:guid}/confirm")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Confirm(Guid id, [FromBody] ErpImportConfirmationRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
@@ -472,6 +479,7 @@ public class GlJournalExportsController : ControllerBase
 
     /// <summary>Records that the client's ERP REFUSED the import. Permits a superseding re-export.</summary>
     [HttpPost("journal-exports/{id:guid}/reject")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Reject(Guid id, [FromBody] ErpImportRejectionRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
@@ -527,6 +535,7 @@ public class GlJournalExportsController : ControllerBase
     /// a 409. When every journal has an outcome the export becomes Confirmed (all posted) or PartiallyConfirmed.
     /// </summary>
     [HttpPost("journal-exports/{id:guid}/journals/confirm")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> ConfirmJournals(Guid id, [FromBody] ErpJournalConfirmationRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
@@ -638,6 +647,7 @@ public class GlJournalExportsController : ControllerBase
     /// <summary>Records that the ERP refused individual journals (reason required). Their ledger rows are owed in a
     /// supplementary export; journals already confirmed are never retro-rejected.</summary>
     [HttpPost("journal-exports/{id:guid}/journals/reject")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> RejectJournals(Guid id, [FromBody] ErpJournalRejectionRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
@@ -1105,7 +1115,10 @@ public class GlJournalExportsController : ControllerBase
     private async Task<IActionResult?> ExporterRefusalAsync(GlJournalExport export, string step, CancellationToken ct)
     {
         if (this.GetUserId() is not Guid actorId) return Forbid();
-        if (export.ExportedByUserId != actorId) return null;
+        // An ERP API key acts for the person who created it: that person's own export cannot be attested
+        // through their key either, or the key would be a way round this rule.
+        var keyCreator = ErpApiKeyPrincipal.CreatorOf(User);
+        if (export.ExportedByUserId != actorId && (keyCreator is null || export.ExportedByUserId != keyCreator)) return null;
 
         WriteAudit($"finance.gl.journal_export.erp_{step}_refused", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
         {
@@ -1119,7 +1132,11 @@ public class GlJournalExportsController : ControllerBase
         return Conflict(new
         {
             error = "segregation_of_duties",
-            message = step == "confirm"
+            message = keyCreator is not null && export.ExportedByUserId == keyCreator
+                ? "This journal was exported by the person who created this API key, so the key cannot record the " +
+                  "ERP result for it. A different user with ERP confirmation rights must record it, or use a key " +
+                  "another administrator created."
+                : step == "confirm"
                 ? "You exported this journal, so you cannot also confirm that the ERP posted it. A different user " +
                   "with ERP confirmation rights must confirm it."
                 : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
