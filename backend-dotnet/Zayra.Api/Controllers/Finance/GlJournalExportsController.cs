@@ -1128,8 +1128,9 @@ public class GlJournalExportsController : ControllerBase
         });
     }
 
+    // Issued tokens carry the display name as "name"; ClaimTypes.Name only exists when something maps it.
     private string UserName() =>
-        User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";
+        User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Unknown";
 
     private void WriteAudit(string action, string entity, string entityId, Guid? companyId, object metadata) =>
         _db.AuditLogs.Add(new AuditLog

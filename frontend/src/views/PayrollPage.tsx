@@ -1259,7 +1259,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
     }
   };
 
+  // Locking posts the run's GL journal. A double-click sent two requests: the server posts once and
+  // refuses the second, but that refusal then showed as an error under a run that had just locked.
+  const lockingRef = useRef<string | null>(null);
+  const [lockingId, setLockingId] = useState<string | null>(null);
   const lockRun = async (id: string) => {
+    if (lockingRef.current) return;
+    lockingRef.current = id;
+    setLockingId(id);
     setError('');
     try {
       const updated = await payrollApi.lockRun(id);
@@ -1267,6 +1274,9 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       setError(msg ?? 'Failed to lock the payroll run. Resolve any blocking validation errors first.');
+    } finally {
+      lockingRef.current = null;
+      setLockingId(null);
     }
   };
 
@@ -1316,6 +1326,9 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                   <p className="font-semibold text-slate-900 dark:text-white">{MONTHS[run.month - 1]} {run.year}</p>
                   <StatusBadge status={run.status} />
                 </div>
+                {companies.length > 1 && run.companyId && (
+                  <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{companies.find(c => c.id === run.companyId)?.name ?? ''}</p>
+                )}
                 <p className="mt-1 text-xs text-slate-500">{run.employeeCount} employees · Net {fmt(run.totalNetSalary)}</p>
                 {run.status !== 'Locked' && (
                   <div className="mt-2 flex gap-1">
@@ -1328,8 +1341,8 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                       </button>
                     )}
                     {run.status === 'Approved' && (
-                      <button type="button" onClick={e => { e.stopPropagation(); lockRun(run.id); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                        <Lock className="h-3 w-3" /> Lock
+                      <button type="button" onClick={e => { e.stopPropagation(); lockRun(run.id); }} disabled={lockingId !== null} className={`${btn.sm} h-6 px-2 text-xs`}>
+                        <Lock className="h-3 w-3" /> {lockingId === run.id ? 'Locking…' : 'Lock'}
                       </button>
                     )}
                     <button type="button" onClick={e => { e.stopPropagation(); onSelectRun(run, 'validation'); }} className={`${btn.sm} h-6 px-2 text-xs`}>

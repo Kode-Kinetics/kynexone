@@ -53,6 +53,8 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId, Guid? companyId, CancellationToken ct)
     {
+        // Callers pass a company's own country ("SA", no jurisdiction); rules are keyed "SAU"/"KSA-mainland".
+        (countryCode, jurisdiction) = StatutoryPackKey.Normalize(countryCode, jurisdiction);
         if (companyId is { } cid && tenantId is { } tid
             && await CompanyOverrideAsync(countryCode, jurisdiction, ruleKey, effectiveDate, tid, cid, ct) is { } overrideValue)
             return overrideValue;
@@ -94,6 +96,31 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
         return value;
     }
 
+    /// <inheritdoc />
+    public async Task PrimeAsync(string countryCode, string jurisdiction, DateOnly effectiveDate, Guid? tenantId, CancellationToken ct = default)
+    {
+        (countryCode, jurisdiction) = StatutoryPackKey.Normalize(countryCode, jurisdiction);
+        var cutoff = effectiveDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        // Same predicate and ranking as FetchAsync, for every key of the pack at once.
+        var rows = await Covering(countryCode, jurisdiction, cutoff, tenantId)
+            .Select(r => new { r.RuleKey, IsTenant = r.TenantId != null, r.EffectiveFrom, r.RuleValue })
+            .ToListAsync(ct);
+        foreach (var g in rows.GroupBy(r => r.RuleKey))
+        {
+            var memoKey = (countryCode, jurisdiction, g.Key, effectiveDate, tenantId);
+            if (_memo.ContainsKey(memoKey)) continue;
+            var platformRow = g.Where(r => !r.IsTenant).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault()?.RuleValue;
+            var tenantRow = g.Where(r => r.IsTenant).OrderByDescending(r => r.EffectiveFrom).FirstOrDefault()?.RuleValue;
+            var value = tenantRow ?? platformRow;
+            // Same read-time floor as FetchAsync: priming must never cache a below-floor tenant value
+            // that the per-key read would have refused.
+            if (tenantRow is not null && platformRow is not null
+                && StatutoryOverridePolicy.ViolatesDirection(g.Key, tenantRow, ParseDecimal(platformRow), platformRow))
+                value = platformRow;
+            _memo[memoKey] = value;
+        }
+    }
+
     private async Task<string?> FetchAsync(
         string countryCode, string jurisdiction, string ruleKey,
         DateOnly effectiveDate, Guid? tenantId, CancellationToken ct)
@@ -103,23 +130,8 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
 
         var cutoff = effectiveDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
-        // IgnoreQueryFilters is intentional: StatutoryRule rows span two scopes — platform defaults
-        // (TenantId = null, set by StatutoryRuleSeeder) and tenant overrides (TenantId = tenantId).
-        // The EF global query filter excludes TenantId=null rows entirely, so bypassing it is
-        // required to reach the platform defaults. The WHERE clause below re-applies the correct
-        // per-call scope restriction (tenantId == null ? platform-only : tenant-or-platform fallback).
-        // SYSTEM CONTEXT: tenant scope intentionally bypassed — reads platform-default rates AND
-        // the calling tenant's overrides; never reads another tenant's rows (see WHERE predicate).
-        var rows = await _db.StatutoryRules
-            .IgnoreQueryFilters()
-            .Where(r => r.CountryCode == countryCode
-                     && r.Jurisdiction == jurisdiction
-                     && r.RuleKey == ruleKey
-                     && r.EffectiveFrom <= cutoff
-                     && (r.EffectiveTo == null || r.EffectiveTo > cutoff)
-                     && (tenantId == null
-                         ? r.TenantId == null
-                         : r.TenantId == tenantId || r.TenantId == null))
+        var rows = await Covering(countryCode, jurisdiction, cutoff, tenantId)
+            .Where(r => r.RuleKey == ruleKey)
             .Select(r => new { IsTenant = r.TenantId != null, r.EffectiveFrom, r.RuleValue })
             .ToListAsync(ct);
 
@@ -142,4 +154,25 @@ public sealed class StatutoryRuleReader : IStatutoryRuleReader
 
     private static decimal? ParseDecimal(string? raw) =>
         decimal.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
+
+    /// <summary>The pack's rules in force on <paramref name="cutoff"/>, platform rows plus (when a tenant is
+    /// given) that tenant's own. Shared by the per-key read and <see cref="PrimeAsync"/> so both rank the
+    /// same rows.</summary>
+    private IQueryable<StatutoryRule> Covering(string countryCode, string jurisdiction, DateTime cutoff, Guid? tenantId)
+        // IgnoreQueryFilters is intentional: StatutoryRule rows span two scopes — platform defaults
+        // (TenantId = null, set by StatutoryRuleSeeder) and tenant overrides (TenantId = tenantId).
+        // The EF global query filter excludes TenantId=null rows entirely, so bypassing it is
+        // required to reach the platform defaults. The WHERE clause below re-applies the correct
+        // per-call scope restriction (tenantId == null ? platform-only : tenant-or-platform fallback).
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed — reads platform-default rates AND
+        // the calling tenant's overrides; never reads another tenant's rows (see WHERE predicate).
+        => _db.StatutoryRules
+            .IgnoreQueryFilters()
+            .Where(r => r.CountryCode == countryCode
+                     && r.Jurisdiction == jurisdiction
+                     && r.EffectiveFrom <= cutoff
+                     && (r.EffectiveTo == null || r.EffectiveTo > cutoff)
+                     && (tenantId == null
+                         ? r.TenantId == null
+                         : r.TenantId == tenantId || r.TenantId == null));
 }

@@ -60,6 +60,57 @@ public class JournalExportDoublePostTests
     }
 
     [Fact]
+    public async Task ExportAndConfirmation_RecordTheSignedInPersonsName_FromTheTokensNameClaim()
+    {
+        // Found live: every export read "Exported by Unknown". Real tokens carry the display name as
+        // "name"; only test principals carried ClaimTypes.Name, so the controller never found it.
+        static ClaimsPrincipal AsIssued(ClaimsPrincipal seeded, string displayName) => new(new ClaimsIdentity(
+            seeded.Claims.Where(c => c.Type != ClaimTypes.Name && c.Type != "FullName").Append(new Claim("name", displayName)), "Test"));
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = AsIssued(await CallerAsync(db, tenantId, "Payroll Manager"), "Huda Maker");
+        var checker = AsIssued(await CallerAsync(db, tenantId, "Finance Approver"), "Faisal Checker");
+
+        var id = IdOf(await CreateAsync(db, maker));
+        StatusOf(await Ctrl(db, checker).Confirm(id, new ErpImportConfirmationRequest("SAP-77"), default)).Should().Be(200);
+
+        var saved = await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == id);
+        saved.ExportedByName.Should().Be("Huda Maker");
+        saved.ConfirmedByName.Should().Be("Faisal Checker");
+    }
+
+    [Fact]
+    public async Task ASecondExportOfTheSameRows_InAnotherFormat_CannotAlsoBeConfirmed()
+    {
+        // Found live: a generic CSV and an SAP file of the same month were both "Waiting for ERP result"
+        // (only a same-format export supersedes), both were confirmed with different document numbers,
+        // and the ledger rows silently took the second number. That is a recorded double post.
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var checker = await CallerAsync(db, tenantId, "Finance Approver");
+        var csv = IdOf(await CreateAsync(db, maker));
+        var sapId = IdOf(await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default));
+        db.ChangeTracker.Clear();
+
+        StatusOf(await Ctrl(db, checker).Confirm(sapId, new ErpImportConfirmationRequest("SAP-100"), default)).Should().Be(200);
+        var second = await Ctrl(db, checker).Confirm(csv, new ErpImportConfirmationRequest("CSV-200"), default);
+
+        StatusOf(second).Should().Be(409);
+        Body(second).GetProperty("error").GetString().Should().Be("rows_already_confirmed");
+        db.ChangeTracker.Clear();
+        (await db.FinanceGlEntries.AsNoTracking().Where(e => e.TenantId == tenantId && e.ErpDocumentNumber != null)
+            .Select(e => e.ErpDocumentNumber).Distinct().ToListAsync()).Should().Equal(new[] { "SAP-100" });
+        (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == csv)).Status.Should().NotBe(GlJournalExportStatuses.Confirmed);
+
+        // The per-journal path refuses the same way.
+        var journalRef = Body(await Ctrl(db, checker).Get(csv, default)).GetProperty("journals")[0].GetProperty("journalRef").GetString();
+        var perJournal = await Ctrl(db, checker).ConfirmJournals(csv,
+            new ErpJournalConfirmationRequest(new List<ErpJournalConfirmationItem> { new(journalRef, "CSV-200", null) }), default);
+        StatusOf(perJournal).Should().Be(409);
+    }
+
+    [Fact]
     public async Task ReExportWithNothingNew_IsRefused_WithTheDoublePostMessage()
     {
         var (db, tenantId) = await TenantAsync();

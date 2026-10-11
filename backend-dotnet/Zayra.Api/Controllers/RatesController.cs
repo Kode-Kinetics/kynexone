@@ -322,10 +322,11 @@ public class RatesController : ControllerBase
         {
             if (ScopeError(companyId) is { } err) return err;
             var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tid && c.Id == companyId, ct);
-            var cc = (string.IsNullOrWhiteSpace(requestedCountry) ? company?.CountryCode : requestedCountry)?.Trim().ToUpperInvariant();
-            if (string.IsNullOrWhiteSpace(cc))
+            var rawCc = (string.IsNullOrWhiteSpace(requestedCountry) ? company?.CountryCode : requestedCountry)?.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(rawCc))
                 return BadRequest(new { message = "This company has no country set, so it has no statutory values. Set it in Setup → Companies." });
-            var jur = jurisdiction ?? company?.Jurisdiction ?? "";
+            // The company's "SA" + no jurisdiction is the rule pack's "SAU"/"KSA-mainland" (StatutoryPackKey).
+            var (cc, jur) = StatutoryPackKey.Normalize(rawCc, string.IsNullOrWhiteSpace(jurisdiction) ? company?.Jurisdiction : jurisdiction);
             return Ok(await CompanyStatutoryRowsAsync(tid.Value, companyId.Value, cc, jur, onDate, ct));
         }
 
@@ -337,14 +338,17 @@ public class RatesController : ControllerBase
                 .ToListAsync(ct))
             .Where(c => scope.IsGroupLevel || scope.CanAccessCompany(c.Id))
             .ToList();
+        var requested = string.IsNullOrWhiteSpace(requestedCountry) ? ((string Cc, string Jur)?)null
+            : StatutoryPackKey.Normalize(requestedCountry, jurisdiction);
         var pairs = companies
-            .Select(c => (Cc: c.CountryCode.Trim().ToUpperInvariant(), Jur: c.Jurisdiction ?? ""))
-            .Where(p => string.IsNullOrWhiteSpace(requestedCountry) || p.Cc == requestedCountry.ToUpperInvariant())
-            .Where(p => jurisdiction is null || p.Jur == jurisdiction)
+            .Select(c => StatutoryPackKey.Normalize(c.CountryCode, c.Jurisdiction))
+            .Select(p => (Cc: p.CountryCode, Jur: p.Jurisdiction))
+            .Where(p => requested is null || p.Cc == requested.Value.Cc)
+            .Where(p => requested is null || string.IsNullOrWhiteSpace(jurisdiction) || p.Jur == requested.Value.Jur)
             .Distinct()
             .ToList();
-        if (pairs.Count == 0 && !string.IsNullOrWhiteSpace(requestedCountry))
-            pairs.Add((requestedCountry.ToUpperInvariant(), jurisdiction ?? ""));
+        if (pairs.Count == 0 && requested is { } only)
+            pairs.Add(only);
 
         var visibleCompanyIds = companies.Select(c => c.Id).ToHashSet();
         var result = new List<object>();
@@ -443,8 +447,8 @@ public class RatesController : ControllerBase
         if (StatutoryValueUnits.Validate(key, req.DataType, req.OverrideValue) is { } unitError)
             return BadRequest(StatutoryValueUnits.Refusal(unitError));
 
-        var cc = req.CountryCode.Trim().ToUpperInvariant();
-        var jur = req.Jurisdiction ?? "";
+        // Stored under the rule pack's key, which is what payroll's reader looks overrides up by.
+        var (cc, jur) = StatutoryPackKey.Normalize(req.CountryCode, req.Jurisdiction);
         var platformDefault = await _reader.GetDecimalAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
         var platformText = await _reader.GetStringAsync(cc, jur, key, req.EffectiveFrom, tenantId: null, ct);
         // ruleKey must resolve to a known statutory rule (no inventing statutory keys).
@@ -684,6 +688,7 @@ public class RatesController : ControllerBase
     private async Task<List<object>> CompanyStatutoryRowsAsync(Guid tid, Guid companyId, string cc, string jur, DateOnly onDate, CancellationToken ct)
     {
         var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        await PrimeReaderAsync(tid, cc, jur, onDate, ct);
         var overrides = await Overrides(tid).AsNoTracking()
             .Where(o => !o.IsDeleted && o.CompanyId == companyId && o.CountryCode == cc && o.Jurisdiction == jur)
             .ToListAsync(ct);
@@ -748,9 +753,18 @@ public class RatesController : ControllerBase
         return result;
     }
 
+    /// <summary>The pack has ~440 rules and each row reads the platform and the tenant value: one query
+    /// per read made the Statutory Rates tab take 13-37 s on a live stack. Two reads load them all.</summary>
+    private async Task PrimeReaderAsync(Guid tid, string cc, string jur, DateOnly onDate, CancellationToken ct)
+    {
+        await _reader.PrimeAsync(cc, jur, onDate, tenantId: null, ct);
+        await _reader.PrimeAsync(cc, jur, onDate, tid, ct);
+    }
+
     private async Task<List<object>> GroupStatutoryRowsAsync(Guid tid, string cc, string jur, IReadOnlySet<Guid> visibleCompanyIds, DateOnly onDate, CancellationToken ct)
     {
         var rules = await VisibleRulesAsync(tid, cc, jur, ct);
+        await PrimeReaderAsync(tid, cc, jur, onDate, ct);
         var overrides = await Overrides(tid).AsNoTracking()
             .Where(o => !o.IsDeleted && o.CountryCode == cc && o.Jurisdiction == jur
                      && (o.Status == CompanyPolicyStatuses.Active || o.Status == PendingApproval))
