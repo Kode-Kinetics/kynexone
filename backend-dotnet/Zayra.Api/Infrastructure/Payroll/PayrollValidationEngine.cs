@@ -14,7 +14,9 @@ namespace Zayra.Api.Infrastructure.Payroll;
 ///   1  Missing salary structure OR missing payroll profile for any active employee
 ///   2  GOSI: Saudi/GCC employee must have non-zero GOSI employee deductions;
 ///            expat must have zero; 45,000 SAR covered-wage ceiling flagged;
-///            Saudi national's GOSI entrant cohort: unknown → Warning, new entrant → Error (F02)
+///            Saudi national's GOSI entrant cohort: unknown → Warning; new entrant on the new-entrant
+///            schedule → Warning (notice, with the rate used); new entrant NOT on it → Error (F02);
+///            covered wage below the GOSI minimum contributory wage → Warning (never blocks)
 ///   3  Net salary not negative; not zero when gross > 0
 ///   4  Duplicate employee entry in run
 ///   5  WPS readiness: IBAN present + valid Saudi format (24 characters total) and mod-97;
@@ -44,9 +46,20 @@ public static class PayrollValidationEngine
     /// <summary>Error — a GCC national whose home-state scheme rates are not configured; no contribution was computed.</summary>
     public const string GosiGccSchemeNotConfigured = "GOSI_GCC_SCHEME_NOT_CONFIGURED";
 
-    /// <summary>F02 — a Saudi national is a post-3-July-2024 new entrant and that schedule is not modelled
-    /// (Error; published as non-overridable in <see cref="PayrollValidationOverridePolicy"/>).</summary>
+    /// <summary>F02 — a Saudi national is a post-3-July-2024 new entrant and THIS slip's GOSI was not computed
+    /// on the new-entrant schedule: it was processed before the schedule was added, or no new-entrant rate is
+    /// on record for the month (Error; published as non-overridable in <see cref="PayrollValidationOverridePolicy"/>).
+    /// The code string is kept from when the schedule was not modelled at all, because overrides, the UI and
+    /// stored results key on it.</summary>
     public const string GosiNewEntrantScheduleNotModelled = "GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED";
+
+    /// <summary>F02 — notice (Warning, never blocks): a new entrant's GOSI was computed on the new-entrant
+    /// annuities schedule (Royal Decree M/273); the message states the rates used.</summary>
+    public const string GosiNewEntrantScheduleApplied = "GOSI_NEW_ENTRANT_SCHEDULE_APPLIED";
+
+    /// <summary>Warning, never blocks — the covered wage (basic + housing) is below the GOSI minimum
+    /// contributory wage (SAR 1,500 annuities / SAR 400 occupational hazards, secondary sources).</summary>
+    public const string GosiBelowMinimumContributoryWage = "GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE";
     private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
@@ -344,18 +357,33 @@ public static class PayrollValidationEngine
                     if (classification == GosiClassifications.Saudi && (paysRecurring || hasGosiEe))
                     {
                         var recordedOn = emp.GosiFirstRegisteredOn;
-                        if (slip.GosiCohort == GosiCohorts.NewEntrant)
+                        if (slip.GosiCohort == GosiCohorts.NewEntrant
+                            && (slip.StatutoryBasis ?? string.Empty).Contains(
+                                   Zayra.Api.Infrastructure.CountryPack.Ksa.KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker,
+                                   StringComparison.Ordinal))
+                            Warn(GosiNewEntrantScheduleApplied,
+                                $"Employee {slip.EmployeeCode} ({emp.FullName}) first registered with GOSI on " +
+                                $"{(recordedOn is DateOnly d ? IsoDate(d) : "a date on or after 3 July 2024")}, so they " +
+                                "are a NEW ENTRANT under the New Social Insurance Law (Royal Decree M/273, from 3 July " +
+                                "2024). Their GOSI was computed on the new-entrant annuities schedule, not the 9% " +
+                                $"existing-subscriber rate. Calculation: {slip.StatutoryBasis} No action needed; if the " +
+                                "first-registration date is wrong, correct it on the employee record (approval " +
+                                "required), then reopen this run and process it again.",
+                                slip.EmployeeId);
+                        else if (slip.GosiCohort == GosiCohorts.NewEntrant)
                             Err(GosiNewEntrantScheduleNotModelled,
                                 $"Employee {slip.EmployeeCode} ({emp.FullName}) first registered with GOSI on " +
-                                $"{(recordedOn is DateOnly d ? IsoDate(d) : "a date on or after 3 July 2024")}, " +
-                                "so they are a NEW ENTRANT on the separate new-entrant contribution schedule that " +
-                                "applies from 3 July 2024. That schedule is not modelled in this product yet, so the " +
-                                "GOSI on this payslip was computed on the pre-3-July-2024 schedule and is wrong for " +
-                                "this person. This blocks approval and locking, and cannot be overridden. Next " +
-                                "action: if the first-registration date is wrong, correct it on the employee record " +
-                                "(the change needs approval), then reopen this run and process it again; if it is " +
-                                "right, reopen the run, exclude this employee, process it again, and calculate their " +
-                                "GOSI outside the system until the new-entrant schedule is modelled.",
+                                $"{(recordedOn is DateOnly d2 ? IsoDate(d2) : "a date on or after 3 July 2024")}, " +
+                                "so they are a NEW ENTRANT on the new-entrant schedule of the New Social Insurance Law " +
+                                "(Royal Decree M/273). The GOSI on this payslip was NOT computed on that schedule — it " +
+                                "was processed before the schedule was added to this product, or no new-entrant rate " +
+                                $"is on record for {ctx.Run.Year}-{ctx.Run.Month:D2} — so it used the 9% " +
+                                "existing-subscriber rate, which is not modelled for this person and is wrong. This " +
+                                "blocks approval and locking, and cannot be overridden. Next action: reopen this run " +
+                                "and process it again (re-process); the new-entrant rate is then applied. If this " +
+                                "finding remains after re-processing, the new-entrant statutory rates for this month " +
+                                "are missing — contact support. If the first-registration date is wrong, correct it " +
+                                "on the employee record (approval required) before re-processing.",
                                 slip.EmployeeId);
                         else if (slip.GosiCohort != GosiCohorts.PreJuly2024)
                             Warn(GosiCohortNotRecorded,
@@ -371,9 +399,10 @@ public static class PayrollValidationEngine
                                       "employee record, so this payslip's GOSI was computed on the pre-3-July-2024 " +
                                       "schedule without knowing whether that is this person's schedule. If they first " +
                                       "registered with GOSI on or after 3 July 2024 the contribution is wrong and GOSI " +
-                                      "will correct it later with a surcharge. Next action: record the employee's GOSI " +
-                                      "first-registration date from their GOSI record (the change needs approval); the " +
-                                      "next run picks it up, or reopen this run and process it again (re-process).",
+                                      "will correct it later with a surcharge. Next action: enter the GOSI registration " +
+                                      "date from their GOSI record (the change needs approval); if it is on or after " +
+                                      "3 July 2024 the new-entrant rate applies. The next run picks it up, or reopen " +
+                                      "this run and process it again (re-process).",
                                 slip.EmployeeId);
                     }
 
@@ -413,6 +442,27 @@ public static class PayrollValidationEngine
                         Err("GOSI_APPLIED_TO_EXPAT",
                             $"Employee {slip.EmployeeCode} is classified as {classification} (expat) but has GOSI employee deductions of {gosiEeAmount:N2} SAR. " +
                             "Expatriate employees must not contribute to GOSI Annuities or SANED.",
+                            slip.EmployeeId);
+                }
+
+                // GOSI minimum contributory wage — a NON-BLOCKING warning, no calculation change. SAR 1,500
+                // (annuities, Saudi nationals) / SAR 400 (occupational hazards, everyone) per secondary sources;
+                // the thresholds come from the platform statutory rows and 0 means "not checked". Only on a run
+                // that pays the monthly wage: a supplemental run has no covered wage of its own.
+                var minCheckWage = slip.BasicSalary + slip.HousingAllowance;
+                if (paysRecurring && minCheckWage > 0m)
+                {
+                    var annMin = classification == GosiClassifications.Saudi ? ctx.GosiMinContributoryWageAnnuities : 0m;
+                    var ohMin = ctx.GosiMinContributoryWageOccupationalHazards;
+                    var below = new List<string>();
+                    if (annMin > 0m && minCheckWage < annMin) below.Add($"SAR {annMin:N0} for annuities");
+                    if (ohMin > 0m && minCheckWage < ohMin) below.Add($"SAR {ohMin:N0} for occupational hazards");
+                    if (below.Count > 0)
+                        Warn(GosiBelowMinimumContributoryWage,
+                            $"Employee {slip.EmployeeCode}: covered wage (Basic + Housing = {minCheckWage:N2} SAR) is " +
+                            $"below the GOSI minimum contributory wage ({string.Join(" and ", below)}) — GOSI may assess " +
+                            "on the minimum. Payroll still calculated GOSI on the actual covered wage. Check the salary " +
+                            "(a part-month or prorated wage can explain it). This does not block the run.",
                             slip.EmployeeId);
                 }
             }
@@ -813,6 +863,20 @@ public sealed record PayrollValidationContext(
     /// treatment of someone who continues working past it.
     /// </summary>
     public int GosiRetirementAgeYears { get; init; }
+
+    /// <summary>
+    /// GOSI minimum monthly contributory wage for the annuities branch (Saudi nationals), from the platform
+    /// row <c>gosi.covered_wage_min_annuities_sar</c> (SAR 1,500, secondary source). Drives a NON-BLOCKING
+    /// warning only. Zero disables the check. Process and /validate must populate it identically.
+    /// </summary>
+    public decimal GosiMinContributoryWageAnnuities { get; init; }
+
+    /// <summary>
+    /// GOSI minimum monthly contributory wage for occupational hazards (everyone), from the platform row
+    /// <c>gosi.covered_wage_min_occupational_hazards_sar</c> (SAR 400, secondary source). Warning only; zero
+    /// disables the check.
+    /// </summary>
+    public decimal GosiMinContributoryWageOccupationalHazards { get; init; }
 }
 
 /// <summary>

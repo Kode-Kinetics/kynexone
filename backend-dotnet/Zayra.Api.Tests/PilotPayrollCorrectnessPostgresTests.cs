@@ -696,8 +696,9 @@ public class PilotPayrollCorrectnessPostgresTests
 
     /// <summary>
     /// For each cohort the run treats specially, readiness shows the SAME code at the SAME severity the
-    /// run raises: a new entrant and a GCC national with no home-scheme rates are Not ready (the run
-    /// blocks them); a Saudi with no first-registration date is Ready with the cohort warning. The
+    /// run raises: a GCC national with no home-scheme rates is Not ready (the run blocks them); a new
+    /// entrant is Ready with the new-entrant-schedule notice (Royal Decree M/273 rows are seeded, so the run
+    /// no longer blocks them); a Saudi with no first-registration date is Ready with the cohort warning. The
     /// report and the preview both carry the cohort and the engine's basis.
     /// </summary>
     [Fact]
@@ -723,7 +724,6 @@ public class PilotPayrollCorrectnessPostgresTests
 
         foreach (var (emp, code) in new[]
                  {
-                     (newEntrant, PayrollValidationEngine.GosiNewEntrantScheduleNotModelled),
                      (bahraini, PayrollValidationEngine.GosiGccSchemeNotConfigured),
                  })
         {
@@ -743,6 +743,13 @@ public class PilotPayrollCorrectnessPostgresTests
         Row(existing).Cohort.Should().Be(GosiCohorts.PreJuly2024);
         Row(existing).Basis.Should().Contain("existing subscriber");
         Row(newEntrant).Cohort.Should().Be(GosiCohorts.NewEntrant);
+        // The new entrant: priced on the new-entrant schedule by the seeded rows, so neither the run nor
+        // readiness blocks them; both carry the same non-blocking notice with the rate used.
+        runFindings.Should().NotContain(f => f.EmployeeId == newEntrant.Id && f.Code == PayrollValidationEngine.GosiNewEntrantScheduleNotModelled);
+        runFindings.Should().Contain(f => f.EmployeeId == newEntrant.Id && f.Code == PayrollValidationEngine.GosiNewEntrantScheduleApplied && f.Severity == "Warning");
+        Row(newEntrant).IsReady.Should().BeTrue("the run no longer blocks a new entrant once the schedule is seeded");
+        Row(newEntrant).Warnings.Should().Contain(w => w.Code == PayrollValidationEngine.GosiNewEntrantScheduleApplied);
+        Row(newEntrant).Basis.Should().Contain(KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker);
 
         // The preview carries the cohort and the basis too.
         var gosi = new GosiController(db, new GosiReconciliationService(db, new _PilotKsaResolver(reader)), reader)
@@ -752,8 +759,11 @@ public class PilotPayrollCorrectnessPostgresTests
         var body = (await gosi.GetEmployeeReadiness(unknown.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
         Prop<string>(body, "cohort").Should().Be(GosiCohorts.Unknown);
         Prop<string>(body, "basis").Should().Contain("unverified");
-        var blockedBody = (await gosi.GetEmployeeReadiness(newEntrant.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        var blockedBody = (await gosi.GetEmployeeReadiness(bahraini.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
         Prop<bool>(blockedBody, "IsReady").Should().BeFalse();
+        var entrantBody = (await gosi.GetEmployeeReadiness(newEntrant.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject.Value!;
+        Prop<bool>(entrantBody, "IsReady").Should().BeTrue();
+        Prop<string>(entrantBody, "basis").Should().Contain(KsaGosiCohortSchedule.NewEntrantScheduleAppliedMarker);
     }
 
     /// <summary>

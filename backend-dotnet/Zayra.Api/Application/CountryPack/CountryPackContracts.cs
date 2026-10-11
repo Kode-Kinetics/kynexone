@@ -63,10 +63,10 @@ public sealed record StatutoryDeductionInput(
     /// <para>F02 — <see cref="SocialInsuranceFirstRegisteredOn"/> is now populated from
     /// <c>Employee.GosiFirstRegisteredOn</c>. The KSA pack resolves the person's cohort from it
     /// (<see cref="GosiCohorts"/>) and looks the annuities rates up by cohort AND period
-    /// (<c>KsaGosiCohortSchedule</c>). The new-entrant schedule itself is still not implemented — its
-    /// rates and step dates need the official source ([SME]) — so a new entrant is computed on the
-    /// pre-reform schedule, the payslip says so, and the validator BLOCKS that person. Packs must treat
-    /// null as "unknown", never as "new entrant".</para>
+    /// (<c>KsaGosiCohortSchedule</c>). A new entrant is computed on the new-entrant annuities schedule of
+    /// the New Social Insurance Law (Royal Decree M/273), seeded as effective-dated platform rows; only if no
+    /// row covers the period is the pre-reform rate applied, the payslip says so and the validator BLOCKS
+    /// that person. Packs must treat null as "unknown", never as "new entrant".</para>
     /// </summary>
     public DateOnly? DateOfBirth { get; init; }
 

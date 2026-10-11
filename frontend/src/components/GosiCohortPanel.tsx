@@ -25,7 +25,7 @@ export function isSaudiNational(nationality?: string | null): boolean {
 const STATUS: Record<GosiCohort, { label: string; tone: string }> = {
   Unknown: { label: 'Not recorded', tone: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300' },
   PreJuly2024: { label: 'Existing subscriber', tone: 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200' },
-  NewEntrant: { label: 'New entrant', tone: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300' },
+  NewEntrant: { label: 'New entrant', tone: 'bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300' },
 };
 
 function explain(cohort: GosiCohort, date?: string | null): string {
@@ -33,11 +33,14 @@ function explain(cohort: GosiCohort, date?: string | null): string {
     case 'PreJuly2024':
       return `First registered with GOSI on ${date}, before 3 July 2024. Payroll uses the pre-3-July-2024 contribution schedule.`;
     case 'NewEntrant':
-      return `First registered with GOSI on ${date}, on or after 3 July 2024, so this person is on the new-entrant schedule. `
-        + 'That schedule is not modelled yet, so payroll blocks approval of any run that pays them until it is.';
+      return `First registered with GOSI on ${date}, on or after 3 July 2024, so this person is a new entrant under the `
+        + 'New Social Insurance Law (Royal Decree M/273). Payroll applies the new-entrant annuities rate for each month: '
+        + '9% from July 2024, 9.5% from July 2025, 10% from July 2026, 10.5% from July 2027 and 11% from July 2028, '
+        + 'for both the employee and the employer. Each payslip states the rate used.';
     default:
       return 'No GOSI first-registration date is recorded. Payroll computes this person\'s GOSI on the pre-3-July-2024 '
-        + 'schedule and marks it unverified on every payslip and in payroll validation until the date is recorded.';
+        + 'schedule (9%) and marks it unverified on every payslip and in payroll validation. Enter the GOSI registration '
+        + 'date; if it is on or after 3 July 2024 the new-entrant rate applies.';
   }
 }
 
@@ -48,8 +51,12 @@ function explain(cohort: GosiCohort, date?: string | null): string {
  * signal, the sentence is the evidence.
  */
 export function GosiBasisNote({ cohort, basis }: { cohort?: string | null; basis: string }) {
+  // A new entrant is an exception only when the slip was NOT computed on the new-entrant schedule (the server
+  // froze "NOT MODELLED" in the basis: processed before the schedule existed, or no rate on record).
+  const newEntrantBlocked = cohort === 'NewEntrant' && basis.includes('NOT MODELLED');
   const { label, tone } =
-    cohort === 'NewEntrant' ? { label: 'GOSI: new entrant', tone: 'text-rose-600 dark:text-rose-400' }
+    newEntrantBlocked ? { label: 'GOSI: new entrant', tone: 'text-rose-600 dark:text-rose-400' }
+      : cohort === 'NewEntrant' ? { label: 'GOSI: new entrant', tone: 'text-sky-700 dark:text-sky-400' }
       : cohort === 'Unknown' ? { label: 'GOSI basis: unverified', tone: 'text-amber-600 dark:text-amber-400' }
         : cohort === 'PreJuly2024' ? { label: 'GOSI basis: pre-3-July-2024', tone: 'text-slate-500' }
           : { label: 'GOSI basis', tone: 'text-slate-500' };

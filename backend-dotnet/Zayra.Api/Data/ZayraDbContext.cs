@@ -1248,6 +1248,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── POD-D4 (month-end hand-off) — additive only; no existing table is altered ───────────────
     public DbSet<GlJournalExport> GlJournalExports => Set<GlJournalExport>();
     public DbSet<GlJournalExportLine> GlJournalExportLines => Set<GlJournalExportLine>();
+    // ERP machine access (wave 3): tenant API keys the client's ERP uses to pull and confirm journal exports.
+    public DbSet<ErpApiKey> ErpApiKeys => Set<ErpApiKey>();
     public DbSet<BankPaymentConfirmation> BankPaymentConfirmations => Set<BankPaymentConfirmation>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
@@ -4470,6 +4472,29 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // The real guard against two live exports of one scope is a raw-SQL partial UNIQUE index
             // (ux_gl_journal_exports_live_scope, NULLS NOT DISTINCT) created in
             // AddErpCodesAndLiveExportIndex — Npgsql 8 cannot express NULLS NOT DISTINCT in the model.
+        });
+
+        // ERP machine access — one row per issued key. Plaintext is never stored (KeyHash = SHA-256).
+        modelBuilder.Entity<ErpApiKey>(entity =>
+        {
+            entity.ToTable("erp_api_keys", t =>
+            {
+                t.HasCheckConstraint("ck_erp_api_keys__scopes_present", "scopes <> ''");
+                t.HasCheckConstraint("ck_erp_api_keys__expiry_after_creation", "expires_at_utc > created_at_utc");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Prefix).HasMaxLength(24).IsRequired();
+            entity.Property(x => x.KeyHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Scopes).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.IpAllowList).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.CreatedByName).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.LastUsedIp).HasMaxLength(64);
+            entity.Property(x => x.RevokedByName).HasMaxLength(200);
+            // Serves the authentication lookup: WHERE key_hash = $1 (one row per key, platform-wide).
+            entity.HasIndex(x => x.KeyHash).IsUnique();
+            // Serves the management list: WHERE tenant_id = $1 ORDER BY created_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
         });
 
         modelBuilder.Entity<GlJournalExportLine>(entity =>

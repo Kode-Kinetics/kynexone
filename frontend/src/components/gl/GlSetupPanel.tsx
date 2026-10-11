@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, Landmark, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, KeyRound, Landmark, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -13,9 +13,10 @@ import { DriverManagerPanel } from './DriverManagerPanel';
 import { CompanyRatesPanel } from './CompanyRatesPanel';
 import { StatutoryRatesPanel, type StatutoryCountry } from './StatutoryRatesPanel';
 import { GlPeriodsPanel } from './GlPeriodsPanel';
+import { ErpApiKeysPanel } from './ErpApiKeysPanel';
 import { problemLabel, problemRank, routeRowId, useScopedResource } from './glUi';
 
-type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods';
+type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'erpApi';
 
 interface Props {
   companies: CompanyDto[];
@@ -25,7 +26,7 @@ interface Props {
 export function GlSetupPanel({ companies, costCenters }: Props) {
   const t = useT();
   const { locale, dir } = useLocale();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
   const { isGroupScope } = useCompany();
 
   // ── Permission map (server is authoritative; UI hides what the caller can't do) ──
@@ -41,6 +42,8 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
   // Activating a statutory override needs the same key as raising one (the API enforces it; approvals.decide is not enough).
   // Per request the server also says whether THIS viewer may approve (never the requester).
   const canApprove = statutoryOverride;
+  // ERP API keys: Admin only (the server also requires two-step sign-in and says so with a 403 the panel explains).
+  const erpApiManage = hasRole('Admin');
 
   // ── Scope selector: group default (group-scoped callers only) or a company ──
   const [scope, setScope] = useState<string | null>(isGroupScope ? null : companies[0]?.id ?? null);
@@ -72,9 +75,10 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
           { id: 'companyRates' as const, label: t('Company Rates'), icon: Coins, show: ratesRead },
           { id: 'statutory' as const, label: t('Statutory Rates'), icon: ShieldCheck, show: statutoryRead },
           { id: 'periods' as const, label: t('Accounting periods'), icon: CalendarCheck, show: glRead },
+          { id: 'erpApi' as const, label: t('ERP API access'), icon: KeyRound, show: erpApiManage },
         ] as const
       ).filter((x) => x.show),
-    [t, glRead, driversRead, ratesRead, statutoryRead],
+    [t, glRead, driversRead, ratesRead, statutoryRead, erpApiManage],
   );
 
   const [active, setActive] = useState<SubTab>(() => tabs[0]?.id ?? 'coa');
@@ -295,6 +299,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
           />
         )}
         {activeTab === 'periods' && <GlPeriodsPanel companyId={scope} />}
+        {activeTab === 'erpApi' && <ErpApiKeysPanel companies={companies} />}
       </div>
     </div>
   );

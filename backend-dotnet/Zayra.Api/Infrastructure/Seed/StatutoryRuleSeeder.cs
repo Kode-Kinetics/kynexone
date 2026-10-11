@@ -101,6 +101,8 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "gosi.covered_wage_ceiling_sar", "45000", "decimal", eff16,
             "VERIFY: GOSI covered wage ceiling SAR 45,000 — confirm current ceiling"));
+        AddGosiNewEntrantSchedule(list);
+        AddGosiMinimumContributoryWage(list, eff16);
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "nitaqat.default_target_ratio", "0.35", "decimal", eff16,
             "SUPERSEDED for reporting — read by KsaNationalizationTracker only, which nothing in "
@@ -663,6 +665,81 @@ public static class StatutoryRuleSeeder
             "VERIFY: Qatarization 20% directional — confirm sector targets with Ministry of Labor"));
 
         return list;
+    }
+
+    // ── KSA GOSI — new-entrant annuities schedule (New Social Insurance Law) ──────────────────────
+    //
+    // Royal Decree M/273 and Council of Ministers Resolution 1022 (26/12/1445H), in force 3 July 2024.
+    // Applies ONLY to a person with no prior contribution period in civil retirement or social insurance
+    // before 3 July 2024 — payroll reads that from the first GOSI registration date (GosiCohorts). The
+    // annuities (pension) rate for EACH of employee and employer steps up half a point a year:
+    //   9% from 3 Jul 2024 · 9.5% from Jul 2025 · 10% from Jul 2026 · 10.5% from Jul 2027 · 11% from Jul 2028.
+    // Payroll is monthly, so each step is effective from 1 JULY (the July contribution month). Sources date
+    // the steps differently: Oracle HCM 25B GOSI Legislative Updates says 3 July, Argaam reports the 2025
+    // step implemented 1 July; the contribution month is July either way.
+    // Existing subscribers stay on gosi.saudi_employee_rate / gosi.saudi_employer_rate (9% / 9%). SANED,
+    // occupational hazards, the SAR 45,000 ceiling and the basic + housing base are unchanged.
+    //
+    // Each step expires where the next one starts, so the Statutory Rates screen shows the step in force on
+    // the day it is viewed and a later period can never be answered with an earlier step's rate. The seeder
+    // inserts any (key, EffectiveFrom) not already present, so an existing database gains these rows on boot.
+    internal static readonly (DateTime From, decimal Rate)[] GosiNewEntrantAnnuitySteps =
+    {
+        (new DateTime(2024, 7, 1, 0, 0, 0, DateTimeKind.Utc), 0.09m),
+        (new DateTime(2025, 7, 1, 0, 0, 0, DateTimeKind.Utc), 0.095m),
+        (new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc), 0.10m),
+        (new DateTime(2027, 7, 1, 0, 0, 0, DateTimeKind.Utc), 0.105m),
+        (new DateTime(2028, 7, 1, 0, 0, 0, DateTimeKind.Utc), 0.11m),
+    };
+
+    private const string GosiNewEntrantCitation =
+        "New Social Insurance Law — Royal Decree M/273 and Council of Ministers Resolution 1022 (26/12/1445H), "
+        + "in force 3 July 2024. Applies only to a NEW ENTRANT: a Saudi with no contribution period in civil "
+        + "retirement or social insurance before 3 July 2024 (first GOSI registration on or after 3 July 2024). "
+        + "Annuities schedule, employee and employer each: 9% from 3 Jul 2024, 9.5% from Jul 2025, 10% from Jul "
+        + "2026, 10.5% from Jul 2027, 11% from Jul 2028. Applied from the July contribution month because payroll "
+        + "is monthly (Oracle HCM dates each step 3 July; Argaam reports the 2025 step implemented 1 July). "
+        + "Sources: Oracle HCM 25B GOSI Legislative Updates, "
+        + "docs.oracle.com/en/cloud/saas/readiness/hcm/25b/payr-25b/25B-payroll-wn-f37393.htm ; Argaam, "
+        + "argaam.com/en/article/articledetail/id/1824657 . Recorded 2026-10-10. SANED, occupational hazards, the "
+        + "SAR 45,000 ceiling and the basic + housing base are unchanged; existing subscribers stay on 9%.";
+
+    private static void AddGosiNewEntrantSchedule(List<StatutoryRule> list)
+    {
+        for (var i = 0; i < GosiNewEntrantAnnuitySteps.Length; i++)
+        {
+            var (from, rate) = GosiNewEntrantAnnuitySteps[i];
+            DateTime? to = i + 1 < GosiNewEntrantAnnuitySteps.Length ? GosiNewEntrantAnnuitySteps[i + 1].From : null;
+            var pct = (rate * 100m).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            var month = from.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture);
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiNewEntrantEmployeeRate, Dec(rate), "decimal", from, to,
+                $"GOSI annuities, new entrant, EMPLOYEE share {pct}% from the {month} contribution month. " + GosiNewEntrantCitation));
+            list.Add(RuleUntil(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+                Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiNewEntrantEmployerRate, Dec(rate), "decimal", from, to,
+                $"GOSI annuities, new entrant, EMPLOYER share {pct}% from the {month} contribution month. " + GosiNewEntrantCitation));
+        }
+    }
+
+    // ── KSA GOSI — minimum contributory wage (validation warning only) ───────────────────────────
+    // SAR 1,500 for the annuities branch and SAR 400 for occupational hazards, per SECONDARY sources (the GOSI
+    // FAQ and payroll vendors), not the regulation text. Read only by PayrollValidationEngine to raise a
+    // NON-BLOCKING warning; no calculation reads them and they are NOT the clamping floor
+    // (gosi.covered_wage_floor_sar stays unseeded — raising a floor raises the employee's deduction). The
+    // description says it is not independently confirmed, so the Statutory Rates screen shows it unverified.
+    private static void AddGosiMinimumContributoryWage(List<StatutoryRule> list, DateTime eff16)
+    {
+        const string secondary =
+            "SECONDARY SOURCE (GOSI FAQ and payroll vendors) — NOT independently confirmed against the primary "
+            + "regulation text, and the effective date is not confirmed. Used only for a non-blocking payroll "
+            + "warning (below GOSI minimum contributory wage: GOSI may assess on the minimum); never in a "
+            + "calculation. Recorded 2026-10-10.";
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageAnnuitiesSar, "1500", "decimal", eff16,
+            "GOSI minimum monthly contributory wage, annuities branch, SAR 1,500. " + secondary));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            Zayra.Api.Infrastructure.CountryPack.Ksa.RuleKeys.GosiMinContributoryWageOccupationalHazardsSar, "400", "decimal", eff16,
+            "GOSI minimum monthly contributory wage, occupational hazards branch, SAR 400. " + secondary));
     }
 
     /// <summary>

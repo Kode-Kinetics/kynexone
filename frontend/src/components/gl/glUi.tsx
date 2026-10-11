@@ -328,7 +328,18 @@ export function useScopedResource<T>(key: string, fetcher: () => Promise<T>, ena
   }, [key, enabled, run]);
 
   const reload = useCallback(() => run(keyRef.current), [run]);
-  return { data, loading, error, loadedKey, ready: loadedKey === key && !loading && !error, reload };
+  // The render that follows a scope change happens before the effect above clears `data`, so the
+  // previous scope's rows would be drawn once under the new scope (duplicated group rows, wrong
+  // labels). Only hand out data that was loaded for THIS key, and say it is loading meanwhile.
+  const current = loadedKey === key;
+  return {
+    data: current ? data : null,
+    loading: loading || (enabled && !current && !error),
+    error,
+    loadedKey,
+    ready: current && !loading && !error,
+    reload,
+  };
 }
 
 /** The server's own refusal sentence (shown verbatim), else a translated description. */

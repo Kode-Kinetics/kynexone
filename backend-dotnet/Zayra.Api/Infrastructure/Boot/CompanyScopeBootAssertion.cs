@@ -43,6 +43,11 @@ public static class CompanyScopeBootAssertion
         ["UserEntityAccess"] = "Access-grant record: CompanyId IS the grant payload. Filtering " +
                                "grants by company scope would be circular (grants define the scope) " +
                                "and would hide grant administration from group admins.",
+        ["ErpApiKey"] = "Machine credential: CompanyId is the company the key GRANTS (null = every company), " +
+                        "the same shape as UserEntityAccess. Filtering keys by the caller's company scope would " +
+                        "be circular at authentication (the key defines the scope). Management is Admin + MFA and " +
+                        "ErpApiKeysController narrows a company-scoped Admin to their companies' keys; a key's own " +
+                        "requests are scoped by the entity_scope claim built from this column.",
         // POD-B1b.
         ["FinanceGlEntry"] = "Immutable ledger line: CompanyId is a reporting DIMENSION added by " +
                              "POD-B1b (per-company trial balance / period close / bonus accrual " +
