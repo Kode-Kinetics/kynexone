@@ -5,5 +5,6 @@ namespace Zayra.Api.Application.Finance;
 /// after embedding their IDs into the readiness manifest.</summary>
 public static class GlJournalExportConstraints
 {
+    public const string ErpCompanyCodeIndexName = "ux_companies_tenant_erp_company_code";
     public const string LiveScopeIndexName = "ux_gl_journal_exports_live_scope";
 }
