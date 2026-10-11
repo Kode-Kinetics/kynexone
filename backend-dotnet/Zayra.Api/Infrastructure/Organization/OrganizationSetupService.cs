@@ -47,6 +47,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, null, request.EmailDomain, cancellationToken);
         await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
+        await EnsureErpCompanyCodeAllowedAsync(tenantId, null, null, request.ErpCompanyCode, context, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
         if (asDraft)
@@ -56,8 +57,12 @@ public class OrganizationSetupService : IOrganizationSetupService
             company.IsActive = false;
         }
         _db.Companies.Add(company);
-        await _db.SaveChangesAsync(cancellationToken);
+        await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, cancellationToken);
+        await SaveCompanyAsync(company.ErpCompanyCode, cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);
+        if (company.ErpCompanyCode is not null)
+            await _audit.WriteAsync(ErpCompanyCodeChangedAction, nameof(Company), company.Id.ToString(), context,
+                System.Text.Json.JsonSerializer.Serialize(new { oldErpCompanyCode = (string?)null, newErpCompanyCode = company.ErpCompanyCode }), cancellationToken);
         if (company.EmailDomain.Length > 0)
             await _audit.WriteAsync(CompanyEmailDomainRules.ChangedAction, nameof(Company), company.Id.ToString(), context,
                 System.Text.Json.JsonSerializer.Serialize(new { oldEmailDomain = (string?)null, newEmailDomain = company.EmailDomain }), cancellationToken);
@@ -96,7 +101,18 @@ public class OrganizationSetupService : IOrganizationSetupService
             // saved before these rules may hold a domain they now refuse, and editing its address or name must still work.
             if (!string.Equals(CompanyEmailDomainRules.Normalize(priorEmailDomain), CompanyEmailDomainRules.Normalize(request.EmailDomain), StringComparison.Ordinal))
                 await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, ct);
+            var priorErpCode = company.ErpCompanyCode;
+            await EnsureErpCompanyCodeAllowedAsync(tenantId, company.Id, priorErpCode, request.ErpCompanyCode, context, ct);
             Apply(company, request, applyLifecycle: false);
+            // Before/after of the code journal exports file this company's postings under: who changed it, from what.
+            if (!string.Equals(priorErpCode, company.ErpCompanyCode, StringComparison.Ordinal))
+                _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
+                {
+                    Id = Guid.NewGuid(), TenantId = tenantId, UserId = context.UserId, Action = ErpCompanyCodeChangedAction,
+                    EntityName = nameof(Company), EntityId = company.Id.ToString(), IpAddress = context.IpAddress, UserAgent = context.UserAgent,
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { oldErpCompanyCode = priorErpCode, newErpCompanyCode = company.ErpCompanyCode }),
+                    CreatedAtUtc = changedAtUtc,
+                });
             if (!string.Equals(priorEmailDomain, company.EmailDomain, StringComparison.Ordinal))
                 _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
                 {
@@ -115,7 +131,8 @@ public class OrganizationSetupService : IOrganizationSetupService
                 company.Id,
                 context with { TenantId = tenantId },
                 ct);
-            await _db.SaveChangesAsync(ct);
+            await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, ct);
+            await SaveCompanyAsync(company.ErpCompanyCode, ct);
             return true;
         }
 
@@ -486,6 +503,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         // lowercased so derivation/collision keys are canonical.
         company.EmailDomain = Clean(request.EmailDomain).ToLowerInvariant();
         company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
+        if (request.ErpCompanyCode is not null)
+            company.ErpCompanyCode = CleanErpCode(request.ErpCompanyCode);
         if (applyLifecycle) company.IsActive = request.IsActive;
     }
 
@@ -671,6 +690,112 @@ public class OrganizationSetupService : IOrganizationSetupService
         {
             token.RevokedAtUtc = changedAtUtc;
             token.RevokedByIp = context.IpAddress;
+        }
+    }
+
+    // ── ERP company code ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The key that may set or change a company's ERP company code: whoever maintains the general ledger
+    /// the journal exports are built from. HR may edit the rest of the company record.</summary>
+    public const string ErpCompanyCodePermission = "finance.gl.manage";
+    public const string ErpCompanyCodeChangedAction = "organization.company_erp_code_changed";
+    /// <summary>Codes the journal export already uses as labels for "no company" and "the whole group".</summary>
+    private static readonly string[] ReservedErpCodes = { "GROUP", "UNATTRIBUTED" };
+
+    private static string? CleanErpCode(string? value) => Clean(value) is { Length: > 0 } erp ? erp : null;
+
+    /// <summary>
+    /// A company's ERP company code decides which legal entity's ledger the ERP books its journals into, so:
+    /// <list type="bullet">
+    /// <item>only a holder of <see cref="ErpCompanyCodePermission"/> may set or change it — a request that repeats the
+    /// stored value (or omits it) passes for anyone, so HR can still edit the rest of the form (403 otherwise);</item>
+    /// <item>it is unique per tenant, case-insensitively, among live companies — and may not equal the registration
+    /// number another company without a code is exported under (409, naming that company);</item>
+    /// <item>GROUP and UNATTRIBUTED are reserved (400).</item>
+    /// </list>
+    /// The database backs the uniqueness with ux_companies_tenant_erp_company_code (see <see cref="SaveCompanyAsync"/>).
+    /// Refusals use <see cref="EmailDomainRefusedException"/>, the (code, status, message) refusal both company doors
+    /// already map to an HTTP status.
+    /// </summary>
+    private async Task EnsureErpCompanyCodeAllowedAsync(
+        Guid tenantId, Guid? companyId, string? current, string? requested, RequestContext context, CancellationToken ct)
+    {
+        if (requested is null) return; // not sent: the stored code is kept
+        var next = CleanErpCode(requested);
+        if (string.Equals(next, current, StringComparison.Ordinal)) return;
+
+        if (context.UserId is Guid actor)
+        {
+            var caller = await Zayra.Api.Infrastructure.Auth.PrivilegeCeilingGraph.TryLoadCallerAsync(_db, tenantId, actor, ct);
+            if (caller is null || !caller.Held.Contains(ErpCompanyCodePermission))
+                throw new EmailDomainRefusedException("erp_company_code_needs_finance", 403,
+                    "Only a finance user who manages the general ledger can set or change a company's ERP company code, "
+                    + "because your ERP files each company's journals under it. Leave it as it is, or ask finance to change it.");
+        }
+        if (next is null) return; // clearing the code: the registration number becomes the exported code again
+
+        if (ReservedErpCodes.Contains(next, StringComparer.OrdinalIgnoreCase))
+            throw new EmailDomainRefusedException("erp_company_code_reserved", 400,
+                $"ERP company code {next} is reserved for journals that belong to no single company. Choose another code.");
+        if (next.Length > 30 || !next.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-'))
+            throw new EmailDomainRefusedException("erp_company_code_invalid", 400,
+                "An ERP company code may be at most 30 characters: letters, digits, '.', '_' and '-'.");
+
+        var lower = next.ToLowerInvariant();
+        // Tenant-wide: a company-scoped editor must still collide with a sibling company they cannot see.
+        // Only the colliding company's name leaves this query.
+        var other = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "ERP company code uniqueness across every legal entity of the tenant (only the colliding company's name is read)")
+            .AsNoTracking()
+            .Where(x => !x.IsDeleted && x.Id != companyId
+                     && ((x.ErpCompanyCode != null && x.ErpCompanyCode.ToLower() == lower)
+                         || ((x.ErpCompanyCode == null || x.ErpCompanyCode == "") && x.RegistrationNumber.ToLower() == lower)))
+            .Select(x => x.LegalNameEn)
+            .FirstOrDefaultAsync(ct);
+        if (other is not null)
+            throw new EmailDomainRefusedException("erp_company_code_taken", 409,
+                $"ERP company code {next} is already used by {other}. Each company needs its own code, or your ERP would book "
+                + "both companies' journals into one ledger.");
+    }
+
+    /// <summary>
+    /// Journal exports label each company with its ERP code, or — when it has none — its registration number
+    /// (<see cref="Zayra.Api.Infrastructure.Finance.JournalExportBuilder.CompanyCodeOf"/>). The ERP-code check above only
+    /// runs when a code is set; this one runs on every save, on the code the company will ACTUALLY be exported under,
+    /// so creating a company, changing its registration number or clearing its ERP code can never make two legal
+    /// entities export under the same company code (409, naming the other company).
+    /// </summary>
+    private async Task EnsureExportedCompanyCodeUniqueAsync(Guid tenantId, Company company, CancellationToken ct)
+    {
+        var exported = Zayra.Api.Infrastructure.Finance.JournalExportBuilder.CompanyCodeOf(company);
+        if (string.IsNullOrWhiteSpace(exported)) return;
+        var lower = exported.ToLowerInvariant();
+        var other = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "Exported company-code uniqueness across every legal entity of the tenant (only the colliding company's name is read)")
+            .AsNoTracking()
+            .Where(x => !x.IsDeleted && x.Id != company.Id
+                     && ((x.ErpCompanyCode != null && x.ErpCompanyCode != "" && x.ErpCompanyCode.ToLower() == lower)
+                         || ((x.ErpCompanyCode == null || x.ErpCompanyCode == "") && x.RegistrationNumber.ToLower() == lower)))
+            .Select(x => x.LegalNameEn)
+            .FirstOrDefaultAsync(ct);
+        if (other is not null)
+            throw new EmailDomainRefusedException("erp_company_code_taken", 409,
+                $"{company.LegalNameEn} would be exported to your ERP under company code {exported}, which {other} already uses. "
+                + "Give one of them its own ERP company code, or your ERP would book both companies' journals into one ledger.");
+    }
+
+    /// <summary>Saves, turning a lost race on ux_companies_tenant_erp_company_code into the same 409 the pre-check gives.</summary>
+    private async Task SaveCompanyAsync(string? erpCompanyCode, CancellationToken ct)
+    {
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException
+            {
+                SqlState: Npgsql.PostgresErrorCodes.UniqueViolation,
+                ConstraintName: Zayra.Api.Migrations.AddErpCodesAndLiveExportIndex.ErpCompanyCodeIndexName,
+            })
+        {
+            throw new EmailDomainRefusedException("erp_company_code_taken", 409,
+                $"ERP company code {erpCompanyCode} is already used by another company. Each company needs its own code.");
         }
     }
 

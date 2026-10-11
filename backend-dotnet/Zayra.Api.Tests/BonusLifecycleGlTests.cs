@@ -395,6 +395,11 @@ public class BonusLifecycleGlTests
         db.GlAccounts.Add(newAcct);
         db.GlAccountMappings.Add(new GlAccountMapping { TenantId = tid, CompanyId = null, DriverKey = "BONUS_PAYABLE", AccountId = newAcct.Id });
         await db.SaveChangesAsync();
+        // A tenant that has a chart must hold every account its Lock posts to (a code missing from the chart
+        // blocks Lock), so the rest of the standard chart is loaded. The seeder never overwrites a mapping:
+        // BONUS_PAYABLE stays remapped to 2301.
+        await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(db, tid, CancellationToken.None);
+        await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
         await LockRun(db, MakePayrollCtrl(db, tid), run);

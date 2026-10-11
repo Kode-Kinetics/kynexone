@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
@@ -168,8 +169,13 @@ public sealed class PayrollVoidService
         Guid? cascadedFromRunId,
         CancellationToken ct)
     {
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(
-            r => r.TenantId == tenantId && r.Id == runId, ct);
+        // P0 — FOR UPDATE on the run row. The void used to read the run without a lock, so two concurrent
+        // voids both read "Locked", both found the accrual live (!IsReversed) and both posted a full set
+        // of contras: the month reversed twice, every liability driven negative. VoidAsync runs this inside
+        // a transaction, so the second caller now waits for the first to commit, then reads "Voided" and is
+        // refused with already_voided. The same row lock serialises a void against a concurrent Lock.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, ct);
 
         if (run is null) return VoidRunResult.NotFound;
         if (run.Status == "Voided") return VoidRunResult.AlreadyVoided;
@@ -546,6 +552,16 @@ public sealed class PayrollVoidService
 
         foreach (var orig in reversedLines) orig.IsReversed = true;
         _db.FinanceGlEntries.AddRange(contras);
+        // POD-C2 — the run's end-of-service provision lines are originating payroll journals, so the
+        // contras above already reverse them; the obligation snapshots that explained them go in the SAME
+        // unit of work, so the month can be measured again by a Replacement run and the per-employee
+        // drill-down never shows a movement the ledger no longer carries.
+        var eosbSnapshots = await ScopedBypass.TenantWide(_db.EosbProvisionSnapshots, tenantId,
+                "Run void is a system correction over the whole run: every company's provision snapshot for " +
+                "this run must go with the reversed provision lines, whatever the caller's company claims.")
+            .Where(x => x.PayrollRunId == runId)
+            .ToListAsync(ct);
+        if (eosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.RemoveRange(eosbSnapshots);
         var glReversed = contras.Count;
         // POD-C3 — the sub-ledger is written in the SAME unit of work as the 1420 debit it explains, so
         // the aggregate and the attribution can never disagree.

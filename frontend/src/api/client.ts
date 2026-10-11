@@ -107,7 +107,9 @@ client.interceptors.response.use(
     // AppToastProvider can display the message without a full-page navigation.
     if (err.response?.status === 403) {
       const isFeatureGated = err.response?.data?.error === 'feature_not_enabled';
-      if (!isFeatureGated && typeof window !== 'undefined') {
+      // Refusals a panel explains in place (ERP API access: "turn on two-step sign-in" / "admins only").
+      const isPanelHandled = ['mfa_required', 'admin_required'].includes(err.response?.data?.error);
+      if (!isFeatureGated && !isPanelHandled && typeof window !== 'undefined') {
         // Prefer the server's reason (e.g. a separation-of-duties refusal) over the generic text, in Arabic
         // when the page is Arabic and the server sent one (messageAr, e.g. a privilege-ceiling refusal).
         const arabic = document.documentElement.lang === 'ar';

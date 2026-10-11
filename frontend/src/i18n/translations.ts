@@ -5,6 +5,10 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
+import { glSetup } from './glSetup';
+import { glErp } from './glErp';
+import { glApiKeys } from './glApiKeys';
+import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
@@ -1385,6 +1389,10 @@ const en: Dict = {
   ...attendanceEvidence.en,
   ...employeeCompletion.en,
   ...setupExperience.en,
+  ...glSetup.en,
+  ...glErp.en,
+  ...glApiKeys.en,
+  ...glEosb.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -2757,6 +2765,10 @@ const ar: Dict = {
   ...attendanceEvidence.ar,
   ...employeeCompletion.ar,
   ...setupExperience.ar,
+  ...glSetup.ar,
+  ...glErp.ar,
+  ...glApiKeys.ar,
+  ...glEosb.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

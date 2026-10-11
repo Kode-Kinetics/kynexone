@@ -95,7 +95,8 @@ public static class FinalSettlementGlLedger
     public static (List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits) BuildAccrual(
         Guid tenantId, EmployeeFinalSettlement settlement, IReadOnlyList<FinalSettlementLine> lines,
         string period, GlResolutionContext gl, Guid? postedBy, string postedByName,
-        decimal provisionConsumed = 0m, string? provisionAccount = null)
+        decimal provisionConsumed = 0m, string? provisionAccount = null,
+        IReadOnlyList<(string Account, decimal Amount)>? provisionReleases = null)
     {
         var entries = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -145,6 +146,25 @@ public static class FinalSettlementGlLedger
                 $"{FinalSettlementGlDescriptions.AccrualPrefix}{grp.Key}",
                 GlEventTypes.SettlementAccrual, FinalSettlementGlDescriptions.SettlementRef(settlement.Id)));
         }
+
+        // ── POD-C2: release whatever provision is LEFT for this leaver ───────────────────────────────
+        // The monthly provision is measured on the full Art. 84 award; an Art. 85 resignation (or any
+        // award below what was provided) leaves part of 2310 that nothing will ever consume. It is
+        // derecognised here, with the leaver, so 2310 holds only provision for people still employed:
+        // DR the provision's STORED account / CR 5110 — a reduction of EOSB expense. Both lines carry the
+        // consumption tag and the employee ref, so the sub-ledger reads the position as fully used and a
+        // cancellation of this settlement re-opens it through the same contra as the consumption.
+        if (provisionReleases is not null)
+            foreach (var (account, released) in provisionReleases.Where(r => r.Amount > 0m && !string.IsNullOrWhiteSpace(r.Account)))
+            {
+                var amount = Math.Round(released, 2);
+                entries.Add(Line(account, string.Empty, amount,
+                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{settlement.EmployeeCode}",
+                    GlEventTypes.EosbProvisionConsumption, employeeRef));
+                entries.Add(Line(string.Empty, GlAccountResolver.AccountLabel(ExpenseDriverFor(FinalSettlementComponents.Gratuity), gl), amount,
+                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{settlement.EmployeeCode}",
+                    GlEventTypes.EosbProvisionConsumption, employeeRef));
+            }
 
         // ── CREDIT: the payable, at the GROSS of the earning lines ───────────────────────────────────
         var gross = Math.Round(lines.Where(l => l.LineType == FinalSettlementLineTypes.Earning).Sum(l => l.Amount), 2);

@@ -55,6 +55,18 @@ public static class OvertimeStatutoryContextResolver
     public const string RuleStandardMonthlyHours = "ot.standard_monthly_hours";
 
     /// <summary>
+    /// The hourly-rate divisor actually used: the statutory monthly hours, unless the company's own
+    /// overtime policy states FEWER hours. Fewer hours means a higher hourly rate, so a more generous
+    /// contractual policy (e.g. 208 h) must never be overridden downwards by the statutory 240 — the
+    /// statute is a floor on what the employee receives, not a cap. With no rule the policy stands.
+    /// </summary>
+    public static int EffectiveMonthlyHours(int policyHours, int? ruleHours)
+    {
+        var policy = Math.Max(1, policyHours);
+        return ruleHours is int rule && rule > 0 ? Math.Min(policy, rule) : policy;
+    }
+
+    /// <summary>
     /// The regular-day multiplier assumed when the country pack has written no
     /// <c>ot.standard_multiplier</c> rule.
     ///
@@ -86,21 +98,25 @@ public static class OvertimeStatutoryContextResolver
         string jurisdiction,
         DateOnly effectiveDate,
         Guid tenantId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? companyId = null)
     {
+        // companyId: the legal entity whose approved company override (if any) wins for the four
+        // numeric keys below — each is in StatutoryOverridePolicy.CompanyAppliedKeys. ot.hourly_base
+        // is deliberately read WITHOUT the company: it is not company-overridable, so it never is.
         var standard = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleStandardMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleStandardMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? StatutoryStandardMultiplierFallback;
         var restDay = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleRestDayMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleRestDayMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? standard;
         var holiday = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleHolidayMultiplier, effectiveDate, tenantId, ct)
+            countryCode, jurisdiction, RuleHolidayMultiplier, effectiveDate, tenantId, ct, companyId)
             ?? standard;
         var hourlyBase = await reader.GetStringAsync(
             countryCode, jurisdiction, RuleHourlyBase, effectiveDate, tenantId, ct);
         var monthlyHours = await reader.GetDecimalAsync(
-            countryCode, jurisdiction, RuleStandardMonthlyHours, effectiveDate, tenantId, ct);
+            countryCode, jurisdiction, RuleStandardMonthlyHours, effectiveDate, tenantId, ct, companyId);
 
         return new OvertimeStatutoryContext(
             OvertimeStatutoryCalculator.BaseIsFullWage(hourlyBase),

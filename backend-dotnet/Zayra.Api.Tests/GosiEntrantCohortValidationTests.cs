@@ -17,8 +17,10 @@ namespace Zayra.Api.Tests;
 /// (<see cref="PayrollSlip.GosiCohort"/>), and the validator reads it:</para>
 /// <list type="bullet">
 /// <item>Unknown → a per-employee WARNING naming the person and the next action;</item>
-/// <item>NewEntrant → a per-employee, NON-overridable ERROR, because the new-entrant schedule is not
-/// modelled and the pre-reform rate on the slip is wrong for that person;</item>
+/// <item>NewEntrant whose slip was NOT computed on the new-entrant schedule (these slips carry no
+/// new-entrant basis — processed before the schedule existed, or no rate on record) → a per-employee,
+/// NON-overridable ERROR, because the pre-reform rate on the slip is wrong for that person. A slip computed
+/// on the schedule gets a notice instead — see <see cref="GosiNewEntrantScheduleTests"/>;</item>
 /// <item>PreJuly2024 → nothing.</item>
 /// </list>
 /// </summary>

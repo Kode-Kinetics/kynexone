@@ -34,10 +34,21 @@ public static class StatutoryRateGuard
         "workhours.", "leave.",
     };
 
+    /// <summary>
+    /// Client-configurable keys that live under a statutory prefix because they ENHANCE that floor
+    /// (extra EOSB days on top of the statutory minimum). They are allow-listed below; without this
+    /// exemption the prefix guard refused them and the allow-list entry was unwritable.
+    /// </summary>
+    private static readonly HashSet<string> EnhancementKeysUnderStatutoryPrefix = new(StringComparer.Ordinal)
+    {
+        "eosb.enhancement_days_per_year",
+    };
+
     public static bool IsStatutoryKey(string? rateKey)
     {
         if (string.IsNullOrWhiteSpace(rateKey)) return false;
         var k = rateKey.Trim().ToLowerInvariant();
+        if (EnhancementKeysUnderStatutoryPrefix.Contains(k)) return false;
         return StatutoryPrefixes.Any(p => k.StartsWith(p, StringComparison.Ordinal));
     }
 
@@ -92,7 +103,38 @@ public static class StatutoryRateGuard
         Def(tenantId, "payparameter.arrears_gosi_treatment",     "PayParameter", "string",  "enum",  null, null, "Statutory treatment of retro arrears: PeriodPaid (default) | None | PeriodEarned (refused — needs an amended-declaration workflow)"),
         Def(tenantId, "payparameter.arrears_max_lookback_months","PayParameter", "decimal", "months",   0m,  120m, "How many past periods a retro/arrears settlement may reach back over (default 24)"),
         Def(tenantId, "payparameter.prorated_components",        "PayParameter", "string",  "list",  null, null, "Comma-separated components proration applies to. Default BASIC,HOUSING,TRANSPORT,OTHER_ALLOWANCES,FIXED_DEDUCTION"),
+        // ── POD-C2: monthly end-of-service provision ──────────────────────────────────────────────
+        // Under payparameter.* (not eosb.*) on purpose: it is an ACCOUNTING policy choice, not the
+        // statutory award, so it belongs on Surface A. Default Off; the effective date of the
+        // StatutoryMonthly row is when provisioning starts.
+        Def(tenantId, EosbProvisioningRateKeys.Mode,             "PayParameter", "string",  "enum",  null, null, "Monthly end-of-service provision at payroll Lock: Off (default) | StatutoryMonthly"),
     };
+
+    /// <summary>
+    /// The registry keys a payroll / EOSB / settlement calculation actually READS. Each entry is the
+    /// constant its consumer reads (<see cref="ProrationPolicyResolver"/>, through
+    /// <see cref="ICompanyRatePolicyResolver"/>), so a key is listed here only with a proven consumer.
+    /// Every other registry key (the allowance/deduction amounts, the EOSB enhancement days, the
+    /// probation OT multiplier, the notice period) is RECORDED ONLY: it was accepted and stored, and
+    /// nothing ever applied it. The write surface refuses new values for those keys
+    /// (COMPANY_RATE_NOT_APPLIED) instead of letting a customer believe pay changed. Writing the
+    /// consumer is the only correct way to add a key here.
+    /// </summary>
+    private static readonly HashSet<string> PayrollAppliedKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ProrationRateKeys.Basis,
+        ProrationRateKeys.GosiBase,
+        ProrationRateKeys.ArrearsGosiTreatment,
+        ProrationRateKeys.ArrearsMaxLookback,
+        ProrationRateKeys.ProratedComponents,
+        // POD-C2 — read by PayrollController.BuildEosbProvisionAsync at every Lock.
+        EosbProvisioningRateKeys.Mode,
+    };
+
+    /// <summary>True only for a client-rate key some payroll calculation reads (see <see cref="PayrollAppliedKeys"/>).
+    /// A tenant-registered custom key is never applied: no code knows to read it.</summary>
+    public static bool IsAppliedByPayroll(string? rateKey) =>
+        !string.IsNullOrWhiteSpace(rateKey) && PayrollAppliedKeys.Contains(rateKey.Trim());
 
     private static ClientRateDefinition Def(
         Guid tenantId, string key, string category, string dataType, string unit,

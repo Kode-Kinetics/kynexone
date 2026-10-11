@@ -71,6 +71,7 @@ public class PayrollRunTypeSmeTests
             new("permission", "payroll.approve"),
             new("permission", "payroll.export"),
             new("permission", "payroll.run_delete"),
+            new("permission", "finance.gl.period.reopen"),
             new("permission", "finance.gl.manage"),
             new("permission", "finance.gl.read"),
         };

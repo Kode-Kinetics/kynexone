@@ -120,6 +120,7 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 function CompaniesTab() {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
   const { isGroupScope, setSelectedCompany } = useCompany();
@@ -129,6 +130,9 @@ function CompaniesTab() {
   // tab via the /companies redirect and get the same read-only list they had before,
   // with no inert (always-403) action controls.
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  // The ERP company code decides whose ledger the ERP books a company's journals into: only the general-ledger
+  // manager may set or change it (the server enforces this and explains a refusal; the form only reflects it).
+  const canSetErpCode = hasPermission('finance.gl.manage');
   const [items, setItems] = useState<CompanyDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -165,7 +169,7 @@ function CompaniesTab() {
   const openNew = () => { setEditing(null); setForm(emptyCompany()); setError(''); setModalOpen(true); };
   const openEdit = (c: CompanyDto) => {
     setEditing(c);
-    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive });
+    setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive, erpCompanyCode: c.erpCompanyCode ?? '' });
     setError('');
     setModalOpen(true);
   };
@@ -432,6 +436,12 @@ function CompaniesTab() {
           </FormField>
           <FormField label="GOSI Employer ID">
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
+          </FormField>
+          <FormField label={t('ERP company code')}>
+            <input type="text" maxLength={30} value={form.erpCompanyCode ?? ''} onChange={(e) => f('erpCompanyCode', e.target.value.trim())} className="input w-full" placeholder="1000" spellCheck={false}
+              readOnly={!canSetErpCode} aria-readonly={!canSetErpCode} data-testid="company-erp-code" />
+            <p className="mt-1 text-xs text-slate-400">{t('The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.')}</p>
+            {!canSetErpCode && <p className="mt-1 text-xs text-slate-500">{t('Only a finance user who manages the general ledger can change this code.')}</p>}
           </FormField>
           <FormField label="Work Email Domain">
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">

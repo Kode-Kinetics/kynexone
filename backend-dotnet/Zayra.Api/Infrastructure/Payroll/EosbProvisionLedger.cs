@@ -78,6 +78,11 @@ public sealed class EosbProvisionCursor
 /// <summary>
 /// POD-C1 — the END-OF-SERVICE PROVISION SUB-LEDGER, and the explicit, correct seam POD-C2 plugs into.
 ///
+/// <para><b>POD-C2 HAS NOW SHIPPED</b> (PayrollController.EosbProvision.cs): the Lock journal posts a
+/// per-employee movement — CR 2310 for a rise, DR 2310 for a fall — both read here as one signed position,
+/// and settlement approval releases whatever the award does not consume. The history below is kept
+/// because it explains why the sub-ledger is positional.</para>
+///
 /// <para><b>WHAT C1 DOES AND DOES NOT DO.</b> C1 never ACCRUES a provision — the monthly gratuity
 /// liability accrual for all active employees is POD-C2 and is deliberately out of scope. C1 only asks
 /// one question at approval time: <i>has anything already been provided for THIS employee, and on which
@@ -138,7 +143,7 @@ public static class EosbProvisionLedger
         if (employeeIds.Count == 0) return new List<EosbProvisionPosition>();
         var refs = employeeIds.Distinct().Select(EmployeeRef).ToList();
 
-        // Accruals: POD-C2's monthly DR expense / CR provision journals that are still live.
+        // Accruals: POD-C2's monthly provision movements that are still live (a void flags them reversed).
         // IgnoreQueryFilters is intentional: company filter only — the EOSB provision balance is a system
         // integrity read over the whole ledger. Tenant re-applied in the WHERE.
         var accrualRows = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
@@ -146,11 +151,17 @@ public static class EosbProvisionLedger
                      && x.SourceModule == FinalSettlementGlDescriptions.SourceModule
                      && x.EventType == GlEventTypes.EosbProvisionAccrual
                      && refs.Contains(x.SourceEntityRef) && !x.IsReversed)
-            .Select(x => new { x.SourceEntityRef, x.CompanyId, x.CreditAccount, x.Currency, x.Amount })
+            .Select(x => new { x.SourceEntityRef, x.CompanyId, x.DebitAccount, x.CreditAccount, x.Currency, x.Amount })
             .ToListAsync(ct);
+        // A RISE in the obligation credits the provision; a FALL (wage cut, service correction) debits it.
+        // Both are per-employee lines (the 5110 side carries the period, never an employee id, so it never
+        // reaches this query), and the fall nets against the same (employee, company, account) position.
         var accruals = accrualRows
             .Where(r => !string.IsNullOrEmpty(r.CreditAccount))
             .Select(r => (r.SourceEntityRef, r.CompanyId, r.CreditAccount, r.Currency, r.Amount))
+            .Concat(accrualRows
+                .Where(r => string.IsNullOrEmpty(r.CreditAccount) && !string.IsNullOrEmpty(r.DebitAccount))
+                .Select(r => (r.SourceEntityRef, r.CompanyId, CreditAccount: r.DebitAccount, r.Currency, Amount: -r.Amount)))
             .ToList();
 
         // ── M2: THE CARRIED PROVISION IS PART OF THIS SUB-LEDGER ────────────────────────────────────

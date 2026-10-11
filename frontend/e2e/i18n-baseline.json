@@ -46,11 +46,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 5599,
+    "hardcoded": 5442,
     "rawStatus": 57,
-    "locale": 214,
+    "locale": 213,
     "icons": 0,
-    "files": 124
+    "files": 118
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -309,25 +309,6 @@
     },
     "src/components/dashboard/dashboardModel.ts": {
       "locale": 9
-    },
-    "src/components/gl/AccountsMappingsPanel.tsx": {
-      "hardcoded": 34
-    },
-    "src/components/gl/CompanyRatesPanel.tsx": {
-      "hardcoded": 27
-    },
-    "src/components/gl/DriverManagerPanel.tsx": {
-      "hardcoded": 50
-    },
-    "src/components/gl/GlSetupPanel.tsx": {
-      "hardcoded": 4
-    },
-    "src/components/gl/StatutoryRatesPanel.tsx": {
-      "hardcoded": 39
-    },
-    "src/components/gl/glUi.tsx": {
-      "hardcoded": 3,
-      "locale": 1
     },
     "src/components/loans/LoanLifecyclePanel.tsx": {
       "hardcoded": 42,

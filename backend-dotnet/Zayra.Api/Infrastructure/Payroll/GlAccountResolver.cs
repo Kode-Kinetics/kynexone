@@ -90,10 +90,64 @@ public sealed record GlResolutionContext(
     /// posting builders emit (a plain FinanceGlEntry dimension, never an amount or account change).</summary>
     public Guid? CompanyId { get; init; }
 
+    /// <summary>
+    /// Configuration faults found while resolving, keyed by driver key: a mapping (or default account)
+    /// that points at an account switched off in the chart, or a SYSTEM posting rule that has been
+    /// switched off. Resolution itself is unchanged (so every non-payroll caller posts exactly as
+    /// before); the payroll Lock and GL preview read this and refuse to post rather than quietly
+    /// falling back to some other account. Empty by default.
+    /// </summary>
+    public IReadOnlyDictionary<string, GlResolutionProblem> Problems { get; init; }
+        = new Dictionary<string, GlResolutionProblem>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The SYSTEM drivers that are switched off (no active row for the key), flattened exactly as an
+    /// active row would be. Routing never sees them; the payroll Lock uses them only to ask "would any
+    /// pay item on THIS run have gone to that rule had it been on?" so a switched-off rule the run
+    /// never touches does not block the month. Empty by default.
+    /// </summary>
+    public IReadOnlyList<GlDriverRow> InactiveSystemDrivers { get; init; } = Array.Empty<GlDriverRow>();
+
     public static readonly GlResolutionContext Empty = new(
         new Dictionary<string, (string, string)>(),
         new Dictionary<string, (string, string)>(),
         Array.Empty<GlDriverRow>());
+}
+
+/// <summary>The kinds of problem the resolver can report for a driver. Stable strings: the GL resolution
+/// API returns them verbatim.</summary>
+public static class GlResolutionProblemKinds
+{
+    /// <summary>Nothing resolves the driver to a real account (no mapping, no default, no built-in).</summary>
+    public const string Unmapped = "Unmapped";
+    /// <summary>The account the driver resolves to exists in the chart but is switched off.</summary>
+    public const string InactiveAccount = "InactiveAccount";
+    /// <summary>The resolved account code is not in this company's chart of accounts. The payroll Lock
+    /// refuses to post a rule the run uses in this state (the ERP would receive an account the chart does
+    /// not have), except for a tenant with no chart at all, which posts the built-in labels as before.</summary>
+    public const string NotInChart = "NotInChart";
+    /// <summary>A system posting rule has been switched off, so its components silently re-route.</summary>
+    public const string InactiveDriver = "InactiveDriver";
+}
+
+/// <summary>One driver's configuration fault, phrased for the person who has to fix it.</summary>
+public sealed record GlResolutionProblem(
+    string DriverKey, string Label, string Kind, string? AccountCode, string? AccountName, string Message);
+
+/// <summary>How one posting driver resolves for a company, and where that answer came from.</summary>
+public sealed record GlDriverResolution(
+    string DriverKey, string Label, string Category, string Side, bool IsSystem,
+    Guid? AccountId, string AccountCode, string AccountName,
+    string Source, bool ExistsInChart, bool IsActive, string? Problem);
+
+/// <summary>Where a resolved account came from, in precedence order.</summary>
+public static class GlResolutionSources
+{
+    public const string CompanyMapping = "CompanyMapping";
+    public const string GroupMapping = "GroupMapping";
+    public const string CompanyDriverDefault = "CompanyDriverDefault";
+    public const string GroupDriverDefault = "GroupDriverDefault";
+    public const string BuiltIn = "BuiltIn";
 }
 
 /// <summary>
@@ -128,58 +182,259 @@ public static class GlAccountResolver
         return $"{code} - {name}";
     }
 
+    // ── Raw configuration, loaded once and read by BOTH LoadAsync and DescribeAsync ─────────────
+    // One loader so the posting path and the "how does each driver resolve?" API can never disagree.
+    private sealed record MappingRow(string DriverKey, Guid? CompanyId, Guid AccountId, string Code, string Name, bool AccountIsActive);
+    private sealed record AccountRow(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive);
+    private sealed record Snapshot(
+        IReadOnlyList<MappingRow> Mappings, IReadOnlyList<GlDriver> Drivers, IReadOnlyList<AccountRow> Accounts);
+
+    private static async Task<Snapshot> LoadSnapshotAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        // Mappings joined to their accounts — INCLUDING switched-off accounts. The join used to filter
+        // a.IsActive, which silently dropped a mapping whose account had been deactivated and let
+        // posting fall back to the driver default: the journal went somewhere nobody chose and nothing
+        // said so. The inactive row is now loaded so it can be REPORTED; see BuildContext.
+        // IgnoreQueryFilters is intentional: GL posting is a SYSTEM read of the company's AND the
+        // tenant-default rows regardless of the caller's claims; the WHERE re-applies exact scope.
+        var mapRows = await db.GlAccountMappings.IgnoreQueryFilters().AsNoTracking()
+            .Where(m => m.TenantId == tenantId && m.IsActive && (m.CompanyId == companyId || m.CompanyId == null))
+            // IgnoreQueryFilters is intentional (both sides of this join): see the LoadAsync summary —
+            // posting must resolve the company's accounts AND the tenant-default accounts regardless of
+            // the caller's claims; the WHERE re-applies exact tenant + company/default scope.
+            .Join(db.GlAccounts.IgnoreQueryFilters().AsNoTracking()
+                    .Where(a => a.TenantId == tenantId && (a.CompanyId == companyId || a.CompanyId == null)),
+                  m => m.AccountId, a => a.Id,
+                  (m, a) => new MappingRow(m.DriverKey, m.CompanyId, a.Id, a.Code, a.Name, a.IsActive))
+            .ToListAsync(ct);
+
+        // IgnoreQueryFilters is intentional: same system-read rationale as the mapping load above —
+        // must see the company drivers AND tenant-default drivers regardless of caller claims.
+        // Inactive rows are loaded too, only so a switched-off SYSTEM driver can be reported.
+        var driverRows = await db.GlDrivers.IgnoreQueryFilters().AsNoTracking()
+            .Where(d => d.TenantId == tenantId && (d.CompanyId == companyId || d.CompanyId == null))
+            .ToListAsync(ct);
+
+        // The chart the company posts into: its own accounts plus the tenant-default (CompanyId == null)
+        // accounts, whatever the caller's own company claims (same system-read rationale as above).
+        var accounts = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.GlAccounts, tenantId,
+                "GL resolution reads the posting company's chart plus the tenant-default chart regardless of the caller's company claims")
+            .AsNoTracking()
+            .Where(a => a.CompanyId == companyId || a.CompanyId == null)
+            .Select(a => new AccountRow(a.Id, a.CompanyId, a.Code, a.Name, a.IsActive))
+            .ToListAsync(ct);
+
+        return new Snapshot(mapRows, driverRows, accounts);
+    }
+
+    /// <summary>Company row beats the tenant row.</summary>
+    private static T CompanyFirst<T>(IEnumerable<T> rows, Func<T, Guid?> company) =>
+        rows.OrderByDescending(r => company(r) != null).First();
+
+    private static AccountRow? ChartAccount(Snapshot s, string code) =>
+        s.Accounts.Where(a => string.Equals(a.Code, code, StringComparison.Ordinal))
+            .OrderByDescending(a => a.CompanyId != null).ThenByDescending(a => a.IsActive).FirstOrDefault();
+
+    private static string DriverLabel(Snapshot s, string key) =>
+        s.Drivers.Where(d => d.Key == key).Select(d => d.Label).FirstOrDefault()
+        ?? PayrollGlCatalog.Drivers.FirstOrDefault(d => d.Key == key)?.Label
+        ?? key;
+
+    private static GlResolutionContext BuildContext(Snapshot s, Guid? companyId)
+    {
+        // Overrides: exactly the pre-existing semantics (active mapping → ACTIVE account, company wins),
+        // so every caller resolves the same label it always did. Faults are reported separately below.
+        var overrides = s.Mappings.Where(m => m.AccountIsActive)
+            .GroupBy(r => r.DriverKey)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var win = CompanyFirst(g, r => r.CompanyId);
+                return (win.Code, win.Name);
+            });
+
+        var activeDrivers = s.Drivers.Where(d => d.IsActive).ToList();
+        // Company driver row wins over the tenant driver row for both routing and default account.
+        var driverDefaults = activeDrivers
+            .GroupBy(d => d.Key)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var win = CompanyFirst(g, d => d.CompanyId);
+                return (win.DefaultCode, win.DefaultName);
+            });
+        var drivers = activeDrivers
+            .GroupBy(d => d.Key)
+            .Select(g => CompanyFirst(g, d => d.CompanyId))
+            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
+                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
+            .ToList();
+
+        // Switched-off SYSTEM keys (no active row at either scope), company row first, as routing rows.
+        var inactiveSystem = s.Drivers.GroupBy(d => d.Key)
+            .Where(g => !g.Any(d => d.IsActive) && g.Any(d => d.IsSystem))
+            .Select(g => CompanyFirst(g.Where(d => d.IsSystem), d => d.CompanyId))
+            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
+                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
+            .ToList();
+
+        var ctx = new GlResolutionContext(overrides, driverDefaults, drivers) { CompanyId = companyId, InactiveSystemDrivers = inactiveSystem };
+        return ctx with { Problems = FindProblems(s, ctx) };
+    }
+
+    /// <summary>
+    /// The faults that make a driver's resolution untrustworthy. Fail CLOSED: the payroll Lock treats
+    /// each of these like an unmapped account and refuses to post.
+    /// <list type="bullet">
+    /// <item><b>InactiveDriver</b> — a SYSTEM driver switched off with no active row for the key. Its
+    /// components then fall through to the catch-all (EARN:BASIC off ⇒ basic salary lands in 5099), so
+    /// the journal still balances while every cost report is wrong.</item>
+    /// <item><b>InactiveAccount</b> — the winning mapping (company beats group, active or not) names an
+    /// account that is switched off, or the driver's default code is an inactive account in the chart.
+    /// Before this the mapping was dropped and posting fell back to the default without a word.</item>
+    /// <item><b>NotInChart</b> — no mapping wins and the driver default (or the built-in default) names
+    /// a code the company's chart does not have, e.g. an account re-coded after the default was set.
+    /// The journal would carry a code the ERP cannot match. NOT reported for a tenant whose chart at
+    /// this scope is completely empty: such a tenant has never set up a chart and has always posted the
+    /// built-in labels, and blocking it would stop every payroll it locks until someone seeds a chart.</item>
+    /// </list>
+    /// </summary>
+    private static IReadOnlyDictionary<string, GlResolutionProblem> FindProblems(Snapshot s, GlResolutionContext ctx)
+    {
+        var problems = new Dictionary<string, GlResolutionProblem>(StringComparer.Ordinal);
+
+        foreach (var g in s.Drivers.GroupBy(d => d.Key))
+        {
+            if (g.Any(d => d.IsActive) || !g.Any(d => d.IsSystem)) continue;
+            var row = CompanyFirst(g, d => d.CompanyId);
+            problems[g.Key] = new GlResolutionProblem(g.Key, row.Label, GlResolutionProblemKinds.InactiveDriver, null, null,
+                $"The built-in posting rule \"{row.Label}\" ({g.Key}) has been switched off, so the pay items it covers would " +
+                "post to a different account without anyone choosing that. Built-in posting rules cannot be switched off: " +
+                "turn it back on in Finance > GL setup, then lock again.");
+        }
+
+        var mappingWinners = s.Mappings
+            .GroupBy(m => m.DriverKey)
+            .ToDictionary(g => g.Key, g => CompanyFirst(g, m => m.CompanyId));
+        var keys = mappingWinners.Keys
+            .Concat(ctx.DriverDefaults.Keys)
+            .Concat(PayrollGlCatalog.Defaults.Keys)
+            .Distinct(StringComparer.Ordinal);
+        foreach (var key in keys)
+        {
+            if (problems.ContainsKey(key)) continue;
+            string? code = null, name = null;
+            if (mappingWinners.TryGetValue(key, out var win))
+            {
+                if (!win.AccountIsActive) { code = win.Code; name = win.Name; }
+            }
+            else
+            {
+                var (rc, rn) = Resolve(key, ctx.Overrides, ctx.DriverDefaults);
+                var acct = string.IsNullOrWhiteSpace(rc) ? null : ChartAccount(s, rc);
+                if (acct is not null && !acct.IsActive) { code = acct.Code; name = string.IsNullOrWhiteSpace(rn) ? acct.Name : rn; }
+                else if (acct is null && s.Accounts.Count > 0 && !IsUnmappedPlaceholder(rc, rn))
+                {
+                    var missingLabel = DriverLabel(s, key);
+                    problems[key] = new GlResolutionProblem(key, missingLabel, GlResolutionProblemKinds.NotInChart, rc, rn,
+                        $"\"{missingLabel}\" ({key}) posts to account {rc} {rn}, which is not in the chart of accounts. " +
+                        $"Add account {rc} to the chart, or map this posting rule to an account that exists, then lock again.");
+                    continue;
+                }
+            }
+            if (code is null) continue;
+            var label = DriverLabel(s, key);
+            problems[key] = new GlResolutionProblem(key, label, GlResolutionProblemKinds.InactiveAccount, code, name,
+                $"\"{label}\" ({key}) posts to account {code} {name}, which is switched off in the chart of accounts. " +
+                "Switch the account back on, or map this posting rule to an active account, then lock again.");
+        }
+        return problems;
+    }
+
+    /// <summary>The "nothing resolves" placeholder (reported as Unmapped, never as NotInChart).</summary>
+    private static bool IsUnmappedPlaceholder(string? code, string? name) =>
+        string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)
+        || code.Equals("UNMAPPED", StringComparison.OrdinalIgnoreCase) || code == "9999"
+        || name.Equals("Unmapped", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Loads the company-first GL resolution context: mapping overrides (company row wins over tenant
-    /// default per driver), the persisted driver defaults (company row → tenant row), and the driver set
-    /// for data-driven routing. IgnoreQueryFilters is intentional and mirrors CompanyTaxPolicyResolver:
+    /// default per driver), the persisted driver defaults (company row → tenant row), the driver set
+    /// for data-driven routing, and any configuration faults (<see cref="GlResolutionContext.Problems"/>).
+    /// IgnoreQueryFilters is intentional and mirrors CompanyTaxPolicyResolver:
     /// GL posting is a SYSTEM read that must see BOTH the company's rows and the tenant-default
     /// (CompanyId == null) rows regardless of the caller's own company claims; the WHERE re-applies exact
     /// tenant + company/default scope and never reads another tenant.
     /// </summary>
     public static async Task<GlResolutionContext> LoadAsync(
         ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct)
+        => BuildContext(await LoadSnapshotAsync(db, tenantId, companyId, ct), companyId);
+
+    /// <summary>
+    /// Every posting driver visible to the company, how it resolves, where the answer came from, and
+    /// what (if anything) is wrong with it. Built from the SAME snapshot and the SAME
+    /// <see cref="Resolve"/> call the posting path uses, so what this reports is what will post.
+    /// </summary>
+    public static async Task<IReadOnlyList<GlDriverResolution>> DescribeAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct)
     {
-        // Mapping overrides joined to active accounts; company-scoped mapping/account beat tenant default.
-        var mapRows = await db.GlAccountMappings.IgnoreQueryFilters().AsNoTracking()
-            .Where(m => m.TenantId == tenantId && m.IsActive && (m.CompanyId == companyId || m.CompanyId == null))
-            // IgnoreQueryFilters is intentional (both sides of this join): see the summary above —
-            // posting must resolve the company's accounts AND the tenant-default accounts regardless of
-            // the caller's claims; the WHERE re-applies exact tenant + company/default scope.
-            .Join(db.GlAccounts.IgnoreQueryFilters().AsNoTracking()
-                    .Where(a => a.TenantId == tenantId && a.IsActive && (a.CompanyId == companyId || a.CompanyId == null)),
-                  m => m.AccountId, a => a.Id,
-                  (m, a) => new { m.DriverKey, m.CompanyId, a.Code, a.Name })
-            .ToListAsync(ct);
-        var overrides = mapRows
-            .GroupBy(r => r.DriverKey)
-            .ToDictionary(g => g.Key, g =>
-            {
-                var win = g.OrderByDescending(r => r.CompanyId != null).First();
-                return (win.Code, win.Name);
-            });
+        var s = await LoadSnapshotAsync(db, tenantId, companyId, ct);
+        var ctx = BuildContext(s, companyId);
 
-        // IgnoreQueryFilters is intentional: same system-read rationale as the mapping load above —
-        // must see the company drivers AND tenant-default drivers regardless of caller claims.
-        var driverRows = await db.GlDrivers.IgnoreQueryFilters().AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.IsActive && (d.CompanyId == companyId || d.CompanyId == null))
-            .ToListAsync(ct);
+        var mappingWinners = s.Mappings
+            .GroupBy(m => m.DriverKey).ToDictionary(g => g.Key, g => CompanyFirst(g, m => m.CompanyId));
 
-        // Company driver row wins over the tenant driver row for both routing and default account.
-        var driverDefaults = driverRows
-            .GroupBy(d => d.Key)
-            .ToDictionary(g => g.Key, g =>
-            {
-                var win = g.OrderByDescending(d => d.CompanyId != null).First();
-                return (win.DefaultCode, win.DefaultName);
-            });
-        var drivers = driverRows
-            .GroupBy(d => d.Key)
-            .Select(g => g.OrderByDescending(d => d.CompanyId != null).First())
-            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
-                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
+        // The driver set: the store (company row wins per key; a key whose rows are all switched off is
+        // still listed so it can be flagged) plus every built-in key the store does not carry.
+        var stored = s.Drivers.GroupBy(d => d.Key)
+            .Select(g => g.Any(d => d.IsActive)
+                ? CompanyFirst(g.Where(d => d.IsActive), d => d.CompanyId)
+                : CompanyFirst(g, d => d.CompanyId))
+            .ToList();
+        var storedKeys = stored.Select(d => d.Key).ToHashSet(StringComparer.Ordinal);
+        var builtIn = PayrollGlCatalog.SystemDriverSeeds(Guid.Empty).Where(d => !storedKeys.Contains(d.Key));
+        var all = stored.Concat(builtIn)
+            .OrderBy(d => d.SortOrder).ThenBy(d => d.Key, StringComparer.Ordinal)
             .ToList();
 
-        return new GlResolutionContext(overrides, driverDefaults, drivers) { CompanyId = companyId };
+        var rows = new List<GlDriverResolution>(all.Count);
+        foreach (var d in all)
+        {
+            var (code, name) = Resolve(d.Key, ctx.Overrides, ctx.DriverDefaults);
+            string source;
+            Guid? accountId;
+            bool existsInChart, isActive;
+            if (mappingWinners.TryGetValue(d.Key, out var m))
+            {
+                // The winning mapping (company beats group). When its account is switched off, report the
+                // account that was actually CHOSEN — not the fallback the posting would quietly have used.
+                source = m.CompanyId != null ? GlResolutionSources.CompanyMapping : GlResolutionSources.GroupMapping;
+                code = m.Code; name = m.Name;
+                accountId = m.AccountId; existsInChart = true; isActive = m.AccountIsActive;
+            }
+            else
+            {
+                var winner = s.Drivers.Where(x => x.Key == d.Key && x.IsActive).OrderByDescending(x => x.CompanyId != null).FirstOrDefault();
+                source = winner is null ? GlResolutionSources.BuiltIn
+                    : winner.CompanyId != null ? GlResolutionSources.CompanyDriverDefault : GlResolutionSources.GroupDriverDefault;
+                var acct = string.IsNullOrWhiteSpace(code) ? null : ChartAccount(s, code);
+                accountId = acct?.Id; existsInChart = acct is not null; isActive = acct?.IsActive ?? false;
+            }
+
+            var unmapped = string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)
+                || code.Equals("UNMAPPED", StringComparison.OrdinalIgnoreCase) || code == "9999"
+                || name.Equals("Unmapped", StringComparison.OrdinalIgnoreCase);
+            string? problem = ctx.Problems.TryGetValue(d.Key, out var p) && p.Kind == GlResolutionProblemKinds.InactiveDriver
+                ? GlResolutionProblemKinds.InactiveDriver
+                : unmapped ? GlResolutionProblemKinds.Unmapped
+                : ctx.Problems.TryGetValue(d.Key, out var p2) ? p2.Kind
+                : !existsInChart ? GlResolutionProblemKinds.NotInChart
+                : null;
+            if (unmapped) { accountId = null; existsInChart = false; isActive = false; }
+
+            rows.Add(new GlDriverResolution(d.Key, d.Label, d.Category, d.PostingSide, d.IsSystem,
+                accountId, code, name, source, existsInChart, isActive, problem));
+        }
+        return rows;
     }
 
     /// <summary>

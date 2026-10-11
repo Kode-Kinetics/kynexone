@@ -79,21 +79,35 @@ public sealed class PeriodHandoffReconciler
         if (!groupScopedCaller) exportQ = exportQ.Where(x => !x.IncludeUnattributed);
         var exports = await exportQ.OrderByDescending(x => x.ExportedAtUtc).ToListAsync(ct);
 
-        var liveExportIds = exports
-            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed)
-            .Select(x => x.Id).ToList();
-        var coveredEntryIds = liveExportIds.Count == 0
-            ? new List<Guid>()
+        // What the ERP holds or was handed, counted ONCE per ledger row. Summing export headers double-counts the
+        // Supplementary / Replacement / per-journal flows: a partly confirmed export's header includes the journals the
+        // ERP REJECTED (those rows go out again in the next file), and a Replacement re-sends the rows of the export it
+        // replaces. So: live exports (Exported / Confirmed / PartiallyConfirmed), minus any export a live Replacement
+        // names (the ERP reversed it), minus each export's rejected journals (owed again); then DISTINCT ledger rows.
+        var liveExports = exports
+            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed or GlJournalExportStatuses.PartiallyConfirmed)
+            .ToList();
+        var replacedIds = liveExports.Where(x => x.ReplacesExportId is not null).Select(x => x.ReplacesExportId!.Value).ToHashSet();
+        var counted = liveExports.Where(x => !replacedIds.Contains(x.Id)).ToList();
+        var liveExportIds = counted.Select(x => x.Id).ToList();
+        var rejectedKeys = counted.ToDictionary(x => x.Id, x => JournalExportBuilder.RejectedJournalKeys(x.JournalConfirmationsJson));
+        var exportedLines = liveExportIds.Count == 0
+            ? new List<(Guid EntryId, string Side, decimal Amount)>()
             // IgnoreQueryFilters is intentional: as above — export lines must tie out across entities.
             // Tenant re-applied.
-            : await _db.GlJournalExportLines.IgnoreQueryFilters().AsNoTracking()
+            : (await _db.GlJournalExportLines.IgnoreQueryFilters().AsNoTracking()
                 .Where(l => l.TenantId == tenantId && liveExportIds.Contains(l.GlJournalExportId))
-                .Select(l => l.FinanceGlEntryId).Distinct().ToListAsync(ct);
+                .Select(l => new { l.GlJournalExportId, l.FinanceGlEntryId, l.Side, l.Amount, l.CompanyCode, l.JournalRef })
+                .ToListAsync(ct))
+                .Where(l => !rejectedKeys[l.GlJournalExportId].Contains(l.CompanyCode + "|" + l.JournalRef))
+                .Select(l => (EntryId: l.FinanceGlEntryId, l.Side, l.Amount))
+                .ToList();
+        var distinctLines = exportedLines.DistinctBy(l => (l.EntryId, l.Side)).ToList();
+        var coveredEntryIds = distinctLines.Select(l => l.EntryId).Distinct().ToList();
 
         var newSince = JournalExportBuilder.NewSinceExport(selection.Entries, coveredEntryIds);
-        var exportedTotal = JournalAmount.Round(exports
-            .Where(x => x.Status is GlJournalExportStatuses.Exported or GlJournalExportStatuses.Confirmed)
-            .Sum(x => x.TotalDebits));
+        // Same arithmetic as postedDr (sum, then round), so a fully handed-over period reconciles to zero.
+        var exportedTotal = JournalAmount.Round(distinctLines.Where(l => l.Side == "DR").Sum(l => l.Amount));
 
         if (exports.Count == 0) blockers.Add("never_exported");
         else if (newSince.Count > 0) blockers.Add("gl_rows_posted_since_last_export");
@@ -101,7 +115,10 @@ public sealed class PeriodHandoffReconciler
         var exportView = new
         {
             count = exports.Count,
-            live = liveExportIds.Count,
+            live = liveExports.Count,
+            // Exports a live Replacement names: the ERP reversed them, so their rows count through the Replacement.
+            replacedExportIds = replacedIds.OrderBy(i => i).ToList(),
+            exportedTotalDebits = exportedTotal,
             latest = exports.FirstOrDefault() is { } latest ? new
             {
                 latest.Id, latest.FormatKey, latest.Currency, latest.FileName, latest.FileHash,
