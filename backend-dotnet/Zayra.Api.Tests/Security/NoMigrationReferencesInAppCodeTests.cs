@@ -14,7 +14,9 @@ namespace Zayra.Api.Tests.Security;
 public class NoMigrationReferencesInAppCodeTests
 {
     private static readonly Regex MigrationReference = new(
-        @"\busing\s+Zayra\.Api\.Migrations\b|\bZayra\.Api\.Migrations\.[A-Z]|(?<![\w.])Migrations\.[A-Z][A-Za-z0-9_]*\.[A-Z]",
+        // Any relatively-qualified migration TYPE counts, with or without member access:
+        // Migrations.X.Name, typeof(Migrations.X), `Migrations.X field;`, new Migrations.X().
+        @"\busing\s+Zayra\.Api\.Migrations\b|\bZayra\.Api\.Migrations\.[A-Z]|(?<![\w.""/])Migrations\.[A-Z]",
         RegexOptions.Compiled);
 
     [Fact]
@@ -44,6 +46,9 @@ public class NoMigrationReferencesInAppCodeTests
     [InlineData("public const string X = Migrations.AddErpCodesAndLiveExportIndex.LiveScopeIndexName;", true)]
     [InlineData("ConstraintName: Zayra.Api.Migrations.AddErpCodesAndLiveExportIndex.ErpCompanyCodeIndexName,", true)]
     [InlineData("using Zayra.Api.Migrations;", true)]
+    [InlineData("var t = typeof(Migrations.AddErpApiKeys);", true)]
+    [InlineData("private readonly Migrations.AddErpApiKeys _m = new();", true)]
+    [InlineData("var x = new Migrations.AddErpApiKeys();", true)]
     [InlineData("var fromAssembly = assemblyMigrations.ToList();", false)]
     [InlineData("if (compiledInMigrations.Count > 0) return null;", false)]
     [InlineData("public const string ResourceName = \"Zayra.Api.Migrations.manifest\";", false)]
