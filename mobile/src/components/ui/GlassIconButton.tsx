@@ -1,68 +1,74 @@
 import React from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { GlassSurface } from './GlassSurface';
 import { MotionPressable } from './MotionPressable';
 import { useTheme } from '@/theme/ThemeProvider';
 
-interface Props {
+export interface GlassIconButtonProps {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   onPress: () => void;
+  /** Required: spoken by VoiceOver/TalkBack (an icon alone has no name). */
   label: string;
+  /** Unread count; shows a dot and is announced. */
   badge?: number;
   style?: StyleProp<ViewStyle>;
+  /** Tint the icon with the brand accent. */
   accent?: boolean;
+  accessibilityHint?: string;
+  testID?: string;
 }
 
-export function GlassIconButton({ icon, onPress, label, badge, style, accent }: Props) {
+const SIZE = 44;
+
+/** Floating control-layer button: real glass, 44pt target, never placed on another glass. */
+export function GlassIconButton({ icon, onPress, label, badge, style, accent, accessibilityHint, testID }: GlassIconButtonProps) {
   const { theme } = useTheme();
+  const { t } = useTranslation();
+  const hasBadge = typeof badge === 'number' && badge > 0;
 
   return (
     <MotionPressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityValue={badge && badge > 0 ? { text: `${badge} unread` } : undefined}
+      accessibilityHint={accessibilityHint}
+      accessibilityValue={hasBadge ? { text: t('kit.unread', { count: badge }) } : undefined}
       onPress={onPress}
+      testID={testID}
       style={style}
       contentStyle={styles.pressable}
-      haptic="selection"
-      dimensional
+      hitSlop={4}
     >
-      <GlassSurface
-        elevated={false}
-        radius={15}
-        interactive
-        contentStyle={styles.content}
-        style={styles.surface}
-      >
+      <GlassSurface interactive radius={SIZE / 2} style={styles.surface} contentStyle={styles.content}>
         <Ionicons
           accessible={false}
           name={icon}
-          size={21}
-          color={accent ? theme.colors.cyan : theme.colors.text}
+          size={20}
+          color={accent ? theme.colors.accent : theme.colors.text}
         />
-        {!!badge && badge > 0 ? (
-          <View style={[styles.badge, { backgroundColor: theme.colors.danger }]}>
-            <Ionicons accessible={false} name="ellipse" size={5} color="#FFFFFF" />
-          </View>
-        ) : null}
       </GlassSurface>
+      {hasBadge ? (
+        <View
+          pointerEvents="none"
+          style={[styles.badge, { backgroundColor: theme.colors.status.danger.fill, borderColor: theme.colors.card }]}
+        />
+      ) : null}
     </MotionPressable>
   );
 }
 
 const styles = StyleSheet.create({
-  pressable: { borderRadius: 15 },
-  surface: { width: 44, height: 44 },
+  pressable: { borderRadius: SIZE / 2 },
+  surface: { width: SIZE, height: SIZE },
   content: { alignItems: 'center', justifyContent: 'center' },
   badge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
+    top: 6,
+    end: 6,
     width: 10,
     height: 10,
     borderRadius: 5,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderWidth: 1.5,
   },
 });

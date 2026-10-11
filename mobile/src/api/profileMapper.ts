@@ -1,8 +1,34 @@
 import type { EmployeeProfile } from '../types';
 
+/**
+ * EssEmployeeProfileDto fields the shared EmployeeProfile type does not carry yet. Optional, and
+ * left undefined when the record has no value — the screen hides what it does not know.
+ */
+export interface EmployeeProfileRecord extends EmployeeProfile {
+  /** Employee.Status: Draft, Invited, Active, Suspended, Offboarded, Archived. */
+  employmentStatus?: string;
+  contractStartDate?: string;
+  contractEndDate?: string;
+  probationEndDate?: string;
+  qid?: string;
+  qidExpiry?: string;
+  civilId?: string;
+  civilIdExpiry?: string;
+  /** The employing company's country (ISO-3166 alpha-2), from the session's companies. */
+  companyCountry?: string;
+}
+
 /** Maps the camel-cased EssEmployeeProfileDto contract to the native model. */
-export function mapEmployeeProfile(raw: Record<string, any>): EmployeeProfile {
+export function mapEmployeeProfile(raw: Record<string, any>): EmployeeProfileRecord {
   return {
+    employmentStatus: raw.status || undefined,
+    contractStartDate: raw.contractStartDate || undefined,
+    contractEndDate: raw.contractEndDate || undefined,
+    probationEndDate: raw.probationEndDate || undefined,
+    qid: raw.qid || undefined,
+    qidExpiry: raw.qidExpiryDate || undefined,
+    civilId: raw.civilId || undefined,
+    civilIdExpiry: raw.civilIdExpiryDate || undefined,
     id: String(raw.id ?? raw.employeeId ?? ''),
     employeeNumber: raw.employeeCode ?? raw.employeeNumber ?? String(raw.id ?? ''),
     fullName: raw.fullName ?? raw.employeeName ?? '',

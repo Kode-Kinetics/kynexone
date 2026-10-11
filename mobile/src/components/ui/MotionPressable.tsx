@@ -1,66 +1,65 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 import {
   Pressable,
   PressableProps,
   StyleProp,
   ViewStyle,
 } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import Animated, {
   interpolate,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import { useTheme } from '@/theme/ThemeProvider';
+import { motion } from '@/theme/motion';
+import { haptics } from '@/utils/haptics';
 
-type Props = Omit<PressableProps, 'style' | 'onPress'> & {
+export type PressHaptic = 'none' | 'selection' | 'commit' | 'light' | 'medium';
+
+export type MotionPressableProps = Omit<PressableProps, 'style' | 'onPress'> & {
   style?: StyleProp<ViewStyle>;
   contentStyle?: StyleProp<ViewStyle>;
   onPress?: PressableProps['onPress'];
-  haptic?: 'none' | 'light' | 'medium' | 'selection';
+  /**
+   * Default 'none': ordinary taps are silent. 'selection' for pickers/tabs, 'commit' for
+   * deliberate actions ('light' / 'medium' are legacy aliases of 'commit').
+   */
+  haptic?: PressHaptic;
+  /** @deprecated No effect — the 3D press tilt was removed. */
   dimensional?: boolean;
 };
 
+/**
+ * Press feedback: scale to 0.97 on a snappy spring. Under Reduce Motion the feedback becomes an
+ * opacity dip instead of disappearing.
+ */
 export function MotionPressable({
   children,
   style,
   contentStyle,
   onPress,
-  haptic = 'light',
-  dimensional = false,
+  haptic = 'none',
+  dimensional: _dimensional,
   disabled,
   ...props
-}: Props) {
+}: MotionPressableProps) {
   const { reduceMotion } = useTheme();
-  const scale = useSharedValue(1);
-  const depth = useSharedValue(0);
+  const pressed = useSharedValue(0);
 
   const animatedStyle = useAnimatedStyle(() => {
-    if (!dimensional) {
-      return { transform: [{ scale: scale.value }] };
+    if (reduceMotion) {
+      return { opacity: interpolate(pressed.value, [0, 1], [1, motion.press.reducedOpacity]) };
     }
-    const tilt = interpolate(depth.value, [0, 1], [0, 1.25]);
-    return {
-      transform: [
-        { perspective: 900 },
-        { translateY: interpolate(depth.value, [0, 1], [0, 1.5]) },
-        { rotateX: `${tilt}deg` },
-        { scale: scale.value },
-      ],
-    };
+    return { transform: [{ scale: interpolate(pressed.value, [0, 1], [1, motion.press.scale]) }] };
   });
-  const runHaptic = useCallback(async () => {
-    if (haptic === 'none') return;
-    if (haptic === 'selection') {
-      await Haptics.selectionAsync();
-      return;
-    }
-    const style = haptic === 'medium'
-      ? Haptics.ImpactFeedbackStyle.Medium
-      : Haptics.ImpactFeedbackStyle.Light;
-    await Haptics.impactAsync(style);
-  }, [haptic]);
+
+  const press = (to: 0 | 1) => {
+    pressed.set(reduceMotion
+      ? withTiming(to, { duration: to ? 60 : motion.durations.fast })
+      : withSpring(to, motion.springs.snappy));
+  };
 
   return (
     <Animated.View style={[style, animatedStyle, disabled && { opacity: 0.55 }]}>
@@ -73,21 +72,16 @@ export function MotionPressable({
         }}
         disabled={disabled}
         onPressIn={(event) => {
-          if (!reduceMotion) {
-            scale.set(withSpring(0.972, { damping: 18, stiffness: 340 }));
-            if (dimensional) depth.set(withSpring(1, { damping: 20, stiffness: 380 }));
-          }
+          press(1);
           props.onPressIn?.(event);
         }}
         onPressOut={(event) => {
-          if (!reduceMotion) {
-            scale.set(withSpring(1, { damping: 16, stiffness: 260 }));
-            if (dimensional) depth.set(withSpring(0, { damping: 17, stiffness: 280 }));
-          }
+          press(0);
           props.onPressOut?.(event);
         }}
         onPress={(event) => {
-          void runHaptic();
+          if (haptic === 'selection') haptics.select();
+          else if (haptic !== 'none') haptics.commit();
           onPress?.(event);
         }}
         style={contentStyle}

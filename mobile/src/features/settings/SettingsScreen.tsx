@@ -22,11 +22,13 @@ import type { AttendanceVerification } from '@/features/attendance/selfieAttenda
 import { useTheme } from '@/theme/ThemeProvider';
 import type { ThemePreference } from '@/theme/tokens';
 import {
-  GlassSurface,
+  DirectionalIcon,
   LiquidBackdrop,
   MotionPressable,
   ScreenHero,
   SectionHeader,
+  SegmentedControl,
+  Surface,
 } from '@/components/ui';
 
 interface SettingRowProps {
@@ -39,6 +41,8 @@ interface SettingRowProps {
   isLast?: boolean;
 }
 
+const BUILD_NUMBER = String(require('../../../app.json').expo.ios?.buildNumber ?? '');
+
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
   const { t, i18n } = useTranslation();
@@ -46,8 +50,12 @@ export default function SettingsScreen() {
   const { theme, preference, setPreference } = useTheme();
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushSaving, setPushSaving] = useState(false);
+  const [pushError, setPushError] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [verification, setVerification] = useState<AttendanceVerification | null>(null);
+  const arabic = i18n.language?.startsWith('ar');
+  const name = (arabic ? user?.fullNameAr : undefined) || user?.fullName || user?.email || '';
+
   // Selfie consent must stay reachable (to withdraw) whenever the tenant uses selfies or a consent is on record.
   useFocusEffect(useCallback(() => {
     let active = true;
@@ -57,17 +65,16 @@ export default function SettingsScreen() {
     return () => { active = false; };
   }, []));
   const showSelfieRow = verification != null && (verification.selfie.enabled || verification.selfie.consent != null);
+
   useEffect(() => {
     let active = true;
     if (!FEATURES.NOTIFICATION_PREFERENCES) return () => { active = false; };
-
     notificationsApi
       .getChannelSwitches()
       .then((settings) => {
         if (active) setPushEnabled(settings.pushEnabled);
       })
       .catch((error) => console.warn('[Settings] Notification preferences unavailable:', error));
-
     return () => { active = false; };
   }, []);
 
@@ -75,27 +82,27 @@ export default function SettingsScreen() {
     const previous = pushEnabled;
     setPushEnabled(enabled);
     setPushSaving(true);
+    setPushError(false);
     try {
       const saved = await notificationsApi.setPushEnabled(enabled);
       setPushEnabled(saved.pushEnabled);
-    } catch (error: any) {
+    } catch {
       setPushEnabled(previous);
-      Alert.alert('Could not update notifications', error?.message ?? 'Please try again.');
+      setPushError(true);
     } finally {
       setPushSaving(false);
     }
   };
 
   const toggleLanguage = async () => {
-    const newLang = i18n.language === 'ar' ? 'en' : 'ar';
+    const newLang = arabic ? 'en' : 'ar';
     // Translates now, persists the choice, and sets the native direction (config/i18n.ts).
     const { restartRequired } = await setLanguage(newLang);
     if (!restartRequired) {
       Alert.alert(t('settings.languageChanged'), newLang === 'ar' ? t('settings.changedToArabic') : t('settings.changedToEnglish'));
       return;
     }
-    // React Native fixes the layout direction per process: Arabic text in a left-to-right layout
-    // (or the reverse) until the app restarts. Offer the restart rather than leave it half-flipped.
+    // React Native fixes the layout direction per process: offer the restart rather than leave it half-flipped.
     Alert.alert(t('settings.restartTitle'), t('settings.restartBody'), [
       { text: t('settings.later'), style: 'cancel' },
       {
@@ -109,124 +116,112 @@ export default function SettingsScreen() {
   };
 
   const handleLogout = () => {
-    Alert.alert('Sign out', 'End this secure session on this device?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(t('more.signOutConfirmTitle'), t('more.signOutConfirmBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
       {
-        text: 'Sign out',
+        text: t('more.signOut'),
         style: 'destructive',
         onPress: async () => {
           setLoggingOut(true);
-          await logout();
-          setLoggingOut(false);
+          try {
+            await logout();
+          } finally {
+            setLoggingOut(false);
+          }
         },
       },
     ]);
   };
+
+  const themeSegments: { key: ThemePreference; label: string }[] = [
+    { key: 'system', label: t('account.settings.themeSystem') },
+    { key: 'light', label: t('account.settings.themeLight') },
+    { key: 'dark', label: t('account.settings.themeDark') },
+  ];
+
+  const version = BUILD_NUMBER
+    ? t('account.settings.versionWithBuild', { version: APP_VERSION, build: BUILD_NUMBER })
+    : APP_VERSION;
+
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
       <LiquidBackdrop subtle />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHero
-          eyebrow="Preferences"
-          title="Settings"
-          subtitle="Security, appearance and communication controls"
+          eyebrow={t('account.settings.eyebrow')}
+          title={t('account.settings.title')}
+          subtitle={t('account.settings.subtitle')}
         />
 
         <View style={styles.section}>
-          <GlassSurface radius={theme.radius.xl} contentStyle={styles.profileCard}>
-            <View style={[styles.avatar, { backgroundColor: theme.colors.primary }]}>
-              <Text style={styles.avatarText}>
-                {(user?.name ?? user?.fullName ?? 'U').charAt(0).toUpperCase()}
+          <Surface contentStyle={styles.profileCard}>
+            <View style={[styles.avatar, { backgroundColor: theme.colors.primaryFill }]}>
+              <Text style={[theme.typography.title3, { color: theme.colors.onFill }]}>
+                {name.trim().charAt(0).toUpperCase()}
               </Text>
             </View>
-            <View style={styles.profileCopy}>
-              <Text style={[theme.typography.h3, { color: theme.colors.text }]}>
-                {user?.name ?? user?.fullName}
-              </Text>
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary, marginTop: 2 }]}>
+            <View style={styles.flex}>
+              <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{name}</Text>
+              <Text style={[theme.typography.footnote, styles.subline, { color: theme.colors.textSecondary }]}>
                 {user?.email}
               </Text>
-              <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 4 }]}>
-                {user?.role}{user?.department ? ` · ${user.department}` : ''}
-              </Text>
             </View>
-            <View style={[styles.securePill, { backgroundColor: `${theme.colors.success}1A` }]}>
-              <Ionicons name="shield-checkmark" size={14} color={theme.colors.success} />
-              <Text style={[theme.typography.micro, { color: theme.colors.success }]}>Secure</Text>
-            </View>
-          </GlassSurface>
+          </Surface>
         </View>
 
         <View style={styles.section}>
-          <SectionHeader title="Appearance" subtitle="Liquid Glass adapts to your preference" />
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.appearanceCard}>
-            <ThemeSelector
-              value={preference}
-              onChange={(next) => void setPreference(next)}
-            />
-          </GlassSurface>
+          <SectionHeader title={t('account.settings.appearance')} />
+          <SegmentedControl
+            segments={themeSegments}
+            value={preference}
+            onChange={(next) => void setPreference(next)}
+          />
         </View>
-        <SettingsSection title="Account">
+
+        <SettingsSection title={t('account.settings.security')}>
           <SettingRow
             icon="key-outline"
-            title="Change password"
-            subtitle="Update your workforce account password"
+            title={t('account.password.title')}
+            subtitle={t('account.settings.passwordSub')}
             onPress={() => navigation.navigate('ChangePassword')}
-          />
-          <SettingRow
-            icon="finger-print-outline"
-            title="Biometric access"
-            subtitle={
-              FEATURES.BIOMETRIC_LOGIN
-                ? 'Use Face ID or device biometrics'
-                : 'Protected biometric sign-in is being finalized'
-            }
-            onPress={FEATURES.BIOMETRIC_LOGIN ? () => undefined : undefined}
             isLast
           />
         </SettingsSection>
 
-        <SettingsSection title="Preferences">
+        <SettingsSection title={t('account.settings.preferences')}>
           <SettingRow
             icon="language-outline"
             title={t('settings.language')}
-            subtitle={i18n.language === 'ar' ? 'العربية' : 'English'}
+            subtitle={arabic ? 'العربية' : 'English'}
             onPress={toggleLanguage}
             rightElement={
-              <View style={[styles.languagePill, { backgroundColor: `${theme.colors.primary}18` }]}>
-                <Text style={[theme.typography.caption, { color: theme.colors.primary, fontWeight: '700' }]}>
-                  {i18n.language === 'ar' ? 'عربي → EN' : 'EN → عربي'}
-                </Text>
-              </View>
+              <Text style={[theme.typography.subheadline, styles.languageSwitch, { color: theme.colors.accent }]}>
+                {arabic ? 'English' : 'العربية'}
+              </Text>
             }
           />
           <SettingRow
             icon="notifications-outline"
-            title="Push notifications"
-            subtitle={
-              FEATURES.NOTIFICATION_PREFERENCES
-                ? 'Real-time alerts and request updates'
-                : 'Managed in device notification settings'
-            }
+            title={t('account.settings.push')}
+            subtitle={pushError
+              ? t('account.settings.pushFailed')
+              : FEATURES.NOTIFICATION_PREFERENCES
+                ? t('account.settings.pushSub')
+                : t('account.settings.pushDevice')}
             rightElement={
               pushSaving ? (
-                <ActivityIndicator color={theme.colors.primary} size="small" />
+                <ActivityIndicator color={theme.colors.accent} size="small" />
               ) : (
                 <Switch
+                  accessibilityLabel={t('account.settings.push')}
                   value={pushEnabled}
                   disabled={!FEATURES.NOTIFICATION_PREFERENCES}
                   onValueChange={(next) => void togglePush(next)}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                  thumbColor="#FFFFFF"
+                  trackColor={{ false: theme.colors.border, true: theme.colors.primaryFill }}
+                  thumbColor={theme.colors.onFill}
                 />
               )
             }
-          />
-          <SettingRow
-            icon="calendar-clear-outline"
-            title="Calendar"
-            subtitle="Gregorian default · Hijri support planned"
-            onPress={() => Alert.alert('Calendar', 'Hijri calendar selection is being prepared for a future release.')}
             isLast={!showSelfieRow}
           />
           {showSelfieRow ? (
@@ -239,235 +234,100 @@ export default function SettingsScreen() {
             />
           ) : null}
         </SettingsSection>
-        <SettingsSection title="About">
-          <SettingRow
-            icon="information-circle-outline"
-            title="App version"
-            subtitle={`${APP_VERSION} · Build ${String(require('../../../app.json').expo.ios?.buildNumber ?? 'dev')}`}
-          />
-          <SettingRow
-            icon="lock-closed-outline"
-            title="Privacy policy"
-            subtitle="Ask your organization for its current privacy policy"
-          />
+
+        <SettingsSection title={t('account.settings.about')}>
+          <SettingRow icon="information-circle-outline" title={t('account.settings.version')} subtitle={version} />
           <SettingRow
             icon="help-buoy-outline"
-            title="Support"
-            subtitle="Contact your HR department or organization support desk"
+            title={t('account.settings.help')}
+            subtitle={t('account.settings.helpSub')}
           />
           <SettingRow
             icon="options-outline"
-            title="Device settings"
-            subtitle="Permissions, notifications and biometrics"
+            title={t('account.settings.deviceSettings')}
+            subtitle={t('account.settings.deviceSettingsSub')}
             onPress={() => void Linking.openSettings()}
             isLast
           />
         </SettingsSection>
 
-        <SettingsSection title="Session">
+        <SettingsSection title={t('more.session')}>
           <SettingRow
             icon="log-out-outline"
-            title={loggingOut ? 'Signing out…' : 'Sign out'}
-            subtitle="Remove the secure session from this device"
+            title={loggingOut ? t('more.signingOut') : t('more.signOut')}
+            subtitle={t('more.signOutBody')}
             destructive
             onPress={loggingOut ? undefined : handleLogout}
-            rightElement={
-              loggingOut ? <ActivityIndicator color={theme.colors.danger} size="small" /> : undefined
-            }
+            rightElement={loggingOut ? <ActivityIndicator color={theme.colors.status.danger.fg} size="small" /> : undefined}
             isLast
           />
         </SettingsSection>
-
-        <View style={styles.tenantInfo}>
-          <Text style={[theme.typography.micro, { color: theme.colors.textMuted }]}>
-            Employee #{user?.employeeId ?? '—'} · Tenant {user?.tenantId ?? '—'}
-          </Text>
-          <Text style={[theme.typography.micro, { color: theme.colors.textMuted, marginTop: 3 }]}>
-            KynexOne Workforce Platform
-          </Text>
-        </View>
       </ScrollView>
     </View>
   );
 }
-function ThemeSelector({
-  value,
-  onChange,
-}: {
-  value: ThemePreference;
-  onChange: (value: ThemePreference) => void;
-}) {
-  const { theme } = useTheme();
-  const options: {
-    value: ThemePreference;
-    label: string;
-    icon: React.ComponentProps<typeof Ionicons>['name'];
-  }[] = [
-    { value: 'system', label: 'System', icon: 'phone-portrait-outline' },
-    { value: 'light', label: 'Light', icon: 'sunny-outline' },
-    { value: 'dark', label: 'Dark', icon: 'moon-outline' },
-  ];
 
-  return (
-    <View style={styles.themeRow}>
-      {options.map((option) => {
-        const selected = value === option.value;
-        return (
-          <MotionPressable
-            key={option.value}
-            onPress={() => onChange(option.value)}
-            haptic="selection"
-            style={styles.themeOptionShell}
-            contentStyle={[
-              styles.themeOption,
-              {
-                backgroundColor: selected ? `${theme.colors.primary}1F` : theme.colors.surfaceSoft,
-                borderColor: selected ? theme.colors.primary : theme.colors.border,
-              },
-            ]}
-            accessibilityRole="radio"
-            accessibilityLabel={`${option.label} appearance`}
-            accessibilityState={{ selected }}
-          >
-            <Ionicons
-              name={option.icon}
-              size={19}
-              color={selected ? theme.colors.primary : theme.colors.textMuted}
-            />
-            <Text
-              style={[
-                theme.typography.caption,
-                {
-                  color: selected ? theme.colors.text : theme.colors.textSecondary,
-                  fontWeight: selected ? '700' : '500',
-                },
-              ]}
-            >
-              {option.label}
-            </Text>
-          </MotionPressable>
-        );
-      })}
-    </View>
-  );
-}
 function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {
-  const { theme } = useTheme();
   return (
     <View style={styles.section}>
       <SectionHeader title={title} />
-      <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.rowsCard}>
-        {children}
-      </GlassSurface>
+      <Surface contentStyle={styles.rowsCard}>{children}</Surface>
     </View>
   );
 }
 
-function SettingRow({
-  icon,
-  title,
-  subtitle,
-  onPress,
-  rightElement,
-  destructive,
-  isLast,
-}: SettingRowProps) {
+function SettingRow({ icon, title, subtitle, onPress, rightElement, destructive, isLast }: SettingRowProps) {
   const { theme } = useTheme();
-  const accent = destructive ? theme.colors.danger : theme.colors.primary;
+  const tone = destructive ? theme.colors.status.danger : null;
 
+  const body = (
+    <View
+      style={[
+        styles.settingRow,
+        !isLast && { borderBottomColor: theme.colors.hairline, borderBottomWidth: StyleSheet.hairlineWidth },
+      ]}
+    >
+      <View style={[styles.settingIcon, { backgroundColor: tone ? tone.tint : theme.colors.surfaceInset }]}>
+        <Ionicons accessible={false} name={icon} size={20} color={tone ? tone.fg : theme.colors.accent} />
+      </View>
+      <View style={styles.flex}>
+        <Text style={[theme.typography.callout, styles.rowTitle, { color: tone ? tone.fg : theme.colors.text }]}>{title}</Text>
+        {subtitle ? (
+          <Text style={[theme.typography.footnote, styles.subline, { color: theme.colors.textSecondary }]}>{subtitle}</Text>
+        ) : null}
+      </View>
+      {rightElement ?? (onPress ? <DirectionalIcon name="chevron" size={18} color={theme.colors.textMuted} /> : null)}
+    </View>
+  );
+
+  if (!onPress) {
+    // Information rows are read as one sentence; rows holding a control leave the control focusable.
+    return rightElement ? body : (
+      <View accessible accessibilityLabel={[title, subtitle].filter(Boolean).join('. ')}>{body}</View>
+    );
+  }
   return (
     <MotionPressable
       onPress={onPress}
-      disabled={!onPress && !rightElement}
-      haptic={onPress ? 'selection' : 'none'}
-      contentStyle={styles.rowPressable}
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={onPress ? [title, subtitle].filter(Boolean).join('. ') : undefined}
+      accessibilityRole="button"
+      accessibilityLabel={[title, subtitle].filter(Boolean).join('. ')}
     >
-      <View
-        style={[
-          styles.settingRow,
-          !isLast && {
-            borderBottomColor: theme.colors.divider,
-            borderBottomWidth: StyleSheet.hairlineWidth,
-          },
-        ]}
-      >
-        <View style={[styles.settingIcon, { backgroundColor: `${accent}17` }]}>
-          <Ionicons name={icon} size={20} color={accent} />
-        </View>
-        <View style={styles.settingCopy}>
-          <Text
-            style={[
-              theme.typography.bodyStrong,
-              { color: destructive ? theme.colors.danger : theme.colors.text },
-            ]}
-          >
-            {title}
-          </Text>
-          {subtitle ? (
-            <Text style={[theme.typography.caption, { color: theme.colors.textMuted, marginTop: 2 }]}>
-              {subtitle}
-            </Text>
-          ) : null}
-        </View>
-        {rightElement ?? (onPress ? (
-          <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
-        ) : null)}
-      </View>
+      {body}
     </MotionPressable>
   );
 }
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { paddingBottom: 38 },
+  content: { paddingBottom: 32 },
   section: { paddingHorizontal: 16, marginTop: 16 },
-  profileCard: { flexDirection: 'row', alignItems: 'center', gap: 13, padding: 16 },
-  avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: { color: '#FFFFFF', fontSize: 21, fontWeight: '800' },
-  profileCopy: { flex: 1, minWidth: 0 },
-  securePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  appearanceCard: { padding: 12 },
-  themeRow: { flexDirection: 'row', gap: 8 },
-  themeOptionShell: { flex: 1 },
-  themeOption: {
-    minHeight: 72,
-    borderRadius: 17,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
+  profileCard: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 },
+  avatar: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
+  flex: { flex: 1, minWidth: 0 },
+  subline: { marginTop: 2 },
   rowsCard: { paddingHorizontal: 14 },
-  rowPressable: { borderRadius: 18 },
-  settingRow: {
-    minHeight: 72,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 11,
-  },
-  settingIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingCopy: { flex: 1, minWidth: 0 },
-  languagePill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 11 },
-  tenantInfo: { marginTop: 24, alignItems: 'center', paddingHorizontal: 16 },
+  settingRow: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  settingIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  rowTitle: { fontWeight: '600' },
+  languageSwitch: { fontWeight: '600' },
 });

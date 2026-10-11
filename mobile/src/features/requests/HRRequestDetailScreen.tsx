@@ -1,472 +1,316 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useRoute } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { hrRequestsApi } from '@/api/adapters';
 import type { HRRequest } from '@/types';
-import { formatDate } from '@/utils/date';
 import { useAuthStore } from '@/auth/authStore';
+import { useTheme } from '@/theme/ThemeProvider';
+import { useFormat } from '@/utils/format';
+import { haptics } from '@/utils/haptics';
 import {
-  GlassSurface,
   LiquidBackdrop,
   MotionPressable,
   ScreenHero,
-  SectionHeader,
+  SkeletonCard,
+  StateCard,
+  StatusPill,
+  StickyFooter,
+  Surface,
 } from '@/components/ui';
-import { useTheme } from '@/theme/ThemeProvider';
+import { useRequestStatus, useRequestSubject, useRequestTypeLabel } from './HRRequestsScreen';
 
-const STATUS_STEPS = ['Open', 'InProgress', 'Resolved', 'Closed'];
+const STEPS: HRRequest['status'][] = ['Open', 'InProgress', 'Resolved', 'Closed'];
+
+/** Server responseStatus (English) → translation key. */
+function responseKey(value?: string): 'closed' | 'responded' | 'overdue' | 'awaiting' | null {
+  const v = (value ?? '').toLowerCase();
+  if (!v) return null;
+  if (v.startsWith('closed')) return 'closed';
+  if (v.startsWith('responded')) return 'responded';
+  if (v.startsWith('overdue')) return 'overdue';
+  if (v.startsWith('awaiting')) return 'awaiting';
+  return null;
+}
 
 export default function HRRequestDetailScreen() {
   const route = useRoute<any>();
-  const navigation = useNavigation();
   const { theme, reduceMotion } = useTheme();
+  const { t } = useTranslation();
+  const f = useFormat();
+  const typeLabel = useRequestTypeLabel();
+  const subjectLabel = useRequestSubject();
+  const statusOf = useRequestStatus();
   const { user } = useAuthStore();
   const { id } = route.params as { id: string };
   const scrollRef = useRef<ScrollView>(null);
 
   const [request, setRequest] = useState<HRRequest | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [comment, setComment] = useState('');
   const [sending, setSending] = useState(false);
-  const [completionMessage, setCompletionMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
       setRequest(await hrRequestsApi.getDetail(id));
-    } catch (error: any) {
-      Alert.alert('Could not load request', error?.message || 'Please try again.');
-      navigation.goBack();
-    } finally {
-      setLoading(false);
+      setState('ready');
+    } catch {
+      setState((s) => (s === 'ready' ? s : 'failed'));
     }
-  }, [id, navigation]);
+  }, [id]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const sendComment = async () => {
-    const message = comment.trim();
-    if (!message || sending) return;
-
+  const send = async () => {
+    const text = comment.trim();
+    if (!text || sending) return;
     setSending(true);
+    setMessage(null);
     try {
-      await hrRequestsApi.addComment(id, message);
+      await hrRequestsApi.addComment(id, text);
       setComment('');
+      haptics.success();
+      setMessage({ ok: true, text: t('manager.hr.detail.sent') });
       await load();
-      setCompletionMessage('Comment sent.');
-      requestAnimationFrame(() => {
-        scrollRef.current?.scrollToEnd({ animated: !reduceMotion });
-      });
-    } catch (error: any) {
-      Alert.alert('Could not send comment', error?.message || 'Please try again.');
+      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: !reduceMotion }));
+    } catch {
+      haptics.error();
+      setMessage({ ok: false, text: t('manager.hr.detail.sendError') });
     } finally {
       setSending(false);
     }
   };
 
-  if (loading) {
+  if (!request) {
     return (
-      <View style={[styles.loadingRoot, { backgroundColor: theme.colors.canvas }]}>
+      <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
         <LiquidBackdrop subtle />
-        <GlassSurface
-          accessibilityRole="progressbar"
-          accessibilityLabel="Loading HR request"
-          accessibilityLiveRegion="polite"
-          radius={theme.radius.xl}
-          contentStyle={styles.loadingCard}
-        >
-          <ActivityIndicator color={theme.colors.primary} />
-          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
-            Loading request…
-          </Text>
-        </GlassSurface>
+        <ScreenHero title={t('manager.hr.title')} />
+        <View style={styles.content}>
+          {state === 'failed' ? (
+            <StateCard
+              variant="error"
+              title={t('manager.hr.detail.errorTitle')}
+              onRetry={() => {
+                setState('loading');
+                void load();
+              }}
+            />
+          ) : (
+            <>
+              <SkeletonCard lines={2} />
+              <SkeletonCard lines={4} />
+            </>
+          )}
+        </View>
       </View>
     );
   }
 
-  if (!request) return null;
-
-  const canComment = !['Closed', 'Resolved', 'Cancelled'].includes(request.status);
+  const open = request.status === 'Open' || request.status === 'InProgress';
+  const status = statusOf(request.status);
+  const stepIndex = Math.max(0, STEPS.indexOf(request.status));
+  const response = responseKey(request.responseStatus);
+  const tx = t as unknown as (k: string) => string;
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.root, { backgroundColor: theme.colors.canvas }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    <KeyboardAvoidingView style={[styles.root, { backgroundColor: theme.colors.canvas }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <LiquidBackdrop subtle />
       <ScrollView
         ref={scrollRef}
-        contentContainerStyle={[styles.scroll, canComment && styles.scrollWithComposer]}
+        contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         showsVerticalScrollIndicator={false}
       >
         <ScreenHero
-          eyebrow={request.ticketNumber ? 'Request #' + request.ticketNumber : 'HR request'}
-          title={request.subject}
-          subtitle={request.requestType}
-          onBack={() => navigation.goBack()}
+          eyebrow={request.ticketNumber ? t('manager.hr.detail.requestNo', { number: request.ticketNumber }) : typeLabel(request.requestType)}
+          title={subjectLabel(request.subject)}
         />
-
         <View style={styles.content}>
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.statusCard}>
-            <SectionHeader title="Status" subtitle="Request progress" />
-            <Timeline status={request.status} />
-          </GlassSurface>
+          <View style={styles.pills}>
+            <StatusPill tone={status.tone} label={status.label} />
+            {request.slaBreached && open ? <StatusPill tone="danger" label={t('manager.hr.breached')} /> : null}
+          </View>
 
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.detailsCard}>
-            {[
-              { label: 'Type', value: request.requestType },
-              { label: 'Submitted', value: formatDate(request.createdAt, 'dateTime') },
-              { label: 'Assigned to', value: request.assignedTo },
-              { label: 'Response', value: request.responseStatus ?? request.slaStatus },
-            ]
-              .filter((row) => row.value)
-              .map((row) => (
-                <DetailRow key={row.label} label={row.label} value={String(row.value)} />
-              ))}
-          </GlassSurface>
-
-          <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.descriptionCard}>
-            <Text style={[theme.typography.bodyStrong, { color: theme.colors.text }]}>
-              Description
-            </Text>
-            <Text style={[theme.typography.body, styles.description, { color: theme.colors.textSecondary }]}>
-              {request.description}
-            </Text>
-          </GlassSurface>
-
-          {request.comments && request.comments.length > 0 ? (
-            <View>
-              <SectionHeader title="Conversation" subtitle={request.comments.length + ' messages'} />
-              <View style={styles.thread}>
-                {request.comments.map((entry) => {
-                  const isMe = String(entry.authorId ?? '') === String(user?.employeeId ?? '');
+          {request.status !== 'Cancelled' ? (
+            <Surface contentStyle={styles.card}>
+              <Text accessibilityRole="header" style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.hr.detail.progress')}</Text>
+              <View accessible accessibilityLabel={t('manager.hr.detail.progressA11y', { status: status.label })}>
+                {STEPS.map((step, i) => {
+                  const done = i < stepIndex;
+                  const current = i === stepIndex;
                   return (
-                    <View
-                      key={entry.id}
-                      style={[
-                        styles.messageWrap,
-                        isMe ? styles.messageWrapMine : styles.messageWrapOther,
-                      ]}
-                    >
-                      <GlassSurface
-                        elevated={false}
-                        radius={18}
-                        style={styles.messageSurface}
-                        contentStyle={styles.message}
-                        tintColor={
-                          isMe
-                            ? theme.isDark
-                              ? 'rgba(47,107,255,0.28)'
-                              : 'rgba(47,107,255,0.15)'
-                            : undefined
-                        }
-                      >
-                        {!isMe ? (
-                          <Text style={[theme.typography.micro, styles.author, { color: theme.colors.primary }]}>
-                            {entry.authorName}
-                          </Text>
+                    <View key={step} style={styles.step}>
+                      <View style={styles.rail}>
+                        <View
+                          style={[
+                            styles.dot,
+                            { backgroundColor: current ? theme.colors.primaryFill : done ? theme.colors.status.success.fill : theme.colors.surfaceInset },
+                          ]}
+                        >
+                          {done ? <Ionicons accessible={false} name="checkmark" size={13} color={theme.colors.onFill} /> : null}
+                        </View>
+                        {i < STEPS.length - 1 ? (
+                          <View style={[styles.line, { backgroundColor: done ? theme.colors.status.success.fill : theme.colors.hairline }]} />
                         ) : null}
-                        <Text style={[theme.typography.body, { color: theme.colors.text }]}>
-                          {entry.content ?? entry.message}
+                      </View>
+                      <View style={styles.stepCopy}>
+                        <Text style={[theme.typography.callout, { color: done || current ? theme.colors.text : theme.colors.textMuted }]}>
+                          {tx(`manager.hr.status.${step}`)}
                         </Text>
-                      </GlassSurface>
-                      <Text
-                        style={[
-                          theme.typography.micro,
-                          styles.messageTime,
-                          isMe && styles.messageTimeMine,
-                          { color: theme.colors.textMuted },
-                        ]}
-                      >
-                        {formatDate(entry.createdAt, 'time')}
-                      </Text>
+                        {current ? (
+                          <Text style={[theme.typography.footnote, { color: theme.colors.accent }]}>{t('manager.hr.detail.current')}</Text>
+                        ) : null}
+                      </View>
                     </View>
                   );
                 })}
               </View>
+            </Surface>
+          ) : null}
+
+          <Surface contentStyle={styles.facts}>
+            <Fact label={t('manager.hr.detail.type')} value={typeLabel(request.requestType)} />
+            {request.createdAt ? <Fact label={t('manager.hr.detail.submitted')} value={f.dateTime(request.createdAt)} /> : null}
+            {request.assignedTo ? <Fact label={t('manager.hr.detail.assignedTo')} value={request.assignedTo} /> : null}
+            {response ? <Fact label={t('manager.hr.detail.response')} value={tx(`manager.hr.response.${response}`)} last /> : null}
+          </Surface>
+
+          {request.description ? (
+            <Surface contentStyle={styles.card}>
+              <Text accessibilityRole="header" style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.hr.detail.details')}</Text>
+              <Text style={[theme.typography.callout, { color: theme.colors.textSecondary }]}>{request.description}</Text>
+            </Surface>
+          ) : null}
+
+          <Text accessibilityRole="header" style={[theme.typography.title3, { color: theme.colors.text }]}>{t('manager.hr.detail.conversation')}</Text>
+          {request.comments?.length ? (
+            <View style={styles.thread}>
+              {request.comments.map((entry) => {
+                const mine = String(entry.authorId ?? '') !== '' && String(entry.authorId) === String(user?.employeeId ?? '');
+                const author = mine
+                  ? t('manager.hr.detail.you')
+                  : entry.authorRole === 'HR' && (!entry.authorName || entry.authorName === 'HR')
+                    ? t('manager.hr.detail.hr')
+                    : entry.authorName;
+                return (
+                  <View key={entry.id} style={[styles.bubbleWrap, mine ? styles.mine : styles.theirs]}>
+                    <Surface
+                      level={mine ? 0 : 1}
+                      tintColor={mine ? theme.colors.status.info.tint : undefined}
+                      radius={16}
+                      contentStyle={styles.bubble}
+                    >
+                      <Text style={[theme.typography.footnote, styles.semibold, { color: mine ? theme.colors.textSecondary : theme.colors.accent }]}>
+                        {author}
+                      </Text>
+                      <Text style={[theme.typography.callout, { color: theme.colors.text }]}>{entry.content ?? entry.message}</Text>
+                    </Surface>
+                    <Text style={[theme.typography.caption, styles.time, { color: theme.colors.textMuted }]}>{f.dateTime(entry.createdAt)}</Text>
+                  </View>
+                );
+              })}
             </View>
           ) : (
-            <GlassSurface elevated={false} radius={theme.radius.xl} contentStyle={styles.emptyConversation}>
-              <Ionicons name="chatbubbles-outline" size={22} color={theme.colors.textMuted} />
-              <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
-                No conversation yet.
-              </Text>
-            </GlassSurface>
+            <Surface level={0} contentStyle={styles.card}>
+              <Text style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>{t('manager.hr.detail.noConversation')}</Text>
+            </Surface>
           )}
+          {!open ? (
+            <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{t('manager.hr.detail.closedNote')}</Text>
+          ) : null}
         </View>
       </ScrollView>
 
-      {canComment ? (
-        <View
-          style={[
-            styles.composerShell,
-            {
-              backgroundColor: theme.colors.canvas,
-              borderTopColor: theme.colors.divider,
-            },
-          ]}
-        >
-          {completionMessage ? (
-            <Animated.View
-              entering={reduceMotion ? undefined : FadeInDown.duration(200)}
-              exiting={reduceMotion ? undefined : FadeOutUp.duration(140)}
-              style={styles.completionWrap}
+      {open ? (
+        <StickyFooter>
+          {message ? (
+            <Text
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              style={[theme.typography.footnote, { color: message.ok ? theme.colors.status.success.fg : theme.colors.status.danger.fg }]}
             >
-              <View
-                accessibilityRole="alert"
-                accessibilityLiveRegion="polite"
-                style={[styles.completionBanner, { backgroundColor: theme.colors.surfaceStrong }]}
-              >
-                <Ionicons name="checkmark-circle" size={20} color={theme.colors.success} />
-                <Text style={[theme.typography.caption, styles.completionText, { color: theme.colors.text }]}>
-                  {completionMessage}
-                </Text>
-                <MotionPressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Dismiss comment confirmation"
-                  onPress={() => setCompletionMessage(null)}
-                  haptic="selection"
-                  contentStyle={styles.completionDismiss}
-                >
-                  <Ionicons name="close" size={17} color={theme.colors.textMuted} />
-                </MotionPressable>
-              </View>
-            </Animated.View>
+              {message.text}
+            </Text>
           ) : null}
-          <GlassSurface
-            elevated={false}
-            radius={22}
-            style={styles.composerSurface}
-            contentStyle={styles.composer}
-          >
+          <View style={styles.composer}>
             <TextInput
               value={comment}
               onChangeText={setComment}
-              placeholder="Add a comment…"
+              placeholder={t('manager.hr.detail.replyPlaceholder')}
+              accessibilityLabel={t('manager.hr.detail.replyLabel')}
               placeholderTextColor={theme.colors.textMuted}
+              selectionColor={theme.colors.accent}
               multiline
               maxLength={2000}
-              accessibilityLabel="Comment"
               style={[
-                theme.typography.body,
-                styles.commentInput,
-                { color: theme.colors.text },
+                theme.typography.callout,
+                styles.input,
+                { color: theme.colors.text, backgroundColor: theme.colors.surfaceInset, borderColor: theme.colors.hairline },
               ]}
             />
             <MotionPressable
               accessibilityRole="button"
-              accessibilityLabel="Send comment"
+              accessibilityLabel={t('manager.hr.detail.send')}
               accessibilityState={{ disabled: sending || !comment.trim(), busy: sending }}
-              onPress={() => void sendComment()}
               disabled={sending || !comment.trim()}
-              haptic="medium"
+              haptic="commit"
+              onPress={() => void send()}
               contentStyle={[
-                styles.sendButton,
-                {
-                  backgroundColor: comment.trim()
-                    ? theme.colors.primary
-                    : theme.colors.surfaceMuted,
-                },
+                styles.send,
+                { backgroundColor: comment.trim() ? theme.colors.primaryFill : theme.colors.surfaceInset },
               ]}
             >
-              {sending ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Ionicons name="arrow-up" size={20} color="#FFFFFF" />
-              )}
+              <Ionicons
+                accessible={false}
+                name="arrow-up"
+                size={20}
+                color={comment.trim() ? theme.colors.onFill : theme.colors.textMuted}
+              />
             </MotionPressable>
-          </GlassSurface>
-        </View>
+          </View>
+        </StickyFooter>
       ) : null}
     </KeyboardAvoidingView>
   );
 }
 
-function Timeline({ status }: { status: string }) {
-  const { theme } = useTheme();
-  const currentIndex = STATUS_STEPS.indexOf(status);
-  const normalizedIndex = currentIndex >= 0 ? currentIndex : 0;
-
-  return (
-    <View
-      accessible
-      accessibilityLabel={`Current request status: ${humanizeStatus(status)}`}
-      accessibilityLiveRegion="polite"
-      style={styles.timeline}
-    >
-      {STATUS_STEPS.map((step, index) => {
-        const complete = index < normalizedIndex;
-        const active = index === normalizedIndex;
-        const reached = index <= normalizedIndex;
-        return (
-          <View key={step} style={styles.timelineItem}>
-            <View style={styles.timelineRail}>
-              <View
-                style={[
-                  styles.timelineDot,
-                  {
-                    backgroundColor: active
-                      ? theme.colors.primary
-                      : complete
-                        ? theme.colors.success
-                        : theme.colors.surfaceMuted,
-                  },
-                ]}
-              >
-                <Ionicons
-                  name={complete ? 'checkmark' : active ? 'ellipse' : 'ellipse-outline'}
-                  size={complete ? 14 : 10}
-                  color={reached ? '#FFFFFF' : theme.colors.textMuted}
-                />
-              </View>
-              {index < STATUS_STEPS.length - 1 ? (
-                <View
-                  style={[
-                    styles.timelineLine,
-                    {
-                      backgroundColor: complete
-                        ? theme.colors.success
-                        : theme.colors.divider,
-                    },
-                  ]}
-                />
-              ) : null}
-            </View>
-            <View style={styles.timelineCopy}>
-              <Text
-                style={[
-                  theme.typography.bodyStrong,
-                  { color: reached ? theme.colors.text : theme.colors.textMuted },
-                ]}
-              >
-                {humanizeStatus(step)}
-              </Text>
-              {active ? (
-                <Text style={[theme.typography.micro, { color: theme.colors.primary }]}>
-                  Current status
-                </Text>
-              ) : null}
-            </View>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
+function Fact({ label, value, last }: { label: string; value: string; last?: boolean }) {
   const { theme } = useTheme();
   return (
-    <View style={[styles.detailRow, { borderBottomColor: theme.colors.divider }]}>
-      <Text style={[theme.typography.caption, styles.detailLabel, { color: theme.colors.textSecondary }]}>
-        {label}
-      </Text>
-      <Text style={[theme.typography.caption, styles.detailValue, { color: theme.colors.text }]}>
-        {value}
-      </Text>
+    <View accessible style={[styles.fact, !last && { borderBottomColor: theme.colors.hairline, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+      <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{label}</Text>
+      <Text style={[theme.typography.callout, { color: theme.colors.text }]}>{value}</Text>
     </View>
   );
-}
-
-function humanizeStatus(status: string) {
-  return status.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  loadingRoot: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  loadingCard: { minWidth: 220, minHeight: 130, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  scroll: { paddingBottom: 34 },
-  scrollWithComposer: { paddingBottom: 118 },
-  content: { paddingHorizontal: 16, paddingTop: 12, gap: 14 },
-  statusCard: { padding: 16 },
-  timeline: { paddingTop: 2 },
-  timelineItem: { minHeight: 52, flexDirection: 'row' },
-  timelineRail: { width: 34, alignItems: 'center' },
-  timelineDot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  timelineLine: { width: 2, flex: 1, minHeight: 20 },
-  timelineCopy: { flex: 1, minWidth: 0, paddingTop: 3, paddingBottom: 13, gap: 1 },
-  detailsCard: { paddingHorizontal: 15, paddingVertical: 5 },
-  detailRow: {
-    minHeight: 48,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingVertical: 9,
-  },
-  detailLabel: { flexShrink: 0 },
-  detailValue: { flex: 1, textAlign: 'right', fontWeight: '600' },
-  descriptionCard: { padding: 16 },
-  description: { marginTop: 7, lineHeight: 21 },
+  scroll: { paddingBottom: 24 },
+  content: { paddingHorizontal: 16, gap: 14 },
+  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  card: { padding: 16, gap: 8 },
+  facts: { paddingHorizontal: 16 },
+  fact: { paddingVertical: 10, gap: 2 },
+  step: { flexDirection: 'row', minHeight: 44 },
+  rail: { width: 30, alignItems: 'center' },
+  dot: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  line: { width: 2, flex: 1, minHeight: 14 },
+  stepCopy: { flex: 1, paddingBottom: 10, paddingStart: 6 },
+  semibold: { fontWeight: '600' },
   thread: { gap: 10 },
-  messageWrap: { maxWidth: '86%' },
-  messageWrapMine: { alignSelf: 'flex-end' },
-  messageWrapOther: { alignSelf: 'flex-start' },
-  messageSurface: { maxWidth: '100%' },
-  message: { paddingHorizontal: 13, paddingVertical: 11, gap: 4 },
-  author: { fontWeight: '800' },
-  messageTime: { marginTop: 3, marginLeft: 5 },
-  messageTimeMine: { alignSelf: 'flex-end', marginRight: 5 },
-  emptyConversation: {
-    minHeight: 74,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  composerShell: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
-  },
-  composerSurface: { width: '100%' },
-  completionWrap: { paddingBottom: 7 },
-  completionBanner: { minHeight: 44, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 12, paddingRight: 4 },
-  completionText: { flex: 1 },
-  completionDismiss: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  composer: {
-    minHeight: 54,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-    paddingLeft: 14,
-    paddingRight: 7,
-    paddingVertical: 7,
-  },
-  commentInput: { flex: 1, minHeight: 40, maxHeight: 104, paddingVertical: 9 },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  bubbleWrap: { maxWidth: '86%', gap: 3 },
+  mine: { alignSelf: 'flex-end' },
+  theirs: { alignSelf: 'flex-start' },
+  bubble: { paddingHorizontal: 12, paddingVertical: 10, gap: 3 },
+  time: { paddingHorizontal: 4 },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  input: { flex: 1, minHeight: 44, maxHeight: 120, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 10, textAlign: 'auto' },
+  send: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
 });

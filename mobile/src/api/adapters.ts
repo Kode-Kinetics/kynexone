@@ -17,31 +17,26 @@ import {
 
 // ─── Overtime ─────────────────────────────────────────────────────────────────
 export const overtimeApi = {
-  create: (payload: { date: string; startTime: string; endTime: string; reason: string }) =>
-    _overtimeApi.submitOTRequest(payload),
+  create: (payload: {
+    date: string;
+    startTime: string;
+    endTime: string;
+    reason: string;
+    endsNextDay: boolean;
+    timeZone: string;
+  }) => _overtimeApi.submitOTRequest(payload),
 
-  getMy: async (params: { page: number; limit: number }) => {
-    const items = await _overtimeApi.getMyOTRequests();
-    return { items: items ?? [] };
-  },
+  getMy: async () => ({ items: (await _overtimeApi.getMyOTRequests()) ?? [] }),
 
-  // There is no server-side preview endpoint; duration is derived client-side
-  // (overnight blocks wrap past midnight, matching submitOTRequest).
-  calculate: async (payload: { date: string; startTime: string; endTime: string }) => {
-    const [sh, sm] = payload.startTime.split(':').map(Number);
-    const [eh, em] = payload.endTime.split(':').map(Number);
-    let minutes = eh * 60 + em - (sh * 60 + sm);
-    if (minutes <= 0) minutes += 24 * 60;
-    return { hours: minutes / 60, estimatedAmount: undefined as number | undefined };
-  },
+  /** null when the policy is unknown (none, or more than one active). */
+  getPolicyLimits: () => _overtimeApi.getPolicyLimits(),
+
+  getMyPay: () => _overtimeApi.getMyPay(),
 };
 
 // ─── Payslips ─────────────────────────────────────────────────────────────────
 export const payslipApi = {
-  getList: async (params: { page: number; limit: number }) => {
-    const items = await _payslipApi.getPayslips();
-    return { items: items ?? [] };
-  },
+  getList: async () => ({ items: (await _payslipApi.getPayslips()) ?? [] }),
 
   getDetail: (id: string) => _payslipApi.getPayslipDetail(id),
 
