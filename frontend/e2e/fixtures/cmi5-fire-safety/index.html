@@ -44,8 +44,22 @@
 // A minimal, conformant cmi5 AU: fetch → LMS.LaunchData → initialized → progressed → passed/failed → completed → terminated.
 (function () {
   const params = new URLSearchParams(location.search);
-  const endpoint = params.get('endpoint');
-  const fetchUrl = params.get('fetch');
+  // TEST FIXTURE: this unit only ever talks to the disposable KynexOne stack the learning journey starts. The launch
+  // URL's endpoint and fetch parameters must point at an allow-listed origin, and the request URLs are rebuilt from that
+  // constant origin and the fixed KynexOne paths, so a crafted launch link cannot send the unit's requests elsewhere.
+  const ALLOWED_LRS_ORIGINS = ['http://127.0.0.1:5211', 'http://localhost:5211'];
+  const allowedOrigin = (raw) => {
+    let origin;
+    try { origin = new URL(raw).origin; } catch { return null; }
+    const i = ALLOWED_LRS_ORIGINS.indexOf(origin);
+    return i < 0 ? null : ALLOWED_LRS_ORIGINS[i];
+  };
+  const lrsOrigin = allowedOrigin(params.get('endpoint'));
+  const rawFetch = params.get('fetch') || '';
+  const fetchToken = (rawFetch.split('/api/learning/cmi5/fetch/')[1] || '').split(/[?#]/)[0];
+  const tokenOk = /^[A-Za-z0-9_-]{1,100}$/.test(fetchToken) && allowedOrigin(rawFetch) === lrsOrigin;
+  const endpoint = lrsOrigin ? lrsOrigin + '/api/learning/xapi/' : null;
+  const fetchUrl = lrsOrigin && tokenOk ? lrsOrigin + '/api/learning/cmi5/fetch/' + encodeURIComponent(fetchToken) : null;
   const actor = JSON.parse(params.get('actor') || 'null');
   const registration = params.get('registration');
   const activityId = params.get('activityId');
@@ -87,7 +101,7 @@
   let slide = 0;
 
   async function start() {
-    if (!endpoint || !fetchUrl || !actor || !registration || !activityId) throw new Error('Launch parameters are missing. Open this unit from KynexOne.');
+    if (!endpoint || !fetchUrl || !actor || !registration || !activityId) throw new Error('Launch parameters are missing or point outside the test stack. Open this unit from KynexOne.');
     const f = await fetch(fetchUrl, { method: 'POST' });
     const token = await f.json();
     if (!f.ok || !token['auth-token']) throw new Error('Could not get a session token (' + (token['error-text'] || f.status) + ').');
