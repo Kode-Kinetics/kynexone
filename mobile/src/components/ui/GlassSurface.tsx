@@ -107,38 +107,42 @@ export function GlassSurface({
     );
   }
 
+  // The shadow sits on an outer view and the clipping (overflow: hidden) on an inner one: iOS clips a
+  // view's own shadow when that view clips its content, so the raised fallback would otherwise lose it.
+  // The inner views use flexGrow (not flex: 1) so they fill a fixed-size caller yet keep their natural
+  // height inside an auto-height parent — flex: 1's zero basis collapsed the selfie capture panel.
   return (
-    <View
-      style={[
-        styles.clip,
-        solid && elevated ? theme.shadows.raised : undefined,
-        {
-          borderRadius: resolvedRadius,
-          borderColor: theme.colors.hairline,
-          backgroundColor: solid ? theme.colors.chromeSolid : 'transparent',
-        },
-        style,
-      ]}
-      {...viewProps}
-    >
-      {!solid ? (
-        <BlurView
-          pointerEvents="none"
-          style={StyleSheet.absoluteFill}
-          intensity={intensity}
-          tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
-        />
-      ) : null}
-      {tintColor && !solid ? (
-        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
-      ) : null}
-      <View style={[styles.content, contentStyle]}>{children}</View>
+    <View style={[solid && elevated ? theme.shadows.raised : undefined, { borderRadius: resolvedRadius }, style]} {...viewProps}>
+      <View
+        style={[
+          styles.clip,
+          {
+            borderRadius: resolvedRadius,
+            borderColor: theme.colors.hairline,
+            backgroundColor: solid ? theme.colors.chromeSolid : 'transparent',
+          },
+        ]}
+      >
+        {!solid ? (
+          <BlurView
+            pointerEvents="none"
+            style={StyleSheet.absoluteFill}
+            intensity={intensity}
+            tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
+          />
+        ) : null}
+        {tintColor && !solid ? (
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
+        ) : null}
+        <View style={[styles.content, contentStyle]}>{children}</View>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   clip: {
+    flexGrow: 1,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
   },
