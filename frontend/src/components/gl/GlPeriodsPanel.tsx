@@ -67,7 +67,12 @@ export function GlPeriodsPanel({ companyId = null }: { companyId?: string | null
   const closeGroupWide = (key: string, period: string, reason?: string) =>
     act(key, () => financeErpApi.closePeriod(period, null, reason), () => {
       setConfirmingGroupClose(null);
-      if (key === 'close-new') { setNewPeriod(''); setCloseReason(''); }
+      // Clear the form only if it still shows the month just closed: a user who has already typed the
+      // next month while the request was in flight must not have it wiped.
+      if (key === 'close-new') {
+        setNewPeriod(cur => (cur === period ? '' : cur));
+        setCloseReason(cur => (cur === (reason ?? '') ? '' : cur));
+      }
     });
 
   return (
@@ -101,7 +106,11 @@ export function GlPeriodsPanel({ companyId = null }: { companyId?: string | null
         <button type="button" className="btn-primary text-xs" disabled={!newPeriod || !!busy}
           onClick={() => newScope === null
             ? setConfirmingGroupClose({ key: 'close-new', period: newPeriod, reason: closeReason })
-            : act('close-new', () => financeErpApi.closePeriod(newPeriod, newScope, closeReason), () => { setNewPeriod(''); setCloseReason(''); })}>
+            : act('close-new', () => financeErpApi.closePeriod(newPeriod, newScope, closeReason), () => {
+                const sent = newPeriod, sentReason = closeReason;
+                setNewPeriod(cur => (cur === sent ? '' : cur));
+                setCloseReason(cur => (cur === sentReason ? '' : cur));
+              })}>
           {busy === 'close-new' ? t('Closing…') : newScope === null ? t('Close for all companies') : t('Close month')}
         </button>
       </div>

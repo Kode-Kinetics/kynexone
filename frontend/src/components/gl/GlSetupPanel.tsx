@@ -250,7 +250,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
             tabIndex={activeTab === id ? 0 : -1}
             onClick={() => setActive(id)}
             onKeyDown={(e) => onTabKey(e, index)}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-shadow ${
               activeTab === id
                 ? 'bg-sapphire text-white shadow-sm'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.10] dark:hover:text-slate-200'
