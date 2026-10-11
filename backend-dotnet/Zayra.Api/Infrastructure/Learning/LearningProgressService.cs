@@ -7,6 +7,15 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Learning;
 
+/// <summary>
+/// Notified after a learning assignment's completion has committed (LRN → other modules, e.g. SUC development-plan actions
+/// linked to the assignment). Register with DI; every registration is called. Implementations must be idempotent.
+/// </summary>
+public interface ILearningAssignmentCompletedListener
+{
+    Task OnAssignmentCompletedAsync(Guid tenantId, Guid assignmentId, CancellationToken ct);
+}
+
 // ── Contracts ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 public static class LearningNextActions
@@ -470,8 +479,21 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             await audit.WriteAsync("learning.credential.issued", nameof(LearningCredential), credential.Id.ToString(), request,
                 JsonSerializer.Serialize(new { credential.EmployeeId, credential.CertificateNumber, credential.CourseCode, credential.ExpiresOn, credential.SupersedesCredentialId }), ct);
         if (assignment.Status == LearningAssignmentStatuses.Completed)
+        {
             await audit.WriteAsync("learning.assignment.completed", nameof(LearningAssignment), assignment.Id.ToString(), request,
                 JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, assignment.Cycle }), ct);
+            // After the completion committed: modules that follow an assignment (SUC development-plan actions) hear about it.
+            // A listener failure never undoes the learner's completion; listeners also reconcile on read and in their sweep.
+            foreach (var listener in services.GetServices<ILearningAssignmentCompletedListener>())
+            {
+                try { await listener.OnAssignmentCompletedAsync(assignment.TenantId, assignment.Id, ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    services.GetService<ILogger<LearningProgressService>>()?.LogWarning(
+                        "Learning: a completion listener failed for assignment {AssignmentId} ({Error}).", assignment.Id, ex.GetType().Name);
+                }
+            }
+        }
     }
 
     private async Task<string> UniqueCertificateNumberAsync(Guid tenantId, DateTime now, CancellationToken ct)

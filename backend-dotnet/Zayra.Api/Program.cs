@@ -599,6 +599,9 @@ Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddRelease
 // LRN — learning management: every registration (services, sweep worker, the cmi5 CORS provider) in one extension.
 // Gated per tenant by the learning opt-in flag (OptInFeatures).
 Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearning(builder.Services, builder.Configuration);
+// SUC — succession and career development: services, the eligibility sweep, the LRN completion listener and the retention
+// rule, in one extension. Gated per tenant by the succession opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Succession.SuccessionServiceCollectionExtensions.AddSuccession(builder.Services, builder.Configuration);
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall

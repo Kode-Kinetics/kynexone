@@ -1292,6 +1292,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<LearningCredential> LearningCredentials => Set<LearningCredential>();
     public DbSet<LearningLaunchSession> LearningLaunchSessions => Set<LearningLaunchSession>();
     public DbSet<LearningXapiStatement> LearningXapiStatements => Set<LearningXapiStatement>();
+    // ── SUC — Succession and career development (capability closure SUC-01..09; mapped in Models/SuccessionModelConfiguration.cs) ──
+    public DbSet<SuccessionCriticalPosition> SuccessionCriticalPositions => Set<SuccessionCriticalPosition>();
+    public DbSet<TalentPool> TalentPools => Set<TalentPool>();
+    public DbSet<SuccessionNomination> SuccessionNominations => Set<SuccessionNomination>();
+    public DbSet<TalentAssessment> TalentAssessments => Set<TalentAssessment>();
+    public DbSet<SuccessionSlateVersion> SuccessionSlateVersions => Set<SuccessionSlateVersion>();
+    public DbSet<DevelopmentPlan> DevelopmentPlans => Set<DevelopmentPlan>();
+    public DbSet<DevelopmentPlanAction> DevelopmentPlanActions => Set<DevelopmentPlanAction>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -4641,6 +4649,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
         // LRN — learning management (same append-only convention).
         LearningModelConfiguration.Configure(modelBuilder);
+        // SUC — succession and career development (same append-only convention).
+        SuccessionModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

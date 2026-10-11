@@ -143,6 +143,18 @@ public static class FeatureKeys
     /// is being rolled out. See OptInFeatures.
     /// </summary>
     public const string Learning = "learning";
+    /// <summary>
+    /// Succession and career development (SUC: critical positions, talent pools, nominations, talent review and 9-box,
+    /// slates, development plans). OPT-IN: an absent row means OFF. Switched on per tenant by the platform team
+    /// (PUT /api/platform/tenants/{id}/features/succession). See OptInFeatures.
+    /// </summary>
+    public const string Succession = "succession";
+    /// <summary>
+    /// SUC: lets an employee see, in self-service, the talent pools and nominations they belong to (never other
+    /// candidates, never a slate or a 9-box placement). OPT-IN, default OFF; owns no route — EssDevelopmentPlanController
+    /// reads it. See OptInFeatures.
+    /// </summary>
+    public const string SuccessionCandidateVisibility = "succession_candidate_visibility";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

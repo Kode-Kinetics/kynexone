@@ -11,6 +11,7 @@ import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
+import { SlateApprovalLink } from '../components/succession/SlateApprovalLink';
 import { leaveRequestsApi } from '../api/leave';
 import type { StatutoryLeaveContext } from '../api/leave';
 
@@ -343,6 +344,7 @@ export function ApprovalsPage() {
                   </td>
                   <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
                   <td className="px-4 py-3">
+                    <SlateApprovalLink request={r} />
                     {r.status === 'Pending' && r.canDecide && (
                       <button type="button" onClick={() => { setSelected(r); setComments(''); setDecisionError(''); }}
                         className="btn-secondary h-8 px-3 text-xs">

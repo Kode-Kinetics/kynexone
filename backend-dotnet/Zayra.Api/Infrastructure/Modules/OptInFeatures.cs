@@ -49,6 +49,15 @@ public static class OptInFeatures
                 "/api/learning",
                 "/api/ess/learning",
             ],
+            // Succession and career development. The employee's own development plan is under /api/ess, classified by
+            // Self-Service, and closed with the rest of the module while the flag is off.
+            [FeatureKeys.Succession] =
+            [
+                "/api/succession",
+                "/api/ess/development-plan",
+            ],
+            // Candidate visibility owns no route: the ESS development-plan read checks it (default OFF).
+            [FeatureKeys.SuccessionCandidateVisibility] = [],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

@@ -9,6 +9,7 @@ import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
 import { learning } from './learning';
+import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
@@ -1401,6 +1402,8 @@ const en: Dict = {
   ...releaseA.en,
   // LRN — learning management (./learning).
   ...learning.en,
+  // SUC — succession and career development (./succession).
+  ...succession.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -2778,6 +2781,8 @@ const ar: Dict = {
   ...releaseA.ar,
   // LRN — learning management (./learning).
   ...learning.ar,
+  // SUC — succession and career development (./succession).
+  ...succession.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

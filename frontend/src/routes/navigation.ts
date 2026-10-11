@@ -30,6 +30,7 @@ import {
   HeartPulse,
   FileSpreadsheet,
   GraduationCap,
+  Sprout,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
@@ -75,6 +76,9 @@ export const navigationGroups: NavGroup[] = [
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
       // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
+      // SUC (succession opt-in flag): critical positions, talent review, slates and development plans. Every succession key
+      // but the employee's own opens it; the page shows each audience its own tabs (a manager: nominations and plans only).
+      { label: 'Succession', icon: Sprout, path: '/performance/succession', requiredPermissions: ['succession.read', 'succession.positions.manage', 'succession.pools.manage', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read'], requiredFeatureKey: 'succession' },
       { label: 'Learning', icon: GraduationCap, path: '/learning', requiredPermissions: ['learning.read', 'learning.manage', 'learning.assign', 'learning.report', 'learning.records.correct'], requiredFeatureKey: 'learning' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
@@ -141,6 +145,7 @@ export const navigationHints: Record<string, string> = {
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
+  '/performance/succession': 'Critical positions and their successors, gaps first: who is ready, who is being developed, and what is missing.',
   '/learning': 'Courses, learning paths, mandatory training and certificates — who has done what, and what is due.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
   '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',

@@ -397,7 +397,9 @@ public static class ModuleCatalog
             LabelEn = "Performance",
             LabelAr = "الأداء",
             Description = "Goals, review cycles, appraisals, probation and calibration.",
-            RoutePrefixes = ["/api/performance"],
+            // Succession (SUC) is the talent-review half of Performance: same module, same nav, so switching
+            // Performance off closes it too. The succession opt-in flag (OptInFeatures) is what opens it per tenant.
+            RoutePrefixes = ["/api/performance", "/api/succession"],
             NavPaths = ["/performance"],
         },
         new ModuleDefinition
@@ -527,6 +529,14 @@ public static class ModuleCatalog
                 "Learning management (courses, paths, mandatory training, certificates, cmi5) is an opt-in feature "
                 + "switched on per tenant by the platform team while it is being rolled out. It is off unless enabled, "
                 + "and Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.Succession] =
+                "Succession and career development (critical positions, talent pools, talent review and 9-box, slates, "
+                + "development plans) is an opt-in feature switched on per tenant by the platform team while it is being "
+                + "rolled out. It is off unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.SuccessionCandidateVisibility] =
+                "Whether employees see their own talent-pool memberships and nominations in self-service. An opt-in "
+                + "setting (default off) the platform team switches per tenant; it is read inside the self-service "
+                + "development-plan view, not a module of its own.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

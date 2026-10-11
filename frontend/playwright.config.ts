@@ -20,7 +20,7 @@ export default defineConfig({
   // "the seeded period ties out" assertions then measure a tenant the evidence run has moved. Both
   // failures showed up together on the first CI run of this branch; this is their single cause.
   // learning-journey needs its own disposable stack plus the cmi5 sample unit on :5411 (playwright.learning-journey.config.ts).
-  testIgnore: [/security-gate\//, /evidence\//, /learning-journey\.spec\.ts/],
+  testIgnore: [/security-gate\//, /evidence\//, /learning-journey\.spec\.ts/, /succession-journey\.spec\.ts/],
   fullyParallel: false,
   // A stray `test.only` would otherwise shrink this 130-test lane to ONE test in CI, silently.
   // playwright.security.config.ts has had this; this config did not — the same "a guard exists in
@@ -71,6 +71,7 @@ export default defineConfig({
         // payroll story is collected into THIS project, with retries:1, ahead of gosi-filing.
         /evidence\//,
         /learning-journey\.spec\.ts/,
+        /succession-journey\.spec\.ts/,
       ],
     },
     // ── Mobile web ────────────────────────────────────────────────────────────────────────────

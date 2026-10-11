@@ -61,8 +61,8 @@ const AR_SAME_ALLOWED: Record<string, string> = {
   Kody: 'the assistant’s product name',
 };
 
-/** Not a sentence fragment even though it matches the shape: namespaced machine keys. */
-const NAMESPACED = /^(enum|error)\./;
+/** Not a sentence fragment even though it matches the shape: namespaced machine keys (suc. = succession, src/i18n/succession.ts). */
+const NAMESPACED = /^(enum|error|suc)\./;
 
 /** Formatting is the formatter's job; its own locale literals are the point of it. */
 const LOCALE_RATCHET_EXCLUDED = new Set(['src/lib/format.ts']);
