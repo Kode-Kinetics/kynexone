@@ -77,7 +77,7 @@ test.afterAll(async () => {
   try { commit = execSync('git rev-parse HEAD', { cwd: __dirname }).toString().trim(); } catch { /* not a git checkout */ }
   const health = await (await fetch(`${world.apiBase}/health/live`)).json().catch(() => ({}));
   await writeFile(path.join(EVIDENCE, 'journey-log.json'), JSON.stringify({
-    run: RUN, checkoutCommit: commit, apiBuildCommit: (health as any).commit ?? null, browser: 'Google Chrome (channel chrome), headed',
+    run: RUN, checkoutCommit: commit, backendBuild: (health as any).commit ?? null, browser: 'Google Chrome (channel chrome), headed',
     tenantA: world.tenantA, tenantB: world.tenantB, departments: world.departments, employees: world.employees,
     personas: { hr: world.logins.hr.email, manager: world.logins.manager.email, ops1: world.logins.ops1.email, ops2: world.logins.ops2.email, tenantB: world.logins.tenantBAdmin.email },
     steps,

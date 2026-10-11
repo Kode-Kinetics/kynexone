@@ -135,9 +135,11 @@ public sealed class LearningXapiController(LearningCmi5Service cmi5) : Controlle
 
     private async Task<Zayra.Api.Models.LearningLaunchSession> AuthenticateAsync(CancellationToken ct)
     {
+        // Authenticate first, unconditionally; the version header is checked only on an authenticated call.
+        var session = await cmi5.AuthenticateAsync(Request.Headers.Authorization.ToString(), Request.Headers.Origin.ToString(), ct);
         var version = Request.Headers["X-Experience-API-Version"].ToString();
         if (!version.StartsWith("1.0", StringComparison.Ordinal))
             throw new Cmi5Exception(400, "xapi_version_required", "Send the X-Experience-API-Version header (1.0.x).");
-        return await cmi5.AuthenticateAsync(Request.Headers.Authorization.ToString(), Request.Headers.Origin.ToString(), ct);
+        return session;
     }
 }

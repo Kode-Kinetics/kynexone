@@ -1,7 +1,7 @@
 {
   "run": "10112015",
   "checkoutCommit": "bd9bc40ab15c5589884fbc2b3b2da06b48732469",
-  "apiBuildCommit": "bd9bc40ab15c5589884fbc2b3b2da06b48732469",
+  "backendBuild": "bd9bc40ab15c5589884fbc2b3b2da06b48732469",
   "browser": "Google Chrome (channel chrome), headed",
   "tenantA": {
     "id": "fc48268f-3c20-46f0-9987-73e57c5212d9",
