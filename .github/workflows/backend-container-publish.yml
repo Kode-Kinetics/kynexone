@@ -1,0 +1,26 @@
+name: Backend container publish
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'backend-dotnet/**'
+      - '.github/workflows/backend-container-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish-trimmed-runtime:
+    name: Publish the production container build stage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build root Dockerfile without publishing an image
+        run: docker build --target build -f Dockerfile -t kynexone-container-publish-check .
