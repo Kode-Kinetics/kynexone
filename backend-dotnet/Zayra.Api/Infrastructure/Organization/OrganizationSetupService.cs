@@ -791,7 +791,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException
             {
                 SqlState: Npgsql.PostgresErrorCodes.UniqueViolation,
-                ConstraintName: Zayra.Api.Migrations.AddErpCodesAndLiveExportIndex.ErpCompanyCodeIndexName,
+                ConstraintName: Zayra.Api.Data.DatabaseIndexNames.CompanyTenantErpCode,
             })
         {
             throw new EmailDomainRefusedException("erp_company_code_taken", 409,
