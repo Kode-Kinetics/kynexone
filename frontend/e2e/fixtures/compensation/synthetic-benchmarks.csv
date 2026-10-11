@@ -1,0 +1,4 @@
+# SYNTHETIC — NOT MARKET DATA. Invented test values for the KynexOne CMP e2e journey only. Never use for pay decisions.
+job_family,level,sample_size,p25,p50,p75,p90
+Engineering,L1,40,5800.00,6500.00,7200.00,8000.00
+Operations,L1,25,6900.00,7400.00,8100.00,8800.00

@@ -137,6 +137,11 @@ public static class FeatureKeys
     /// selfies (not biometric, so no DPIA gate); settings in ConfigJson (PunchGeofenceConfig). Platform-switched.
     /// </summary>
     public const string PunchGeofence = "attendance_geofence";
+    /// <summary>
+    /// CMP — merit planning, pay benchmarking and pay equity. OPT-IN: an absent row means OFF; switched on per tenant by the
+    /// platform team (PUT /api/platform/tenants/{id}/features/compensation). See OptInFeatures.
+    /// </summary>
+    public const string Compensation = "compensation";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

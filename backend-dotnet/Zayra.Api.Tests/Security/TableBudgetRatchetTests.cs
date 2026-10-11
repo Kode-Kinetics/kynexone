@@ -93,7 +93,15 @@ public class TableBudgetRatchetTests
         // EosbProvisionSnapshots + GlAdjustmentRequests (POD-C2, owner-approved): the per-employee EOSB obligation
         // witness behind the monthly provision, and one maker-checker table for the EOSB true-up and the legacy
         // 2104/2105 reclass. Finance owns both; kept as long as the GL lines they explain.
-        DeclaredDbSets().Should().HaveCount(335,
+        // CMP merit planning (AddMeritPlanning, +8; cap 7 + one written exception — CMP_DESIGN.md): CompCycles (a planning
+        // round: period, effective date, currency, eligibility, lifecycle), CompCycleBudgets (per-department pool in
+        // cycle currency), CompGuidelines (rating × compa-ratio band → min/target/max %), CompFxRates (the product's first
+        // FX table: rate, source, date, entered by), CompWorksheets (the approval subject: manager × scenario, status,
+        // revision — the exception), CompWorksheetLines (the award and what the approver saw; one applied award per
+        // cycle × employee), PayBenchmarkSets (customer-owned survey import with provenance and licence) and
+        // PayBenchmarkRows (percentiles + designation/grade mapping). HR owns all eight; Finance reads budgets. Kept as
+        // long as the salary rows the awards produced. No existing table holds any of these facts.
+        DeclaredDbSets().Should().HaveCount(343,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

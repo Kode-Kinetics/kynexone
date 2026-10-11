@@ -389,6 +389,7 @@ public class ConfigurationConsumerTests
         {
             "BenefitAdditionalGrant", // AdditionalBenefitGrants.SubmitAsync -> CreateApprovalAsync
             "BenefitClaim",           // BenefitClaims.SubmitAsync
+            "CompensationWorksheet",  // MeritPlanningService.SubmitWorksheetAsync -> CreateRequestAsync
             "EmployeeChangeRequest",  // EmployeesController governed-change submission
             "JawazatRequest",         // JawazatWorkflowService.CreateAsync
             "LeaveRequest",           // LeaveService.BuildApprovalProjection

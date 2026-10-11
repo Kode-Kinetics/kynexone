@@ -535,6 +535,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
+        // CMP: merit worksheet SoD beyond the subject bar (no employee on the worksheet decides it) + reject needs a reason.
+        await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ValidateDecisionAsync(_db, approval, requestedDecision, context, Clean(request.Comments), cancellationToken);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
         {
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
@@ -608,6 +610,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: a returned merit worksheet goes back to its manager for revision. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
         }
         else if (step.IsFinalStep)
         {
@@ -627,6 +631,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: the final approval locks the merit worksheet. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
         }
         else
         {

@@ -71,7 +71,11 @@ public static class EmployeeSalaryBreakdownChanges
         var richerContract = await db.EmployeeSalaryStructures.AnyAsync(s => s.TenantId == employee.TenantId && s.EmployeeId == employee.Id
             && s.IsActive && s.EffectiveDate == salary.EffectiveDate && (s.HousingBasis != AllowanceBases.Amount
                 || s.TransportBasis != AllowanceBases.Amount || s.QiwaConfirmedOn != null || s.RenewalCaseId != null), ct);
-        if (richerContract) throw new InvalidOperationException("This salary has allowance-basis or confirmed contract details. Update it through Compensation or its contract renewal workflow.");
+        // Not "update it through Compensation": merit planning refuses these rows too. The governed salary change (the
+        // employee's change request, approved in Approvals) can take a different effective date; the renewal owns the rest.
+        if (richerContract) throw new InvalidOperationException(
+            $"The salary dated {salary.EffectiveDate:yyyy-MM-dd} has a percent-of-basic or in-kind allowance, or a Qiwa-confirmed contract, so an amount-only package cannot replace it on that date. "
+            + "Request the change as a governed salary change with a different effective date (approved in Approvals), or through the contract renewal workflow.");
     }
 
     public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct)

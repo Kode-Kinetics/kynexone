@@ -266,6 +266,13 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         if (SeparatedStatuses.Contains(employee.Status))
             return await ReturnForReviewAsync(context, "employee_separated", $"employee is now {employee.Status}",
                 $"The employee's status is now {employee.Status}. Confirm the change should still take effect.", ct);
+        // The module that raised the change has the last word on whether it still applies (e.g. a merit award for
+        // someone who went on notice after it was scheduled). Nothing has been written yet.
+        foreach (var gate in services.GetServices<IEffectiveChangeGate>())
+        {
+            if (await gate.CheckAsync(db, tenantId, change, employee, localToday, ct) is { } refusal)
+                return Cancel(context, refusal.ReasonCode, refusal.Reason) with { NotifyUserId = refusal.NotifyUserId ?? change.ApprovedByUserId };
+        }
         if (changes is null)
             return await ReturnForReviewAsync(context, "unreadable_change", "the stored change could not be read",
                 "The stored change could not be read, so it was not applied.", ct);

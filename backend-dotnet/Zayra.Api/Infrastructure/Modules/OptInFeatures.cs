@@ -41,6 +41,12 @@ public static class OptInFeatures
             ],
             // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
             [FeatureKeys.PunchGeofence] = [],
+            // CMP: merit cycles, worksheets, benchmarks and pay equity. The awards it schedules are ordinary employee change
+            // requests, so switching the flag off never strands a scheduled award: the effective-date job still applies it.
+            [FeatureKeys.Compensation] =
+            [
+                "/api/compensation/merit",
+            ],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

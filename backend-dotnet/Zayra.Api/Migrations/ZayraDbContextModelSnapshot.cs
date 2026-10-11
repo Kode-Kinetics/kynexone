@@ -6175,6 +6175,402 @@ namespace Zayra.Api.Migrations
                     b.ToTable("client_rate_definitions", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.CompCycle", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AppliedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("applied_at_utc");
+
+                    b.Property<Guid?>("AppliedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("applied_by_user_id");
+
+                    b.Property<DateTime?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at_utc");
+
+                    b.Property<Guid?>("ApprovedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by_user_id");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("cancel_reason");
+
+                    b.Property<string>("RetroAcknowledgedPeriods")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("retro_acknowledged_periods");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at_utc");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cancelled_by_user_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateOnly>("EffectiveDate")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_date");
+
+                    b.Property<string>("EligibilityFiltersJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("eligibility_filters_json");
+
+                    b.Property<string>("EligibleStatuses")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("eligible_statuses");
+
+                    b.Property<bool>("EquityIncludesNationality")
+                        .HasColumnType("boolean")
+                        .HasColumnName("equity_includes_nationality");
+
+                    b.Property<DateOnly?>("HireDateCutoff")
+                        .HasColumnType("date")
+                        .HasColumnName("hire_date_cutoff");
+
+                    b.Property<int>("MinimumEligibleDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("minimum_eligible_days");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PayComponent")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("pay_component");
+
+                    b.Property<DateOnly>("PerformancePeriodEnd")
+                        .HasColumnType("date")
+                        .HasColumnName("performance_period_end");
+
+                    b.Property<DateOnly>("PerformancePeriodStart")
+                        .HasColumnType("date")
+                        .HasColumnName("performance_period_start");
+
+                    b.Property<DateTime?>("PlanningOpenedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("planning_opened_at_utc");
+
+                    b.Property<Guid?>("PlanningOpenedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("planning_opened_by_user_id");
+
+                    b.Property<string>("ProrationRule")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("proration_rule");
+
+                    b.Property<DateTime?>("ReviewStartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("review_started_at_utc");
+
+                    b.Property<Guid?>("ReviewStartedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("review_started_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "EffectiveDate");
+
+                    b.ToTable("comp_cycles", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_cycles__company_required", "company_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_comp_cycles__currency", "length(currency) = 3 AND upper(currency) = currency");
+
+                            t.HasCheckConstraint("ck_comp_cycles__min_days", "minimum_eligible_days >= 0");
+
+                            t.HasCheckConstraint("ck_comp_cycles__pay_component_basic", "pay_component = 'Basic'");
+
+                            t.HasCheckConstraint("ck_comp_cycles__period_order", "performance_period_end >= performance_period_start");
+
+                            t.HasCheckConstraint("ck_comp_cycles__proration_rule", "proration_rule IN ('None','EligibleDays')");
+
+                            t.HasCheckConstraint("ck_comp_cycles__status", "status IN ('Draft','Planning','Review','Approved','Applied','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompCycleBudget", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid>("CycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cycle_id");
+
+                    b.Property<Guid>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
+
+                    b.Property<decimal?>("FixedAmount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("fixed_amount");
+
+                    b.Property<decimal?>("PoolPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("pool_percent");
+
+                    b.Property<string>("PoolType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("pool_type");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DepartmentId");
+
+                    b.HasIndex("CycleId", "DepartmentId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.ToTable("comp_cycle_budgets", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_cycle_budgets__pool_type", "pool_type IN ('PercentOfEligibleBasic','FixedAmount')");
+
+                            t.HasCheckConstraint("ck_comp_cycle_budgets__pool_value", "(pool_type = 'PercentOfEligibleBasic' AND pool_percent IS NOT NULL AND pool_percent >= 0 AND pool_percent <= 100 AND fixed_amount IS NULL) OR (pool_type = 'FixedAmount' AND fixed_amount IS NOT NULL AND fixed_amount >= 0 AND pool_percent IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompFxRate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("CycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cycle_id");
+
+                    b.Property<DateTime>("EnteredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("entered_at_utc");
+
+                    b.Property<string>("EnteredByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("entered_by_name");
+
+                    b.Property<Guid?>("EnteredByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entered_by_user_id");
+
+                    b.Property<string>("FromCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("from_currency");
+
+                    b.Property<decimal>("Rate")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("numeric(18,8)")
+                        .HasColumnName("rate");
+
+                    b.Property<DateOnly>("RateDate")
+                        .HasColumnType("date")
+                        .HasColumnName("rate_date");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("source");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CycleId", "FromCurrency")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.ToTable("comp_fx_rates", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_fx_rates__currency", "length(from_currency) = 3 AND upper(from_currency) = from_currency");
+
+                            t.HasCheckConstraint("ck_comp_fx_rates__rate_positive", "rate > 0");
+
+                            t.HasCheckConstraint("ck_comp_fx_rates__source_present", "source <> ''");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompGuideline", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("CompaRatioMax")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("compa_ratio_max");
+
+                    b.Property<decimal>("CompaRatioMin")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("compa_ratio_min");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cycle_id");
+
+                    b.Property<decimal>("MaxPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("max_percent");
+
+                    b.Property<decimal>("MinPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("min_percent");
+
+                    b.Property<string>("Rating")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("rating");
+
+                    b.Property<decimal>("TargetPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("target_percent");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("CycleId", "Rating", "CompaRatioMin")
+                        .IsUnique();
+
+                    b.ToTable("comp_guidelines", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_guidelines__band", "compa_ratio_min >= 0 AND (compa_ratio_max IS NULL OR compa_ratio_max > compa_ratio_min)");
+
+                            t.HasCheckConstraint("ck_comp_guidelines__percent_order", "min_percent <= target_percent AND target_percent <= max_percent");
+
+                            t.HasCheckConstraint("ck_comp_guidelines__percent_range", "min_percent >= 0 AND max_percent <= 100");
+
+                            t.HasCheckConstraint("ck_comp_guidelines__rating_present", "rating <> ''");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.CompOffCredit", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6304,6 +6700,366 @@ namespace Zayra.Api.Migrations
                         .HasFilter("\"idempotency_key\" IS NOT NULL");
 
                     b.ToTable("comp_off_usages", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompWorksheet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid>("CycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cycle_id");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<string>("DecisionComments")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_comments");
+
+                    b.Property<bool>("IsPrimary")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_primary");
+
+                    b.Property<int>("ManagerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("manager_employee_id");
+
+                    b.Property<string>("OverspendJustification")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("overspend_justification");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("RevisionEditorIds")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasDefaultValue("")
+                        .HasColumnName("revision_editor_ids");
+
+                    b.Property<string>("ScenarioName")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("scenario_name");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at_utc");
+
+                    b.Property<Guid?>("SubmittedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("submitted_by_user_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId")
+                        .HasFilter("approval_request_id IS NOT NULL");
+
+                    b.HasIndex("ManagerEmployeeId");
+
+                    b.HasIndex("CycleId", "ManagerEmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_comp_worksheets__one_primary")
+                        .HasFilter("is_primary");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("CycleId", "ManagerEmployeeId", "ScenarioName")
+                        .IsUnique();
+
+                    b.ToTable("comp_worksheets", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_worksheets__revision", "revision >= 1");
+
+                            t.HasCheckConstraint("ck_comp_worksheets__status", "status IN ('Draft','Submitted','Returned','Approved','Cancelled')");
+
+                            t.HasCheckConstraint("ck_comp_worksheets__submitted_has_approval", "status NOT IN ('Submitted','Approved') OR approval_request_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_comp_worksheets__submitted_is_primary", "status IN ('Draft','Cancelled') OR is_primary");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompWorksheetLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApplyBlockedReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("apply_blocked_reason");
+
+                    b.Property<Guid?>("AssignedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_by_user_id");
+
+                    b.Property<Guid?>("ChangeRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("change_request_id");
+
+                    b.Property<DateTime?>("ChangeRequestedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("change_requested_at_utc");
+
+                    b.Property<decimal?>("CompaRatio")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("compa_ratio");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<decimal>("CurrentBasic")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("current_basic");
+
+                    b.Property<decimal?>("CurrentBasicCycle")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("current_basic_cycle");
+
+                    b.Property<decimal>("CurrentGross")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("current_gross");
+
+                    b.Property<decimal?>("CurrentGrossCycle")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("current_gross_cycle");
+
+                    b.Property<Guid>("CycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cycle_id");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
+
+                    b.Property<Guid?>("DesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("designation_id");
+
+                    b.Property<int>("EligibleDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("eligible_days");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("Flags")
+                        .IsRequired()
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("flags");
+
+                    b.Property<decimal?>("FxRate")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("numeric(18,8)")
+                        .HasColumnName("fx_rate");
+
+                    b.Property<Guid?>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
+
+                    b.Property<decimal?>("GuidelineMaxPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("guideline_max_percent");
+
+                    b.Property<decimal?>("GuidelineMinPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("guideline_min_percent");
+
+                    b.Property<decimal?>("GuidelineTargetPercent")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("guideline_target_percent");
+
+                    b.Property<string>("Justification")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("justification");
+
+                    b.Property<decimal>("NewBasic")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("new_basic");
+
+                    b.Property<decimal?>("NewCompaRatio")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("new_compa_ratio");
+
+                    b.Property<decimal>("NewGross")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("new_gross");
+
+                    b.Property<bool>("OutOfGuideline")
+                        .HasColumnType("boolean")
+                        .HasColumnName("out_of_guideline");
+
+                    b.Property<string>("PayCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("pay_currency");
+
+                    b.Property<bool>("ProposedAsPercent")
+                        .HasColumnType("boolean")
+                        .HasColumnName("proposed_as_percent");
+
+                    b.Property<decimal>("ProposedIncrease")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("proposed_increase");
+
+                    b.Property<decimal>("ProposedPercent")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("proposed_percent");
+
+                    b.Property<decimal>("ProratedIncrease")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("prorated_increase");
+
+                    b.Property<decimal>("ProratedIncreasePay")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("prorated_increase_pay");
+
+                    b.Property<decimal>("ProrationFactor")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("proration_factor");
+
+                    b.Property<decimal?>("RangePosition")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)")
+                        .HasColumnName("range_position");
+
+                    b.Property<string>("Rating")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("rating");
+
+                    b.Property<Guid?>("ReversalChangeRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reversal_change_request_id");
+
+                    b.Property<Guid?>("SalaryRowId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("salary_row_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid>("WorksheetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("worksheet_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChangeRequestId")
+                        .HasFilter("change_request_id IS NOT NULL");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("ReversalChangeRequestId")
+                        .HasFilter("reversal_change_request_id IS NOT NULL");
+
+                    b.HasIndex("CycleId", "DepartmentId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("WorksheetId", "EmployeeId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CycleId", "EmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_comp_worksheet_lines__one_award")
+                        .HasFilter("change_request_id IS NOT NULL");
+
+                    b.ToTable("comp_worksheet_lines", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_comp_worksheet_lines__fx_rate_positive", "fx_rate IS NULL OR fx_rate > 0");
+
+                            t.HasCheckConstraint("ck_comp_worksheet_lines__money_non_negative", "current_basic >= 0 AND current_gross >= 0 AND proposed_increase >= 0 AND prorated_increase >= 0 AND prorated_increase_pay >= 0 AND new_basic >= 0 AND new_gross >= 0");
+
+                            t.HasCheckConstraint("ck_comp_worksheet_lines__out_of_guideline_justified", "NOT out_of_guideline OR change_request_id IS NULL OR (justification IS NOT NULL AND justification <> '')");
+
+                            t.HasCheckConstraint("ck_comp_worksheet_lines__pay_currency", "length(pay_currency) = 3 AND upper(pay_currency) = pay_currency");
+
+                            t.HasCheckConstraint("ck_comp_worksheet_lines__proration_factor", "proration_factor >= 0 AND proration_factor <= 1");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.Company", b =>
@@ -20658,6 +21414,216 @@ namespace Zayra.Api.Migrations
                     b.ToTable("passport_records", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("DesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("designation_id");
+
+                    b.Property<Guid?>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
+
+                    b.Property<string>("JobFamily")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("job_family");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("level");
+
+                    b.Property<decimal>("P25")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("p25");
+
+                    b.Property<decimal>("P50")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("p50");
+
+                    b.Property<decimal>("P75")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("p75");
+
+                    b.Property<decimal>("P90")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("p90");
+
+                    b.Property<int>("SampleSize")
+                        .HasColumnType("integer")
+                        .HasColumnName("sample_size");
+
+                    b.Property<Guid>("SetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("set_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DesignationId");
+
+                    b.HasIndex("GradeId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "DesignationId")
+                        .HasFilter("designation_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "GradeId")
+                        .HasFilter("grade_id IS NOT NULL");
+
+                    b.HasIndex("SetId", "JobFamily", "Level")
+                        .IsUnique();
+
+                    b.ToTable("pay_benchmark_rows", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_pay_benchmark_rows__keys_present", "job_family <> '' AND level <> ''");
+
+                            t.HasCheckConstraint("ck_pay_benchmark_rows__percentiles_monotonic", "p25 > 0 AND p25 <= p50 AND p50 <= p75 AND p75 <= p90");
+
+                            t.HasCheckConstraint("ck_pay_benchmark_rows__sample_size", "sample_size > 0");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("Geography")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("geography");
+
+                    b.Property<DateTime>("ImportedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("imported_at_utc");
+
+                    b.Property<string>("ImportedByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("imported_by_name");
+
+                    b.Property<Guid?>("ImportedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("imported_by_user_id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsSynthetic")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_synthetic");
+
+                    b.Property<string>("LicenceStatement")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("licence_statement");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PayBasis")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("pay_basis");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("provider");
+
+                    b.Property<DateTime?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at_utc");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("row_count");
+
+                    b.Property<string>("SourceFileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("character varying(260)")
+                        .HasColumnName("source_file_name");
+
+                    b.Property<string>("SourceFileSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_file_sha256");
+
+                    b.Property<DateOnly>("SurveyDate")
+                        .HasColumnType("date")
+                        .HasColumnName("survey_date");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "SourceFileSha256")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "IsActive", "SurveyDate");
+
+                    b.ToTable("pay_benchmark_sets", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_pay_benchmark_sets__file_hash", "length(source_file_sha256) = 64 AND lower(source_file_sha256) = source_file_sha256");
+
+                            t.HasCheckConstraint("ck_pay_benchmark_sets__pay_basis", "pay_basis IN ('MonthlyBasic','MonthlyGross')");
+
+                            t.HasCheckConstraint("ck_pay_benchmark_sets__provenance", "provider <> '' AND licence_statement <> '' AND length(geography) = 2 AND upper(geography) = geography AND length(currency) = 3 AND upper(currency) = currency");
+
+                            t.HasCheckConstraint("ck_pay_benchmark_sets__row_count", "row_count > 0");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.PayComponent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -27455,6 +28421,93 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.CompCycle", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompCycleBudget", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.CompCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Department", null)
+                        .WithMany()
+                        .HasForeignKey("DepartmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompFxRate", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.CompCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompGuideline", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.CompCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompWorksheet", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.CompCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("ManagerEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompWorksheetLine", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeChangeRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ChangeRequestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.CompCycle", null)
+                        .WithMany()
+                        .HasForeignKey("CycleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EmployeeChangeRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ReversalChangeRequestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.CompWorksheet", null)
+                        .WithMany()
+                        .HasForeignKey("WorksheetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.ContractRenewalCase", b =>
                 {
                     b.HasOne("Zayra.Api.Models.Company", null)
@@ -27714,6 +28767,33 @@ namespace Zayra.Api.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "ReversalGlEntryId")
                         .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkRow", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Designation", null)
+                        .WithMany()
+                        .HasForeignKey("DesignationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Models.Grade", null)
+                        .WithMany()
+                        .HasForeignKey("GradeId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Models.PayBenchmarkSet", null)
+                        .WithMany()
+                        .HasForeignKey("SetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkSet", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 

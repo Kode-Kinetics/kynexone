@@ -46,6 +46,8 @@ public static class ApprovalEntities
             // TimesheetService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync.
             [TimesheetConstants.ApprovalEntityName] = "submitting a timesheet",
             [Zayra.Api.Application.Jawazat.JawazatConstants.ApprovalEntityName] = "creating an employer-assisted Jawazat request",
+            // MeritPlanningService.SubmitWorksheetAsync → IApprovalWorkflowService.CreateRequestAsync.
+            [Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.EntityName] = "submitting a merit planning worksheet",
         };
 
     /// <summary>The producer entity names, for validation and for the refusal body.</summary>
