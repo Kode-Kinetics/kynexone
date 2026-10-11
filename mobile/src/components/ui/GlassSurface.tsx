@@ -102,7 +102,7 @@ export function GlassSurface({
         isInteractive={interactive}
         {...viewProps}
       >
-        <View style={contentStyle}>{children}</View>
+        <View style={[styles.content, contentStyle]}>{children}</View>
       </GlassView>
     );
   }
@@ -132,7 +132,7 @@ export function GlassSurface({
       {tintColor && !solid ? (
         <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
       ) : null}
-      <View style={contentStyle}>{children}</View>
+      <View style={[styles.content, contentStyle]}>{children}</View>
     </View>
   );
 }
@@ -142,4 +142,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
   },
+  // flexGrow, not flex: 1. `flex: 1` sets flexBasis 0, which collapses the content to nothing inside an
+  // auto-height parent (the selfie capture panel lost its controls). flexGrow keeps the content's natural
+  // height there, yet still fills a fixed-height surface so callers that centre content (GlassIconButton's
+  // 44×44 circle, LiquidTabBar's row) stay vertically centred.
+  content: { flexGrow: 1 },
 });
