@@ -32,7 +32,30 @@ public static class StatutoryPackKey
         var raw = (countryCode ?? string.Empty).Trim().ToUpperInvariant();
         var cc = CountryCodeStandard.ToIso3(raw) ?? raw;
         var jur = (jurisdiction ?? string.Empty).Trim();
-        if (jur.Length == 0 && cc.Length > 0) jur = MainlandFor(cc) ?? string.Empty;
+        if (cc.Length > 0 && MainlandFor(cc) is { } mainland && IsMainlandAlias(raw, cc, jur)) jur = mainland;
         return (cc, jur);
+    }
+
+    /// <summary>
+    /// Jurisdiction spellings that mean "the country's mainland labour law" rather than a distinct legal
+    /// zone. Real data holds all of them: blank (company form), the bare country code ("SA"/"SAU", e2e
+    /// provisioning), "KSA", and "&lt;cc&gt;-default" (the setup assistant writes "SA-default"). Left
+    /// unmapped they match no seeded rule and payroll silently falls back to hard-coded constants.
+    /// Explicit zones such as "UAE-DIFC" or "UAE-ADGM" are distinct law and pass through unchanged.
+    /// </summary>
+    private static bool IsMainlandAlias(string rawCountry, string iso3, string jur)
+    {
+        if (jur.Length == 0) return true;
+        var j = jur.ToUpperInvariant();
+        if (j == rawCountry || j == iso3 || j.EndsWith("-DEFAULT", StringComparison.Ordinal) || j.EndsWith("-MAINLAND", StringComparison.Ordinal))
+            return true;
+        var iso2 = CountryCodeStandard.NormalizeToIso2(iso3);
+        if (iso2 is not null && (j == iso2 || j == iso2 + "-DEFAULT")) return true;
+        return iso3 switch
+        {
+            CountryCodes.Saudi => j is "KSA" or "SAUDI" or "SAUDI ARABIA",
+            CountryCodes.UAE => j is "UAE" or "EMIRATES",
+            _ => false,
+        };
     }
 }

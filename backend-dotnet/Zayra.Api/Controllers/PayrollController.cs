@@ -1898,9 +1898,8 @@ public class PayrollController : ControllerBase
         var otRestDayMultiplier = otContext.RestDayMultiplier;
         var otHolidayMultiplier = otContext.HolidayMultiplier;
         var otBaseIsFullWage = otContext.BaseIsFullWage;
-        // Standard monthly hours for hourly-rate divisor (overrides policy value if configured).
-        if (otContext.StandardMonthlyHoursOverride is int otMonthlyHoursRule)
-            standardMonthlyHours = otMonthlyHoursRule;
+        // Hourly-rate divisor: the statutory hours, unless the company's OT policy is more generous.
+        standardMonthlyHours = OvertimeStatutoryContextResolver.EffectiveMonthlyHours(standardMonthlyHours, otContext.StandardMonthlyHoursOverride);
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(

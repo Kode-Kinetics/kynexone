@@ -55,6 +55,18 @@ public static class OvertimeStatutoryContextResolver
     public const string RuleStandardMonthlyHours = "ot.standard_monthly_hours";
 
     /// <summary>
+    /// The hourly-rate divisor actually used: the statutory monthly hours, unless the company's own
+    /// overtime policy states FEWER hours. Fewer hours means a higher hourly rate, so a more generous
+    /// contractual policy (e.g. 208 h) must never be overridden downwards by the statutory 240 — the
+    /// statute is a floor on what the employee receives, not a cap. With no rule the policy stands.
+    /// </summary>
+    public static int EffectiveMonthlyHours(int policyHours, int? ruleHours)
+    {
+        var policy = Math.Max(1, policyHours);
+        return ruleHours is int rule && rule > 0 ? Math.Min(policy, rule) : policy;
+    }
+
+    /// <summary>
     /// The regular-day multiplier assumed when the country pack has written no
     /// <c>ot.standard_multiplier</c> rule.
     ///
