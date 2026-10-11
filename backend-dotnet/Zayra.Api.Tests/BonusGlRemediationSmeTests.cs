@@ -633,6 +633,11 @@ public class BonusGlRemediationSmeTests
             AccountId = newAccount.Id, IsActive = true,
         });
         await db.SaveChangesAsync();
+        // A tenant that has a chart must hold every account its Lock posts to (a code missing from the chart
+        // blocks Lock), so the rest of the standard chart is loaded. The seeder never overwrites a mapping:
+        // LOAN_RECEIVABLE stays remapped to 1401.
+        await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(db, tid, CancellationToken.None);
+        await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
         var payroll = Payroll(db, tid);

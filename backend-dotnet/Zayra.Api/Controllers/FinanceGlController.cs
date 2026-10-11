@@ -128,11 +128,18 @@ public class FinanceGlController : ControllerBase
             return problem;
 
         var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode };
+        // A re-code (allowed only while no journal names the account) must carry the driver defaults that
+        // name the old code with it, in the same SaveChanges; otherwise an unmapped driver keeps resolving
+        // the old code, which is no longer in the chart (and Lock now refuses that).
+        var repointedDrivers = !string.Equals(newCode, acct.Code, StringComparison.Ordinal)
+            ? await RepointDriverDefaultsAsync(tid.Value, acct, newCode, newName, ct)
+            : new List<string>();
         acct.Code = newCode; acct.Name = newName; acct.AccountType = type; acct.IsActive = req.IsActive; acct.UpdatedAtUtc = DateTime.UtcNow;
         // null = leave the ERP code as it is; "" (or whitespace) = clear it.
         if (req.ExternalCode is not null) acct.ExternalCode = NormalizeExternalCode(req.ExternalCode);
         await WriteAudit("finance.gl.account.updated", "GlAccount", acct.Id.ToString(), acct.CompanyId,
-            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode }, companyId = acct.CompanyId }, ct);
+            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode }, companyId = acct.CompanyId,
+                  driverDefaultsRepointed = repointedDrivers }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, acct.CompanyId));
     }
@@ -381,9 +388,14 @@ public class FinanceGlController : ControllerBase
                 newCostCenter = m.SegmentCostCenterId,
             })
             .ToList();
-        var removed = prevByDriver.Keys.Except(mappings.Select(m => m.DriverKey)).ToList();
+        // Only the drivers this scope LISTS (the active ones GET /mappings returns, which is all the UI can
+        // send) are replaced wholesale; omitting one of those still clears its mapping. A mapping keyed to
+        // a driver that is switched off (or otherwise not listed) is left exactly as it is: the caller
+        // could not have sent it, so its absence is not a decision to delete it.
+        var replaceable = existing.Where(m => driverByKey.ContainsKey(m.DriverKey)).ToList();
+        var removed = replaceable.Select(m => m.DriverKey).Distinct().Except(mappings.Select(m => m.DriverKey)).ToList();
 
-        _db.GlAccountMappings.RemoveRange(existing);
+        _db.GlAccountMappings.RemoveRange(replaceable);
         foreach (var m in mappings)
             _db.GlAccountMappings.Add(new GlAccountMapping
             {
@@ -477,7 +489,9 @@ public class FinanceGlController : ControllerBase
         if (driver.IsSystem)
         {
             // System rows: only Label, default account, SortOrder are editable. They cannot be switched
-            // off — payroll's journal relies on every system driver existing.
+            // off — payroll's journal relies on every system driver existing. They CAN be switched back on:
+            // a system row turned off before this rule existed blocks every Lock that would have used it,
+            // and this is the only way back short of editing the database.
             if (req.Category != driver.Category || req.PostingSide != driver.PostingSide
                 || (req.MatchSource ?? "") != (driver.MatchSource ?? "") || (req.MatchMode ?? "") != driver.MatchMode
                 || (req.MatchComponentCode ?? "") != (driver.MatchComponentCode ?? "")
@@ -488,6 +502,7 @@ public class FinanceGlController : ControllerBase
                 return BadRequest(new { code = "GL_SYSTEM_DRIVER_REQUIRED", message = "System drivers cannot be deactivated: payroll posting depends on every one of them. Remap its account instead." });
             driver.Label = (req.Label ?? driver.Label).Trim();
             if (newDefault is not null) { driver.DefaultCode = newDefault.Code; driver.DefaultName = newDefault.Name; }
+            driver.IsActive = true;
             driver.SortOrder = req.SortOrder;
             driver.UpdatedAtUtc = DateTime.UtcNow;
             await WriteAudit("finance.gl.driver.updated", "GlDriver", driver.Id.ToString(), driver.CompanyId,
@@ -792,6 +807,35 @@ public class FinanceGlController : ControllerBase
             .Select(d => d.Key).ToListAsync(ct);
         foreach (var d in drivers) refs.Add($"the default account of driver {d}");
         return refs;
+    }
+
+    /// <summary>
+    /// Moves every driver default that resolves to <paramref name="acct"/> by its OLD code onto the new
+    /// code (and name): drivers at the account's own scope, and — for a tenant-default account — company
+    /// drivers in companies that do not carry their own account with the old code (theirs resolve to the
+    /// company account, not this one). Tracked changes; the caller's SaveChanges commits them with the
+    /// account. Returns the driver keys moved, for the audit row.
+    /// </summary>
+    private async Task<List<string>> RepointDriverDefaultsAsync(Guid tid, GlAccount acct, string newCode, string newName, CancellationToken ct)
+    {
+        var oldCode = acct.Code;
+        var candidates = await Drivers(tid)
+            .Where(d => d.DefaultCode == oldCode && (acct.CompanyId == null || d.CompanyId == acct.CompanyId))
+            .ToListAsync(ct);
+        if (acct.CompanyId is null && candidates.Any(d => d.CompanyId != null))
+        {
+            var shadowing = (await ScopedBypass.TenantWide(_db.GlAccounts, tid,
+                    "Which companies carry their own account with the old code (their drivers resolve to it, not to the tenant default).")
+                    .AsNoTracking()
+                    .Where(a => a.CompanyId != null && a.Code == oldCode)
+                    .Select(a => a.CompanyId).ToListAsync(ct)).ToHashSet();
+            candidates = candidates.Where(d => d.CompanyId == null || !shadowing.Contains(d.CompanyId)).ToList();
+        }
+        foreach (var d in candidates)
+        {
+            d.DefaultCode = newCode; d.DefaultName = newName; d.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        return candidates.Select(d => d.CompanyId is null ? d.Key : $"{d.Key} (company {d.CompanyId})").ToList();
     }
 
     private async Task<IActionResult?> AccountChangeProblemAsync(Guid tid, GlAccount acct, string newCode, string newName, string newType, bool newActive, CancellationToken ct)

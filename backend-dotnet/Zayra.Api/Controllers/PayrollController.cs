@@ -3814,7 +3814,10 @@ public class PayrollController : ControllerBase
             if (plan.Problems.Count > 0)
                 return new(UnprocessableEntity(new
                 {
-                    error    = "gl_posting_rule_inactive",
+                    // Every problem is a code missing from the chart → its own code; anything else (a
+                    // switched-off account or rule, alone or mixed) keeps the established one.
+                    error    = plan.Problems.All(p => p.Kind == GlResolutionProblemKinds.NotInChart)
+                        ? "gl_account_not_in_chart" : "gl_posting_rule_inactive",
                     message  = plan.Problems.Count == 1
                         ? plan.Problems[0].Message
                         : $"{plan.Problems.Count} posting rules need attention before this run can be locked. " +
@@ -4165,7 +4168,51 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> Approve(Guid id, PayrollDecisionRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        PayrollRun? financeApproved = null;
+        var result = await InRunRowLockTransactionAsync(async () =>
+        {
+            financeApproved = null;
+            return await ApproveCoreAsync(id, tenantId, req, r => financeApproved = r, cancellationToken);
+        }, cancellationToken);
+        // Notifications are best-effort and only once the approval is durably committed.
+        if (financeApproved is { } approved)
+        {
+            var runCurrency = await ResolveRunCurrencyAsync(tenantId, approved.CompanyId, cancellationToken);
+            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {approved.Year}/{approved.Month:D2}", $"Payroll run for {approved.Year}/{approved.Month:D2} has been approved by Finance. Total net: {approved.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Runs one payroll_runs status transition in a single transaction whose body must read the run with
+    /// <see cref="Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag"/> FIRST — the same row
+    /// lock Lock, Void and Reopen take — so a transition decided on a stale status can never overwrite a
+    /// status another request committed meanwhile (PayrollRun has no concurrency token; EF's UPDATE
+    /// matches on the key alone). Refusals write nothing, so the transaction is always committed. EF
+    /// InMemory has no transactions or row locks and runs the body directly, as does an ambient
+    /// transaction opened by a caller (which then owns the commit).
+    /// </summary>
+    private async Task<IActionResult> InRunRowLockTransactionAsync(Func<Task<IActionResult>> body, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await body();
+        var attempt = 0;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            if (attempt++ > 0) _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var result = await body();
+            await tx.CommitAsync(ct);
+            return result;
+        });
+    }
+
+    private async Task<IActionResult> ApproveCoreAsync(
+        Guid id, Guid tenantId, PayrollDecisionRequest req, Action<PayrollRun> onFinanceApproved, CancellationToken cancellationToken)
+    {
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status != "Processed" && run.Status != "PendingFinanceReview")
             return BadRequest(new { message = "Only a Processed or PendingFinanceReview run can be approved." });
@@ -4266,8 +4313,7 @@ public class PayrollController : ControllerBase
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
                 new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            var runCurrency = await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken);
-            await _notifications.NotifyAsync(tenantId, GetUserId(), $"Payroll Run Approved — {run.Year}/{run.Month:D2}", $"Payroll run for {run.Year}/{run.Month:D2} has been approved by Finance. Total net: {run.TotalNetSalary:N2} {runCurrency}.", "PayrollRun", id.ToString(), cancellationToken);
+            onFinanceApproved(run);
             return Ok(run);
         }
 
@@ -4289,15 +4335,20 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> SendBack(Guid id, PayrollDecisionRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
-        if (run is null) return NotFound();
-        if (run.Status != "PendingFinanceReview")
-            return BadRequest(new { message = "Only a PendingFinanceReview run can be sent back." });
-        _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "SentBack", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
-        run.Status = "Processed";
-        await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(run);
+        return await InRunRowLockTransactionAsync(async () =>
+        {
+            // FOR UPDATE: see InRunRowLockTransactionAsync.
+            var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+            if (run is null) return NotFound();
+            if (run.Status != "PendingFinanceReview")
+                return BadRequest(new { message = "Only a PendingFinanceReview run can be sent back." });
+            _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "SentBack", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
+            run.Status = "Processed";
+            await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            return Ok(run);
+        }, cancellationToken);
     }
 
     // ── VoidRun ───────────────────────────────────────────────────────────────────
@@ -4482,14 +4533,47 @@ public class PayrollController : ControllerBase
             });
 
         var svc = new PayrollVoidService(_db);
-        var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
         object? payload = null;
+        IActionResult? refused = null;
         await strategy.ExecuteAsync(async () =>
         {
-            if (attempt++ > 0) _db.ChangeTracker.Clear();
+            // The run read above is tracked with its pre-transaction values; a tracked entity is NOT
+            // refreshed by a later query, so clear it before the locked re-read.
+            _db.ChangeTracker.Clear();
+            refused = null;
             await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
-            run = await _db.PayrollRuns.FirstAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+            // FOR UPDATE — the same row lock Lock and Void take. The checks above ran outside any
+            // transaction: a Lock committing in between (journal posted, status Locked) would otherwise be
+            // wiped back to Draft with its accrual still live on the ledger. Under the lock, a concurrent
+            // Lock has either committed (and is seen here) or has not started.
+            run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .FirstAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+            if (run.Status is not ("Draft" or "Processed" or "PendingFinanceReview" or "Approved"))
+            {
+                refused = run.Status == "Voided"
+                    ? BadRequest(new { error = "run_voided", message = "A voided run cannot be reopened. Create a Replacement run for the period instead." })
+                    : BadRequest(new
+                    {
+                        error   = "not_reopenable",
+                        message = $"A '{run.Status}' run cannot be reopened. Void it and create a Replacement run for the period.",
+                    });
+                return;
+            }
+            var glRowsNow = await _db.FinanceGlEntries.CountAsync(
+                x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id, cancellationToken);
+            if (glRowsNow > 0)
+            {
+                refused = UnprocessableEntity(new
+                {
+                    error   = "run_has_gl",
+                    message = $"This run has {glRowsNow} GL entr(ies) posted against it, so re-processing it would delete the " +
+                              "earnings and deductions those journals are built from. Void it (POST runs/{id}/void) and create a " +
+                              "Replacement run.",
+                    glEntryCount = glRowsNow,
+                });
+                return;
+            }
 
             // 1. Release everything the run consumed — the same replay the void performs.
             var opState = await svc.RestoreOperationalStateAsync(tenantId, run, id, cancellationToken);
@@ -4605,6 +4689,7 @@ public class PayrollController : ControllerBase
             await tx.CommitAsync(cancellationToken);
         });
 
+        if (refused is not null) return refused;
         return Ok(payload);
     }
 
@@ -8509,8 +8594,24 @@ public class PayrollController : ControllerBase
         var rounding = AppendRoundingLine(lines, employeeCount, glCtx, tenantId, id, period, currency, postedBy, postedByName);
         if (rounding != 0m) used.Add(PayrollRoundingDriverKey);
 
+        // A switched-off SYSTEM rule blocks only when this run would have used it: route the run again
+        // as if those rules were on, and any pay item (or employer pair) that lands on one of them is a
+        // component that is being silently re-routed (usually to a catch-all) because it is off. A rule
+        // nothing on this run matches must not stop the month.
+        var wouldUseInactive = new HashSet<string>(StringComparer.Ordinal);
+        if (glCtx.InactiveSystemDrivers.Count > 0)
+        {
+            var asIfOn = RoutePayrollGroups(earnings, dedxns,
+                glCtx with { Drivers = glCtx.Drivers.Concat(glCtx.InactiveSystemDrivers).ToList() });
+            foreach (var r in asIfOn)
+            {
+                wouldUseInactive.Add(r.DriverKey);
+                if (r.IsEmployerSide) wouldUseInactive.Add(r.PairKey);
+            }
+        }
         var problems = glCtx.Problems.Values
-            .Where(p => p.Kind == GlResolutionProblemKinds.InactiveDriver || used.Contains(p.DriverKey))
+            .Where(p => used.Contains(p.DriverKey)
+                     || (p.Kind == GlResolutionProblemKinds.InactiveDriver && wouldUseInactive.Contains(p.DriverKey)))
             .OrderBy(p => p.DriverKey, StringComparer.Ordinal)
             .ToList();
         var catchAlls = routed
