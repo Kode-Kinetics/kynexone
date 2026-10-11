@@ -37,7 +37,7 @@ namespace Zayra.Api.Migrations
     /// </summary>
     public partial class AddErpCodesAndLiveExportIndex : Migration
     {
-        public const string LiveScopeIndexName = "ux_gl_journal_exports_live_scope";
+        public const string LiveScopeIndexName = Zayra.Api.Application.Finance.GlJournalExportConstraints.LiveScopeIndexName;
         public const string ErpCompanyCodeIndexName = "ux_companies_tenant_erp_company_code";
 
         /// <summary>Fail fast instead of queueing live traffic behind ALTER TABLE companies (a hot table) while a long
