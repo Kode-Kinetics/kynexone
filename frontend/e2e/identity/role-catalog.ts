@@ -136,9 +136,9 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[]): 
   const excepts = [...predicate.matchAll(exceptRe)].map((m) => ({ prefix: m[1], without: m[2] }));
   predicate = predicate.replace(exceptRe, '');
   const prefixes = [...predicate.matchAll(/x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
-  let exact: string[] = [];
-  const isClause = /x\.Key\s+is\s+((?:"[^"]+"\s*(?:or\s*)?)+)/.exec(predicate);
-  if (isClause) exact = literals(isClause[1]);
+  // Every `x.Key is "a" or "b"` clause, not just the first: a role may grant two explicit lists (HR Director names
+  // its legacy keys in one and the learning keys in another). Reading only the first silently dropped the rest.
+  const exact = [...predicate.matchAll(/x\.Key\s+is\s+((?:"[^"]+"\s*(?:or\s*)?)+)/g)].flatMap((m) => literals(m[1]));
 
   // Everything the parser did not account for must be operators and whitespace. Anything left over is
   // a shape this file does not understand, and guessing would produce a wrong matrix.

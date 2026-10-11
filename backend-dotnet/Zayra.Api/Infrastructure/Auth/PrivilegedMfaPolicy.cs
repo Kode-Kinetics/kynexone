@@ -78,6 +78,8 @@ public static class PrivilegedMfaPolicy
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
+        // LRN: the course catalogue, and training status of the people in one's data scope (a manager's own team).
+        "learning.read", "learning.report",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
         "performance.write",
@@ -118,6 +120,9 @@ public static class PrivilegedMfaPolicy
         // Release A: packages and renewal cases show each employee's pay terms (like payroll.read), and the manage keys
         // change contract terms — all four are privileged, the read keys included.
         "entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage",
+        // LRN: authoring and publishing courses, assigning mandatory training, and correcting the training record
+        // (reset attempts, revoke or supersede certificates) change compliance evidence.
+        "learning.manage", "learning.assign", "learning.records.correct",
     };
 
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);

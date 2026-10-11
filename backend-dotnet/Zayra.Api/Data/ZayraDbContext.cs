@@ -1281,6 +1281,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
     // ── W2-D: per-category notification preferences (S4) ───────────────────────
     public DbSet<EmployeeNotificationCategoryPreference> EmployeeNotificationCategoryPreferences => Set<EmployeeNotificationCategoryPreference>();
+    // ── LRN — Learning management (capability closure LRN-01..15; mapped in Models/LearningModelConfiguration.cs) ──
+    public DbSet<LearningCourse> LearningCourses => Set<LearningCourse>();
+    public DbSet<LearningPath> LearningPaths => Set<LearningPath>();
+    public DbSet<LearningPathItem> LearningPathItems => Set<LearningPathItem>();
+    public DbSet<LearningAssignmentRule> LearningAssignmentRules => Set<LearningAssignmentRule>();
+    public DbSet<LearningAssignment> LearningAssignments => Set<LearningAssignment>();
+    public DbSet<LearningEnrollment> LearningEnrollments => Set<LearningEnrollment>();
+    public DbSet<LearningAttempt> LearningAttempts => Set<LearningAttempt>();
+    public DbSet<LearningCredential> LearningCredentials => Set<LearningCredential>();
+    public DbSet<LearningLaunchSession> LearningLaunchSessions => Set<LearningLaunchSession>();
+    public DbSet<LearningXapiStatement> LearningXapiStatements => Set<LearningXapiStatement>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -4628,6 +4639,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
+        // LRN — learning management (same append-only convention).
+        LearningModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

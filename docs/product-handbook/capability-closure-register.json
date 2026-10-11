@@ -3882,130 +3882,172 @@
         {
           "id": "F24.01",
           "acceptance": "Provide versioned course/path catalogue, prerequisites, eligibility, assignment/deduplication, content delivery, assessments/attempt rules and employee progress.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F24.02",
           "acceptance": "Complete assign, fail/retake, pass, transcript/certificate, expiry/renewal and manager/HR reporting with persisted evidence and unauthorized changes denied.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F24.03",
           "acceptance": "Declare supported content standards/providers and prove launch/token expiry, callback validation, duplicate callbacks, provider failure and completion authority.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
@@ -4013,42 +4055,56 @@
           "acceptance": "Learning feeds succession/development and BI through existing employee/position authorities; content launch alone is not verified completion.",
           "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Succession development-plan links (SUC) and the BI learning_enrollments dataset are built on their own branches and not yet accepted.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
             "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Learning side ready (assignment ids, completion listener). Consumers pending.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         }
       ]

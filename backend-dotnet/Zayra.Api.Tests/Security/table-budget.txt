@@ -169,6 +169,16 @@ InterviewSchedules
 IssuedLetters
 JobApplications
 JobOpenings
+LearningAssignmentRules
+LearningAssignments
+LearningAttempts
+LearningCourses
+LearningCredentials
+LearningEnrollments
+LearningLaunchSessions
+LearningPathItems
+LearningPaths
+LearningXapiStatements
 LeaveAIInsights
 LeaveAccrualRules
 LeaveApprovals

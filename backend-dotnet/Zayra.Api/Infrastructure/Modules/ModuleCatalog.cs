@@ -167,6 +167,10 @@ public static class ModuleCatalog
                 // Release A: the grade entitlement matrix and the employee package are employment terms, not an
                 // optional module. The release_a opt-in flag (OptInFeatures) gates them on top of this.
                 "/api/entitlements",
+                // Learning management (LRN) is an employee-development record, not an optional module of its own:
+                // it is classified here so the route has an owner, and the learning opt-in flag (OptInFeatures) is
+                // what actually opens it per tenant. /api/ess/learning is classified by Self-Service's /api/ess.
+                "/api/learning",
             ],
             NavPaths = ["/people", "/org-chart", "/companies"],
         },
@@ -519,6 +523,10 @@ public static class ModuleCatalog
             [FeatureKeys.PunchGeofence] =
                 "The attendance geofence is an opt-in setting the platform team switches on per tenant with its "
                 + "accuracy and mock-location rules. It is enforced inside every self-punch, not a module of its own.",
+            [FeatureKeys.Learning] =
+                "Learning management (courses, paths, mandatory training, certificates, cmi5) is an opt-in feature "
+                + "switched on per tenant by the platform team while it is being rolled out. It is off unless enabled, "
+                + "and Tenant Admin cannot switch it. See OptInFeatures.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

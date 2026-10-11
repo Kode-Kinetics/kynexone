@@ -49,6 +49,8 @@ export const ESS_SECTIONS: EssSection[] = [
     pages: [
       { label: 'Self-Service', tab: 'Overview', path: ESS_HOME_PATH, hint: 'Your day at a glance: what needs you, your balances and what is coming up.' },
       { label: 'My employee details', tab: 'My details', path: '/ess/onboarding', hint: 'Complete your contact details and share documents securely with HR.' },
+      // LRN (learning opt-in flag): the employee's own training, courses, assessments and certificates.
+      { label: 'My learning', tab: 'Learning', path: '/ess/learning', hint: 'The training assigned to you, what to do next, and the certificates you have earned.', requiredFeatureKey: 'learning' },
     ],
   },
   {

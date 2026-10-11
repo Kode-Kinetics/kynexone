@@ -93,7 +93,16 @@ public class TableBudgetRatchetTests
         // EosbProvisionSnapshots + GlAdjustmentRequests (POD-C2, owner-approved): the per-employee EOSB obligation
         // witness behind the monthly provision, and one maker-checker table for the EOSB true-up and the legacy
         // 2104/2105 reclass. Finance owns both; kept as long as the GL lines they explain.
-        DeclaredDbSets().Should().HaveCount(335,
+        // LRN — learning management (capability closure LRN-01..15; owner L&D/HR; LRN_DESIGN.md has the per-table
+        // template). Ten tables, the module's whole cap: LearningCourses (immutable course versions + question bank),
+        // LearningPaths + LearningPathItems (curricula, order, prerequisites, eligibility), LearningAssignmentRules
+        // (standing rules the sweep re-applies), LearningAssignments (employee × path × cycle; one live row per pair,
+        // DB-enforced), LearningEnrollments (per course, pinned to a version), LearningAttempts (scored submissions),
+        // LearningCredentials (certificates with expiry, revocation and a supersede chain), LearningLaunchSessions
+        // (cmi5 one-time fetch / auth token hashes) and LearningXapiStatements (the minimal LRS, unique per statement
+        // id). No existing table holds learning content, completion evidence or a qualification lifecycle. Retention:
+        // kept with the employee's training record (FK Restrict; never hard-deleted — cancel/revoke are statuses).
+        DeclaredDbSets().Should().HaveCount(345,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

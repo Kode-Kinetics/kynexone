@@ -596,6 +596,9 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
+// LRN — learning management: every registration (services, sweep worker, the cmi5 CORS provider) in one extension.
+// Gated per tenant by the learning opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearning(builder.Services, builder.Configuration);
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall

@@ -29,6 +29,7 @@ import {
   CheckSquare2,
   HeartPulse,
   FileSpreadsheet,
+  GraduationCap,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
@@ -73,6 +74,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
+      // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
+      { label: 'Learning', icon: GraduationCap, path: '/learning', requiredPermissions: ['learning.read', 'learning.manage', 'learning.assign', 'learning.report', 'learning.records.correct'], requiredFeatureKey: 'learning' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
   },
@@ -138,6 +141,7 @@ export const navigationHints: Record<string, string> = {
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
+  '/learning': 'Courses, learning paths, mandatory training and certificates — who has done what, and what is due.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
   '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',
   '/reports': 'Standard and custom reports, with scheduled delivery.',

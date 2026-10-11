@@ -8,6 +8,7 @@ import { setupExperience } from './setupExperience';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
+import { learning } from './learning';
 import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
@@ -1398,6 +1399,8 @@ const en: Dict = {
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
+  // LRN — learning management (./learning).
+  ...learning.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -2773,6 +2776,8 @@ const ar: Dict = {
   ...policyIntelligence.ar,
 
   ...releaseA.ar,
+  // LRN — learning management (./learning).
+  ...learning.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

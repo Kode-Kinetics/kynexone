@@ -163,7 +163,9 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
             "qiwa.read" or "qiwa.sync" ||
-            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // LRN: the whole learning module, explicitly (no prefix grant, so a future learning.* key is a decision).
+            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct"
         ).ToList(), 2, true, cancellationToken);
 
         // Level 3 — HR Manager: operational HR management.
@@ -184,7 +186,9 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("performance.") ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
-            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.")
+            x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // LRN: runs the catalogue, assignments and reports, and resets locked attempts / corrects records (audited).
+            x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct"
         ).ToList(), 3, true, cancellationToken);
 
         // Level 4 — Payroll Manager: payroll + finance + employees
@@ -210,7 +214,9 @@ public class AuthSeeder : IAuthSeeder
             "organization.read", "approvals.read", "approvals.write", "notifications.read", "localization.read",
             // overtime.write beside leave.write: HR Officer files both on an employee's behalf. Filing overtime
             // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
-            "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read"
+            "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read",
+            // LRN: sees the catalogue and assigns training; does not author courses, correct records or report.
+            "learning.read", "learning.assign"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
@@ -254,7 +260,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
-            "performance.read", "performance.write"
+            "performance.read", "performance.write",
+            // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
+            "learning.report"
         }), 10, true, cancellationToken);
 
         // Level 11 — Supervisor: front-line supervision
@@ -458,6 +466,12 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
             ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),
             ("payroll.rates.statutory_override", "Payroll", "Create bounded per-company statutory rate overrides (reason + effective-dated + audited)"),
+            // LRN — learning management (opt-in feature "learning"). Employees learn through ESS (ess.read/ess.write).
+            ("learning.read", "Learning", "View the course catalogue, learning paths and assignment rules"),
+            ("learning.manage", "Learning", "Author and publish courses, learning paths and assignment rules"),
+            ("learning.assign", "Learning", "Assign learning paths to employees, departments, designations and grades"),
+            ("learning.report", "Learning", "View learning reports for the employees in your scope"),
+            ("learning.records.correct", "Learning", "Reset locked assessment attempts, revoke and correct certificates (reason required, audited)"),
         };
 
         foreach (var definition in definitions)

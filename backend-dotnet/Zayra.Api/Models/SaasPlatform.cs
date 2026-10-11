@@ -137,6 +137,12 @@ public static class FeatureKeys
     /// selfies (not biometric, so no DPIA gate); settings in ConfigJson (PunchGeofenceConfig). Platform-switched.
     /// </summary>
     public const string PunchGeofence = "attendance_geofence";
+    /// <summary>
+    /// Learning management (LRN: courses, paths, assignments, assessments, certificates, cmi5). OPT-IN: an absent row
+    /// means OFF. Switched on per tenant by the platform team (PUT /api/platform/tenants/{id}/features/learning) while it
+    /// is being rolled out. See OptInFeatures.
+    /// </summary>
+    public const string Learning = "learning";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

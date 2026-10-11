@@ -20,11 +20,13 @@ public static class NotificationCategories
     public const string Attendance = "attendance";
     public const string HrRequests = "hr_requests";
     public const string Announcements = "announcements";
+    /// <summary>LRN: training due, overdue, and certificates expiring or expired (LEARNING_* event codes).</summary>
+    public const string Learning = "learning";
     /// <summary>Password resets, sign-in and MFA notices. Mandatory: cannot be opted out of.</summary>
     public const string Security = "security";
 
     public static readonly string[] All =
-        [Approvals, Leave, Overtime, Payslip, Documents, Attendance, HrRequests, Announcements, Security];
+        [Approvals, Leave, Overtime, Payslip, Documents, Attendance, HrRequests, Announcements, Learning, Security];
 
     /// <summary>
     /// Categories that ignore an opt-out on every channel. Exposed to the app as
@@ -79,6 +81,7 @@ public static class NotificationCategories
 
         if (Has(key, "password", "mfa", "security", "login", "signin", "sign_in", "otp")) return Security;
         if (Has(key, "approval")) return Approvals;
+        if (Has(key, "learning")) return Learning;
         if (Has(key, "payslip", "payroll")) return Payslip;
         if (Has(key, "overtime")) return Overtime;
         if (Has(key, "leave")) return Leave;
