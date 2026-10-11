@@ -1,4 +1,4 @@
-# Builds the ROOT Dockerfile's build stage — the exact image Render deploys — on every backend PR.
+# Builds the ROOT Dockerfile — the exact image Render deploys, every stage — on every backend PR.
 # That stage deletes Migrations/ before `dotnet publish`, which no other CI lane does: on 2026-10-11 #223
 # passed every check and then failed the Render build (CS0103, app code naming a migration class).
 # Salvaged from #225; complements NoMigrationReferencesInAppCodeTests (#228).
@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - 'Dockerfile'
+      - '.dockerignore'
       - 'backend-dotnet/**'
       - '.github/workflows/backend-container-publish.yml'
   workflow_dispatch:
@@ -26,5 +27,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build root Dockerfile without publishing an image
-        run: docker build --target build -f Dockerfile -t kynexone-container-publish-check .
+      # The FULL image (no --target): a broken instruction in the final runtime stage (COPY, RUN, USER)
+      # must fail here too, not only the build stage. Nothing is pushed.
+      - name: Build the root Dockerfile (full image, not published)
+        run: docker build -f Dockerfile -t kynexone-container-publish-check .
