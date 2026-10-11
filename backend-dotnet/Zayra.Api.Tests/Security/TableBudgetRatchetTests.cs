@@ -86,7 +86,11 @@ public class TableBudgetRatchetTests
         // it; class E — blob purged by the selfie retention rule, envelope and sha256 kept.
         // BiometricConsents: per-version consent to selfie attendance with withdrawal; nothing records consent today. HR
         // owns it (DPO approves retention); kept for employment + the statutory minimum as the lawful basis.
-        DeclaredDbSets().Should().HaveCount(332,
+        // ErpApiKeys (wave 3, ERP machine access): the client's ERP pulls and confirms journal exports with a
+        // scoped, expiring, revocable key. No table holds a machine credential with scopes, expiry, an address
+        // allow-list and a revocation record (SCIM has one unscoped token per tenant; device keys are attendance
+        // only). Finance owns it; kept as long as the exports it confirmed, whose stamps carry its id as actor.
+        DeclaredDbSets().Should().HaveCount(333,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

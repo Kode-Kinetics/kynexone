@@ -136,6 +136,7 @@ EmployeeTransferRequests
 EmployeeUserAccounts
 Employees
 EnterpriseIdentityProvisioningEvents
+ErpApiKeys
 Feedback360
 FinalSettlementLines
 FinanceGlEntries
