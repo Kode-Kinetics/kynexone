@@ -1,0 +1,1027 @@
+{
+  "source": "coverage-review.md",
+  "currentSourceSha": "76985c559e9b51c246a4a48ab88e0e14eedc1ae1",
+  "observedLiveSha": "0e54b4f51e4cea94fd03f934ae92e20ce7cc1d0d",
+  "reviewType": "coverage acceptance contract; no implementation or production certification",
+  "families": [
+    {
+      "familyId": "F01",
+      "family": "HR records and organization",
+      "baseline": "I \u2014 Company, branches, departments, cost centres, grades and employee records implemented.",
+      "action": "VALIDATE + close exceptions. Original priority: P1.",
+      "dependencies": "Approved master-data/import specification and representative synthetic records.",
+      "criteria": [
+        {
+          "id": "F01.01",
+          "acceptance": "HR creates a company-scoped employee with mandatory, duplicate and invalid-data checks; approved changes persist after refresh and appear in authorized search.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F01.02",
+          "acceptance": "Organizational assignments, position, grade, manager, employment state and effective dates use the existing authorities; transfer/history and termination do not corrupt reporting.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F01.03",
+          "acceptance": "Sensitive fields and employee documents are protected by role/field access, tenant boundaries, audit, retention and permitted correction controls.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F02",
+      "family": "Multiple companies / entities",
+      "baseline": "I \u2014 Company-level policies and entity scoping exist; complex global hierarchies need validation.",
+      "action": "VALIDATE + advanced hierarchy decisions. Original priority: P1.",
+      "dependencies": "Company hierarchy and transfer policy decisions; customer-specific entities/FX source where applicable.",
+      "criteria": [
+        {
+          "id": "F02.01",
+          "acceptance": "An administrator configures at least two companies with distinct policies and overlapping identifiers; each actor sees only authorized entities.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F02.02",
+          "acceptance": "An employee transfer preserves history and explicitly determines salary, benefits, accruals and payroll-effective dates without duplicate employees or double pay.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F02.03",
+          "acceptance": "Company consolidation reconciles to scoped source totals; currency conversion, shared services, matrix management and global hierarchy support are individually declared and verified when committed.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F03",
+      "family": "Recruitment / ATS",
+      "baseline": "I \u2014 Candidates, applications, interviews, assessments, offers and approval endpoints exist.",
+      "action": "VALIDATE. Original priority: P1.",
+      "dependencies": "Controlled messaging sinks and authorized external publishing/assessment access for committed providers.",
+      "criteria": [
+        {
+          "id": "F03.01",
+          "acceptance": "Run approved requisition, posting, application, screening, interview/assessment, decision, separate offer approval and accepted hire linked to one employee.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F03.02",
+          "acceptance": "Validate duplicate applicants, withdrawn/rejected offers, returning hires, consent/retention, permission boundaries and unauthorized/self approval.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F03.03",
+          "acceptance": "Email/job-board/provider operations have explicit supported channels and proof; unconnected publishing is visibly separate from an external submission.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F04",
+      "family": "Onboarding",
+      "baseline": "I \u2014 Templates, checklists and task/status endpoints; employee completion wizard upgraded.",
+      "action": "VALIDATE. Original priority: P1.",
+      "dependencies": "Approved onboarding checklist/templates and controlled identity/message sinks.",
+      "criteria": [
+        {
+          "id": "F04.01",
+          "acceptance": "An approved offer triggers one onboarding instance, owned tasks, documents and employee account activation; required completion gates first-day/first-payroll readiness.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F04.02",
+          "acceptance": "Test employee, manager, HR and IT task roles, missing/expired documents, rescinded offers, late starters and duplicate callbacks.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F04.03",
+          "acceptance": "Completion, outstanding tasks and evidence persist and reconcile to the employee and first payroll; document confidentiality and revocation are enforced.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F05",
+      "family": "Leave and holiday management",
+      "baseline": "I \u2014 Leave policies, balances, approvals and KSA floor hardening are implemented.",
+      "action": "VALIDATE + country-policy closure. Original priority: P0.",
+      "dependencies": "Current official country rules and HR/legal-approved company policies; each country has a separate acceptance record.",
+      "criteria": [
+        {
+          "id": "F05.01",
+          "acceptance": "Independently verify accrual, opening balances, carryover/expiry, encashment, holidays, half-days, overlap and negative-balance rules for each supported country/policy.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F05.02",
+          "acceptance": "An employee requests leave; independent manager approves/rejects/cancels; changed balances, roster, attendance and payroll reconcile to golden expectations.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F05.03",
+          "acceptance": "Test joining/leaving/proration, effective-date policy changes, backdating, concurrent approvals and reversal; obtain domain sign-off against current primary rules.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F06",
+      "family": "Attendance / location controls",
+      "baseline": "I/F \u2014 Attendance plus selfie and server geofence controls; guarded defaults. Photo is not face recognition.",
+      "action": "VALIDATE + device/privacy controls. Original priority: P1.",
+      "dependencies": "Physical devices, declared attendance-provider access and approved privacy/geofence policies.",
+      "criteria": [
+        {
+          "id": "F06.01",
+          "acceptance": "Clock in/out on declared web/mobile/device channels; prove server geofence rules, time zones, offline/late events, missing punch correction and supervised exceptions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F06.02",
+          "acceptance": "Consent, photo retention, authorized viewing and disable/revocation match published policy; selfie capture is not advertised as facial recognition/liveness without implemented proof.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F06.03",
+          "acceptance": "Approved attendance and overtime feed payroll once; duplicate/out-of-order events, spoofed client coordinates and cross-tenant records are handled according to a declared threat model.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F07",
+      "family": "Shifts and rostering",
+      "baseline": "I \u2014 Scheduling/shift functionality exists; optimized staffing and demand forecasting unproven.",
+      "action": "VALIDATE + declared advanced roster scope. Original priority: P1.",
+      "dependencies": "Country/workforce scheduling policies and representative demand dataset for any promised optimization.",
+      "criteria": [
+        {
+          "id": "F07.01",
+          "acceptance": "Create and publish shifts; employees receive schedules and authorized managers resolve swaps, absences and exceptions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F07.02",
+          "acceptance": "Golden cases cover overnight shifts, rest days, multiple time zones, overlapping assignments and approved overtime with reconciled payroll effects.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F07.03",
+          "acceptance": "Declare whether demand-based staffing, auto-optimization and predictive forecasting are included; if included, test stated constraints/objective and human override with representative demand.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F08",
+      "family": "Project timesheets",
+      "baseline": "I \u2014 Timesheet submission, inbox, approval and attendance variance endpoints inspected.",
+      "action": "VALIDATE. Original priority: P1.",
+      "dependencies": "Project/rate authority and committed costing/billing destination.",
+      "criteria": [
+        {
+          "id": "F08.01",
+          "acceptance": "An employee records time to authorized projects/tasks; a different approver returns, revises and approves the submission.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F08.02",
+          "acceptance": "Approved time reconciles to project costing and committed payroll/billing outputs without mixing attendance and billable hours.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F08.03",
+          "acceptance": "Test closed projects/periods, duplicate entries, overlaps, corrections, locked exports, rate/effective-date rules and employee/company access.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F09",
+      "family": "Employee / manager self-service",
+      "baseline": "I \u2014 ESS views, requests, approval restrictions and employee linking have recent upgrades.",
+      "action": "VALIDATE. Original priority: P1.",
+      "dependencies": "Controlled activation/recovery notifications and representative employee/manager accounts.",
+      "criteria": [
+        {
+          "id": "F09.01",
+          "acceptance": "New employees activate accounts, recover access and use every committed ESS request/view on actual employee identity; managers operate only their teams.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F09.02",
+          "acceptance": "Complete profile/document update, leave, attendance correction, payslip, benefit/loan request and status tracking with linked approvals and persisted results.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F09.03",
+          "acceptance": "Test role changes, manager changes, unlinked accounts, termination, MFA/recovery and no employee/self approval or peer-sensitive access.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F10",
+      "family": "Native mobile app",
+      "baseline": "P \u2014 Mobile source, MFA/OTA hardening and App Store app ID exist; public release/device evidence unverified. Refreshed README still lists biometric endpoint, offline punch/history, Hijri and push-certificate work; verify each TODO against current code before treating it as missing.",
+      "action": "COMPLETE release + VALIDATE devices. Original priority: P1.",
+      "dependencies": "Signing/distribution accounts, physical iOS/Android devices, push credentials, store reviews and market availability.",
+      "criteria": [
+        {
+          "id": "F10.01",
+          "acceptance": "Provide installable signed iOS and Android release artifacts and stated distribution status; app identifiers/build configuration alone do not prove public release.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F10.02",
+          "acceptance": "Run physical-device employee/manager journeys, login/MFA/recovery, push/deep links, file upload/download and explicit network/offline recovery.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F10.03",
+          "acceptance": "Prove secure token storage/logout/revocation, Arabic/RTL/accessibility, supported OS/device range and upgrade/OTA compatibility with backend version.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F10.04",
+          "acceptance": "Public-store availability claims require approved store listings and accessible downloads for stated markets; private distribution must be labelled separately.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F10.05",
+          "acceptance": "Resolve verified current TODOs for biometric authentication/endpoint, offline punch/history, Hijri dates and push certificates where committed; device/browser biometrics must not be represented as employee facial-recognition attendance.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F11",
+      "family": "Arabic / RTL experience",
+      "baseline": "P \u2014 Arabic localization, names and sentence-formatting improvements exist; complete RTL acceptance not established.",
+      "action": "COMPLETE localization acceptance. Original priority: P1.",
+      "dependencies": "Arabic language/domain review and device/browser/font coverage.",
+      "criteria": [
+        {
+          "id": "F11.01",
+          "acceptance": "Complete supported Arabic web/mobile journeys with RTL navigation, forms, tables, charts, dialogs and keyboard/focus behavior.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F11.02",
+          "acceptance": "Validate mixed Arabic/Latin employee names, dates/numerals, phone/account fields, long labels and locale switching without data loss.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F11.03",
+          "acceptance": "Arabic payslips, statutory/customer outputs, documents and exports use correct font shaping and declared terminology; missing translations/fallback strings are tracked.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F11.04",
+          "acceptance": "HR/domain reviewer and Arabic-capable UX reviewer sign off the committed journey coverage; a locale dictionary alone is insufficient.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F12",
+      "family": "Regular payroll / payslips",
+      "baseline": "T \u2014 14-employee persisted journey proves approvals, lock, payslips, file generation and reconciliation on 30 Sep candidate.",
+      "action": "REVALIDATE current release. Original priority: P0.",
+      "dependencies": "Current web/API parity and controlled connected environment; external channel credentials if payment/submission is committed.",
+      "criteria": [
+        {
+          "id": "F12.01",
+          "acceptance": "Run an independently computed multi-employee payroll from source inputs through separate approval, lock, payslips, bank instruction files and reconciliation on the named current deployed candidate.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.02",
+          "acceptance": "Golden cases include joining/leaving, unpaid leave, overtime, allowances/deductions, benefits, loans, rounding and effective dates, with ledger/payslip/source reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.03",
+          "acceptance": "Prove immutable approved snapshots, recalculation restrictions, idempotency, unauthorized/self approval denial and explicit separation of approved/exported/paid states.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.04",
+          "acceptance": "External payment or statutory submission claims require actual accepted external receipts; old local acceptance remains dated historical evidence.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.05",
+          "acceptance": "Validate PR #223 payroll-to-GL on the deployed candidate: balanced per-company journals, rounding, preview/Lock equivalence, row-lock conflicts, no duplicate Lock/Void journal, valid active mappings/accounts and immutable approved history.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.06",
+          "acceptance": "Implement committed GL cost-centre dimensions and leave/air-ticket accruals; reconcile employee/payroll provisions, EOSB accrual/settlement/void and maker-checker true-up. A statutory-formula provision is not a complete actuarial IAS 19 valuation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F12.07",
+          "acceptance": "Validate legacy absence contra-expense reclassification with maker-checker, preserved posted history and migration-collision warnings. Resolve unmapped legacy 2104/2105 balances without company through an auditable authorized route; do not silently assign a company.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F13",
+      "family": "Off-cycle / corrections / arrears",
+      "baseline": "I \u2014 Regular, off-cycle, supplementary, correction and replacement run types; arrears/proration code exists.",
+      "action": "VALIDATE all committed run types. Original priority: P0.",
+      "dependencies": "Approved payroll correction policy and current deployment/test data.",
+      "criteria": [
+        {
+          "id": "F13.01",
+          "acceptance": "Exercise regular, off-cycle, supplementary, correction and replacement/void runs with explicit eligibility and state transitions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F13.02",
+          "acceptance": "Reconcile arrears, retroactive pay, proration, carried YTD and already-consumed benefits/loan deductions to independent golden totals.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F13.03",
+          "acceptance": "Test overlapping/concurrent runs, closed/paid periods, rejected/returned approval, cancellation and reversals without duplicate payment or orphaned ledgers.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F14",
+      "family": "Payroll coverage across six GCC",
+      "baseline": "P \u2014 Explicit registry has Saudi Arabia, UAE and Qatar only; not six-GCC payroll.",
+      "action": "IMPLEMENT absent packs + country acceptance. Original priority: P2.",
+      "dependencies": "Current official legislation/specifications; qualified local payroll/legal review; country-specific channel/provider access.",
+      "criteria": [
+        {
+          "id": "F14.01",
+          "acceptance": "Keep a country-by-country capability record for Saudi Arabia, UAE, Qatar, Kuwait, Oman and Bahrain, including effective-dated source references, policy scope and exclusions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F14.02",
+          "acceptance": "Implement absent country rules using existing payroll authorities: social insurance, statutory deductions/contributions, leave/EOS and committed payment/reporting formats.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F14.03",
+          "acceptance": "Independently verify golden citizen/non-citizen, age/cohort, joining/leaving, arrears and other applicable scenarios against current primary rules; special zones/regimes require separate acceptance.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F14.04",
+          "acceptance": "Advertise six-GCC support only after each country\u2019s committed workflow and outputs pass; a registry entry is not statutory payroll certification.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F15",
+      "family": "Saudi social insurance cohorts",
+      "baseline": "Main PR #223 implements the new-entrant annuity ladder and idempotent seeding; the October 10 \u201cnot modelled\u201d statement is superseded for source implementation. Current production verification remains unestablished. PR #223 flags minimum-wage floor sources, in-kind housing treatment and counsel decisions as unresolved.",
+      "action": "REVALIDATE new implementation + resolve statutory source/policy gaps. Original priority: P0.",
+      "dependencies": "Authoritative current GOSI schedule and payroll-domain approval; real eligibility data where production proof is needed.",
+      "criteria": [
+        {
+          "id": "F15.01",
+          "acceptance": "Verify the newly implemented Saudi social-insurance new-entrant/effective-date schedule against current authoritative primary rules, idempotent deployed seeding, future changes and bounded eligibility. Do not rebuild the ladder simply because the older comparison recorded a gap.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F15.02",
+          "acceptance": "Independently test pre/post-boundary cohorts, nationality/age/service inputs, missing/contradictory data, contribution bases/caps and effective-date transitions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F15.03",
+          "acceptance": "Block payroll for unsupported/unknown critical cohorts rather than silently using an assumed rate; verify calculation, payslip/employer liabilities and audit provenance.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F15.04",
+          "acceptance": "Resolve authoritative minimum contributory wage treatment and in-kind housing contribution-base interpretation with qualified counsel/domain sign-off; a warning backed by secondary sources does not establish full statutory coverage.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F16",
+      "family": "Saudi WPS / bank channel outputs",
+      "baseline": "F/P \u2014 ANB Connect two-CSV instruction ZIP exists, allowlisted/off by default; bank/Mudad acceptance unverified.",
+      "action": "COMPLETE channel acceptance. Original priority: P0.",
+      "dependencies": "Bank/channel onboarding, official specs and accepted test/production receipts; applicable Mudad/WPS entitlements.",
+      "criteria": [
+        {
+          "id": "F16.01",
+          "acceptance": "Name every bank/channel/version and applicable WPS/Mudad route; distinguish the existing ANB instruction ZIP from accepted payment or statutory submission.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F16.02",
+          "acceptance": "Generate deterministic immutable approved-payroll instructions, validate format/content and test duplicate prevention, rejection, resubmission and reversal/reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F16.03",
+          "acceptance": "Obtain bank/channel-specific accepted submission and applicable WPS/Mudad evidence; successful local file generation or internal validation is insufficient.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F16.04",
+          "acceptance": "Default-off/allowlisted rollout, operator diagnostics, business ownership and settlement status prevent exported files being shown as paid.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F17",
+      "family": "Government system connections",
+      "baseline": "F/P \u2014 Qiwa adapter has unverified contract and partner-reference gate; no real Qiwa transaction proof.",
+      "action": "COMPLETE authorized live provider proof. Original priority: P0.",
+      "dependencies": "Official provider/partner access, contracts and test accounts, production approval where committed.",
+      "criteria": [
+        {
+          "id": "F17.01",
+          "acceptance": "Freeze named government systems, operations and supported channels; verify official contract, partner/tenant entitlement and actual authorized environment.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F17.02",
+          "acceptance": "For each operation, execute credential-aware connection, valid transaction, rate limits/pagination, errors, retry/idempotency and persisted reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F17.03",
+          "acceptance": "Enforce tenant credentials, least privilege, expiry/rotation, safe disconnect, audit and operational support; remove unverifiable success states.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F17.04",
+          "acceptance": "Qiwa\u2019s current contract/partner gates remain blocked until licensed provider proof is supplied; other government logos are not evidence of integration.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F18",
+      "family": "Offboarding / end-of-service",
+      "baseline": "I \u2014 Offboarding, access revocation, settlement recording and country calculation paths exist; old error states fixed.",
+      "action": "VALIDATE complete exit journey. Original priority: P0.",
+      "dependencies": "Current country/domain review and authorized identity/payment targets for external execution.",
+      "criteria": [
+        {
+          "id": "F18.01",
+          "acceptance": "Run resignation/termination through authorized review, final working date, country-specific EOS/final-pay calculation, independent approval and settlement tracking.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F18.02",
+          "acceptance": "Reconcile leave encashment, benefits, loans/advances, arrears and deductions to golden final amounts with explicit legal/company scope.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F18.03",
+          "acceptance": "Prove access removal in app and committed external systems; handle future-dated/withdrawn exits, return/correction, outstanding assets and external payment failures.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F18.04",
+          "acceptance": "Do not equate internal settlement recording with external payment execution.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F18.05",
+          "acceptance": "Resolve company LOP-divisor treatment for leave encashment and independently verify final settlement boundaries; PR #223 explicitly reports that encashment does not yet use this company divisor.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F19",
+      "family": "Employee loans / advances",
+      "baseline": "T/P \u2014 Policy by company/type/grade, separate approvals, finance payouts, repayment, reversals and standalone ledger.",
+      "action": "VALIDATE real disbursement/recovery. Original priority: P1.",
+      "dependencies": "Loan policy owner, independent golden schedule and bank/payout proof where real execution is promised.",
+      "criteria": [
+        {
+          "id": "F19.01",
+          "acceptance": "Exercise company/type/grade eligibility, affordability/exposure, service/probation gates, independent HR/Finance/director approvals and documented exceptions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F19.02",
+          "acceptance": "Prove standalone and payroll-linked disbursement, repayment schedules, partial/failed payout, rescheduling, reversal and once-only ledger effects.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F19.03",
+          "acceptance": "Reconcile real committed payout/recovery routes, payroll deductions and outstanding balance, including termination/final settlement and void/replacement runs.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F20",
+      "family": "Grade and individual benefits",
+      "baseline": "T/P \u2014 Auto assignment, HR exceptions, separate proposal approval and immutable history have isolated evidence.",
+      "action": "VALIDATE + identified benefit boundaries. Original priority: P0.",
+      "dependencies": "Latest release parity, canonical-authority resolution and approved company/dependent benefit policies.",
+      "criteria": [
+        {
+          "id": "F20.01",
+          "acceptance": "Validate automatic company/grade assignment, effective dates, renewal/offer changes, individual HR exceptions and separate proposal approval.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F20.02",
+          "acceptance": "Immutable policy/entitlement snapshots preserve history and prevent draft/rejected changes creating active benefits.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F20.03",
+          "acceptance": "Validate canonical benefit authority across offer, employment, renewal and payroll; no competing salary/benefit state silently overrides approved entitlement.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F20.04",
+          "acceptance": "For committed dependent/family/age/count caps and fiscal/academic periods, implement explicit eligibility, balance and revision rules and verify boundary cases.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F21",
+      "family": "Benefit receipt reimbursements",
+      "baseline": "T/P \u2014 HR and ESS claims with receipts, budget reservation, separate approval and once-only payroll consumption.",
+      "action": "COMPLETE partial claim policy + VALIDATE paid cycle. Original priority: P1.",
+      "dependencies": "Customer benefit rules, provider/insurer contracts and accepted settlement evidence for committed integrations.",
+      "criteria": [
+        {
+          "id": "F21.01",
+          "acceptance": "HR and ESS submit receipt-backed claims against authorized entitlement; owned attachment integrity, budget reservation, duplicate checks and separate approval are enforced.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F21.02",
+          "acceptance": "Implement committed per-child/dependent caps, age/count rules, fiscal/academic-year budgets and rollover rules with deterministic boundary cases.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F21.03",
+          "acceptance": "Approved claims enter payroll or committed insurer/provider settlement once; reject/cancel/void/replacement recover balances correctly and preserve traceability.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F21.04",
+          "acceptance": "Prove actual paid/settled lifecycle and supplier/insurer integration where promised; receipt approval alone is not settlement.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F22",
+      "family": "Business expenses / travel",
+      "baseline": "G \u2014 Benefit claims exist; dedicated business travel, corporate spend and card reconciliation not established.",
+      "action": "IMPLEMENT dedicated workflow or supported integration. Original priority: P2.",
+      "dependencies": "Customer expense/travel rules; approved FX/tax sources and expense/card/accounting provider access where committed.",
+      "criteria": [
+        {
+          "id": "F22.01",
+          "acceptance": "Declare supported business expenses/travel separately from employee benefit claims, including categories, policies, per diem, mileage and receipts.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F22.02",
+          "acceptance": "Complete travel/pre-spend authorization, expense submission, currency/FX/tax treatment, separate approvals, accounting posting and reimbursement reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F22.03",
+          "acceptance": "Test duplicates, limits, rejection/return, advances, cancelled travel and sensitive attachments; corporate cards/card feeds are independent committed features.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F22.04",
+          "acceptance": "If integrated rather than native, prove actual provider operations and support ownership; do not re-label benefit reimbursements as travel management.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F23",
+      "family": "Performance / goals / calibration",
+      "baseline": "I \u2014 Reviews, goals, competencies, 360/PIP/probation and score/calibration endpoints implemented.",
+      "action": "VALIDATE full performance cycle. Original priority: P1.",
+      "dependencies": "Approved review/scoring policy and controlled review participants.",
+      "criteria": [
+        {
+          "id": "F23.01",
+          "acceptance": "Run cycle creation, goals/competencies, employee self-review, manager review and independent calibration through final decision and employee acknowledgment/appeal.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F23.02",
+          "acceptance": "Verify committed 360, probation and PIP flows, scoring formulas, weights, deadlines and policy changes with golden outcomes.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F23.03",
+          "acceptance": "Test conflicting reviewers, transferred managers, ineligible/terminated employees, reopen/revision and restricted private-feedback access.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F24",
+      "family": "Learning management",
+      "baseline": "G \u2014 No completed LMS/catalogue/enrolment/learning transcript implementation evidence found.",
+      "action": "IMPLEMENT advanced module LRN. Original priority: P2.",
+      "dependencies": "Content licensing/authorized provider and declared standard access; actual playable content and representative assessments.",
+      "criteria": [
+        {
+          "id": "F24.01",
+          "acceptance": "Provide versioned course/path catalogue, prerequisites, eligibility, assignment/deduplication, content delivery, assessments/attempt rules and employee progress.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F24.02",
+          "acceptance": "Complete assign, fail/retake, pass, transcript/certificate, expiry/renewal and manager/HR reporting with persisted evidence and unauthorized changes denied.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F24.03",
+          "acceptance": "Declare supported content standards/providers and prove launch/token expiry, callback validation, duplicate callbacks, provider failure and completion authority.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F24.04",
+          "acceptance": "Learning feeds succession/development and BI through existing employee/position authorities; content launch alone is not verified completion.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F25",
+      "family": "Engagement / surveys / eNPS",
+      "baseline": "G \u2014 No dedicated survey, engagement analytics and action-planning cycle evidenced.",
+      "action": "IMPLEMENT advanced module ENG. Original priority: P2.",
+      "dependencies": "Approved privacy/threat model and confidentiality thresholds, controlled invitation sink and representative cohort data.",
+      "criteria": [
+        {
+          "id": "F25.01",
+          "acceptance": "Provide survey templates/questions/scales, audiences, scheduling/recurrence, invitations, reminders, submission rules and follow-up actions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F25.02",
+          "acceptance": "Define identified/confidential/anonymous models, response denominators, scoring/eNPS, retention and free-text access without overstating anonymity.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F25.03",
+          "acceptance": "Independently reconcile multi-department results/trends; enforce minimum cohorts and suppression across intersecting/complementary filters, dashboards, exports and scheduled delivery.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F25.04",
+          "acceptance": "Complete an owned action and verify logs/privileged access match the published privacy model.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F26",
+      "family": "Succession / career development",
+      "baseline": "G \u2014 No completed succession slates, critical-role pipeline and career marketplace evidenced.",
+      "action": "IMPLEMENT advanced module SUC. Original priority: P2.",
+      "dependencies": "Approved talent/review policy, sensitive access model and learning/goals integration authority.",
+      "criteria": [
+        {
+          "id": "F26.01",
+          "acceptance": "Link critical positions to existing organization authority; support nominations, talent pools, competencies, readiness/evidence and controlled review/calibration.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F26.02",
+          "acceptance": "Approve and revise succession slates with sensitive role boundaries, historical snapshots, coverage/bench-strength reporting and declared 9-box axes where committed.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F26.03",
+          "acceptance": "Link development plans to learning/goals; record progress/readiness changes and test vacant roles, transfer, termination/ineligibility and reviewer conflicts.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F26.04",
+          "acceptance": "Career paths/opportunity marketplace are separate explicit subfeatures: implement and verify them if committed; do not claim them from slates alone.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F27",
+      "family": "Merit cycles / pay benchmarking",
+      "baseline": "P \u2014 Grades, salary ranges and structures exist; merit budgets, pay-equity and market benchmarking not established.",
+      "action": "IMPLEMENT advanced module CMP. Original priority: P2.",
+      "dependencies": "Authorized real benchmark data/licensing, approved reward policy, FX source and sensitive-pay access.",
+      "criteria": [
+        {
+          "id": "F27.01",
+          "acceptance": "Create eligible merit cycles, budgeted manager worksheets/scenarios, guidelines/proration, exceptions and separate Finance/HR approval, locking and revision.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F27.02",
+          "acceptance": "Independently reconcile monetary awards, currencies/FX dates/pay periods/FTE basis, compa-ratio/range position and declared equity/cohort controls.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F27.03",
+          "acceptance": "Provide licensed/customer-authorized benchmark import/feed with geography/job/level, provenance, sample/age/currency metadata and stale/missing/out-of-scope handling.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F27.04",
+          "acceptance": "Approved effective-dated changes update existing salary/payroll authority once; rejected/scenario/overlapping changes do not reach payroll and cancellation/reversal is tested.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F28",
+      "family": "Workforce / headcount planning",
+      "baseline": "I/P \u2014 Establishment, headcount summaries and budgets exist; advanced scenarios/forecasting unproven.",
+      "action": "VALIDATE foundation + IMPLEMENT committed forecasting. Original priority: P2.",
+      "dependencies": "Finance-approved planning semantics and representative historical/forecast data.",
+      "criteria": [
+        {
+          "id": "F28.01",
+          "acceptance": "Prove establishment/position/headcount budget controls, approved vacancy/requisition links, employee movement and period-close source reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F28.02",
+          "acceptance": "Provide versioned scenarios for hiring, attrition, pay changes and organization changes with declared assumptions, time grain and costs; compare scenarios against actuals.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F28.03",
+          "acceptance": "Test multi-company/currency/effective-date boundaries and permissions; scenario plans remain separate from approved employee/payroll changes.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F28.04",
+          "acceptance": "Advanced demand/skills forecasting or AI projections require separately stated model inputs, error/quality measures and human review when promised.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F29",
+      "family": "Reports / scheduled exports",
+      "baseline": "I \u2014 Report catalogue, saved reports, schedules/history and CSV/XLSX exports; retry/error states fixed.",
+      "action": "VALIDATE delivery + reconciliation. Original priority: P1.",
+      "dependencies": "Working scheduler/worker and controlled delivery destination.",
+      "criteria": [
+        {
+          "id": "F29.01",
+          "acceptance": "Authorized users select catalogue reports, save variants, export CSV/XLSX and schedule delivery; actual worker/history and controlled recipients prove execution.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F29.02",
+          "acceptance": "Independently reconcile report totals/as-of dates/time zones/currencies to HR/payroll/benefit/loan authorities.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F29.03",
+          "acceptance": "Test denied fields, revoked recipient access, failures/retry/cancellation, duplicate delivery, empty/stale data and attachment security.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F30",
+      "family": "Self-service BI / analytics depth",
+      "baseline": "P \u2014 Reports exist; arbitrary analytical model, pivot builder and external benchmarks not established.",
+      "action": "IMPLEMENT advanced module BI. Original priority: P2.",
+      "dependencies": "Stable semantic/source contracts, realistic performance dataset and external BI credentials where committed.",
+      "criteria": [
+        {
+          "id": "F30.01",
+          "acceptance": "Publish a governed semantic catalogue with dataset grain, joins, measures, effective/as-of dates, units/currencies/time zones and freshness.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F30.02",
+          "acceptance": "An authorized user builds dimensions/measures/filters/grouping/sort, approved expressions, pivot/crosstab, chart and drill-through; saves, shares, exports and schedules analysis.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F30.03",
+          "acceptance": "Reconcile headcount, payroll-cost and training-overdue scenarios independently; prevent fan-out/double counts, currency mixing and incorrect effective dates.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F30.04",
+          "acceptance": "Enforce tenant/company/role/field permissions and survey/pay cohort suppression at query, share, export and delivery time; bound/cancel expensive queries with measured volumes.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F30.05",
+          "acceptance": "External BI destinations/benchmarks require their own supported contracts/proofs; governed user-defined analysis does not mean unrestricted SQL.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F31",
+      "family": "Approval workflows / configuration",
+      "baseline": "I/T \u2014 Separate approvers, policy configuration and self-approval restrictions; role/isolation CI passes.",
+      "action": "VALIDATE + delegation lifecycle. Original priority: P0.",
+      "dependencies": "Explicit workflow/segregation-of-duties policy and controlled notification sink.",
+      "criteria": [
+        {
+          "id": "F31.01",
+          "acceptance": "Enumerate all committed workflow paths with approver authority, ordered/parallel/escalation rules, effective dates and outcomes; prove configuration controls actual runtime behavior.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F31.02",
+          "acceptance": "Test no self approval, requester/beneficiary conflicts, tenant/company boundaries, substituted managers and concurrent/stale approvals.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F31.03",
+          "acceptance": "Controlled delegation/emergency access expires/revokes, records rationale and audit; policy edits do not retrospectively alter immutable approved records.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F31.04",
+          "acceptance": "Return/reject/cancel/reopen and notification failures preserve consistent source status and downstream once-only effects.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F32",
+      "family": "Prebuilt ERP / ecosystem connectors",
+      "baseline": "Main PR #223 supplies 11 export formats: generic CSV verified in a bounded scope; ten vendor templates pinned by golden-file tests but not imported into real ERP instances. Scoped ERP API keys for eight allowlisted export endpoints exist off by default. These do not establish ten live ERP connectors or a broad verified marketplace.",
+      "action": "IMPLEMENT advanced module CON. Original priority: P1.",
+      "dependencies": "Provider licenses, authorized sandbox/production accounts, official API/spec contracts and paid external commitments when needed.",
+      "criteria": [
+        {
+          "id": "F32.01",
+          "acceptance": "Freeze named supported provider/channel/version/operation catalogue; minimum advanced milestone spans two identity providers, two ERP/accounting targets including authorized D365 F&O, one attendance, one learning, one BI and one collaboration target.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F32.02",
+          "acceptance": "Per entry prove real credentials, scopes, mappings, connection, source/destination transfer or federation, pagination/cursors, limits, idempotency, conflict/delete rules and reconciliation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F32.03",
+          "acceptance": "Provide retry/backoff, failed-item replay, interrupt/resume, credential rotation/revocation/disconnect, monitoring and operator ownership; reject cross-tenant credentials.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F32.04",
+          "acceptance": "Label development, unit/mock, sandbox verified and production verified separately; unsupported providers remain explicit gaps and CSV/webhooks do not stand in for promised API operations.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F32.05",
+          "acceptance": "Validate PR #223 export/re-export/confirmation locking, row-level confirmed evidence, ERP company/account codes and rejection of conflicting confirmations. Import each committed vendor template into its actual target test instance and independently reconcile posted records before calling that format validated.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F32.06",
+          "acceptance": "Verify scoped ERP API keys: MFA-admin creation, one-time secret display and hashed storage, allowed endpoints, expiry/IP rules/rate limits/audit, creator deactivation and cross-tenant denial. Keep export API access separate from bidirectional vendor connector claims.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F33",
+      "family": "Working SAML / OIDC federation",
+      "baseline": "G \u2014 EnterpriseIdentity SAML ACS and OIDC authorize return HTTP 501. SCIM foundation does not establish SSO.",
+      "action": "IMPLEMENT working federation + VALIDATE lifecycle. Original priority: P0.",
+      "dependencies": "At least declared enterprise IdP test tenants/admin configuration and approved federation/provisioning policy.",
+      "criteria": [
+        {
+          "id": "F33.01",
+          "acceptance": "Implement real SAML and OIDC flows as committed: signed/encrypted assertion rules, issuer/audience/nonce/state/PKCE, safe redirect restrictions and validated metadata/keys.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F33.02",
+          "acceptance": "Test actual IdP login, account linking/JIT or stated provisioning, tenant discovery, role/group mapping, logout/session expiry and denied/invalid/replayed assertions.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F33.03",
+          "acceptance": "Prove deprovisioning/group removal revokes access and privileged changes are audited; preserve controlled MFA/break-glass recovery and prevent tenant/account takeover.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F33.04",
+          "acceptance": "Current HTTP 501 paths must be replaced with working verified behavior; SCIM or configuration screens alone do not satisfy federation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F34",
+      "family": "AI assistance / automation",
+      "baseline": "I/P \u2014 Kody assistant implementation exists; accuracy, action safety and adopted business outcomes unproven.",
+      "action": "VALIDATE useful/safe outcomes. Original priority: P2.",
+      "dependencies": "Authorized model/provider configuration, curated evaluation set and privacy/retention policy.",
+      "criteria": [
+        {
+          "id": "F34.01",
+          "acceptance": "Freeze assistant use cases, supported data/actions and success metrics; evaluate representative HR tasks with independently reviewed expected answers.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F34.02",
+          "acceptance": "Enforce source/tenant/role/field permissions, sensitive-data minimization, prompt-injection defenses and correct denial/uncertainty behavior.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F34.03",
+          "acceptance": "High-impact actions require authorized human approval, idempotent execution and auditable linkage; inaccurate/generated market pay/legal guidance is not authoritative.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F34.04",
+          "acceptance": "Report task accuracy, unsafe-action rate, latency/cost and measurable customer outcomes at stated sample/usage scope.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F35",
+      "family": "RBAC / MFA / audit / isolation",
+      "baseline": "I/T \u2014 Role, MFA, import and anti-self-approval hardening; main role/isolation and security gates pass.",
+      "action": "REVALIDATE deployed security matrix. Original priority: P0.",
+      "dependencies": "Current deployed candidate parity, security test accounts and audit/retention decisions.",
+      "criteria": [
+        {
+          "id": "F35.01",
+          "acceptance": "Exercise a current deployed role/company/tenant/field matrix for all committed modules including imports, exports, admin and privileged operations.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F35.02",
+          "acceptance": "Prove MFA enrollment/login/recovery/reset/revocation and safe emergency access without revealing secrets or allowing employee/self approval.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F35.03",
+          "acceptance": "Validate immutable/auditable actor, beneficiary, entity, prior/new state, timestamps and correlation for sensitive reads/changes; test audit access, retention and tamper controls.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F35.04",
+          "acceptance": "Run relevant security, session, dependency, authorization and data-integrity checks against the candidate; passing CI alone does not establish independent assurance.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    },
+    {
+      "familyId": "F36",
+      "family": "Published independent assurance",
+      "baseline": "G \u2014 No current KynexOne SOC 2/ISO certificate or independently evidenced operating assurance verified. CI is not certification.",
+      "action": "DELIVER operating evidence + obtain independent assurance. Original priority: P1.",
+      "dependencies": "Security/operations owners, approved service commitments, production restore permissions/evidence and external accredited auditor/certification engagement.",
+      "criteria": [
+        {
+          "id": "F36.01",
+          "acceptance": "Publish a truthful security/procurement pack: architecture/data boundaries, supported residency, subprocessors, retention/deletion, encryption/access controls and actual assurance status.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F36.02",
+          "acceptance": "Create and execute backup/restore and disaster-recovery drills with stated measured RPO/RTO, incident/runbook ownership, monitoring and escalation; load/availability claims require measured evidence.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F36.03",
+          "acceptance": "Publish agreed support/service commitments, release/maintenance/change policy, vulnerability handling and factual accessibility/availability scope.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        },
+        {
+          "id": "F36.04",
+          "acceptance": "Obtain independent audit/certification only through the authorized assessor/program; publish scope, dates, entity and limitations of an issued report/certificate, never manufacture one from CI or documentation.",
+          "verification": "NOT_EXECUTED_IN_THIS_REVIEW"
+        }
+      ]
+    }
+  ]
+}
