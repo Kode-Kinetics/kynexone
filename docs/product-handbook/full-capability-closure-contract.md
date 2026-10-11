@@ -2,6 +2,8 @@
 
 Prepared from the 10 October 2026 comparison and the attached version 1.1 advanced-capability prompt. This is a coverage/acceptance review, not a current implementation or production certification. Original assessed SHA: `8fb929403fe3632d1b967a60be747c8a09c52008`. Refreshed source evidence at `2026-10-11T04:55:02Z` identifies main `76985c559e9b51c246a4a48ab88e0e14eedc1ae1` (merged PR #223) and live web/API `0e54b4f51e4cea94fd03f934ae92e20ce7cc1d0d`. Updated implementation below is explicitly distinguished from still-unproved deployed acceptance. Refresh these identities before execution.
 
+**Source references.** Assessment source IDs K01–K03 cited below are items of the owner's 10 October 2026 competitor/coverage comparison, which is not stored in this repository. A baseline that cites only K01–K03 is UNVERIFIED: re-establish it from current source and evidence before execution, or commit the comparison and link it from `capability-closure-register.json` (`assessmentSources`). The machine-readable register carries a `closure` record per criterion with the fields in "Closure register fields" below.
+
 ## Scope and completeness contract
 
 The existing prompt covers six advanced families (F24, F25, F26, F27, F30 and F32). It does not close the other 30 families, nor does it certify previously implemented modules on a current release. All 36 families therefore need a closure ledger. Reuse valid existing implementation and dated evidence; implement confirmed gaps and retest changed behavior plus its regressions.
