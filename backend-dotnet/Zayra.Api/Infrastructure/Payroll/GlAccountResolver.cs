@@ -100,6 +100,14 @@ public sealed record GlResolutionContext(
     public IReadOnlyDictionary<string, GlResolutionProblem> Problems { get; init; }
         = new Dictionary<string, GlResolutionProblem>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The SYSTEM drivers that are switched off (no active row for the key), flattened exactly as an
+    /// active row would be. Routing never sees them; the payroll Lock uses them only to ask "would any
+    /// pay item on THIS run have gone to that rule had it been on?" so a switched-off rule the run
+    /// never touches does not block the month. Empty by default.
+    /// </summary>
+    public IReadOnlyList<GlDriverRow> InactiveSystemDrivers { get; init; } = Array.Empty<GlDriverRow>();
+
     public static readonly GlResolutionContext Empty = new(
         new Dictionary<string, (string, string)>(),
         new Dictionary<string, (string, string)>(),
@@ -114,8 +122,9 @@ public static class GlResolutionProblemKinds
     public const string Unmapped = "Unmapped";
     /// <summary>The account the driver resolves to exists in the chart but is switched off.</summary>
     public const string InactiveAccount = "InactiveAccount";
-    /// <summary>The resolved account code is not in this company's chart of accounts (informational:
-    /// posting still writes the code/name label).</summary>
+    /// <summary>The resolved account code is not in this company's chart of accounts. The payroll Lock
+    /// refuses to post a rule the run uses in this state (the ERP would receive an account the chart does
+    /// not have), except for a tenant with no chart at all, which posts the built-in labels as before.</summary>
     public const string NotInChart = "NotInChart";
     /// <summary>A system posting rule has been switched off, so its components silently re-route.</summary>
     public const string InactiveDriver = "InactiveDriver";
@@ -260,7 +269,15 @@ public static class GlAccountResolver
                 d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
             .ToList();
 
-        var ctx = new GlResolutionContext(overrides, driverDefaults, drivers) { CompanyId = companyId };
+        // Switched-off SYSTEM keys (no active row at either scope), company row first, as routing rows.
+        var inactiveSystem = s.Drivers.GroupBy(d => d.Key)
+            .Where(g => !g.Any(d => d.IsActive) && g.Any(d => d.IsSystem))
+            .Select(g => CompanyFirst(g.Where(d => d.IsSystem), d => d.CompanyId))
+            .Select(d => new GlDriverRow(d.Key, d.Category, d.PostingSide, d.MatchSource, d.MatchMode,
+                d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
+            .ToList();
+
+        var ctx = new GlResolutionContext(overrides, driverDefaults, drivers) { CompanyId = companyId, InactiveSystemDrivers = inactiveSystem };
         return ctx with { Problems = FindProblems(s, ctx) };
     }
 
@@ -274,6 +291,11 @@ public static class GlAccountResolver
     /// <item><b>InactiveAccount</b> — the winning mapping (company beats group, active or not) names an
     /// account that is switched off, or the driver's default code is an inactive account in the chart.
     /// Before this the mapping was dropped and posting fell back to the default without a word.</item>
+    /// <item><b>NotInChart</b> — no mapping wins and the driver default (or the built-in default) names
+    /// a code the company's chart does not have, e.g. an account re-coded after the default was set.
+    /// The journal would carry a code the ERP cannot match. NOT reported for a tenant whose chart at
+    /// this scope is completely empty: such a tenant has never set up a chart and has always posted the
+    /// built-in labels, and blocking it would stop every payroll it locks until someone seeds a chart.</item>
     /// </list>
     /// </summary>
     private static IReadOnlyDictionary<string, GlResolutionProblem> FindProblems(Snapshot s, GlResolutionContext ctx)
@@ -310,6 +332,14 @@ public static class GlAccountResolver
                 var (rc, rn) = Resolve(key, ctx.Overrides, ctx.DriverDefaults);
                 var acct = string.IsNullOrWhiteSpace(rc) ? null : ChartAccount(s, rc);
                 if (acct is not null && !acct.IsActive) { code = acct.Code; name = string.IsNullOrWhiteSpace(rn) ? acct.Name : rn; }
+                else if (acct is null && s.Accounts.Count > 0 && !IsUnmappedPlaceholder(rc, rn))
+                {
+                    var missingLabel = DriverLabel(s, key);
+                    problems[key] = new GlResolutionProblem(key, missingLabel, GlResolutionProblemKinds.NotInChart, rc, rn,
+                        $"\"{missingLabel}\" ({key}) posts to account {rc} {rn}, which is not in the chart of accounts. " +
+                        $"Add account {rc} to the chart, or map this posting rule to an account that exists, then lock again.");
+                    continue;
+                }
             }
             if (code is null) continue;
             var label = DriverLabel(s, key);
@@ -319,6 +349,12 @@ public static class GlAccountResolver
         }
         return problems;
     }
+
+    /// <summary>The "nothing resolves" placeholder (reported as Unmapped, never as NotInChart).</summary>
+    private static bool IsUnmappedPlaceholder(string? code, string? name) =>
+        string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(name)
+        || code.Equals("UNMAPPED", StringComparison.OrdinalIgnoreCase) || code == "9999"
+        || name.Equals("Unmapped", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Loads the company-first GL resolution context: mapping overrides (company row wins over tenant
