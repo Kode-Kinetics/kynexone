@@ -41,6 +41,13 @@ public static class OptInFeatures
             ],
             // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
             [FeatureKeys.PunchGeofence] = [],
+            // Engagement surveys: HR's side and the respondent's Self-Service side. The scheduled results report
+            // (engagement.results) checks the flag in its own arm, as it runs under /api/reports.
+            [FeatureKeys.Engagement] =
+            [
+                "/api/engagement",
+                "/api/ess/surveys",
+            ],
             // Learning management. The cmi5 launch endpoints under /api/learning/cmi5 and /api/learning/xapi carry no
             // JWT (the AU authenticates with its session token), so this guard cannot see their tenant: LearningCmi5Service
             // checks the flag itself against the session's tenant.

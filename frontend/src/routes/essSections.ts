@@ -3,6 +3,7 @@ import {
   HeartPulse,
   Inbox,
   LayoutDashboard,
+  MessageSquareText,
   WalletCards,
   type LucideIcon,
 } from 'lucide-react';
@@ -32,7 +33,7 @@ export interface EssPage {
 }
 
 export interface EssSection {
-  id: 'overview' | 'pay' | 'time' | 'requests' | 'benefits';
+  id: 'overview' | 'pay' | 'time' | 'requests' | 'benefits' | 'surveys';
   label: string;
   icon: LucideIcon;
   pages: EssPage[];
@@ -42,6 +43,7 @@ export const ESS_HOME_PATH = '/ess';
 export const ESS_DOCUMENTS_PATH = '/ess/documents';
 export const ESS_JAWAZAT_PATH = '/ess/jawazat';
 export const ESS_BENEFITS_PATH = '/ess/benefits';
+export const ESS_SURVEYS_PATH = '/ess/surveys';
 
 export const ESS_SECTIONS: EssSection[] = [
   {
@@ -94,6 +96,15 @@ export const ESS_SECTIONS: EssSection[] = [
     icon: HeartPulse,
     pages: [
       { label: 'My Benefits', tab: 'Benefits', path: ESS_BENEFITS_PATH, hint: 'The benefits you are enrolled in and what they cover.' },
+    ],
+  },
+  {
+    // Engagement surveys (engagement opt-in flag): answer open surveys, and record progress on actions you own.
+    id: 'surveys',
+    label: 'Surveys',
+    icon: MessageSquareText,
+    pages: [
+      { label: 'My surveys', tab: 'Surveys', path: ESS_SURVEYS_PATH, hint: 'Answer the surveys waiting for you and follow up on actions you own.', requiredFeatureKey: 'engagement' },
     ],
   },
 ];

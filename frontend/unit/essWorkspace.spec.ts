@@ -37,7 +37,14 @@ test('a feature-flagged tab shows only while its flag is on, and a section never
   expect(visibleEssPages(pay, () => false).map((p) => p.path)).toEqual(['/ess/payslips']);
   expect(visibleEssPages(pay, (k) => k === 'release_a').map((p) => p.path)).toEqual(['/ess/payslips', '/ess/package', '/ess/deductions']);
   expect(visibleEssPages(time, () => false).map((p) => p.path)).toEqual(['/ess/leave']);
-  for (const s of ESS_SECTIONS) expect(visibleEssPages(s, () => false).length, s.id).toBeGreaterThan(0);
+  // A section of ordinary pages never goes empty. A section that exists only for an opt-in feature (Surveys, the
+  // engagement flag) has no page while the flag is off, and EssWorkspaceNav drops a section with no visible page.
+  for (const s of ESS_SECTIONS.filter((x) => x.pages.some((p) => !p.requiredFeatureKey))) {
+    expect(visibleEssPages(s, () => false).length, s.id).toBeGreaterThan(0);
+  }
+  const surveys = ESS_SECTIONS.find((s) => s.id === 'surveys')!;
+  expect(visibleEssPages(surveys, () => false)).toEqual([]);
+  expect(visibleEssPages(surveys, (k) => k === 'engagement').map((p) => p.path)).toEqual(['/ess/surveys']);
 });
 
 test('every section, tab, page name and hint is translated into Arabic', () => {

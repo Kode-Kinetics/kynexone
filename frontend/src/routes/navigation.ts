@@ -75,6 +75,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
+      // Engagement surveys (engagement opt-in flag). Respondents answer in Self-Service → Surveys.
+      { label: 'Engagement', icon: MessageSquareText, path: '/engagement', requiredPermissions: ['engagement.read', 'engagement.manage', 'engagement.actions.manage'], requiredFeatureKey: 'engagement' },
       // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
       // SUC (succession opt-in flag): critical positions, talent review, slates and development plans. Every succession key
       // but the employee's own opens it; the page shows each audience its own tabs (a manager: nominations and plans only).
@@ -145,6 +147,7 @@ export const navigationHints: Record<string, string> = {
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
+  '/engagement': 'Engagement surveys, results that protect small groups, and follow-up actions.',
   '/performance/succession': 'Critical positions and their successors, gaps first: who is ready, who is being developed, and what is missing.',
   '/learning': 'Courses, learning paths, mandatory training and certificates — who has done what, and what is due.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',

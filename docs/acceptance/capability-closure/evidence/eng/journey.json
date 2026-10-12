@@ -1,0 +1,371 @@
+{
+  "api": "http://127.0.0.1:5212",
+  "surveyId": "95eb54dc-3922-44e0-91d5-abbc176324db",
+  "world": {
+    "acmeTenantId": "6ca38a98-759a-40cd-8ea3-875f580fbda1",
+    "otherTenantId": "922ecf48-e313-47eb-acdc-02d48c608961",
+    "companyId": "0ebef26f-e843-4352-85aa-3c1a3ecef162",
+    "departments": {
+      "OPS": "e9c2c37d-1b3e-45a8-bcb2-fa904fe967a0",
+      "FIN": "fbabab50-e749-45de-a3c5-57f655696ae6",
+      "LEG": "3eec2116-bf39-4619-9b80-85f4a3e7f295",
+      "MGT": "58661dea-3622-4ce5-a0a6-76e5d4463fb9"
+    },
+    "designations": {
+      "ENG": "7dd18972-1833-40e4-b407-ca8c1b4fd0d1",
+      "ANA": "b74f92d1-0a4e-4831-871c-c667d575bb92",
+      "SUP": "e36879cb-49a0-43ac-9e80-ebdb5891426f",
+      "MGR": "14d46797-c888-4960-bf3d-8237c84daed5"
+    },
+    "employees": {
+      "MGR-ENG": 1,
+      "MGR-OPS": 2,
+      "MGR-FIN": 3,
+      "MGR-LEG": 4,
+      "ACM-001": 5,
+      "ACM-002": 6,
+      "ACM-003": 7,
+      "ACM-004": 8,
+      "ACM-005": 9,
+      "ACM-006": 10,
+      "ACM-007": 11,
+      "ACM-008": 12,
+      "ACM-009": 13,
+      "ACM-010": 14,
+      "ACM-011": 15,
+      "ACM-012": 16,
+      "ACM-013": 17,
+      "ACM-014": 18,
+      "ACM-015": 19,
+      "ACM-016": 20,
+      "ACM-017": 21,
+      "ACM-018": 22,
+      "ACM-019": 23,
+      "ACM-020": 24,
+      "ACM-021": 25,
+      "ACM-022": 26,
+      "ACM-023": 27,
+      "ACM-024": 28,
+      "ACM-025": 29,
+      "ACM-026": 30,
+      "ACM-027": 31,
+      "ACM-028": 32,
+      "ACM-029": 33,
+      "ACM-030": 34,
+      "ACM-031": 35,
+      "ACM-032": 36,
+      "ACM-033": 37,
+      "ACM-034": 38,
+      "ACM-035": 39,
+      "ACM-036": 40
+    }
+  },
+  "log": [
+    {
+      "id": "J0",
+      "atUtc": "2026-10-11T21:27:54.454Z",
+      "tenant": "eng-acme",
+      "otherTenant": "eng-other",
+      "employees": 40,
+      "companyId": "0ebef26f-e843-4352-85aa-3c1a3ecef162"
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:01.890Z",
+      "file": "J1-01-engagement-home.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:02.588Z",
+      "file": "J1-02-template-builder.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:04.459Z",
+      "file": "J1-03-template-published.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:05.021Z",
+      "file": "J1-04-survey-builder-anonymous-notice.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:09.525Z",
+      "file": "J1-05-survey-launched.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J1",
+      "atUtc": "2026-10-11T21:28:10.898Z",
+      "surveyId": "95eb54dc-3922-44e0-91d5-abbc176324db",
+      "status": "Open",
+      "invited": 36
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:23.105Z",
+      "file": "J2-01-my-surveys.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:23.758Z",
+      "file": "J2-02-draft-saved.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:24.205Z",
+      "file": "J2-03-ready-to-submit.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:28:24.421Z",
+      "file": "J2-04-submitted.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J2",
+      "atUtc": "2026-10-11T21:28:24.625Z",
+      "employee": "ACM-001",
+      "reopenStatus": 409,
+      "reopenError": "survey_already_submitted",
+      "resubmitStatus": 409,
+      "resubmitError": "survey_already_submitted"
+    },
+    {
+      "id": "J3",
+      "atUtc": "2026-10-11T21:29:02.520Z",
+      "submittedViaApi": 33,
+      "totalRespondents": 34
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:10.528Z",
+      "file": "J3b-01-mobile-my-surveys-ar.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:11.740Z",
+      "file": "J3b-02-mobile-respond-ar.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:12.142Z",
+      "file": "J3b-03-mobile-submitted-ar.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "id": "J3b",
+      "atUtc": "2026-10-11T21:29:12.142Z",
+      "employee": "ACM-030",
+      "horizontalOverflowPx": 0
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:20.380Z",
+      "file": "J3c-01-results-wait-for-close.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:20.677Z",
+      "file": "J3c-02-survey-closed.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J3c",
+      "atUtc": "2026-10-11T21:29:20.677Z",
+      "resultsAvailableWhileOpen": false,
+      "commentsWhileOpen": 409,
+      "submittedLive": 35
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:26.361Z",
+      "file": "J4-01-results-overview.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:26.756Z",
+      "file": "J4-02-breakdown-small-group-suppressed.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:27.822Z",
+      "file": "J4-03-intersecting-filter-blocked.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J4",
+      "atUtc": "2026-10-11T21:29:28.532Z",
+      "responseRatePct": 97.2,
+      "favourablePct": 64.3,
+      "enps": 17.1,
+      "cells": [
+        {
+          "label": "Legal",
+          "visible": false,
+          "reason": "suppressed"
+        },
+        {
+          "label": "Operations",
+          "visible": true,
+          "reason": null
+        },
+        {
+          "label": "Finance",
+          "visible": false,
+          "reason": "suppressed"
+        }
+      ],
+      "exportFile": "J4-export.csv"
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:35.099Z",
+      "file": "J5-01-action-editor.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:35.394Z",
+      "file": "J5-02-action-created.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:39.490Z",
+      "file": "J5-03-owner-completed-action.png",
+      "url": "http://127.0.0.1:5312/ess/surveys",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:43.718Z",
+      "file": "J5-04-action-done-after-reload.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J5",
+      "atUtc": "2026-10-11T21:29:43.773Z",
+      "actionId": "d6fd0841-2ab7-49cd-bfa2-84ba93a31c1e",
+      "status": "Done",
+      "progressEntries": 3
+    },
+    {
+      "id": "screenshot",
+      "atUtc": "2026-10-11T21:29:47.428Z",
+      "file": "J6-01-results-arabic-rtl.png",
+      "url": "http://127.0.0.1:5312/engagement",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "id": "J6",
+      "atUtc": "2026-10-11T21:29:47.432Z",
+      "dir": "rtl"
+    },
+    {
+      "id": "J8",
+      "atUtc": "2026-10-11T21:29:47.809Z",
+      "otherTenantStatus": 404,
+      "employeeStatus": 403
+    }
+  ]
+}
