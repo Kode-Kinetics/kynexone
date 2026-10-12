@@ -19,6 +19,10 @@ import { EmployeePackagePanel } from '../components/entitlements/EmployeePackage
 import { EmployeeBenefitsPanel } from '../components/benefits/EmployeeBenefitsPanel';
 import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
 import { useReleaseA } from '../lib/releaseA';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { DevelopmentPlanPanel } from '../components/succession/DevelopmentPlanPanel';
+import { useSuccessionAccess } from '../components/succession/SuccessionParts';
+import { SUCCESSION_FLAG } from '../lib/succession';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { createUrlSeed } from '../lib/urlSeed';
@@ -84,7 +88,7 @@ import {
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
-type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers';
+type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
 type EditField = EmployeeEditField;
 
 function employeeEditStep(field: EditField): number {
@@ -146,7 +150,8 @@ const BULK_REASON_LABELS: Record<string, string> = {
 const bulkReasonLabel = (reason?: string | null) => (reason ? BULK_REASON_LABELS[reason] ?? reason : 'Skipped');
 
 // releaseA: shown only when the tenant has the release_a flag on (Release A slices R2 and R3 own the panels).
-const tabs: { id: DetailTab; label: string; releaseA?: boolean }[] = [
+// succession: shown only with the succession opt-in flag and succession.devplans.read (SUC development plans).
+const tabs: { id: DetailTab; label: string; releaseA?: boolean; succession?: boolean }[] = [
   { id: 'personal', label: 'Personal Information' },
   { id: 'employment', label: 'Employment Information' },
   { id: 'payroll', label: 'Payroll Profile' },
@@ -157,6 +162,7 @@ const tabs: { id: DetailTab; label: string; releaseA?: boolean }[] = [
   { id: 'documents', label: 'Documents' },
   { id: 'history', label: 'History' },
   { id: 'transfers', label: 'Transfers' },
+  { id: 'development', label: 'suc.employee.tab', succession: true },
 ];
 
 const emptyEmployee = (): EmployeeCreateRequest => ({
@@ -369,8 +375,11 @@ export function EmployeesPage() {
     }
   }, [activeTab, detail?.id]);
   const releaseA = useReleaseA();
+  const successionAccess = useSuccessionAccess();
+  const { isFeatureEnabled } = useFeatureFlags();
+  const canSeeDevelopment = isFeatureEnabled(SUCCESSION_FLAG) && successionAccess.devplansRead;
   const visibleTabs = useMemo(() => tabs.filter((tab) => tab.id === 'benefits'
-    ? !releaseA && canReadBenefits : !tab.releaseA || releaseA), [releaseA, canReadBenefits]);
+    ? !releaseA && canReadBenefits : tab.succession ? canSeeDevelopment : !tab.releaseA || releaseA), [releaseA, canReadBenefits, canSeeDevelopment]);
   useEffect(() => {
     if (!visibleTabs.some(tab => tab.id === activeTab)) setActiveTab('personal');
   }, [activeTab, visibleTabs]);
@@ -2194,7 +2203,7 @@ export function EmployeesPage() {
                 </div>
                 <div className="mt-4 flex gap-1 overflow-x-auto">
                   {visibleTabs.map((tab) => (
-                    <button key={tab.id} ref={tab.id === 'benefits' ? benefitsTabRef : undefined} type="button" onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
+                    <button key={tab.id} ref={tab.id === 'benefits' ? benefitsTabRef : undefined} type="button" data-testid={tab.id === 'development' ? 'suc-dev-tab' : undefined} onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
                       {t(tab.label)}
                     </button>
                   ))}
@@ -2382,6 +2391,7 @@ export function EmployeesPage() {
                 )}
                 {releaseA && activeTab === 'package' && <EmployeePackagePanel key={detail!.id} employee={detail!} />}
                 {releaseA && activeTab === 'deductions' && <EmployeeDeductionsPanel key={detail!.id} employee={detail!} />}
+                {canSeeDevelopment && activeTab === 'development' && <DevelopmentPlanPanel key={detail!.id} employeeId={detail!.id} access={successionAccess} />}
                 {activeTab === 'compliance' && (
                   <div className="space-y-2">
                     {detail!.complianceRecords.length === 0 && <SmallEmpty label="No compliance records saved" />}

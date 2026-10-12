@@ -101,7 +101,22 @@ public class TableBudgetRatchetTests
         // cycle × employee), PayBenchmarkSets (customer-owned survey import with provenance and licence) and
         // PayBenchmarkRows (percentiles + designation/grade mapping). HR owns all eight; Finance reads budgets. Kept as
         // long as the salary rows the awards produced. No existing table holds any of these facts.
-        DeclaredDbSets().Should().HaveCount(343,
+        // LRN — learning management (capability closure LRN-01..15; owner L&D/HR; LRN_DESIGN.md has the per-table
+        // template). Ten tables, the module's whole cap: LearningCourses (immutable course versions + question bank),
+        // LearningPaths + LearningPathItems (curricula, order, prerequisites, eligibility), LearningAssignmentRules
+        // (standing rules the sweep re-applies), LearningAssignments (employee × path × cycle; one live row per pair,
+        // DB-enforced), LearningEnrollments (per course, pinned to a version), LearningAttempts (scored submissions),
+        // LearningCredentials (certificates with expiry, revocation and a supersede chain), LearningLaunchSessions
+        // (cmi5 one-time fetch / auth token hashes) and LearningXapiStatements (the minimal LRS, unique per statement
+        // id). No existing table holds learning content, completion evidence or a qualification lifecycle. Retention:
+        // kept with the employee's training record (FK Restrict; never hard-deleted — cancel/revoke are statuses).
+        // SUC — succession and career development (capability closure SUC-01..09; owner HR; SUC_IMPLEMENTATION.md has the
+        // per-table template). Seven tables, the module's whole cap: SuccessionCriticalPositions (criticality side table on
+        // Position), TalentPools, SuccessionNominations (candidate × one target, readiness history), TalentAssessments
+        // (potential + performance snapshot, generated 9-box cell, immutable once calibrated), SuccessionSlateVersions
+        // (immutable hashed snapshots, approval-routed), DevelopmentPlans and DevelopmentPlanActions (linked to
+        // learning_assignments / EmployeeGoal). Retention: 3 years after employment ends, then anonymised (SuccessionRetentionJob).
+        DeclaredDbSets().Should().HaveCount(360,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

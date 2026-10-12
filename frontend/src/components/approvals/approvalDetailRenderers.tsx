@@ -3,6 +3,7 @@ import type { ApprovalRequest } from '../../api/approvals';
 import { RenewalOfferApprovalCard } from '../renewals/RenewalOfferApprovalCard';
 import { BenefitClaimApprovalCard } from '../benefits/BenefitClaims';
 import { AdditionalBenefitApprovalCard } from '../benefits/AdditionalBenefitRequestDetail';
+import { SlateApprovalCard } from '../succession/SlateApprovalLink';
 
 export interface ApprovalDetailRendererProps {
   request: ApprovalRequest;
@@ -18,4 +19,5 @@ export const approvalDetailRenderers: Record<string, ComponentType<ApprovalDetai
   BenefitAdditionalGrant: AdditionalBenefitApprovalCard,
   ContractRenewal: RenewalOfferApprovalCard,
   ContractRenewalBatch: RenewalOfferApprovalCard,
+  SuccessionSlate: SlateApprovalCard,
 };

@@ -6,6 +6,8 @@ export interface RovingTabItem<T extends string> {
   id: T;
   label: string;
   icon?: React.ElementType<{ className?: string }>;
+  /** Optional data-testid for the tab button. */
+  testId?: string;
 }
 
 interface RovingTabListProps<T extends string> {
@@ -72,6 +74,7 @@ export function RovingTabList<T extends string>({
               key={item.id}
               ref={(node) => { refs.current[index] = node; }}
               id={`${idPrefix}-tab-${item.id}`}
+              data-testid={item.testId}
               type="button"
               role="tab"
               aria-selected={selected}

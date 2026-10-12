@@ -9,6 +9,8 @@ import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
 import { compensation } from './compensation';
+import { learning } from './learning';
+import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
@@ -1400,6 +1402,10 @@ const en: Dict = {
 
   // Release A — one file per slice in ./releaseA (R0 spreads them once; slices edit only their own file).
   ...releaseA.en,
+  // LRN — learning management (./learning).
+  ...learning.en,
+  // SUC — succession and career development (./succession).
+  ...succession.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -2776,6 +2782,10 @@ const ar: Dict = {
   ...policyIntelligence.ar,
 
   ...releaseA.ar,
+  // LRN — learning management (./learning).
+  ...learning.ar,
+  // SUC — succession and career development (./succession).
+  ...succession.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────

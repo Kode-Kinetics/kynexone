@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAMPLE cmi5 unit — Fire safety basics</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 16px; background: #f8fafc; color: #0f172a; }
+  @media (prefers-color-scheme: dark) { body { background: #0f172a; color: #e2e8f0; } .card { background: #1e293b !important; } }
+  .banner { background: #fef3c7; color: #78350f; border: 1px solid #f59e0b; border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 600; }
+  .card { max-width: 640px; margin: 16px auto; background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #1d4ed8; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  .muted { color: #64748b; font-size: 13px; }
+  .error { color: #b91c1c; font-weight: 600; }
+  label { display: block; margin: 6px 0; }
+  #log { font-family: ui-monospace, monospace; font-size: 11px; white-space: pre-wrap; color: #475569; max-height: 160px; overflow: auto; }
+</style>
+</head>
+<body>
+<p class="banner" data-testid="sample-banner">SAMPLE cmi5 assignable unit (KynexOne e2e test fixture, served only by the test HTTP server). Not real training content.</p>
+<main class="card">
+  <h1>Fire safety basics</h1>
+  <p id="status" class="muted" data-testid="au-status">Connecting to the learning system…</p>
+  <section id="lesson" hidden>
+    <p id="slide"></p>
+    <button id="next" type="button">Next</button>
+  </section>
+  <section id="quiz" hidden>
+    <p><strong>Which way do you leave during a fire alarm?</strong></p>
+    <label><input type="radio" name="q1" value="lift"> By the lift</label>
+    <label><input type="radio" name="q1" value="stairs"> By the nearest stairs</label>
+    <button id="submit" type="button">Submit answer</button>
+  </section>
+  <section id="done" hidden>
+    <p id="result" data-testid="au-result"></p>
+    <p class="muted">You can close this window. Your result has been sent to KynexOne.</p>
+    <a id="return" hidden>Return to KynexOne</a>
+  </section>
+  <details><summary class="muted">Technical log</summary><div id="log"></div></details>
+</main>
+<script>
+// A minimal, conformant cmi5 AU: fetch → LMS.LaunchData → initialized → progressed → passed/failed → completed → terminated.
+(function () {
+  const params = new URLSearchParams(location.search);
+  // TEST FIXTURE: this unit only ever talks to the disposable KynexOne stack the learning journey starts. The launch
+  // URL's endpoint and fetch parameters must point at an allow-listed origin, and the request URLs are rebuilt from that
+  // constant origin and the fixed KynexOne paths, so a crafted launch link cannot send the unit's requests elsewhere.
+  const ALLOWED_LRS_ORIGINS = ['http://127.0.0.1:5211', 'http://localhost:5211'];
+  const allowedOrigin = (raw) => {
+    let origin;
+    try { origin = new URL(raw).origin; } catch { return null; }
+    const i = ALLOWED_LRS_ORIGINS.indexOf(origin);
+    return i < 0 ? null : ALLOWED_LRS_ORIGINS[i];
+  };
+  const lrsOrigin = allowedOrigin(params.get('endpoint'));
+  const rawFetch = params.get('fetch') || '';
+  const fetchToken = (rawFetch.split('/api/learning/cmi5/fetch/')[1] || '').split(/[?#]/)[0];
+  const tokenOk = /^[A-Za-z0-9_-]{1,100}$/.test(fetchToken) && allowedOrigin(rawFetch) === lrsOrigin;
+  const endpoint = lrsOrigin ? lrsOrigin + '/api/learning/xapi/' : null;
+  const fetchUrl = lrsOrigin && tokenOk ? lrsOrigin + '/api/learning/cmi5/fetch/' + encodeURIComponent(fetchToken) : null;
+  const actor = JSON.parse(params.get('actor') || 'null');
+  const registration = params.get('registration');
+  const activityId = params.get('activityId');
+  const $ = (id) => document.getElementById(id);
+  const log = (m) => { $('log').textContent += m + '\n'; };
+  let auth = null, launchData = null, sessionId = null;
+
+  const headers = () => ({ 'Authorization': 'Basic ' + auth, 'X-Experience-API-Version': '1.0.3', 'Content-Type': 'application/json' });
+
+  function statement(verb, result) {
+    const s = {
+      id: crypto.randomUUID(),
+      actor: actor,
+      verb: { id: verb, display: { 'en-US': verb.split('/').pop() } },
+      object: { id: activityId, objectType: 'Activity' },
+      context: {
+        registration: registration,
+        contextActivities: { category: [{ id: 'https://w3id.org/xapi/cmi5/context/categories/cmi5' }] },
+        extensions: Object.assign({}, (launchData && launchData.contextTemplate && launchData.contextTemplate.extensions) || {}),
+      },
+      timestamp: new Date().toISOString(),
+    };
+    if (result) s.result = result;
+    return s;
+  }
+
+  async function send(verb, result) {
+    const body = statement(verb, result);
+    const r = await fetch(endpoint + 'statements', { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+    log(verb.split('/').pop() + ' → ' + r.status);
+    if (!r.ok) throw new Error('The learning system refused the ' + verb.split('/').pop() + ' statement (' + r.status + ').');
+  }
+
+  const slides = [
+    'When the alarm sounds, stop work and leave by the nearest stairs. Never use the lift.',
+    'Close doors behind you to slow the fire. Do not go back for belongings.',
+    'Go to your assembly point and report to the fire warden.',
+  ];
+  let slide = 0;
+
+  async function start() {
+    if (!endpoint || !fetchUrl || !actor || !registration || !activityId) throw new Error('Launch parameters are missing or point outside the test stack. Open this unit from KynexOne.');
+    const f = await fetch(fetchUrl, { method: 'POST' });
+    const token = await f.json();
+    if (!f.ok || !token['auth-token']) throw new Error('Could not get a session token (' + (token['error-text'] || f.status) + ').');
+    auth = token['auth-token'];
+    log('fetch → ' + f.status);
+    const q = new URLSearchParams({ stateId: 'LMS.LaunchData', activityId: activityId, agent: JSON.stringify(actor), registration: registration });
+    const st = await fetch(endpoint + 'activities/state?' + q.toString(), { headers: headers() });
+    if (!st.ok) throw new Error('Could not read the launch data (' + st.status + ').');
+    launchData = await st.json();
+    sessionId = launchData.contextTemplate.extensions['https://w3id.org/xapi/cmi5/context/extensions/sessionid'];
+    log('LMS.LaunchData → moveOn ' + launchData.moveOn + ', session ' + sessionId);
+    await send('http://adlnet.gov/expapi/verbs/initialized');
+    $('status').textContent = 'Connected. Read the three slides, then answer one question.';
+    $('lesson').hidden = false;
+    showSlide();
+  }
+
+  function showSlide() { $('slide').textContent = (slide + 1) + ' / ' + slides.length + ' — ' + slides[slide]; }
+
+  $('next').addEventListener('click', async () => {
+    $('next').disabled = true;
+    try {
+      slide++;
+      await send('http://adlnet.gov/expapi/verbs/progressed', { extensions: { 'https://w3id.org/xapi/cmi5/result/extensions/progress': Math.round(slide / slides.length * 100) } });
+      if (slide < slides.length) { showSlide(); } else { $('lesson').hidden = true; $('quiz').hidden = false; }
+    } catch (e) { fail(e); } finally { $('next').disabled = false; }
+  });
+
+  $('submit').addEventListener('click', async () => {
+    const choice = document.querySelector('input[name=q1]:checked');
+    if (!choice) { $('status').textContent = 'Choose an answer first.'; return; }
+    $('submit').disabled = true;
+    try {
+      const passed = choice.value === 'stairs';
+      const score = { scaled: passed ? 1 : 0, raw: passed ? 1 : 0, min: 0, max: 1 };
+      await send(passed ? 'http://adlnet.gov/expapi/verbs/passed' : 'http://adlnet.gov/expapi/verbs/failed', { success: passed, score: score });
+      await send('http://adlnet.gov/expapi/verbs/completed', { completion: true });
+      await send('http://adlnet.gov/expapi/verbs/terminated');
+      $('quiz').hidden = true;
+      $('done').hidden = false;
+      $('result').textContent = passed ? 'Passed and completed.' : 'Completed, but the answer was wrong.';
+      $('status').textContent = 'Finished.';
+      // Only an http(s) return address is ever made a link: a javascript: (or any other) URL is ignored.
+      const back = safeHttpUrl(launchData.returnURL);
+      if (back) { $('return').href = back; $('return').hidden = false; }
+    } catch (e) { fail(e); $('submit').disabled = false; }
+  });
+
+  function safeHttpUrl(value) {
+    if (typeof value !== 'string' || value.length > 2000) return null;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+    } catch { return null; }
+  }
+
+  function fail(e) { $('status').textContent = e.message; $('status').className = 'error'; log('ERROR ' + e.message); }
+  start().catch(fail);
+})();
+</script>
+</body>
+</html>
