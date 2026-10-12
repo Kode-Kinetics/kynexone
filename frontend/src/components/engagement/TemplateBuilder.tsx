@@ -3,9 +3,11 @@
 import { useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { pick } from '../../lib/engagementDisplay';
 import { describeApiError } from '../../lib/apiError';
 import { msg } from '../../i18n/translations';
-import { engagementApi, type Driver, type Question, type QuestionType, type Template } from '../../api/engagement';
+import { engagementApi, type Driver, type EngagementOptions, type Question, type QuestionType, type Template } from '../../api/engagement';
 import { Modal } from '../Modal';
 
 const TYPE_LABELS: Record<QuestionType, string> = {
@@ -35,9 +37,13 @@ const STARTER: { drivers: Driver[]; questions: Question[] } = {
  * starts a new version.
  */
 export function TemplateBuilder({
-  open, template, onClose, onSaved,
-}: { open: boolean; template: Template | null; onClose: () => void; onSaved: (t: Template) => void }) {
-  const { t } = useLocale();
+  open, template, options, onClose, onSaved,
+}: { open: boolean; template: Template | null; options: EngagementOptions | null; onClose: () => void; onSaved: (t: Template) => void }) {
+  const { t, locale } = useLocale();
+  const { user } = useAuth();
+  // A tenant-wide template needs group-level access; a company-scoped HR user creates it for one of their companies.
+  const isGroup = !!(user as { isGroupScope?: boolean } | null)?.isGroupScope;
+  const [companyId, setCompanyId] = useState<string>('');
   const [nameEn, setNameEn] = useState('');
   const [nameAr, setNameAr] = useState('');
   const [descriptionEn, setDescriptionEn] = useState('');
@@ -50,13 +56,14 @@ export function TemplateBuilder({
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setCompanyId(template ? template.companyId ?? '' : (isGroup ? '' : options?.companies[0]?.value ?? ''));
     setNameEn(template?.nameEn ?? '');
     setNameAr(template?.nameAr ?? '');
     setDescriptionEn(template?.descriptionEn ?? '');
     setDescriptionAr(template?.descriptionAr ?? '');
     setDrivers(template?.content.drivers ?? STARTER.drivers);
     setQuestions(template?.content.questions ?? STARTER.questions);
-  }, [open, template]);
+  }, [open, template, isGroup, options]);
 
   const setQuestion = (i: number, patch: Partial<Question>) =>
     setQuestions((qs) => qs.map((q, j) => (j === i ? { ...q, ...patch } : q)));
@@ -72,7 +79,7 @@ export function TemplateBuilder({
     setSaving(true);
     setError(null);
     const body = {
-      nameEn, nameAr, descriptionEn, descriptionAr, companyId: template?.companyId ?? null, drivers,
+      nameEn, nameAr, descriptionEn, descriptionAr, companyId: companyId || null, drivers,
       questions: questions.map((q) => ({ ...q, options: q.type === 'single' || q.type === 'multi' ? q.options ?? [] : null, driver: q.driver || null })),
     };
     try {
@@ -105,6 +112,12 @@ export function TemplateBuilder({
       <div className="space-y-5">
         {error && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-900/20 dark:text-rose-300">{error}</p>}
         <div className="grid gap-3 md:grid-cols-2">
+          <Field label={t('Company')}>
+            <select className="select" value={companyId} onChange={(e) => setCompanyId(e.target.value)} disabled={!!template} data-testid="template-company">
+              {isGroup && <option value="">{t('Every company')}</option>}
+              {(options?.companies ?? []).map((c) => <option key={c.value} value={c.value}>{pick(locale, c.labelEn, c.labelAr)}</option>)}
+            </select>
+          </Field>
           <Field label={t('Name (English)')}><input className="input" value={nameEn} onChange={(e) => setNameEn(e.target.value)} data-testid="template-name-en" /></Field>
           <Field label={t('Name (Arabic)')}><input className="input" dir="rtl" value={nameAr} onChange={(e) => setNameAr(e.target.value)} data-testid="template-name-ar" /></Field>
           <Field label={t('Description (English)')}><input className="input" value={descriptionEn} onChange={(e) => setDescriptionEn(e.target.value)} /></Field>

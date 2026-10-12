@@ -344,6 +344,7 @@ function Engagement() {
       <TemplateBuilder
         open={!!templateEditor}
         template={templateEditor?.template ?? null}
+        options={options}
         onClose={() => setTemplateEditor(null)}
         onSaved={() => { setTemplateEditor(null); setNotice(t('Template draft saved. Publish it to use it in a survey.')); void load(); }}
       />

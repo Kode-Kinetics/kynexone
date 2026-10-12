@@ -136,8 +136,18 @@ public sealed class EngagementController : ControllerBase
     public async Task<IActionResult> CreateTemplate([FromBody] EngagementTemplateRequest req, CancellationToken ct)
     {
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
-        if (CompanyDenial(req.CompanyId) is { } denied) return denied;
-        var result = await _surveys.CreateTemplateAsync(tid, req.CompanyId, req.NameEn, req.NameAr, req.DescriptionEn, req.DescriptionAr,
+        // A company-scoped HR user cannot own a tenant-wide template: an unspecified company defaults to theirs (the
+        // selected company, or their only one). Tenant-wide stays a group-level choice.
+        var companyId = req.CompanyId;
+        if (companyId is null && !this.HasGroupEntityScope())
+        {
+            var scope = this.GetRequestScope();
+            companyId = scope.SelectedCompanyId ?? (scope.AuthorizedCompanyIds.Count == 1 ? scope.AuthorizedCompanyIds[0] : null);
+            if (companyId is null)
+                return Error(400, EngagementErrors.InvalidRequest, "Choose the company this template is for.");
+        }
+        if (CompanyDenial(companyId) is { } denied) return denied;
+        var result = await _surveys.CreateTemplateAsync(tid, companyId, req.NameEn, req.NameAr, req.DescriptionEn, req.DescriptionAr,
             new EngagementTemplateContent(req.Drivers ?? [], req.Questions ?? []), ct);
         if (!result.Ok) return Error(result);
         await AuditAsync("engagement.template.created", "EngagementSurveyTemplate", result.Value!.Id.ToString(), new { result.Value.NameEn }, ct);
@@ -333,12 +343,22 @@ public sealed class EngagementController : ControllerBase
         if (survey.Mode == EngagementSurveyModes.Anonymous)
             return Error(409, EngagementErrors.NoPersonView,
                 "This survey is anonymous: non-respondents are shown only as a count, never by name.");
-        var rows = await (from i in _db.EngagementSurveyInvitations.AsNoTracking()
-                          join e in _db.Employees.AsNoTracking() on i.EmployeeId equals e.Id
-                          where i.TenantId == tid && i.SurveyId == id
-                                && (i.Status == EngagementInvitationStatuses.Invited || i.Status == EngagementInvitationStatuses.Opened)
-                          orderby e.FullName
-                          select new { employeeId = e.Id, e.FullName, e.EmployeeCode, i.RemindersSent }).Take(2000).ToListAsync(ct);
+        // Names are per-person data: only the people in the caller's own data scope (a team- or department-scoped HR
+        // user sees their own reporting line), exactly as the identified-responses view does.
+        var dataScope = await _dataScope.ResolveAsync(User, tid, ct);
+        var pending = from i in _db.EngagementSurveyInvitations.AsNoTracking()
+                      join e in _db.Employees.AsNoTracking() on i.EmployeeId equals e.Id
+                      where i.TenantId == tid && i.SurveyId == id
+                            && (i.Status == EngagementInvitationStatuses.Invited || i.Status == EngagementInvitationStatuses.Opened)
+                      select new { i, e };
+        if (!dataScope.IsUnrestricted)
+        {
+            var allowed = (dataScope.AllowedEmployeeIds ?? []).ToList();
+            pending = pending.Where(x => allowed.Contains(x.e.Id));
+        }
+        var rows = await pending.OrderBy(x => x.e.FullName)
+            .Select(x => new { employeeId = x.e.Id, x.e.FullName, x.e.EmployeeCode, x.i.RemindersSent }).Take(2000).ToListAsync(ct);
+        rows = rows.Where(r => dataScope.CanAccessEmployee(r.employeeId)).ToList();
         return Ok(rows);
     }
 

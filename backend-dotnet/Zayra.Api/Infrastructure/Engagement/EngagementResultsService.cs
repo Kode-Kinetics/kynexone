@@ -156,7 +156,9 @@ public sealed class EngagementResultsService
             .ToListAsync(ct);
         var answers = await ScopedBypass.TenantWide(_db.EngagementSurveyAnswers, survey.TenantId, WholeSurveyRead)
             .AsNoTracking().Where(a => a.SurveyId == survey.Id)
-            .Select(a => new AnswerRow(a.ResponseId, a.QuestionKey, a.NumericValue, a.ChoiceKeys, a.TextValue != null && a.TextValue != ""))
+            // A comment purged by retention (TextPurged) still counts as answered: retention removes the words, never the
+            // fact that someone answered — counts and suppression must not change when the text goes.
+            .Select(a => new AnswerRow(a.ResponseId, a.QuestionKey, a.NumericValue, a.ChoiceKeys, (a.TextValue != null && a.TextValue != "") || a.TextPurged))
             .ToListAsync(ct);
         var records = responses.ToDictionary(r => r.Id, ToRecord);
         var invitees = (await InviteesAsync(survey, ct)).Select(i => i.Record).ToList();

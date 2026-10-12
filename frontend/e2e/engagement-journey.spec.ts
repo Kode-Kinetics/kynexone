@@ -64,10 +64,34 @@ function answers(i: number) {
   return list;
 }
 
+/**
+ * The evidence file holds only an allow-listed, typed subset of what the API returned: finite numbers, booleans and
+ * short identifier-like strings (ids, codes, statuses, file names), under identifier-like keys. Anything else — free
+ * text, nested shapes deeper than the log needs, unexpected characters — is dropped, never written to disk.
+ */
+const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,40}$/;
+const SAFE_TEXT = /^[A-Za-z0-9 _.:/@()-]{0,120}$/;
+type Evidence = number | boolean | string | null | Evidence[] | { [key: string]: Evidence };
+function evidenceOf(value: unknown, depth = 0): Evidence {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return SAFE_TEXT.test(value) ? value : null;
+  if (depth >= 5) return null;
+  if (Array.isArray(value)) return value.slice(0, 200).map((v) => evidenceOf(v, depth + 1));
+  if (typeof value === 'object') {
+    const out: { [key: string]: Evidence } = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) if (SAFE_KEY.test(key)) out[key] = evidenceOf(v, depth + 1);
+    return out;
+  }
+  return null;
+}
+
 test.describe.serial('ENG real-backend journey', () => {
   test.afterAll(() => {
     fs.mkdirSync(EVIDENCE, { recursive: true });
-    fs.writeFileSync(path.join(EVIDENCE, 'journey.json'), JSON.stringify({ api: API, surveyId, world, log: LOG }, null, 2));
+    const evidence = evidenceOf({ api: API, surveyId, world, log: LOG });
+    fs.writeFileSync(path.join(EVIDENCE, 'journey.json'), JSON.stringify(evidence, null, 2));
   });
 
   test('J0 seed the disposable world through the API only', async () => {
