@@ -41,6 +41,23 @@ public static class OptInFeatures
             ],
             // The geofence owns no route: it is enforced inside every self-punch (AttendanceVerificationService).
             [FeatureKeys.PunchGeofence] = [],
+            // Learning management. The cmi5 launch endpoints under /api/learning/cmi5 and /api/learning/xapi carry no
+            // JWT (the AU authenticates with its session token), so this guard cannot see their tenant: LearningCmi5Service
+            // checks the flag itself against the session's tenant.
+            [FeatureKeys.Learning] =
+            [
+                "/api/learning",
+                "/api/ess/learning",
+            ],
+            // Succession and career development. The employee's own development plan is under /api/ess, classified by
+            // Self-Service, and closed with the rest of the module while the flag is off.
+            [FeatureKeys.Succession] =
+            [
+                "/api/succession",
+                "/api/ess/development-plan",
+            ],
+            // Candidate visibility owns no route: the ESS development-plan read checks it (default OFF).
+            [FeatureKeys.SuccessionCandidateVisibility] = [],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

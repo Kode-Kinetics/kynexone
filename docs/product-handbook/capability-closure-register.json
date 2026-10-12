@@ -3882,130 +3882,172 @@
         {
           "id": "F24.01",
           "acceptance": "Provide versioned course/path catalogue, prerequisites, eligibility, assignment/deduplication, content delivery, assessments/attempt rules and employee progress.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F24.02",
           "acceptance": "Complete assign, fail/retake, pass, transcript/certificate, expiry/renewal and manager/HR reporting with persisted evidence and unauthorized changes denied.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F24.03",
           "acceptance": "Declare supported content standards/providers and prove launch/token expiry, callback validation, duplicate callbacks, provider failure and completion authority.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme: no learning entity, endpoint, UI or test existed (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'learning', default OFF. Deployed acceptance is a separate record.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         },
         {
@@ -4013,42 +4055,56 @@
           "acceptance": "Learning feeds succession/development and BI through existing employee/position authorities; content launch alone is not verified completion.",
           "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Native Lesson/Link content and cmi5 (Quartz) externally hosted assignable units in their own window. KynexOne is the LMS and a minimal LRS (one-time fetch, idempotent statements, LMS.LaunchData). SCORM, AICC, LTI and provider catalogues are excluded (see docs/acceptance/capability-closure/REGISTER.md §3.1).",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Succession development-plan links (SUC) and the BI learning_enrollments dataset are built on their own branches and not yet accepted.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Department, Designation, Grade, IDataScopeService, INotificationService, IAuditService, ITenantClock",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddLearning (10 tables)"
+              ],
+              "design": "docs/acceptance/capability-closure/LRN_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bd9bc40a (feat/learning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md (headed Chrome real-backend journey 6/6)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Learning/LearningHttpTests (23-case permission matrix, opt-in 403, cmi5 CORS/Origin/size)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Learning/* real-Postgres integration tests (110)"
+              ],
+              "negative": [
+                "Independent reviews R2: FIX REQUIRED x2, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
+              "provider": "cmi5 assignable units: sample AU proven cross-origin. Moodle 4.5 provider proven in the connector catalogue (F32), binding pending",
               "license": null,
               "device": null,
               "statutory": null
             },
             "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "residualOwner": "Integration Owner",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Learning side ready (assignment ids, completion listener). Consumers pending.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/LRN_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/lrn/EVIDENCE.md"
+            ]
           }
         }
       ]
@@ -4244,32 +4300,44 @@
         {
           "id": "F26.01",
           "acceptance": "Link critical positions to existing organization authority; support nominations, talent pools, competencies, readiness/evidence and controlled review/calibration.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Critical positions (side table over Position), talent pools, nominations with readiness and evidence, potential assessments with calibration, a 9-box with explicit axes, versioned slates with approval and history, and development plans linked to learning assignments and goals. Bench, coverage, gap, trend and plan-progress reporting with drill-down. Candidate data is restricted to HR succession roles, the accountable executive and the routed approver; employees, peers, unrelated managers and Admin (configuration only) cannot see it.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no succession data existed. Calibration was single-axis, and Performance reads were not company-scoped (fixed and deployed in PR #230).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Position, Employee (manager/supervisor/skip-level lines), AppraisalReview, PerformanceRatingOption, EmployeeGoal, learning_assignments (F24), approval engine",
             "implementation": {
               "commits": [],
-              "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "pullRequests": [
+                "#230 (prerequisite, deployed)"
+              ],
+              "migrations": [
+                "AddSuccession (7 tables, triggers, generated 9-box column)"
+              ],
+              "design": "docs/acceptance/capability-closure/SUC_DESIGN.md; SUC_IMPLEMENTATION.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bcdad8d6/ab1db637 (feat/succession; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md (headed Chrome journey 7/7 including restricted-access probes)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Succession/SuccessionHttpTests (27-row permission matrix, opt-in 403, audit viewer)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Succession/* real-Postgres tests (82) including the reviewer's ported probes"
+              ],
+              "negative": [
+                "Independent reviews R6: FIX REQUIRED (SUC-07), then ACCEPT WITH FOLLOW-UPS twice (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4277,42 +4345,59 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner; rollout note for owner: link every HR and Director login to its employee record before enabling 'succession'",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'succession', default OFF. Candidate visibility to employees is off by default.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/SUC_DESIGN.md",
+              "docs/acceptance/capability-closure/SUC_IMPLEMENTATION.md",
+              "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F26.02",
           "acceptance": "Approve and revise succession slates with sensitive role boundaries, historical snapshots, coverage/bench-strength reporting and declared 9-box axes where committed.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Critical positions (side table over Position), talent pools, nominations with readiness and evidence, potential assessments with calibration, a 9-box with explicit axes, versioned slates with approval and history, and development plans linked to learning assignments and goals. Bench, coverage, gap, trend and plan-progress reporting with drill-down. Candidate data is restricted to HR succession roles, the accountable executive and the routed approver; employees, peers, unrelated managers and Admin (configuration only) cannot see it.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no succession data existed. Calibration was single-axis, and Performance reads were not company-scoped (fixed and deployed in PR #230).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Position, Employee (manager/supervisor/skip-level lines), AppraisalReview, PerformanceRatingOption, EmployeeGoal, learning_assignments (F24), approval engine",
             "implementation": {
               "commits": [],
-              "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "pullRequests": [
+                "#230 (prerequisite, deployed)"
+              ],
+              "migrations": [
+                "AddSuccession (7 tables, triggers, generated 9-box column)"
+              ],
+              "design": "docs/acceptance/capability-closure/SUC_DESIGN.md; SUC_IMPLEMENTATION.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bcdad8d6/ab1db637 (feat/succession; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md (headed Chrome journey 7/7 including restricted-access probes)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Succession/SuccessionHttpTests (27-row permission matrix, opt-in 403, audit viewer)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Succession/* real-Postgres tests (82) including the reviewer's ported probes"
+              ],
+              "negative": [
+                "Independent reviews R6: FIX REQUIRED (SUC-07), then ACCEPT WITH FOLLOW-UPS twice (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4320,42 +4405,59 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner; rollout note for owner: link every HR and Director login to its employee record before enabling 'succession'",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'succession', default OFF. Candidate visibility to employees is off by default.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/SUC_DESIGN.md",
+              "docs/acceptance/capability-closure/SUC_IMPLEMENTATION.md",
+              "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F26.03",
           "acceptance": "Link development plans to learning/goals; record progress/readiness changes and test vacant roles, transfer, termination/ineligibility and reviewer conflicts.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Critical positions (side table over Position), talent pools, nominations with readiness and evidence, potential assessments with calibration, a 9-box with explicit axes, versioned slates with approval and history, and development plans linked to learning assignments and goals. Bench, coverage, gap, trend and plan-progress reporting with drill-down. Candidate data is restricted to HR succession roles, the accountable executive and the routed approver; employees, peers, unrelated managers and Admin (configuration only) cannot see it.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no succession data existed. Calibration was single-axis, and Performance reads were not company-scoped (fixed and deployed in PR #230).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Position, Employee (manager/supervisor/skip-level lines), AppraisalReview, PerformanceRatingOption, EmployeeGoal, learning_assignments (F24), approval engine",
             "implementation": {
               "commits": [],
-              "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "pullRequests": [
+                "#230 (prerequisite, deployed)"
+              ],
+              "migrations": [
+                "AddSuccession (7 tables, triggers, generated 9-box column)"
+              ],
+              "design": "docs/acceptance/capability-closure/SUC_DESIGN.md; SUC_IMPLEMENTATION.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bcdad8d6/ab1db637 (feat/succession; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md (headed Chrome journey 7/7 including restricted-access probes)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Succession/SuccessionHttpTests (27-row permission matrix, opt-in 403, audit viewer)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Succession/* real-Postgres tests (82) including the reviewer's ported probes"
+              ],
+              "negative": [
+                "Independent reviews R6: FIX REQUIRED (SUC-07), then ACCEPT WITH FOLLOW-UPS twice (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4363,11 +4465,16 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner; rollout note for owner: link every HR and Director login to its employee record before enabling 'succession'",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'succession', default OFF. Candidate visibility to employees is off by default.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/SUC_DESIGN.md",
+              "docs/acceptance/capability-closure/SUC_IMPLEMENTATION.md",
+              "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md"
+            ]
           }
         },
         {
@@ -4377,28 +4484,40 @@
           "closure": {
             "supportedScope": null,
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Career paths and an opportunity marketplace were not committed in this release (SUC-01..09 scope). Nothing is claimed from slates or development plans.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Position, Employee (manager/supervisor/skip-level lines), AppraisalReview, PerformanceRatingOption, EmployeeGoal, learning_assignments (F24), approval engine",
             "implementation": {
               "commits": [],
-              "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "pullRequests": [
+                "#230 (prerequisite, deployed)"
+              ],
+              "migrations": [
+                "AddSuccession (7 tables, triggers, generated 9-box column)"
+              ],
+              "design": "docs/acceptance/capability-closure/SUC_DESIGN.md; SUC_IMPLEMENTATION.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "bcdad8d6/ab1db637 (feat/succession; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md (headed Chrome journey 7/7 including restricted-access probes)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Succession/SuccessionHttpTests (27-row permission matrix, opt-in 403, audit viewer)"
+              ],
+              "persistence": [
+                "Zayra.Api.Tests/Succession/* real-Postgres tests (82) including the reviewer's ported probes"
+              ],
+              "negative": [
+                "Independent reviews R6: FIX REQUIRED (SUC-07), then ACCEPT WITH FOLLOW-UPS twice (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4407,10 +4526,15 @@
               "statutory": null
             },
             "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "residualOwner": "Integration Owner; rollout note for owner: link every HR and Director login to its employee record before enabling 'succession'",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Not available.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/SUC_DESIGN.md",
+              "docs/acceptance/capability-closure/SUC_IMPLEMENTATION.md",
+              "docs/acceptance/capability-closure/evidence/suc/EVIDENCE.md"
+            ]
           }
         }
       ]

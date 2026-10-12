@@ -1,0 +1,331 @@
+{
+  "run": "10112015",
+  "checkoutCommit": "bd9bc40ab15c5589884fbc2b3b2da06b48732469",
+  "backendBuild": "bd9bc40ab15c5589884fbc2b3b2da06b48732469",
+  "browser": "Google Chrome (channel chrome), headed",
+  "tenantA": {
+    "id": "fc48268f-3c20-46f0-9987-73e57c5212d9",
+    "slug": "intelliflow",
+    "companyId": "9c8696ce-d89e-40e6-8d12-7daef7dc9d6d"
+  },
+  "tenantB": {
+    "id": "e3916dbd-5f6f-4c12-a23c-5c9ca4225181",
+    "slug": "rasalmanar"
+  },
+  "departments": {
+    "operations": "700bdd6f-a97b-4260-a99c-c80e1b8c0895",
+    "quality": "e4579ff5-ebe5-4fbf-a41b-7905a822b9d1"
+  },
+  "employees": {
+    "ops1": {
+      "id": 2,
+      "name": "Liu Wei",
+      "code": "INTELLIFLOW-KSA-E2",
+      "login": "employee1@intelliflow.com"
+    },
+    "ops2": {
+      "id": 3,
+      "name": "Carlos Mendez",
+      "code": "INTELLIFLOW-KSA-E3",
+      "login": "employee2@intelliflow.com"
+    },
+    "quality": [
+      {
+        "id": 44,
+        "name": "Huda Quality Lead",
+        "code": "LRN-QA-E1"
+      },
+      {
+        "id": 45,
+        "name": "Yusuf Quality Analyst",
+        "code": "LRN-QA-E2"
+      },
+      {
+        "id": 46,
+        "name": "Reem Quality Analyst",
+        "code": "LRN-QA-E3"
+      }
+    ],
+    "managerHead": {
+      "id": 1,
+      "name": "Noura Al-Qahtani",
+      "code": "INTELLIFLOW-KSA-E1"
+    }
+  },
+  "personas": {
+    "hr": "hrmanager@intelliflow.com",
+    "manager": "lrn.manager@intelliflow.com",
+    "ops1": "employee1@intelliflow.com",
+    "ops2": "employee2@intelliflow.com",
+    "tenantB": "admin@rasalmanar.com"
+  },
+  "steps": [
+    {
+      "n": 1,
+      "id": "LRN-01-catalogue",
+      "step": "HR publishes three course versions (lesson+acknowledgement, lesson+assessment, cmi5)",
+      "expected": "Three rows, each Version 1 · Published",
+      "actual": "Three rows shown Published",
+      "screenshot": "01-LRN-01-catalogue.png",
+      "url": "http://localhost:5311/learning?tab=courses",
+      "atUtc": "2026-10-11T20:15:39.861Z",
+      "viewport": "1440x950",
+      "courseCodes": [
+        "IND-10112015",
+        "QUIZ-10112015",
+        "UNIT-10112015"
+      ]
+    },
+    {
+      "n": 2,
+      "id": "LRN-02-path",
+      "step": "HR builds and activates a 3-course path; course 2 requires course 1",
+      "expected": "Path Active, items in order, \"After course 1\" on item 2",
+      "actual": "As expected",
+      "screenshot": "02-LRN-02-path.png",
+      "url": "http://localhost:5311/learning?tab=paths",
+      "atUtc": "2026-10-11T20:15:44.503Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 3,
+      "id": "LRN-03-assign-employees",
+      "step": "Assign the path to two Operations employees",
+      "expected": "2 assigned · 0 already had it · 0 not assigned",
+      "actual": "2 assigned · 0 already had it · 0 not assigned",
+      "screenshot": "03-LRN-03-assign-employees.png",
+      "url": "http://localhost:5311/learning?tab=assign",
+      "atUtc": "2026-10-11T20:15:47.541Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 4,
+      "id": "LRN-03-assign-department",
+      "step": "Assign the same path to the Quality department (3 people)",
+      "expected": "3 assigned",
+      "actual": "3 assigned · 0 already had it · 0 not assigned",
+      "screenshot": "04-LRN-03-assign-department.png",
+      "url": "http://localhost:5311/learning?tab=assign",
+      "atUtc": "2026-10-11T20:15:48.100Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 5,
+      "id": "LRN-03-duplicate",
+      "step": "Assign the same path to Ops1 again",
+      "expected": "409 duplicate_assignment shown as a sentence",
+      "actual": "Refused with the sentence",
+      "screenshot": "05-LRN-03-duplicate.png",
+      "url": "http://localhost:5311/learning?tab=assign",
+      "atUtc": "2026-10-11T20:15:49.629Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 6,
+      "id": "LRN-04-my-learning",
+      "step": "Employee opens My learning",
+      "expected": "Path, due date, 0 of 3, course 2 waits for course 1",
+      "actual": "As expected",
+      "screenshot": "06-LRN-04-my-learning.png",
+      "url": "http://localhost:5311/ess/learning",
+      "atUtc": "2026-10-11T20:16:07.119Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 7,
+      "id": "LRN-05-acknowledged",
+      "step": "Open the lesson, then acknowledge it",
+      "expected": "Lesson rendered without the script; Completed · Acknowledged",
+      "actual": "As expected",
+      "screenshot": "07-LRN-05-acknowledged.png",
+      "url": "http://localhost:5311/ess/learning/73222434-9af1-4521-a497-47f9e0d9fe8e",
+      "atUtc": "2026-10-11T20:16:09.175Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 8,
+      "id": "LRN-07-failed",
+      "step": "Submit wrong answers",
+      "expected": "Not passed: 0%, 2 attempts left",
+      "actual": "Not passed: 0%. The pass mark is 70%. 0 of 2 answers correct. You have 2 attempts left.",
+      "screenshot": "08-LRN-07-failed.png",
+      "url": "http://localhost:5311/ess/learning/fe93dcc1-4b47-4c90-8280-952634906ed9",
+      "atUtc": "2026-10-11T20:16:12.178Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 9,
+      "id": "LRN-06-passed",
+      "step": "Retake with the right answers (scored on the server)",
+      "expected": "Completed · Passed assessment · Score 100%",
+      "actual": "As expected",
+      "screenshot": "09-LRN-06-passed.png",
+      "url": "http://localhost:5311/ess/learning/fe93dcc1-4b47-4c90-8280-952634906ed9",
+      "atUtc": "2026-10-11T20:16:12.698Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 10,
+      "id": "LRN-08-certificate",
+      "step": "Open the certificate",
+      "expected": "Printable certificate with number, verification code, expiry +12 months",
+      "actual": "Number LRN-2026-PGMKTGX6",
+      "screenshot": "10-LRN-08-certificate.png",
+      "url": "http://localhost:5311/ess/learning/certificates/5c31da1a-cbf1-499e-9560-80da997632b5",
+      "atUtc": "2026-10-11T20:16:13.661Z",
+      "viewport": "1440x950",
+      "credentialId": "5c31da1a-cbf1-499e-9560-80da997632b5"
+    },
+    {
+      "n": 11,
+      "id": "LRN-13-cmi5-unit",
+      "step": "The cmi5 unit (served from 127.0.0.1:5411) fetches its token, reads LMS.LaunchData and reports",
+      "expected": "fetch 200 → initialized → progressed ×3 → passed → completed → terminated, all 200",
+      "actual": "fetch → 200 | LMS.LaunchData → moveOn CompletedAndPassed, session 28c80a4d-0625-40f5-bff2-a535232eb66a | initialized → 200 | progressed → 200 | progressed → 200 | progressed → 200 | passed → 200 | completed → 200 | terminated → 200",
+      "screenshot": "11-LRN-13-cmi5-unit.png",
+      "url": "http://127.0.0.1:5411/index.html?endpoint=http%3A%2F%2Flocalhost%3A5211%2Fapi%2Flearning%2Fxapi%2F&fetch=http%3A%2F%2Flocalhost%3A5211%2Fapi%2Flearning%2Fcmi5%2Ffetch%2FMm8Zy5geO0iLLVtvfbHAwobkfyfgDPmFiXwlByc1kyg&actor=%7B%22objectType%22%3A%22Agent%22%2C%22account%22%3A%7B%22homePage%22%3A%22http%3A%2F%2Flocalhost%3A5211%22%2C%22name%22%3A%2259efcbaf-b57b-4ee7-b1fc-2804bcac4e90%22%7D%7D&registration=31a2afc7-b375-404f-b59e-f92955a6a6e8&activityId=https%3A%2F%2Fkynexone.test%2Funits%2Ffire-safety%2F10112015",
+      "atUtc": "2026-10-11T20:16:26.987Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 12,
+      "id": "LRN-05-cmi5-reported",
+      "step": "Back on KynexOne, the course page updates by itself",
+      "expected": "Waiting for HR to verify — the unit's report alone issues no certificate",
+      "actual": "As expected",
+      "screenshot": "12-LRN-05-cmi5-reported.png",
+      "url": "http://localhost:5311/ess/learning/46e82578-8b42-4afc-9d18-57900aea2ffe",
+      "atUtc": "2026-10-11T20:16:30.585Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 13,
+      "id": "LRN-05-hr-pending",
+      "step": "HR: Overview → \"Waiting for HR to verify\"",
+      "expected": "Liu Wei listed",
+      "actual": "As expected",
+      "screenshot": "13-LRN-05-hr-pending.png",
+      "url": "http://localhost:5311/learning",
+      "atUtc": "2026-10-11T20:16:39.652Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 14,
+      "id": "LRN-05-hr-verify",
+      "step": "HR opens the assignment",
+      "expected": "The cmi5 item shows \"Reported complete · Completed — reported by course content\" with Verify / Reject",
+      "actual": "As expected",
+      "screenshot": "14-LRN-05-hr-verify.png",
+      "url": "http://localhost:5311/learning?tab=records",
+      "atUtc": "2026-10-11T20:16:41.984Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 15,
+      "id": "LRN-05-hr-verified",
+      "step": "HR verifies the completion",
+      "expected": "Item Completed; certificate issued; audited learning.enrollment.verified",
+      "actual": "As expected",
+      "screenshot": "15-LRN-05-hr-verified.png",
+      "url": "http://localhost:5311/learning?tab=records",
+      "atUtc": "2026-10-11T20:16:42.446Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 16,
+      "id": "LRN-04-persisted",
+      "step": "Reload My learning",
+      "expected": "Path Completed, 3 of 3, transcript shows Acknowledged / Passed assessment / Completed — reported by course content",
+      "actual": "As expected",
+      "screenshot": "16-LRN-04-persisted.png",
+      "url": "http://localhost:5311/ess/learning",
+      "atUtc": "2026-10-11T20:16:50.273Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 17,
+      "id": "LRN-11-manager-team",
+      "step": "Manager opens Learning → Overview → Assigned",
+      "expected": "Only their reports (Operations); no Quality employee",
+      "actual": "As expected",
+      "screenshot": "17-LRN-11-manager-team.png",
+      "url": "http://localhost:5311/learning",
+      "atUtc": "2026-10-11T20:16:57.901Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 18,
+      "id": "LRN-11-hr-departments",
+      "step": "HR completion grouped by department",
+      "expected": "Operations and Quality rows; KPI \"Assigned\" = rows in the status report",
+      "actual": "Assigned KPI 5 = 5 rows",
+      "screenshot": "18-LRN-11-hr-departments.png",
+      "url": "http://localhost:5311/learning",
+      "atUtc": "2026-10-11T20:17:04.628Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 19,
+      "id": "LRN-12-denied",
+      "step": "Employee 2 opens employee 1's course and calls HR/other endpoints",
+      "expected": "404 / 403 / 409 everywhere; nothing changed",
+      "actual": "{\"otherEmployeesEnrollment\":404,\"ackOtherEmployees\":404,\"assignAsEmployee\":403,\"revokeAsEmployee\":403,\"selfCompleteAssessment\":409}",
+      "screenshot": "19-LRN-12-denied.png",
+      "url": "http://localhost:5311/ess/learning/fe93dcc1-4b47-4c90-8280-952634906ed9",
+      "atUtc": "2026-10-11T20:17:13.269Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 20,
+      "id": "LRN-12-cross-tenant",
+      "step": "Tenant B admin reads tenant A assignment id",
+      "expected": "404",
+      "actual": "404",
+      "atUtc": "2026-10-11T20:17:18.078Z"
+    },
+    {
+      "n": 21,
+      "id": "LRN-14-arabic-my-learning",
+      "step": "My learning in Arabic",
+      "expected": "dir=rtl, Arabic headings and statuses",
+      "actual": "As expected",
+      "screenshot": "21-LRN-14-arabic-my-learning.png",
+      "url": "http://localhost:5311/ess/learning",
+      "atUtc": "2026-10-11T20:17:23.234Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 22,
+      "id": "LRN-14-arabic-certificate",
+      "step": "The certificate in Arabic",
+      "expected": "Arabic labels; number and code stay LTR",
+      "actual": "As expected",
+      "screenshot": "22-LRN-14-arabic-certificate.png",
+      "url": "http://localhost:5311/ess/learning/certificates/5c31da1a-cbf1-499e-9560-80da997632b5",
+      "atUtc": "2026-10-11T20:17:24.664Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 23,
+      "id": "LRN-14-mobile-my-learning",
+      "step": "My learning at 390px",
+      "expected": "No horizontal scroll",
+      "actual": "overflow 0px",
+      "screenshot": "23-LRN-14-mobile-my-learning.png",
+      "url": "http://localhost:5311/ess/learning",
+      "atUtc": "2026-10-11T20:17:30.123Z",
+      "viewport": "390x844"
+    },
+    {
+      "n": 24,
+      "id": "LRN-14-mobile-course",
+      "step": "A course page at 390px",
+      "expected": "Readable, controls reachable",
+      "actual": "As expected",
+      "screenshot": "24-LRN-14-mobile-course.png",
+      "url": "http://localhost:5311/ess/learning/e27f47ae-783a-4c04-81ba-05e1f1683b3f",
+      "atUtc": "2026-10-11T20:17:31.102Z",
+      "viewport": "390x844"
+    }
+  ]
+}

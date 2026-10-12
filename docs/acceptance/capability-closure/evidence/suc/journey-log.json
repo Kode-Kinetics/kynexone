@@ -1,0 +1,436 @@
+{
+  "checkoutCommit": "ab1db637c79683829de37484881f9653b4df9aed",
+  "backendBuild": "ab1db637c79683829de37484881f9653b4df9aed",
+  "browser": "Google Chrome (channel chrome), headed",
+  "tenantA": {
+    "id": "a0da8172-9ae3-4b1c-961c-c80285b08bbf",
+    "slug": "intelliflow",
+    "companyId": "ab8b359d-053a-4b76-babc-4d29cf98586e"
+  },
+  "tenantB": {
+    "id": "a58a4a5b-32b4-4f4f-a114-702fdb2c83c9",
+    "slug": "rasalmanar",
+    "positionId": "f259e5f8-2454-4248-b0c9-6a0214519e7e"
+  },
+  "positions": {
+    "cfo": "c19cd891-65c8-45ab-bad9-e0d05aa74983",
+    "hoq": "a34adf5a-199d-48c6-b1e1-dcbc3975c645"
+  },
+  "candidates": {
+    "a": {
+      "id": 2,
+      "name": "Liu Wei"
+    },
+    "b": {
+      "id": 3,
+      "name": "Carlos Mendez"
+    }
+  },
+  "pathId": "761a2d37-71c5-4350-b463-9f1b0607e943",
+  "goalId": "42067166-0ded-4763-8aa4-b213576abad4",
+  "cycleId": "7172cb97-141d-4c22-9b9f-080f3687f4a0",
+  "ids": {
+    "critical": "196e4387-7b24-49b5-bbc3-18214e45c1fe",
+    "nomA": "851440e1-bdf7-44cc-9013-ece14bcdf58b",
+    "nomB": "14cd4d0f-3c63-4ba7-9926-9c6a36249cbc",
+    "v1": "5bd97163-a27a-4b11-8d5a-162ea2e4d7ff",
+    "v2": "2f4c58d0-8f18-4b7c-8c39-f41d6489b5df",
+    "learningAction": "092f9d08-bd2e-4d8e-a8b5-2b0199184062"
+  },
+  "records": {
+    "approvalTitles": [
+      "Succession slate v1 · 82b9f36c8147 · Pending · requestedFor=null"
+    ],
+    "essRefusals": {
+      "cancel": 403,
+      "completeOutright": 403
+    },
+    "slateV2": {
+      "hash": "dcb329b21456c7f8fdccdc7d391c08b7d615f497601100b764f8f19c6bbcfd5f",
+      "status": "Approved",
+      "hashVerified": true
+    },
+    "access": {
+      "candidateReadsSlate": 404,
+      "candidateReadsNominations": 403,
+      "candidateReadsOthersPlans": 403,
+      "managerReadsSlate": 404,
+      "managerReadsNominations": 403,
+      "managerNineBox": 403,
+      "managerReadsPlan": 200,
+      "managerPlanHasNominationLink": false,
+      "slateInTeamQueue": false,
+      "managerNominateStatus": 200,
+      "managerNominateMasked": true,
+      "adminPositions": 200,
+      "adminPositionsNameFree": true,
+      "adminNominations": 403,
+      "adminNineBox": 403,
+      "adminReports": 403,
+      "adminSlateEdit": 403,
+      "adminReadsSlate": 404,
+      "auditRows": 29,
+      "auditIdsOnly": true,
+      "supervisorPositions": 403,
+      "otherTenantPosition": 404,
+      "otherTenantSlate": 404
+    },
+    "reconcile": {
+      "positions": [
+        1,
+        1
+      ],
+      "coverage": [
+        1,
+        1
+      ],
+      "extendedCoverage": [
+        1,
+        1
+      ],
+      "benchReadyNow": [
+        1,
+        1
+      ],
+      "benchOneToTwoYears": [
+        1,
+        1
+      ],
+      "benchThreePlusYears": [
+        0,
+        0
+      ],
+      "gapNoApprovedSlate": [
+        0,
+        0
+      ],
+      "gapNoReadyNow": [
+        0,
+        0
+      ],
+      "gapStaleSlate": [
+        0,
+        0
+      ],
+      "gapVacantNoReadyNow": [
+        0,
+        0
+      ],
+      "gapHighRisk": [
+        0,
+        0
+      ]
+    }
+  },
+  "personas": {
+    "hrManager": "suc.hrmanager@intelliflow.com",
+    "hrDirector": "suc.hrdirector@intelliflow.com",
+    "manager": "lrn.manager@intelliflow.com",
+    "admin": "admin@intelliflow.com",
+    "employeeA": "employee1@intelliflow.com",
+    "employeeB": "employee2@intelliflow.com",
+    "supervisor": "supervisor@intelliflow.com",
+    "tenantBAdmin": "admin@rasalmanar.com"
+  },
+  "steps": [
+    {
+      "n": 1,
+      "id": "SUC-01-designated",
+      "step": "Designate the CFO position (company INTELLIFLOW-KSA) as critical: High risk, Critical impact",
+      "expected": "Row listed gaps-first with its gap chips (no approved slate, no ready-now successor, vacant, high risk); the headline figures count it",
+      "actual": "As expected",
+      "screenshot": "01-SUC-01-designated.png",
+      "url": "http://localhost:5317/performance/succession",
+      "atUtc": "2026-10-11T22:03:21.675Z",
+      "viewport": "1440x950",
+      "criticalPositionId": "196e4387-7b24-49b5-bbc3-18214e45c1fe"
+    },
+    {
+      "n": 2,
+      "id": "SUC-02-competing-candidates",
+      "step": "Nominate Liu Wei and Carlos Mendez (evidence required), take both into review and record a talent assessment of each (period 2026-H2)",
+      "expected": "Two candidate rows In review, each with an assessment brief; a second nomination of Liu Wei → 409 duplicate_nomination",
+      "actual": "As expected",
+      "screenshot": "02-SUC-02-competing-candidates.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:03:29.467Z",
+      "viewport": "1440x950",
+      "nominationA": "851440e1-bdf7-44cc-9013-ece14bcdf58b",
+      "nominationB": "14cd4d0f-3c63-4ba7-9926-9c6a36249cbc",
+      "duplicateStatus": 409
+    },
+    {
+      "n": 3,
+      "id": "SUC-03-calibration-reason-required",
+      "step": "Move Carlos from Growth to Limited with a 9-character reason",
+      "expected": "Refused: a moved potential needs a reason of at least 20 characters",
+      "actual": "As expected",
+      "screenshot": "03-SUC-03-calibration-reason-required.png",
+      "url": "http://localhost:5317/performance/succession?tab=calibration",
+      "atUtc": "2026-10-11T22:03:35.141Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 4,
+      "id": "SUC-03-calibrated",
+      "step": "Calibrate Liu Wei at High (kept, no reason) and Carlos at Limited (moved, reason ≥ 20 chars); confirm readiness Ready now / 1–2 years",
+      "expected": "Both assessments calibrated; both nominations Calibrated",
+      "actual": "As expected",
+      "screenshot": "04-SUC-03-calibrated.png",
+      "url": "http://localhost:5317/performance/succession?tab=calibration",
+      "atUtc": "2026-10-11T22:03:36.838Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 5,
+      "id": "SUC-03-ninebox-inputs",
+      "step": "The 9-box for the CFO candidates; open Liu Wei's placement",
+      "expected": "Liu Wei in Future leader (High potential × High performance, score 86 ≥ 75), Carlos in Effective in role (Limited × Moderate, 68); the inputs show review, score, band rule default-75-60-v1, proposed vs calibrated potential, assessor",
+      "actual": "As expected",
+      "screenshot": "05-SUC-03-ninebox-inputs.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:03:38.978Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 6,
+      "id": "SUC-06-submitted",
+      "step": "Build v1 (Liu Wei 1, Carlos 2, each with a written rationale) and submit it",
+      "expected": "v1 Submitted with its SHA-256 prefix; the order is manual and says so",
+      "actual": "As expected",
+      "screenshot": "06-SUC-06-submitted.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:03:48.017Z",
+      "viewport": "1440x950",
+      "slateV1": "5bd97163-a27a-4b11-8d5a-162ea2e4d7ff"
+    },
+    {
+      "n": 7,
+      "id": "SUC-06-approval-center",
+      "step": "The HR Director opens the Approval Center",
+      "expected": "The slate request reads \"Succession slate v1 · <hash>\" — no candidate name — with a \"Review slate\" link",
+      "actual": "As expected",
+      "screenshot": "07-SUC-06-approval-center.png",
+      "url": "http://localhost:5317/approvals",
+      "atUtc": "2026-10-11T22:03:57.979Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 8,
+      "id": "SUC-06-returned",
+      "step": "The HR Director reviews v1 (snapshot with every 9-box input) and returns it with a reason",
+      "expected": "v1 ReturnedForRevision; the reason is kept on the version",
+      "actual": "As expected",
+      "screenshot": "08-SUC-06-returned.png",
+      "url": "http://localhost:5317/performance/succession/slates/5bd97163-a27a-4b11-8d5a-162ea2e4d7ff",
+      "atUtc": "2026-10-11T22:04:02.005Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 9,
+      "id": "SUC-06-approved-history",
+      "step": "HR revises (v2 cloned from v1, rationale updated) and submits; the HR Director approves v2",
+      "expected": "Versions: v2 Approved (effective today), v1 ReturnedForRevision with its reason; hashes verified; candidates On slate",
+      "actual": "As expected",
+      "screenshot": "09-SUC-06-approved-history.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:04:15.040Z",
+      "viewport": "1440x950",
+      "slateV2": "2f4c58d0-8f18-4b7c-8c39-f41d6489b5df"
+    },
+    {
+      "n": 10,
+      "id": "SUC-04-plan-active",
+      "step": "On Liu Wei's employee record → Development: create a plan (purpose, review date), add a Learning action (path SUC-LEAD, assigned through the learning module) and a Goal action, activate",
+      "expected": "Plan Active; three actions Not started (Learning, Goal, Experience)",
+      "actual": "As expected",
+      "screenshot": "10-SUC-04-plan-active.png",
+      "url": "http://localhost:5317/people?employeeId=2",
+      "atUtc": "2026-10-11T22:04:35.875Z",
+      "viewport": "1440x950",
+      "learningActionId": "092f9d08-bd2e-4d8e-a8b5-2b0199184062"
+    },
+    {
+      "n": 11,
+      "id": "SUC-04-linked-completion",
+      "step": "Liu Wei completes the lesson in My learning, then opens My development plan",
+      "expected": "The learning action is Completed automatically (linked learning completed); the Experience action shows \"You said this is done\" (proposed, still In progress); cancelling or completing it outright → 403; no nomination, slate or pool is shown (visibility off)",
+      "actual": "As expected",
+      "screenshot": "11-SUC-04-linked-completion.png",
+      "url": "http://localhost:5317/ess/development-plan",
+      "atUtc": "2026-10-11T22:04:46.502Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 12,
+      "id": "SUC-04-owner-confirms",
+      "step": "HR (plan owner side) opens the Development tab and confirms the proposed completion",
+      "expected": "Experience action Completed (Manual); progress now counts it",
+      "actual": "As expected",
+      "screenshot": "12-SUC-04-owner-confirms.png",
+      "url": "http://localhost:5317/people?employeeId=2",
+      "atUtc": "2026-10-11T22:05:00.064Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 13,
+      "id": "SUC-06-readiness-history",
+      "step": "Change Carlos from 1–2 years to Ready now with a reason; open his history",
+      "expected": "Nomination shows Ready now (was 1–2 years); the history lists the change with its reason",
+      "actual": "As expected",
+      "screenshot": "13-SUC-06-readiness-history.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:05:21.605Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 14,
+      "id": "SUC-06-snapshot-kept",
+      "step": "Open the approved v2 after the change",
+      "expected": "The approved snapshot still shows Carlos at 1–2 years; the hash still verifies",
+      "actual": "As expected",
+      "screenshot": "14-SUC-06-snapshot-kept.png",
+      "url": "http://localhost:5317/performance/succession/slates/2f4c58d0-8f18-4b7c-8c39-f41d6489b5df",
+      "atUtc": "2026-10-11T22:05:25.871Z",
+      "viewport": "1440x950",
+      "snapshotReadiness": "OneToTwoYears"
+    },
+    {
+      "n": 15,
+      "id": "SUC-07-candidate-denied",
+      "step": "Carlos (a candidate, Employee role) opens the approved slate URL",
+      "expected": "No slate content; API slate 404, nominations 403, plans 403",
+      "actual": "As expected",
+      "screenshot": "15-SUC-07-candidate-denied.png",
+      "url": "http://localhost:5317/performance/succession/slates/2f4c58d0-8f18-4b7c-8c39-f41d6489b5df",
+      "atUtc": "2026-10-11T22:05:42.047Z",
+      "viewport": "1440x950",
+      "candidateReadsSlate": 404,
+      "candidateReadsNominations": 403,
+      "candidateReadsOthersPlans": 403
+    },
+    {
+      "n": 16,
+      "id": "SUC-07-manager-view",
+      "step": "The candidates' line manager opens Succession",
+      "expected": "Own nominations and team plans only; slate 404, nominations 403, 9-box 403, plan without its nomination link, no slate in the team queue",
+      "actual": "As expected",
+      "screenshot": "16-SUC-07-manager-view.png",
+      "url": "http://localhost:5317/performance/succession",
+      "atUtc": "2026-10-11T22:06:06.177Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 17,
+      "id": "SUC-07-admin-config-only",
+      "step": "Admin (configuration role) opens Succession and calls the candidate endpoints",
+      "expected": "Positions and pools only; nominations/9-box/reports 403, slate edit 403, slate read 404; audit metadata ids only",
+      "actual": "As expected",
+      "screenshot": "17-SUC-07-admin-config-only.png",
+      "url": "http://localhost:5317/performance/succession",
+      "atUtc": "2026-10-11T22:06:37.949Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 18,
+      "id": "SUC-05-kpi-drill",
+      "step": "HR Director opens Succession and clicks the Coverage tile",
+      "expected": "Coverage = positions with a Ready-now successor ÷ active critical positions; the drill lists exactly those positions",
+      "actual": "As expected",
+      "screenshot": "18-SUC-05-kpi-drill.png",
+      "url": "http://localhost:5317/performance/succession",
+      "atUtc": "2026-10-11T22:07:09.030Z",
+      "viewport": "1440x950",
+      "reconcile": {
+        "positions": [
+          1,
+          1
+        ],
+        "coverage": [
+          1,
+          1
+        ],
+        "extendedCoverage": [
+          1,
+          1
+        ],
+        "benchReadyNow": [
+          1,
+          1
+        ],
+        "benchOneToTwoYears": [
+          1,
+          1
+        ],
+        "benchThreePlusYears": [
+          0,
+          0
+        ],
+        "gapNoApprovedSlate": [
+          0,
+          0
+        ],
+        "gapNoReadyNow": [
+          0,
+          0
+        ],
+        "gapStaleSlate": [
+          0,
+          0
+        ],
+        "gapVacantNoReadyNow": [
+          0,
+          0
+        ],
+        "gapHighRisk": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "n": 19,
+      "id": "SUC-08-arabic-ninebox",
+      "step": "The position page in Arabic",
+      "expected": "dir=rtl; the 9-box mirrored (High performance on the left); Arabic labels",
+      "actual": "As expected",
+      "screenshot": "19-SUC-08-arabic-ninebox.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:07:37.370Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 20,
+      "id": "SUC-04-arabic-my-plan",
+      "step": "My development plan in Arabic",
+      "expected": "dir=rtl, Arabic statuses",
+      "actual": "As expected",
+      "screenshot": "20-SUC-04-arabic-my-plan.png",
+      "url": "http://localhost:5317/ess/development-plan",
+      "atUtc": "2026-10-11T22:07:55.378Z",
+      "viewport": "1440x950"
+    },
+    {
+      "n": 21,
+      "id": "SUC-04-mobile-my-plan",
+      "step": "My development plan at 390px",
+      "expected": "No horizontal scroll",
+      "actual": "overflow 0px",
+      "screenshot": "21-SUC-04-mobile-my-plan.png",
+      "url": "http://localhost:5317/ess/development-plan",
+      "atUtc": "2026-10-11T22:08:12.461Z",
+      "viewport": "390x844"
+    },
+    {
+      "n": 22,
+      "id": "SUC-01-mobile-position",
+      "step": "Position page at 390px (HR Manager)",
+      "expected": "No horizontal scroll; 9-box and slates readable",
+      "actual": "overflow 0px",
+      "screenshot": "22-SUC-01-mobile-position.png",
+      "url": "http://localhost:5317/performance/succession/positions/196e4387-7b24-49b5-bbc3-18214e45c1fe",
+      "atUtc": "2026-10-11T22:08:22.494Z",
+      "viewport": "390x844"
+    }
+  ]
+}
