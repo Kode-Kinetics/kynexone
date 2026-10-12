@@ -58,7 +58,13 @@ const confinedTo = (
 });
 
 /** AuthSeeder.AdminWithheldPermissions: the keys the Admin role is NOT given by default (review 3). */
-export const ADMIN_WITHHELD: string[] = ['attendance.evidence.view'];
+// Mirrors AuthSeeder.AdminWithheldPermissions. SUC: succession is HR-confidential (who is on whose slate, the 9-box), so
+// Admin — the technical role — does not get slate reading, assessing or calibrating by default (SUC_DESIGN §0).
+// Mirrors AuthSeeder.AdminWithheldPermissions. SUC (F2): Admin keeps only succession.read, positions.manage and pools.manage.
+export const ADMIN_WITHHELD: string[] = [
+  'attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read',
+  'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self',
+];
 
 export const ROLE_POLICY: PolicyRule[] = [
   {
@@ -99,11 +105,16 @@ export const ROLE_POLICY: PolicyRule[] = [
     'An auditor is read-only by definition (mirrors Zayra.Api.Tests/Security/AuditorReadOnlyTests).'),
   confinedTo('kiosk-operator-is-kiosk-only', 'Kiosk Operator', 'attendance.kiosk', (key) => key === 'attendance.kiosk',
     'A kiosk device account captures punches and nothing else.', ['attendance.kiosk']),
-  confinedTo('employee-is-self-service-only', 'Employee', 'dashboard/profile/ess, loans.self and performance.read',
-    (key) => key === 'dashboard.read' || key.startsWith('profile.') || key.startsWith('ess.') || key === 'loans.self' || key === 'performance.read',
+  confinedTo('employee-is-self-service-only', 'Employee', 'dashboard/profile/ess, loans.self, performance.read and succession.self',
+    (key) => key === 'dashboard.read' || key.startsWith('profile.') || key.startsWith('ess.') || key === 'loans.self' || key === 'performance.read'
+      || key === 'succession.self',
     'An employee sees their own record through self-service, never other people\'s records or pay. '
-    + 'loans.self and performance.read open only their OWN records (object/data scope); goals are set by others, so no performance.write.',
-    ['loans.self', 'performance.read']),
+    + 'loans.self, performance.read and succession.self open only their OWN records (object/data scope); goals are set by others, '
+    + 'so no performance.write.',
+    ['loans.self', 'performance.read', 'succession.self']),
+  onlyHeldBy('succession-calibrate-is-hr-director', 'succession.calibrate', ['HR Director'],
+    'Calibration moves a person\'s potential and confirms readiness for a slate (SUC_DESIGN §4): HR Director only by default; '
+    + 'HR Manager holds everything else in succession, and Admin has it withheld.'),
   onlyHeldBy('erp-confirm-is-the-checker', 'finance.erp.confirm', ['Admin', 'Finance Approver'],
     'Maker-checker on the GL hand-off: Payroll Manager produces the journal export, so it must not also attest '
     + 'that the client ERP imported it.'),

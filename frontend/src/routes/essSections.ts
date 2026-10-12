@@ -3,6 +3,7 @@ import {
   HeartPulse,
   Inbox,
   LayoutDashboard,
+  MessageSquareText,
   WalletCards,
   type LucideIcon,
 } from 'lucide-react';
@@ -25,12 +26,14 @@ export interface EssPage {
   /** What the page is for, in the employee's words. */
   hint: string;
   requiredFeatureKey?: string;
+  /** Offered only to a user holding this permission (on top of ess.read, which every page here needs). */
+  requiredPermission?: string;
   /** Shown only when one of the user's companies is in one of these countries (ISO 3166 alpha-2). */
   countries?: string[];
 }
 
 export interface EssSection {
-  id: 'overview' | 'pay' | 'time' | 'requests' | 'benefits';
+  id: 'overview' | 'pay' | 'time' | 'requests' | 'benefits' | 'surveys';
   label: string;
   icon: LucideIcon;
   pages: EssPage[];
@@ -40,6 +43,7 @@ export const ESS_HOME_PATH = '/ess';
 export const ESS_DOCUMENTS_PATH = '/ess/documents';
 export const ESS_JAWAZAT_PATH = '/ess/jawazat';
 export const ESS_BENEFITS_PATH = '/ess/benefits';
+export const ESS_SURVEYS_PATH = '/ess/surveys';
 
 export const ESS_SECTIONS: EssSection[] = [
   {
@@ -48,6 +52,11 @@ export const ESS_SECTIONS: EssSection[] = [
     icon: LayoutDashboard,
     pages: [
       { label: 'Self-Service', tab: 'Overview', path: ESS_HOME_PATH, hint: 'Your day at a glance: what needs you, your balances and what is coming up.' },
+      { label: 'My employee details', tab: 'My details', path: '/ess/onboarding', hint: 'Complete your contact details and share documents securely with HR.' },
+      // LRN (learning opt-in flag): the employee's own training, courses, assessments and certificates.
+      { label: 'My learning', tab: 'Learning', path: '/ess/learning', hint: 'The training assigned to you, what to do next, and the certificates you have earned.', requiredFeatureKey: 'learning' },
+      // SUC (succession opt-in flag): the employee's own development plan, its actions and the next review.
+      { label: 'My development plan', tab: 'Development', path: '/ess/development-plan', hint: 'Your development plan: the actions agreed with you, how far you are, and when it is next reviewed.', requiredFeatureKey: 'succession', requiredPermission: 'succession.self' },
     ],
   },
   {
@@ -87,6 +96,15 @@ export const ESS_SECTIONS: EssSection[] = [
     icon: HeartPulse,
     pages: [
       { label: 'My Benefits', tab: 'Benefits', path: ESS_BENEFITS_PATH, hint: 'The benefits you are enrolled in and what they cover.' },
+    ],
+  },
+  {
+    // Engagement surveys (engagement opt-in flag): answer open surveys, and record progress on actions you own.
+    id: 'surveys',
+    label: 'Surveys',
+    icon: MessageSquareText,
+    pages: [
+      { label: 'My surveys', tab: 'Surveys', path: ESS_SURVEYS_PATH, hint: 'Answer the surveys waiting for you and follow up on actions you own.', requiredFeatureKey: 'engagement' },
     ],
   },
 ];

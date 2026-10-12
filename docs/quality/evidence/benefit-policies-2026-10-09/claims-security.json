@@ -1,0 +1,70 @@
+{
+  "base": "http://127.0.0.1:5218",
+  "startedAtUtc": "2026-10-09T16:57:58.536215+00:00",
+  "status": "passed",
+  "checks": [
+    {
+      "check": "supported configured BenefitAdditionalGrant route exists",
+      "passed": true
+    },
+    {
+      "check": "supported configured BenefitClaim route exists",
+      "passed": true
+    },
+    {
+      "check": "concurrent claims cannot over-reserve annual cap",
+      "passed": true,
+      "httpStatuses": [
+        200,
+        400
+      ]
+    },
+    {
+      "check": "one pending600 claim persists and remaining400 is server-derived",
+      "passed": true,
+      "pending": 1,
+      "reserved": 600,
+      "remaining": 400.0
+    },
+    {
+      "check": "same receipt hash cannot be claimed through a second plan",
+      "passed": true,
+      "httpStatus": 400
+    },
+    {
+      "check": "configured payment behavior cannot be silently changed",
+      "passed": true,
+      "httpStatus": 400
+    },
+    {
+      "check": "authorized issuing-company HR can download exact receipt bytes",
+      "passed": true,
+      "httpStatus": 200
+    },
+    {
+      "check": "other company cannot download receipt or expose stored object",
+      "passed": true,
+      "httpStatus": 404
+    },
+    {
+      "check": "other company cannot read claim details",
+      "passed": true
+    }
+  ],
+  "ids": {
+    "employee": 14,
+    "A": {
+      "plan": "086ba2bf-57b0-4dde-8473-16eee19a7d48",
+      "enrollment": "fd08384c-5516-4c67-b361-a5083c9079e0"
+    },
+    "B": {
+      "plan": "cce63245-c30d-4fd3-b77f-460706532667",
+      "enrollment": "2b8129e3-3c07-44d9-9bad-124e5a2dee93"
+    },
+    "claim": "c4dac409-b1b3-4b7d-8024-b31231dd08fa",
+    "receipt": "da72c2b4-6579-44bb-a15b-910dcf73304b"
+  },
+  "tag": "020C44D63",
+  "scopeNote": "Receipt download proof covers issuing-company HR versus another company. ESS owner proof is a separate linked-employee walkthrough.",
+  "completedAtUtc": "2026-10-09T16:57:59.451806+00:00"
+}

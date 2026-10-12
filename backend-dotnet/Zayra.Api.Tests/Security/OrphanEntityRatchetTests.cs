@@ -100,8 +100,8 @@ public class OrphanEntityRatchetTests
 
         // ── Recruitment / performance: product decision needed before deletion ───────────────
         "CandidateDocument",
-        "PerformanceRatingOption",
-        "PerformanceRatingScale",
+        // PerformanceRatingScale / PerformanceRatingOption left this list with SUC: the shared performance-band helper
+        // (Infrastructure/Performance/PerformanceBands.cs) reads the tenant's default scale to band the 9-box.
         "RoleCompetency",
         // EmployeeDependent left this list in Release A R2: the package resolver counts the dependants
         // a medical, ticket or education entitlement covers (PackageRules.DependantsCovered).

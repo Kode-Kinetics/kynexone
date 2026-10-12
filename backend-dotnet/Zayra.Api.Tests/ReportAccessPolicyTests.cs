@@ -97,12 +97,13 @@ public sealed class ReportAccessPolicyTests
     // Recruitment reports: role-gated Admin/HR Manager/HR Officer/Recruiter, no recruitment.read.
     // Visa/passport/contract: VisaTracking and Contracts are Admin/HR Manager/HR Officer, no compliance.read.
     // Qiwa and Saudization: the Qiwa and Saudi-compliance modules need qiwa.read or compliance.read.
-    [InlineData("Payroll Manager", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization")]
-    [InlineData("Payroll Officer", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization")]
+    [InlineData("Payroll Manager", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization,engagement.results")]
+    [InlineData("Payroll Officer", "recruitment.pipeline,recruitment.time-to-hire,compliance.visa-expiry,compliance.passport-expiry,compliance.contract-expiry,qiwa.readiness,compliance.saudization,engagement.results")]
     // Payroll: Admin/HR Manager/Payroll Manager/Payroll Officer or payroll.read. Loans: loans.read or
     // loans.write. Bonus batches: payroll.read. Recruitment: as above.
-    [InlineData("Compliance Officer", "payroll.register,payroll.summary,payroll.slips,finance.bonus-payout,finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire")]
-    [InlineData("Auditor", "finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire")]
+    // Engagement results: engagement.read (HR Director, HR Manager, Manager) — the opt-in survey module's own gate.
+    [InlineData("Compliance Officer", "payroll.register,payroll.summary,payroll.slips,finance.bonus-payout,finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire,engagement.results")]
+    [InlineData("Auditor", "finance.loan-balance,finance.advance-report,recruitment.pipeline,recruitment.time-to-hire,engagement.results")]
     public async Task SeededRoles_RunEveryReportTheirModulesAllow_AndOnlyThose(string role, string denied)
     {
         await using var db = Db();

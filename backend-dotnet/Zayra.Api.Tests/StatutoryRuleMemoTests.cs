@@ -97,7 +97,9 @@ public class StatutoryRuleMemoTests
         // All three are PRE-LOOP reads resolved once per run, so the property this test exists to
         // protect is untouched: the count is still flat in headcount, which is what the assertion
         // above enforces. This second bound is only a tightness ratchet.
-        counter.Count.Should().BeLessThanOrEqualTo(16);
+        // 16 → 18: the validation context now also reads the two GOSI minimum-contributory-wage rows
+        // (gosi.covered_wage_min_*_sar) for a non-blocking warning — two PRE-LOOP reads, once per run.
+        counter.Count.Should().BeLessThanOrEqualTo(18);
 
         // Value invariance: KSA Saudi GOSI EE = 9% + 0.75% = 9.75% of covered wage (12,000) = 1,170.
         await using (var check = _fx.CreateDb())

@@ -318,10 +318,10 @@ public class EmployeeFieldWiringTests
         client.Should().Contain("optionsAwareType(");
 
         var page = FrontendSource.EmployeesPage();
-        page.Should().NotContain("f.options!",
+        page.Should().NotMatchRegex(@"\.\s*options\s*!(?!=)",
             "the non-null assertion is what threw and replaced the entire People page with the error boundary");
-        page.Should().Contain("f.options && f.options.length > 0",
-            "the modal must check the option list before rendering a <select> from it");
+        page.Should().MatchRegex(@"(?<![\w$])(?<field>[$A-Za-z_][$A-Za-z_0-9]*)\s*\.\s*options\s*&&\s*\k<field>\s*\.\s*options\s*\.\s*length\s*>\s*0\b",
+            "the modal must check the same field's option list before rendering a <select>, regardless of its local variable name");
     }
 
     /// <summary>The offline fallback must not invent an expiry binding the server does not send. These two

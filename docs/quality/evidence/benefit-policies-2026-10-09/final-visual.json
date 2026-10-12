@@ -1,0 +1,33 @@
+{
+  "at": "2026-10-09T17:06:07.867Z",
+  "origin": "http://127.0.0.1:5281",
+  "errors": [],
+  "consoleErrors": [],
+  "screenshots": [
+    "12-final-catalogue-search.png",
+    "13-final-hr-claims.png",
+    "14-final-sealed-payment-policy.png",
+    "15-final-ess-phone.png"
+  ],
+  "catalogueSearch": true,
+  "claimCardWidths": [
+    {
+      "width": 352,
+      "x": 1022
+    },
+    {
+      "width": 352,
+      "x": 1022
+    }
+  ],
+  "hrPanelStacked": true,
+  "sealedPaymentPolicy": {
+    "requestId": "daa0be53-6ed9-40b4-b406-27eb7b7c6eca",
+    "delivery": "SalaryAllowance",
+    "amount": 310,
+    "version": 1
+  },
+  "essEmptyDeductionHidden": true,
+  "noHorizontalOverflow": true,
+  "complete": true
+}

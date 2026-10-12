@@ -86,7 +86,44 @@ public class TableBudgetRatchetTests
         // it; class E — blob purged by the selfie retention rule, envelope and sha256 kept.
         // BiometricConsents: per-version consent to selfie attendance with withdrawal; nothing records consent today. HR
         // owns it (DPO approves retention); kept for employment + the statutory minimum as the lawful basis.
-        DeclaredDbSets().Should().HaveCount(332,
+        // ErpApiKeys (wave 3, ERP machine access): the client's ERP pulls and confirms journal exports with a
+        // scoped, expiring, revocable key. No table holds a machine credential with scopes, expiry, an address
+        // allow-list and a revocation record (SCIM has one unscoped token per tenant; device keys are attendance
+        // only). Finance owns it; kept as long as the exports it confirmed, whose stamps carry its id as actor.
+        // EosbProvisionSnapshots + GlAdjustmentRequests (POD-C2, owner-approved): the per-employee EOSB obligation
+        // witness behind the monthly provision, and one maker-checker table for the EOSB true-up and the legacy
+        // 2104/2105 reclass. Finance owns both; kept as long as the GL lines they explain.
+        // CMP merit planning (AddMeritPlanning, +8; cap 7 + one written exception — CMP_DESIGN.md): CompCycles (a planning
+        // round: period, effective date, currency, eligibility, lifecycle), CompCycleBudgets (per-department pool in
+        // cycle currency), CompGuidelines (rating × compa-ratio band → min/target/max %), CompFxRates (the product's first
+        // FX table: rate, source, date, entered by), CompWorksheets (the approval subject: manager × scenario, status,
+        // revision — the exception), CompWorksheetLines (the award and what the approver saw; one applied award per
+        // cycle × employee), PayBenchmarkSets (customer-owned survey import with provenance and licence) and
+        // PayBenchmarkRows (percentiles + designation/grade mapping). HR owns all eight; Finance reads budgets. Kept as
+        // long as the salary rows the awards produced. No existing table holds any of these facts.
+        // ENG — engagement surveys (AddEngagementSurveys, ENG cap 7, six used; the orphan employee_sentiment_pulses is
+        // left in place — no DROP in this release). SurveyTemplates: versioned questionnaires, published versions frozen.
+        // Surveys: one cycle (mode, audience, dates, k, recurrence). SurveyInvitations: the participation ledger (who was
+        // invited, submitted flag/date, encrypted draft) — never an answer. SurveyResponses + SurveyAnswers: the
+        // anonymous side, no identity column, date-truncated, cohort snapshot (EngagementPrivacyRatchetTests).
+        // SurveyActions: follow-up actions with owner, due date and progress. HR owns all six; responses/answers are
+        // deleted with their survey, comment text purged after the tenant's retention (EngagementFreeTextRetentionRule).
+        // LRN — learning management (capability closure LRN-01..15; owner L&D/HR; LRN_DESIGN.md has the per-table
+        // template). Ten tables, the module's whole cap: LearningCourses (immutable course versions + question bank),
+        // LearningPaths + LearningPathItems (curricula, order, prerequisites, eligibility), LearningAssignmentRules
+        // (standing rules the sweep re-applies), LearningAssignments (employee × path × cycle; one live row per pair,
+        // DB-enforced), LearningEnrollments (per course, pinned to a version), LearningAttempts (scored submissions),
+        // LearningCredentials (certificates with expiry, revocation and a supersede chain), LearningLaunchSessions
+        // (cmi5 one-time fetch / auth token hashes) and LearningXapiStatements (the minimal LRS, unique per statement
+        // id). No existing table holds learning content, completion evidence or a qualification lifecycle. Retention:
+        // kept with the employee's training record (FK Restrict; never hard-deleted — cancel/revoke are statuses).
+        // SUC — succession and career development (capability closure SUC-01..09; owner HR; SUC_IMPLEMENTATION.md has the
+        // per-table template). Seven tables, the module's whole cap: SuccessionCriticalPositions (criticality side table on
+        // Position), TalentPools, SuccessionNominations (candidate × one target, readiness history), TalentAssessments
+        // (potential + performance snapshot, generated 9-box cell, immutable once calibrated), SuccessionSlateVersions
+        // (immutable hashed snapshots, approval-routed), DevelopmentPlans and DevelopmentPlanActions (linked to
+        // learning_assignments / EmployeeGoal). Retention: 3 years after employment ends, then anonymised (SuccessionRetentionJob).
+        DeclaredDbSets().Should().HaveCount(366,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

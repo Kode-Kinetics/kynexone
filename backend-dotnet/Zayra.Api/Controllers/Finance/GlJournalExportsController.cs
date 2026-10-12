@@ -1,11 +1,15 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Finance;
@@ -48,12 +52,17 @@ public class GlJournalExportsController : ControllerBase
     // ── Formats ───────────────────────────────────────────────────────────────────────────────────
 
     [HttpGet("journal-exports/formats")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public IActionResult Formats()
     {
         if (!CanRead()) return Forbid();
         return Ok(_exports.Formatters.Select(f => new
         {
             f.Key, f.DisplayName, f.Extension, f.ContentType, f.Disclaimer,
+            // "Verified" = pinned to a documented spec; "Template" = validate in the client's ERP test instance.
+            f.Status,
+            options = f.Options.Select(o => new { o.Key, o.Label, o.DefaultValue, o.Description, o.MaxLength, o.Required }).ToList(),
+            singleCompany = f.SingleEntity,
         }).ToList());
     }
 
@@ -68,7 +77,10 @@ public class GlJournalExportsController : ControllerBase
         [FromQuery] string? period, [FromQuery] Guid? runId, [FromQuery] Guid? companyId,
         [FromQuery] string? currency, [FromQuery] bool includeUnattributed = false,
         [FromQuery] bool suppressReversedPairs = false, [FromQuery] string format = "generic-csv",
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        // Appended after ct so positional callers keep compiling; MVC binds by name.
+        [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
     {
         if (!CanRead()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -76,8 +88,9 @@ public class GlJournalExportsController : ControllerBase
         if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
-        var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs);
-        var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct);
+        var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
+            includePreviouslyConfirmed, replacesExportId);
+        var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
         return Ok(Manifest(build!, null, sampleLines: true));
@@ -94,7 +107,10 @@ public class GlJournalExportsController : ControllerBase
         [FromQuery] string? period, [FromQuery] Guid? runId, [FromQuery] Guid? companyId,
         [FromQuery] string? currency, [FromQuery] bool includeUnattributed = false,
         [FromQuery] bool suppressReversedPairs = false, [FromQuery] string format = "generic-csv",
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        // Appended after ct so positional callers keep compiling; MVC binds by name.
+        [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
     {
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -102,45 +118,113 @@ public class GlJournalExportsController : ControllerBase
         if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
-        var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs);
-        var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct);
-        if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
+        var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
+            includePreviouslyConfirmed, replacesExportId);
+        var groupCaller = this.GetEntityScope().IsGroupLevel;
 
-        // IgnoreQueryFilters is intentional: company filter only — the duplicate-export probe must see a
-        // live export taken at group level. Tenant re-applied in the WHERE.
-        var priorLiveQ = _db.GlJournalExports.IgnoreQueryFilters()
-            .Where(x => x.TenantId == tid && x.Period == (period ?? string.Empty)
-                     && x.PayrollRunId == runId && x.CompanyId == companyId
-                     && x.FormatKey == build!.Formatter.Key && x.Currency == build.Document.Currency
-                     && x.Status == GlJournalExportStatuses.Exported);
-        // D2 (round 3): superseding is a WRITE. A company-scoped caller is refused sight of a
-        // group-created includeUnattributed artifact by Get/Download/Confirm/Reject/List, so they must not
-        // be able to flip its status either — silently, and with the superseded ids visible only in the
-        // audit log. Same predicate, same rule, applied to the mutation as well as the reads.
-        if (!this.GetEntityScope().IsGroupLevel) priorLiveQ = priorLiveQ.Where(x => !x.IncludeUnattributed);
-        var priorLive = await priorLiveQ.ToListAsync(ct);
-
-        var export = _exports.Persist(tid.Value, filter, build!, this.GetUserId(), UserName(), priorLive);
-
-        var stamp = await ErpPostingEvidence.StampAsync(
-            _db, tid.Value, build!.Document.Lines.Select(l => l.EntryId).Distinct().ToList(),
-            ErpPostingStatuses.Exported, null, DateTime.UtcNow, ct);
-
-        WriteAudit("finance.gl.journal_export.created", "GlJournalExport", export.Id.ToString(), companyId, new
+        return await SerialisedAsync(async () =>
         {
-            period, runId, companyId, format = export.FormatKey, currency = export.Currency,
-            export.FileHash, export.LineCount, export.EntryCount, export.TotalDebits, export.TotalCredits,
-            supersededExports = priorLive.Select(p => p.Id).ToList(),
-            linesStamped = stamp.LinesStamped, runsAdvanced = stamp.RunsAdvanced,
-        });
-        await _db.SaveChangesAsync(ct);
+            // LOCK ORDER (every decision path takes the same order, so they serialise instead of deadlocking):
+            // 1. the live exports of this scope, any format or currency, FOR UPDATE in id order — a concurrent
+            //    confirm/reject of one of them either commits first (and is seen below) or waits for this export;
+            // 2. the scope's ledger rows FOR UPDATE in id order — a concurrent ERP confirmation of the same rows by an
+            //    export of another scope cannot slip between the double-post guard (BuildAsync) and the insert.
+            // IgnoreQueryFilters is intentional: company filter only — the duplicate-export probe must see a
+            // live export taken at group level. Tenant re-applied in the WHERE.
+            var scopeLive = await _db.GlJournalExports.IgnoreQueryFilters()
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tid && x.Period == (period ?? string.Empty)
+                         && x.PayrollRunId == runId && x.CompanyId == companyId
+                         && x.Status == GlJournalExportStatuses.Exported)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            await LockLedgerScopeAsync(tid.Value, filter, ct);
 
-        return Created($"/api/finance/gl/journal-exports/{export.Id}", Manifest(build, export, sampleLines: false, stamp));
+            var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
+            if (refusal is not null) return (StatusCode(refusal.Status, refusal.Payload), false);
+
+            var priorLive = scopeLive
+                .Where(x => x.FormatKey == build!.Formatter.Key && x.Currency == build.Document.Currency).ToList();
+
+            // D2 (round 3): superseding is a WRITE. A company-scoped caller is refused sight of a group-created
+            // includeUnattributed artifact by Get/Download/Confirm/Reject/List, so they may not flip its status
+            // either. And the two files would hold the same company rows, so this export cannot simply coexist with
+            // it (the live-scope index refuses that). Say exactly that, instead of a misleading "created at the same
+            // moment" from the index.
+            if (!groupCaller && priorLive.Any(x => x.IncludeUnattributed))
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.GroupExportLive,
+                    message = "A group-level export of this company and month in this format is still waiting for your ERP's "
+                            + "result (it also carries ledger rows that belong to no company). A group finance user must record "
+                            + "that result or export again at group level first; until then the same rows would be in two files.",
+                }), false);
+
+            // An export with some journals already decided is ERP evidence: superseding it would strand those outcomes and
+            // re-send its undecided journals, which the ERP may already hold. Its confirmed journals are excluded from any
+            // new export; the rest must be recorded first.
+            if (priorLive.FirstOrDefault(JournalExportService.HasJournalOutcomes) is { } partly)
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.PriorPartlyRecorded,
+                    message = $"Your ERP's result is recorded for some journals of {partly.FileName}, but not all of them. Record "
+                            + "whether your ERP posted or refused the remaining journals of that file first. Then export again: "
+                            + "only rows your ERP has not posted will be sent.",
+                    exportId = partly.Id,
+                    fileName = partly.FileName,
+                    journalsRecorded = JournalExportBuilder.ParseConfirmations(partly.JournalConfirmationsJson).Count,
+                }), false);
+
+            var export = _exports.Persist(tid.Value, filter, build!, this.GetUserId(), UserName(), priorLive);
+
+            var stamp = await ErpPostingEvidence.StampAsync(
+                _db, tid.Value, build!.Document.Lines.Select(l => l.EntryId).Distinct().ToList(),
+                ErpPostingStatuses.Exported, null, DateTime.UtcNow, ct);
+
+            WriteAudit("finance.gl.journal_export.created", "GlJournalExport", export.Id.ToString(), companyId, new
+            {
+                period, runId, companyId, format = export.FormatKey, currency = export.Currency,
+                export.FileHash, export.LineCount, export.EntryCount, export.TotalDebits, export.TotalCredits,
+                kind = export.Kind, replacesExportId = export.ReplacesExportId,
+                previouslyConfirmedExcluded = build.Selection.PreviouslyConfirmedExcludedCount,
+                supersededExports = priorLive.Where(p => p.Status == GlJournalExportStatuses.Superseded).Select(p => p.Id).ToList(),
+                linesStamped = stamp.LinesStamped, runsAdvanced = stamp.RunsAdvanced,
+            });
+            try
+            {
+                // One SaveChanges: EF orders a table's UPDATEs before its INSERTs, so the prior live export is
+                // Superseded before the new one is inserted and the live-scope unique index is never tripped by
+                // a legitimate re-export — only by a concurrent one (proven on Postgres by
+                // JournalExportConcurrencyPostgresTests).
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (IsLiveScopeViolation(ex))
+            {
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.ConcurrentExport,
+                    message = "Another export of this same company, month, format and currency was created at the same "
+                            + "moment. Refresh the export history and use that file; nothing was written by this request.",
+                }), false);
+            }
+
+            return (Created($"/api/finance/gl/journal-exports/{export.Id}", Manifest(build, export, sampleLines: false, stamp)), true);
+        }, ct);
     }
+
+    /// <summary>The partial unique index <c>ux_gl_journal_exports_live_scope</c>: one live (Exported) export per
+    /// tenant + company + period + run + format + currency.</summary>
+    private static bool IsLiveScopeViolation(DbUpdateException ex) =>
+        ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation } pg
+        && string.Equals(pg.ConstraintName, LiveScopeIndexName, StringComparison.Ordinal);
+
+    /// <summary>Created by migration AddErpCodesAndLiveExportIndex (raw SQL: NULLS NOT DISTINCT).</summary>
+    public const string LiveScopeIndexName = Zayra.Api.Data.DatabaseIndexNames.GlJournalExportLiveScope;
 
     // ── List / read / download ────────────────────────────────────────────────────────────────────
 
     [HttpGet("journal-exports")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> List(
         [FromQuery] string? period, [FromQuery] Guid? runId, [FromQuery] Guid? companyId,
         [FromQuery] string? status, CancellationToken ct = default)
@@ -178,6 +262,7 @@ public class GlJournalExportsController : ControllerBase
     }
 
     [HttpGet("journal-exports/{id:guid}")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         if (!CanRead()) return Forbid();
@@ -198,13 +283,16 @@ public class GlJournalExportsController : ControllerBase
             .Where(l => l.TenantId == tid && l.GlJournalExportId == id)
             .OrderBy(l => l.LineNo).ToListAsync(ct);
 
-        // Was the ledger moved after this file was handed over? Non-blocking, but never hidden.
-        var current = await JournalExportBuilder.SelectAsync(_db, tid.Value, FilterOf(export), ct);
+        // Was the ledger moved after this file was handed over? Non-blocking, but never hidden. Rows another
+        // export already got CONFIRMED by the ERP are not "owed" — leaving them out stops a Supplementary export
+        // from reporting its Full predecessor's rows as new.
+        var current = await JournalExportBuilder.SelectAsync(_db, tid.Value, FilterOf(export), ct, new ConfirmedExclusion(export.Id));
         var newSince = JournalExportBuilder.NewSinceExport(current.Entries, lines.Select(l => l.FinanceGlEntryId).Distinct().ToList());
 
         return Ok(new
         {
             export = Summary(export),
+            journals = JournalsOf(export, lines),
             formatter = _exports.FindFormatter(export.FormatKey) is { } f
                 ? new { f.Key, f.DisplayName, f.Disclaimer } : null,
             newRowsInScopeSinceExport = new
@@ -232,6 +320,7 @@ public class GlJournalExportsController : ControllerBase
     /// reproducible byte-for-byte forever.
     /// </summary>
     [HttpGet("journal-exports/{id:guid}/download")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
     {
         if (!CanRead()) return Forbid();
@@ -266,11 +355,19 @@ public class GlJournalExportsController : ControllerBase
     /// twice.</para>
     /// </summary>
     [HttpPost("journal-exports/{id:guid}/confirm")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Confirm(Guid id, [FromBody] ErpImportConfirmationRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        var export = await LoadAsync(tid.Value, id, ct);
+        return await SerialisedAsync(async () => (await ConfirmCoreAsync(tid.Value, id, req, ct), true), ct);
+    }
+
+    private async Task<IActionResult> ConfirmCoreAsync(Guid tid, Guid id, ErpImportConfirmationRequest req, CancellationToken ct)
+    {
+        // FOR UPDATE: per-journal decisions, a whole-file decision and a superseding export of this row are
+        // serialised on it, so none of them can overwrite another's outcome.
+        var export = await LoadAsync(tid, id, ct, forUpdate: true);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
         // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
@@ -310,6 +407,8 @@ public class GlJournalExportsController : ControllerBase
                 message = "A later export replaced this one. Confirm the current export instead.",
             });
 
+        if (PerJournalDecisionsError(export) is { } perJournal) return perJournal;
+
         // The artifact must still be the artifact. If it does not regenerate to its recorded hash, the
         // frozen rows were altered and nothing may be confirmed against it.
         var (_, _, _, drift) = await _exports.RegenerateAsync(export, ct);
@@ -321,8 +420,12 @@ public class GlJournalExportsController : ControllerBase
             .Where(l => l.TenantId == tid && l.GlJournalExportId == id)
             .Select(l => l.FinanceGlEntryId).Distinct().ToListAsync(ct);
 
+        // One ledger row, one ERP posting: refuse when another export's confirmation already holds these rows.
+        await LockLedgerRowsAsync(tid, entryIds, ct);
+        if (await AlreadyConfirmedElsewhereAsync(tid, export, entryIds, null, ct) is { } elsewhere) return elsewhere;
+
         var nowUtc = DateTime.UtcNow;
-        var stamp = await ErpPostingEvidence.StampAsync(_db, tid.Value, entryIds, ErpPostingStatuses.Posted, reference, nowUtc, ct);
+        var stamp = await ErpPostingEvidence.StampAsync(_db, tid, entryIds, ErpPostingStatuses.Posted, reference, nowUtc, ct);
 
         export.Status = GlJournalExportStatuses.Confirmed;
         export.ErpDocumentNumber = reference;
@@ -344,7 +447,7 @@ public class GlJournalExportsController : ControllerBase
         // Run-level payroll evidence also lands on the tamper-evident POD-A3 chain.
         _db.PayrollAuditLogs.Add(new PayrollAuditLog
         {
-            TenantId = tid.Value,
+            TenantId = tid,
             EntityName = "GlJournalExport",
             EntityId = export.Id.ToString(),
             Action = "payroll.erp_posting.confirmed_from_export",
@@ -376,24 +479,27 @@ public class GlJournalExportsController : ControllerBase
 
     /// <summary>Records that the client's ERP REFUSED the import. Permits a superseding re-export.</summary>
     [HttpPost("journal-exports/{id:guid}/reject")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Reject(Guid id, [FromBody] ErpImportRejectionRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        var export = await LoadAsync(tid.Value, id, ct);
+        return await SerialisedAsync(async () => (await RejectCoreAsync(tid.Value, id, req, ct), true), ct);
+    }
+
+    private async Task<IActionResult> RejectCoreAsync(Guid tid, Guid id, ErpImportRejectionRequest req, CancellationToken ct)
+    {
+        var export = await LoadAsync(tid, id, ct, forUpdate: true);
         if (export is null) return NotFound();
         if (ScopeError(export.CompanyId) is { } err) return err;
-        // D2: the STORED flag matters as much as the stored company. A group caller may legitimately
-        // create an export for company A with includeUnattributed=true; its frozen line set then holds
-        // tenant-wide NULL-company rows. Checking only export.CompanyId would let a company-A-scoped
-        // caller read or re-confirm exactly the rows the flag exists to restrict — via the artifact
-        // instead of the query. Re-checking here closes that indirect route.
+        // D2: the STORED flag matters as much as the stored company — see Confirm.
         if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return unattributedErr;
         if (await ExporterRefusalAsync(export, "reject", ct) is { } makerChecker) return makerChecker;
 
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
             return BadRequest(new { error = "rejection_reason_required", message = "A rejection reason is required." });
+        if (PerJournalDecisionsError(export) is { } perJournal) return perJournal;
         if (export.Status == GlJournalExportStatuses.Confirmed)
             return Conflict(new
             {
@@ -407,7 +513,8 @@ public class GlJournalExportsController : ControllerBase
         var entryIds = await _db.GlJournalExportLines.IgnoreQueryFilters().AsNoTracking()
             .Where(l => l.TenantId == tid && l.GlJournalExportId == id)
             .Select(l => l.FinanceGlEntryId).Distinct().ToListAsync(ct);
-        var stamped = await ErpPostingEvidence.StampRejectionAsync(_db, tid.Value, entryIds, reason, DateTime.UtcNow, ct);
+        await LockLedgerRowsAsync(tid, entryIds, ct);
+        var stamped = await ErpPostingEvidence.StampRejectionAsync(_db, tid, entryIds, reason, DateTime.UtcNow, ct);
 
         export.Status = GlJournalExportStatuses.Rejected;
         export.RejectionReason = reason;
@@ -417,6 +524,288 @@ public class GlJournalExportsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(new { exportId = export.Id, status = export.Status, linesStamped = stamped });
     }
+
+    // ── Per-journal ERP evidence ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Confirms individual journals of an export, each with ITS ERP document number — the normal case when a
+    /// multi-company file is imported as one ERP document per company, or a file is only partly accepted.
+    /// Same evidence rules as the whole-file confirmation: checker key, a different person from the exporter,
+    /// the artifact must still hash true. Idempotent per journal; a different number for a confirmed journal is
+    /// a 409. When every journal has an outcome the export becomes Confirmed (all posted) or PartiallyConfirmed.
+    /// </summary>
+    [HttpPost("journal-exports/{id:guid}/journals/confirm")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
+    public async Task<IActionResult> ConfirmJournals(Guid id, [FromBody] ErpJournalConfirmationRequest req, CancellationToken ct)
+    {
+        if (!CanConfirm()) return Forbid();
+        return await SerialisedAsync(async () => (await ConfirmJournalsCoreAsync(id, req, ct), true), ct);
+    }
+
+    private async Task<IActionResult> ConfirmJournalsCoreAsync(Guid id, ErpJournalConfirmationRequest req, CancellationToken ct)
+    {
+        var (export, lines, gate) = await LoadForJournalDecisionAsync(id, "confirm", ct);
+        if (gate is not null) return gate;
+        var items = req.Journals ?? new List<ErpJournalConfirmationItem>();
+        if (items.Count == 0 || items.Any(i => string.IsNullOrWhiteSpace(i.ErpDocumentNumber)))
+            return BadRequest(new
+            {
+                error = "erp_document_number_required",
+                message = "Every journal you confirm needs the document number your ERP gave it: that number is the evidence it was posted.",
+            });
+
+        var documents = PostingDocumentsOf(export!, lines!);
+        var unknown = items.Select(i => i.JournalRef).Where(r => !documents.ContainsKey(r ?? string.Empty)).ToList();
+        if (unknown.Count > 0)
+            return BadRequest(new { error = "unknown_journal", message = "These journals are not in this export.", journals = unknown });
+
+        // Read under the export's row lock: no other decision on this export can interleave from here to the save,
+        // so no outcome recorded by someone else in the meantime can be lost.
+        var decisions = JournalExportBuilder.ParseConfirmations(export!.JournalConfirmationsJson);
+
+        // Validate EVERY item before anything is stamped: a refusal half-way through must leave nothing applied.
+        var toApply = new List<(JournalPostingDocument Doc, string Reference, DateTime? PostedAtUtc)>();
+        var duplicates = new List<string>();
+        foreach (var item in items)
+        {
+            var reference = item.ErpDocumentNumber!.Trim();
+            if (reference.Length > 120)
+                return BadRequest(new { error = "erp_document_number_too_long", message = "An ERP document number can be at most 120 characters." });
+            var existing = decisions.FirstOrDefault(d => d.DocumentRef == item.JournalRef);
+            if (existing?.Status == GlJournalExportStatuses.Rejected)
+                return Conflict(new
+                {
+                    error = "journal_already_rejected", journalRef = item.JournalRef,
+                    message = "This journal was recorded as rejected by your ERP. Create a supplementary export to send it again.",
+                });
+            if (existing?.Status == GlJournalExportStatuses.Confirmed)
+            {
+                if (string.Equals(existing.ErpDocumentNumber, reference, StringComparison.OrdinalIgnoreCase)) { duplicates.Add(item.JournalRef!); continue; }
+                return Conflict(new
+                {
+                    error = "already_confirmed", journalRef = item.JournalRef,
+                    message = "This journal is already confirmed with a different ERP document number. Two numbers for one "
+                            + "journal means it was imported twice: investigate before recording another.",
+                    existingReference = existing.ErpDocumentNumber, submittedReference = reference,
+                });
+            }
+            var pending = toApply.FirstOrDefault(x => x.Doc.DocumentRef == item.JournalRef);
+            if (pending.Doc is not null)
+            {
+                if (string.Equals(pending.Reference, reference, StringComparison.OrdinalIgnoreCase)) { duplicates.Add(item.JournalRef!); continue; }
+                return Conflict(new
+                {
+                    error = "already_confirmed", journalRef = item.JournalRef,
+                    message = "The same journal is listed twice with two different ERP document numbers. Two numbers for one "
+                            + "journal means it was imported twice: investigate before recording either.",
+                    existingReference = pending.Reference, submittedReference = reference,
+                });
+            }
+            toApply.Add((documents[item.JournalRef!], reference, item.PostedAtUtc));
+        }
+
+        var allEntryIds = toApply.SelectMany(x => x.Doc.Lines.Select(l => l.EntryId)).Distinct().ToList();
+        await LockLedgerRowsAsync(export.TenantId, allEntryIds, ct);
+        if (await AlreadyConfirmedElsewhereAsync(export.TenantId, export, allEntryIds, toApply.Select(x => x.Doc).ToList(), ct) is { } elsewhere)
+            return elsewhere;
+
+        var nowUtc = DateTime.UtcNow;
+        var applied = new List<object>();
+        foreach (var (doc, reference, postedAtUtc) in toApply)
+        {
+            var stamp = await ErpPostingEvidence.StampAsync(_db, export.TenantId,
+                doc.Lines.Select(l => l.EntryId).Distinct().ToList(), ErpPostingStatuses.Posted, reference, nowUtc, ct);
+            decisions.Add(new GlJournalConfirmation
+            {
+                DocumentRef = doc.DocumentRef, CompanyCode = doc.CompanyCode, JournalRefs = doc.JournalRefs.ToList(),
+                Status = GlJournalExportStatuses.Confirmed, ErpDocumentNumber = reference,
+                ErpPostedAtUtc = postedAtUtc ?? nowUtc, DecidedByUserId = this.GetUserId(), DecidedByName = UserName(),
+                DecidedAtUtc = nowUtc,
+            });
+            applied.Add(new { journalRef = doc.DocumentRef, erpDocumentNumber = reference, linesStamped = stamp.LinesStamped, runsAdvanced = stamp.RunsAdvanced });
+        }
+
+        ApplyJournalDecisions(export, decisions, documents.Count, nowUtc, req.Notes);
+        if (applied.Count > 0)
+        {
+            WriteAudit("finance.gl.journal_export.erp_journals_confirmed", "GlJournalExport", export.Id.ToString(), export.CompanyId,
+                new { export.FileHash, journals = applied, duplicates, status = export.Status, notes = req.Notes });
+            _db.PayrollAuditLogs.Add(new PayrollAuditLog
+            {
+                TenantId = export.TenantId,
+                EntityName = "GlJournalExport",
+                EntityId = export.Id.ToString(),
+                Action = "payroll.erp_posting.confirmed_from_export_journals",
+                UserId = this.GetUserId(),
+                MetadataJson = JsonSerializer.Serialize(new { userId = this.GetUserId()?.ToString(), data = new { exportId = export.Id, export.FileHash, journals = applied } }),
+            });
+            await _db.SaveChangesAsync(ct);
+        }
+        return Ok(new { exportId = export.Id, status = export.Status, confirmed = applied, duplicates, journals = JournalsOf(export, lines!) });
+    }
+
+    /// <summary>Records that the ERP refused individual journals (reason required). Their ledger rows are owed in a
+    /// supplementary export; journals already confirmed are never retro-rejected.</summary>
+    [HttpPost("journal-exports/{id:guid}/journals/reject")]
+    [ErpApiKeyAccess(ErpApiKeyScopes.ExportsConfirm), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
+    public async Task<IActionResult> RejectJournals(Guid id, [FromBody] ErpJournalRejectionRequest req, CancellationToken ct)
+    {
+        if (!CanConfirm()) return Forbid();
+        return await SerialisedAsync(async () => (await RejectJournalsCoreAsync(id, req, ct), true), ct);
+    }
+
+    private async Task<IActionResult> RejectJournalsCoreAsync(Guid id, ErpJournalRejectionRequest req, CancellationToken ct)
+    {
+        var (export, lines, gate) = await LoadForJournalDecisionAsync(id, "reject", ct);
+        if (gate is not null) return gate;
+        var items = req.Journals ?? new List<ErpJournalRejectionItem>();
+        if (items.Count == 0 || items.Any(i => string.IsNullOrWhiteSpace(i.Reason)))
+            return BadRequest(new { error = "rejection_reason_required", message = "Say why your ERP refused each journal." });
+
+        var documents = PostingDocumentsOf(export!, lines!);
+        var unknown = items.Select(i => i.JournalRef).Where(r => !documents.ContainsKey(r ?? string.Empty)).ToList();
+        if (unknown.Count > 0)
+            return BadRequest(new { error = "unknown_journal", message = "These journals are not in this export.", journals = unknown });
+
+        var decisions = JournalExportBuilder.ParseConfirmations(export!.JournalConfirmationsJson);
+        foreach (var item in items)
+        {
+            var existing = decisions.FirstOrDefault(d => d.DocumentRef == item.JournalRef);
+            if (existing?.Status == GlJournalExportStatuses.Confirmed)
+                return Conflict(new
+                {
+                    error = "already_confirmed", journalRef = item.JournalRef,
+                    message = "This journal was already confirmed as posted. Reverse it in the ERP instead of rejecting the evidence.",
+                    existingReference = existing.ErpDocumentNumber,
+                });
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var applied = new List<object>();
+        await LockLedgerRowsAsync(export.TenantId,
+            items.SelectMany(i => documents[i.JournalRef!].Lines.Select(l => l.EntryId)).Distinct().ToList(), ct);
+        foreach (var item in items)
+        {
+            if (decisions.Any(d => d.DocumentRef == item.JournalRef)) continue; // already rejected: idempotent
+            var reason = ErpFile.Clip(item.Reason!.Trim(), 1000);
+            var doc = documents[item.JournalRef!];
+            var stamped = await ErpPostingEvidence.StampRejectionAsync(_db, export.TenantId,
+                doc.Lines.Select(l => l.EntryId).Distinct().ToList(), reason, nowUtc, ct);
+            decisions.Add(new GlJournalConfirmation
+            {
+                DocumentRef = doc.DocumentRef, CompanyCode = doc.CompanyCode, JournalRefs = doc.JournalRefs.ToList(),
+                Status = GlJournalExportStatuses.Rejected, Reason = reason, DecidedByUserId = this.GetUserId(),
+                DecidedByName = UserName(), DecidedAtUtc = nowUtc,
+            });
+            applied.Add(new { journalRef = doc.DocumentRef, reason, linesStamped = stamped });
+        }
+
+        ApplyJournalDecisions(export, decisions, documents.Count, nowUtc, null);
+        if (applied.Count > 0)
+        {
+            WriteAudit("finance.gl.journal_export.erp_journals_rejected", "GlJournalExport", export.Id.ToString(), export.CompanyId,
+                new { export.FileHash, journals = applied, status = export.Status });
+            await _db.SaveChangesAsync(ct);
+        }
+        return Ok(new { exportId = export.Id, status = export.Status, rejected = applied, journals = JournalsOf(export, lines!) });
+    }
+
+    /// <summary>Every gate the whole-file decision applies, in the same order, plus the per-journal ones. The export
+    /// row is read FOR UPDATE: the caller runs inside <see cref="SerialisedAsync"/>.</summary>
+    private async Task<(GlJournalExport? Export, List<GlJournalExportLine>? Lines, IActionResult? Gate)> LoadForJournalDecisionAsync(
+        Guid id, string step, CancellationToken ct)
+    {
+        if (!CanConfirm()) return (null, null, Forbid());
+        var tid = this.GetTenantId(); if (tid is null) return (null, null, Unauthorized());
+        var export = await LoadAsync(tid.Value, id, ct, forUpdate: true);
+        if (export is null) return (null, null, NotFound());
+        if (ScopeError(export.CompanyId) is { } err) return (null, null, err);
+        if (UnattributedScopeError(export.IncludeUnattributed) is { } unattributedErr) return (null, null, unattributedErr);
+        if (await ExporterRefusalAsync(export, step, ct) is { } makerChecker) return (null, null, makerChecker);
+        if (export.Status == GlJournalExportStatuses.Superseded)
+            return (null, null, UnprocessableEntity(new { error = "export_superseded", message = "A later export replaced this one. Record the outcome against the current export instead." }));
+        if (export.Status == GlJournalExportStatuses.Rejected && export.ConfirmedJournalCount == 0
+            && JournalExportBuilder.ParseConfirmations(export.JournalConfirmationsJson).Count == 0)
+            return (null, null, Conflict(new { error = "export_rejected", message = "This whole file was recorded as rejected. Create a new export instead." }));
+        if (export.Status == GlJournalExportStatuses.Confirmed && export.ConfirmedJournalCount == 0)
+            return (null, null, Conflict(new { error = "already_confirmed", message = "This whole file was already confirmed with one ERP document number.", existingReference = export.ErpDocumentNumber }));
+        if (export.FormatVersion < JournalExportService.CurrentFormatVersion)
+            return (null, null, UnprocessableEntity(new { error = "per_journal_not_supported", message = "This export predates per-journal confirmation. Confirm or reject the whole file." }));
+
+        var (_, _, _, drift) = await _exports.RegenerateAsync(export, ct);
+        if (drift is not null) return (null, null, StatusCode(drift.Status, drift.Payload));
+
+        var lines = await ScopedBypass.TenantWide(_db.GlJournalExportLines, tid.Value,
+                "frozen lines of an export the caller is already authorised for (ScopeError + unattributed guard above)")
+            .AsNoTracking().Where(l => l.GlJournalExportId == id).OrderBy(l => l.LineNo).ToListAsync(ct);
+        return (export, lines, null);
+    }
+
+    private static Dictionary<string, JournalPostingDocument> PostingDocumentsOf(GlJournalExport export, IReadOnlyList<GlJournalExportLine> lines) =>
+        JournalExportService.ToDocument(export, lines).PostingDocuments().ToDictionary(d => d.DocumentRef, StringComparer.Ordinal);
+
+    /// <summary>Folds per-journal outcomes into the export status. All confirmed ⇒ Confirmed; all decided with some
+    /// rejected ⇒ PartiallyConfirmed (or Rejected when none confirmed); otherwise it stays live (Exported).</summary>
+    private void ApplyJournalDecisions(GlJournalExport export, List<GlJournalConfirmation> decisions, int journalCount, DateTime nowUtc, string? notes)
+    {
+        export.JournalConfirmationsJson = JsonSerializer.Serialize(decisions);
+        var confirmed = decisions.Where(d => d.Status == GlJournalExportStatuses.Confirmed).ToList();
+        var rejected = decisions.Count(d => d.Status == GlJournalExportStatuses.Rejected);
+        export.ConfirmedJournalCount = confirmed.Count;
+        if (decisions.Count < journalCount) return;
+
+        export.Status = rejected == 0 ? GlJournalExportStatuses.Confirmed
+                      : confirmed.Count == 0 ? GlJournalExportStatuses.Rejected
+                      : GlJournalExportStatuses.PartiallyConfirmed;
+        if (confirmed.Count > 0)
+        {
+            var numbers = confirmed.Select(c => c.ErpDocumentNumber).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            export.ErpDocumentNumber = ErpFile.Clip(numbers.Count == 1 ? numbers[0] : $"{numbers.Count} ERP documents (per journal)", 120);
+            export.ErpPostedAtUtc = confirmed.Max(c => c.ErpPostedAtUtc);
+            export.ConfirmedByUserId = this.GetUserId();
+            export.ConfirmedByName = UserName();
+            export.ConfirmedAtUtc = nowUtc;
+        }
+        if (rejected > 0)
+            export.RejectionReason = ErpFile.Clip(string.Join("; ", decisions.Where(d => d.Status == GlJournalExportStatuses.Rejected)
+                .Select(d => $"{d.DocumentRef}: {d.Reason}")), 1000);
+        if (notes is not null) export.Notes = ErpFile.Clip(notes, 1000);
+    }
+
+    /// <summary>Per-journal view: what each ERP document holds and what the ERP said about it.</summary>
+    private static List<object> JournalsOf(GlJournalExport export, IReadOnlyList<GlJournalExportLine> lines)
+    {
+        if (export.FormatVersion < JournalExportService.CurrentFormatVersion) return new List<object>();
+        var decisions = JournalExportBuilder.ParseConfirmations(export.JournalConfirmationsJson)
+            .ToDictionary(d => d.DocumentRef, StringComparer.Ordinal);
+        var wholeFile = export.Status is GlJournalExportStatuses.Confirmed or GlJournalExportStatuses.Rejected && decisions.Count == 0;
+        return JournalExportService.ToDocument(export, lines).PostingDocuments().Select(d =>
+        {
+            decisions.TryGetValue(d.DocumentRef, out var decision);
+            var status = decision?.Status ?? (wholeFile ? export.Status : "Pending");
+            return (object)new
+            {
+                journalRef = d.DocumentRef, companyCode = d.CompanyCode, composite = d.Composite, lineCount = d.Lines.Count,
+                debits = d.Debits, credits = d.Credits, accountingDate = d.AccountingDate, description = d.Description,
+                status,
+                erpDocumentNumber = decision?.ErpDocumentNumber ?? (wholeFile && export.Status == GlJournalExportStatuses.Confirmed ? export.ErpDocumentNumber : null),
+                erpPostedAtUtc = decision?.ErpPostedAtUtc ?? (wholeFile ? export.ErpPostedAtUtc : null),
+                reason = decision?.Reason ?? (wholeFile && export.Status == GlJournalExportStatuses.Rejected ? export.RejectionReason : null),
+                decidedByName = decision?.DecidedByName,
+            };
+        }).ToList();
+    }
+
+    private IActionResult? PerJournalDecisionsError(GlJournalExport export) =>
+        export.ConfirmedJournalCount > 0 || JournalExportBuilder.ParseConfirmations(export.JournalConfirmationsJson).Count > 0
+        || export.Status == GlJournalExportStatuses.PartiallyConfirmed
+            ? Conflict(new
+            {
+                error = "per_journal_decisions_recorded",
+                message = "Outcomes have already been recorded journal by journal for this export. Record the remaining "
+                        + "journals the same way instead of deciding the whole file.",
+            })
+            : null;
 
     // ── Reconciliation ────────────────────────────────────────────────────────────────────────────
 
@@ -445,10 +834,102 @@ public class GlJournalExportsController : ControllerBase
 
     // ── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
-    private Task<GlJournalExport?> LoadAsync(Guid tid, Guid id, CancellationToken ct) =>
+    private Task<GlJournalExport?> LoadAsync(Guid tid, Guid id, CancellationToken ct, bool forUpdate = false)
+    {
         // IgnoreQueryFilters is intentional: company filter only — single-export lookup by id. Tenant re-
         // applied in the WHERE.
-        _db.GlJournalExports.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id, ct)!;
+        var q = _db.GlJournalExports.IgnoreQueryFilters().Where(x => x.TenantId == tid && x.Id == id);
+        if (forUpdate) q = q.TagWith(RowLockingInterceptor.ForUpdateTag);
+        return q.FirstOrDefaultAsync(ct)!;
+    }
+
+    /// <summary>
+    /// Runs one export decision in ONE transaction (inside the execution strategy, so a transient failure retries the
+    /// whole decision from a clean change tracker). The row locks each decision takes — export row, then ledger rows,
+    /// both in id order — are held until commit, so concurrent decisions serialise and none overwrites another.
+    /// The action says whether to commit: a refusal that wrote its own audit row commits, a failed insert rolls back.
+    /// </summary>
+    private async Task<IActionResult> SerialisedAsync(Func<Task<(IActionResult Result, bool Commit)>> action, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational())
+            return (await action()).Result;
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
+            var (result, commit) = await action();
+            if (commit) await tx.CommitAsync(ct);
+            else { await tx.RollbackAsync(ct); _db.ChangeTracker.Clear(); }
+            return result;
+        });
+    }
+
+    /// <summary>Locks the given ledger rows FOR UPDATE, in id order (the order every decision uses).</summary>
+    private async Task LockLedgerRowsAsync(Guid tid, IReadOnlyCollection<Guid> entryIds, CancellationToken ct)
+    {
+        if (entryIds.Count == 0 || !_db.Database.IsRelational()) return;
+        var ids = entryIds.Distinct().ToList();
+        _ = await ScopedBypass.TenantWide(_db.FinanceGlEntries, tid,
+                "ERP decision row lock: ledger rows of an export the caller is already authorised for")
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(e => ids.Contains(e.Id)).OrderBy(e => e.Id).Select(e => e.Id).ToListAsync(ct);
+    }
+
+    /// <summary>Locks every ledger row an export of <paramref name="filter"/> could select, in id order, before the
+    /// double-post guard reads which of them the ERP already confirmed.</summary>
+    private async Task LockLedgerScopeAsync(Guid tid, JournalExportFilter filter, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational()) return;
+        var q = ScopedBypass.TenantWide(_db.FinanceGlEntries, tid,
+            "journal export row lock: the period/run rows the caller's export will select (company scope applied after)");
+        if (filter.PayrollRunId is { } runId) q = q.Where(e => e.SourceModule == "Payroll" && e.SourceEntityId == runId);
+        else q = q.Where(e => e.Period == filter.Period);
+        if (filter.CompanyId is { } cid) q = q.Where(e => e.CompanyId == cid || e.CompanyId == null);
+        _ = await q.TagWith(RowLockingInterceptor.ForUpdateTag).OrderBy(e => e.Id).Select(e => e.Id).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Refuses a confirmation when another export's ERP confirmation already holds any of these ledger rows: one row,
+    /// one ERP posting, and the first ERP document number must not be overwritten. The only exception is a Replacement
+    /// export recording the re-posting of the confirmed export(s) it replaces (the ERP reversed those).
+    /// </summary>
+    private async Task<IActionResult?> AlreadyConfirmedElsewhereAsync(
+        Guid tid, GlJournalExport export, IReadOnlyCollection<Guid> entryIds, IReadOnlyList<JournalPostingDocument>? docs, CancellationToken ct)
+    {
+        var allowed = new HashSet<Guid> { export.Id };
+        var exports = ScopedBypass.TenantWide(_db.GlJournalExports, tid,
+            "replacement chain of an export the caller is authorised for: the exports it names as replaced");
+        for (var next = export.ReplacesExportId; next is { } r && allowed.Add(r);)
+            next = await exports.AsNoTracking().Where(x => x.Id == r).Select(x => x.ReplacesExportId).FirstOrDefaultAsync(ct);
+
+        var hits = await JournalExportBuilder.ConfirmedHitsAsync(_db, tid, entryIds, allowed, ct);
+        if (hits.Count == 0) return null;
+
+        var otherIds = hits.Select(h => h.ExportId).Distinct().ToList();
+        var names = await exports.AsNoTracking().Where(x => otherIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.FileName }).ToDictionaryAsync(x => x.Id, x => x.FileName, ct);
+        var journalOf = (docs ?? Array.Empty<JournalPostingDocument>())
+            .SelectMany(d => d.Lines.Select(l => (l.EntryId, d.DocumentRef))).DistinctBy(x => x.EntryId)
+            .ToDictionary(x => x.EntryId, x => x.DocumentRef);
+        var held = hits.GroupBy(h => (h.ExportId, h.DocumentRef, h.ErpDocumentNumber)).Select(g => new
+        {
+            exportId = g.Key.ExportId,
+            fileName = names.GetValueOrDefault(g.Key.ExportId),
+            otherJournalRef = g.Key.DocumentRef,
+            erpDocumentNumber = g.Key.ErpDocumentNumber,
+            journalRefs = g.Select(h => journalOf.GetValueOrDefault(h.EntryId)).Where(r => r is not null).Distinct().ToList(),
+            rows = g.Count(),
+        }).ToList();
+        var first = held[0];
+        return Conflict(new
+        {
+            error = JournalExportErrors.RowsAlreadyConfirmed,
+            message = $"Your ERP already posted {hits.Select(h => h.EntryId).Distinct().Count()} of these ledger row(s) through "
+                    + $"another file ({first.fileName}, ERP document {first.erpDocumentNumber ?? "—"}). Recording them again would "
+                    + "mean your ERP holds them twice. If your ERP reversed that posting, create a Replacement export of it instead.",
+            alreadyConfirmed = held,
+        });
+    }
 
     private static JournalExportFilter FilterOf(GlJournalExport e) =>
         new(string.IsNullOrWhiteSpace(e.Period) ? null : e.Period, e.PayrollRunId, e.CompanyId,
@@ -468,7 +949,10 @@ public class GlJournalExportsController : ControllerBase
     {
         exportId = export?.Id,
         status = export?.Status,
-        format = new { build.Formatter.Key, build.Formatter.DisplayName, build.Formatter.Disclaimer, build.Formatter.Extension },
+        kind = build.Kind,
+        replacesExportId = export?.ReplacesExportId,
+        format = new { build.Formatter.Key, build.Formatter.DisplayName, build.Formatter.Disclaimer, build.Formatter.Extension, build.Formatter.Status },
+        options = build.Options,
         fileName = build.FileName,
         fileHash = build.FileHash,
         currency = build.Document.Currency,
@@ -477,6 +961,21 @@ public class GlJournalExportsController : ControllerBase
         lineCount = build.Document.Lines.Count,
         totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits),
         totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits),
+        // Each company's journal balances on its own — the per-company check the gate enforced.
+        byCompany = (build.TieOut.ByCompany ?? Array.Empty<CompanyBalance>()).Select(b => new
+        {
+            companyCode = b.CompanyCode, companyId = b.CompanyId, debits = b.Debits, credits = b.Credits,
+            balanced = b.Balanced, lines = b.Lines,
+        }).ToList(),
+        journalCount = build.Document.PostingDocuments().Count,
+        // The double-post guard at work: rows an ERP-confirmed export already holds, left out of this file.
+        previouslyConfirmedExcluded = new
+        {
+            count = build.Selection.PreviouslyConfirmedExcludedCount,
+            total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal),
+            exportIds = build.Selection.PreviouslyConfirmedExportIds,
+        },
+        warnings = build.Warnings ?? Array.Empty<string>(),
         tieOut = new
         {
             ok = build.TieOut.Ok,
@@ -527,7 +1026,7 @@ public class GlJournalExportsController : ControllerBase
             ? build.Document.Lines.Take(20).Select(l => new
             {
                 l.LineNo, l.Side, l.AccountCode, l.AccountName, l.Amount, l.AccountingDate,
-                l.SystemPostedDate, l.Period, l.JournalRef, l.EventType,
+                l.SystemPostedDate, l.Period, l.JournalRef, l.EventType, l.CompanyCode, l.ExternalAccountCode,
             }).ToList<object>()
             : null,
     };
@@ -539,6 +1038,9 @@ public class GlJournalExportsController : ControllerBase
         e.IncludeUnattributed, e.SuppressReversedPairs, e.Status,
         e.ExportedByName, e.ExportedAtUtc, e.ErpDocumentNumber, e.ErpPostedAtUtc,
         e.ConfirmedByName, e.ConfirmedAtUtc, e.RejectionReason, e.Notes,
+        Kind = string.IsNullOrWhiteSpace(e.Kind) ? JournalExportKinds.Full : e.Kind,
+        e.ReplacesExportId, e.FormatVersion, e.ConfirmedJournalCount,
+        e.SupersededByExportId, e.SupersedeReason,
     };
 
     /// <summary>Authorises a companyId against the caller's entity scope. Identical rule to
@@ -613,7 +1115,10 @@ public class GlJournalExportsController : ControllerBase
     private async Task<IActionResult?> ExporterRefusalAsync(GlJournalExport export, string step, CancellationToken ct)
     {
         if (this.GetUserId() is not Guid actorId) return Forbid();
-        if (export.ExportedByUserId != actorId) return null;
+        // An ERP API key acts for the person who created it: that person's own export cannot be attested
+        // through their key either, or the key would be a way round this rule.
+        var keyCreator = ErpApiKeyPrincipal.CreatorOf(User);
+        if (export.ExportedByUserId != actorId && (keyCreator is null || export.ExportedByUserId != keyCreator)) return null;
 
         WriteAudit($"finance.gl.journal_export.erp_{step}_refused", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
         {
@@ -627,7 +1132,11 @@ public class GlJournalExportsController : ControllerBase
         return Conflict(new
         {
             error = "segregation_of_duties",
-            message = step == "confirm"
+            message = keyCreator is not null && export.ExportedByUserId == keyCreator
+                ? "This journal was exported by the person who created this API key, so the key cannot record the " +
+                  "ERP result for it. A different user with ERP confirmation rights must record it, or use a key " +
+                  "another administrator created."
+                : step == "confirm"
                 ? "You exported this journal, so you cannot also confirm that the ERP posted it. A different user " +
                   "with ERP confirmation rights must confirm it."
                 : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
@@ -636,8 +1145,9 @@ public class GlJournalExportsController : ControllerBase
         });
     }
 
+    // Issued tokens carry the display name as "name"; ClaimTypes.Name only exists when something maps it.
     private string UserName() =>
-        User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";
+        User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Unknown";
 
     private void WriteAudit(string action, string entity, string entityId, Guid? companyId, object metadata) =>
         _db.AuditLogs.Add(new AuditLog
@@ -656,3 +1166,7 @@ public class GlJournalExportsController : ControllerBase
 
 public record ErpImportConfirmationRequest(string? ErpDocumentNumber, DateTime? PostedAtUtc = null, string? Notes = null);
 public record ErpImportRejectionRequest(string? Reason);
+public record ErpJournalConfirmationItem(string? JournalRef, string? ErpDocumentNumber, DateTime? PostedAtUtc = null);
+public record ErpJournalConfirmationRequest(List<ErpJournalConfirmationItem>? Journals, string? Notes = null);
+public record ErpJournalRejectionItem(string? JournalRef, string? Reason);
+public record ErpJournalRejectionRequest(List<ErpJournalRejectionItem>? Journals);

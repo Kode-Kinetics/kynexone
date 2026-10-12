@@ -5,6 +5,9 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
+
 namespace Zayra.Api.Controllers.Performance;
 
 [ApiController]
@@ -21,6 +24,7 @@ public class PIPController : ControllerBase
     }
 
     [HttpGet]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(
         [FromQuery] int? employeeId,
         [FromQuery] string? status,
@@ -57,14 +61,13 @@ public class PIPController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var pip = await _db.PerformanceImprovementPlans
-            .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
+        var pip = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.PerformanceImprovementPlans.Where(p => p.Id == id && p.TenantId == tenantId), p => p.EmployeeId, ct);
         if (pip is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
 
         var checkIns = await _db.PIPCheckIns
             .Where(c => c.TenantId == tenantId && c.PipId == id)
@@ -133,8 +136,7 @@ public class PIPController : ControllerBase
         var pip = await _db.PerformanceImprovementPlans
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
+        if (!await _scopeService.InScopeAsync(User, tenantId, pip.EmployeeId, ct)) return NotFound();
         if (pip.Status is not ("Active" or "Extended"))
             return Conflict(new { error = "pip_closed", message = $"A PIP in '{pip.Status}' status cannot be edited." });
         if (req.EndDate is { } endDate && endDate < pip.StartDate)
@@ -221,8 +223,9 @@ public class PIPController : ControllerBase
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] PIPStatusRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var pip = await _db.PerformanceImprovementPlans
-            .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
+        // The outcome of a PIP is an employment decision: out of scope is a 404, the same as a wrong id.
+        var pip = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.PerformanceImprovementPlans.Where(p => p.Id == id && p.TenantId == tenantId), p => p.EmployeeId, ct);
         if (pip is null) return NotFound();
         if (req.Status is not ("Improved" or "Extended" or "Failed" or "TerminationRecommended"))
             return BadRequest(new { error = "invalid_status", message = "Status must be Improved, Extended, Failed, or TerminationRecommended." });
@@ -282,8 +285,7 @@ public class PIPController : ControllerBase
         var pip = await _db.PerformanceImprovementPlans
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(pip.EmployeeId)) return Forbid();
+        if (!await _scopeService.InScopeAsync(User, tenantId, pip.EmployeeId, ct)) return NotFound();
         if (pip.Status is not ("Active" or "Extended"))
             return Conflict(new { error = "pip_closed", message = $"Check-ins cannot be added to a PIP in '{pip.Status}' status." });
 

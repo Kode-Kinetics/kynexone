@@ -1,6 +1,9 @@
 import type { ComponentType } from 'react';
 import type { ApprovalRequest } from '../../api/approvals';
 import { RenewalOfferApprovalCard } from '../renewals/RenewalOfferApprovalCard';
+import { BenefitClaimApprovalCard } from '../benefits/BenefitClaims';
+import { AdditionalBenefitApprovalCard } from '../benefits/AdditionalBenefitRequestDetail';
+import { SlateApprovalCard } from '../succession/SlateApprovalLink';
 
 export interface ApprovalDetailRendererProps {
   request: ApprovalRequest;
@@ -12,6 +15,9 @@ export interface ApprovalDetailRendererProps {
  * generic header. R0 registers every Release A entity here once, so the owning slice edits only its own card.
  */
 export const approvalDetailRenderers: Record<string, ComponentType<ApprovalDetailRendererProps>> = {
+  BenefitClaim: BenefitClaimApprovalCard,
+  BenefitAdditionalGrant: AdditionalBenefitApprovalCard,
   ContractRenewal: RenewalOfferApprovalCard,
   ContractRenewalBatch: RenewalOfferApprovalCard,
+  SuccessionSlate: SlateApprovalCard,
 };

@@ -1,0 +1,38 @@
+{
+  "at": "2026-10-09T16:58:44.790650+00:00",
+  "checks": [
+    {
+      "check": "enrollment_policy_immutable",
+      "passed": true
+    },
+    {
+      "check": "claim_payload_immutable",
+      "passed": true
+    },
+    {
+      "check": "claim_delete_refused",
+      "passed": true
+    },
+    {
+      "check": "payment_amount_immutable",
+      "passed": true
+    },
+    {
+      "check": "payment_source_immutable",
+      "passed": true
+    },
+    {
+      "check": "payment_snapshot_immutable",
+      "passed": true
+    },
+    {
+      "check": "payment_delete_refused",
+      "passed": true
+    },
+    {
+      "check": "nonvoid_payment_rebind_refused",
+      "passed": true
+    }
+  ],
+  "allChangesRolledBack": true
+}

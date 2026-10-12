@@ -66,6 +66,8 @@ public sealed class PostgresFixture : IAsyncLifetime
         await db.Database.ExecuteSqlRawAsync(GradeEntitlementSql.AddExclusion);
         // AddGradeNameArAndLoanOffering: employer loans are principal only (qard). Same DDL as the migration.
         await db.Database.ExecuteSqlRawAsync(LoanTypeSql.AddInterestFreeCheck);
+        // AddErpCodesAndLiveExportIndex: one live journal export per scope (NULLS NOT DISTINCT, raw SQL only).
+        await db.Database.ExecuteSqlRawAsync(Zayra.Api.Migrations.AddErpCodesAndLiveExportIndex.CreateLiveScopeIndex);
         // Release A (ReleaseAEntitlementsAndRenewals): the EXCLUDE, the PublicId FKs and the four triggers EF cannot
         // model — the migration's own frozen constants, so the fixture runs against exactly what production gets.
         // Through a plain command, not ExecuteSqlRaw: the DDL holds regex quantifiers ({64}) that ExecuteSqlRaw would
@@ -73,6 +75,28 @@ public sealed class PostgresFixture : IAsyncLifetime
         var connection = db.Database.GetDbConnection();
         await connection.OpenAsync();
         foreach (var ddl in Zayra.Api.Migrations.ReleaseAEntitlementsAndRenewals.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
+        // CMP (AddMeritPlanning): the pre-flight and the deferred one-active-salary-row-per-date guard, the migration's
+        // own constants. Plain commands for the same reason as above ($$ / % must reach the server verbatim).
+        foreach (var ddl in new[] { Zayra.Api.Migrations.AddMeritPlanning.PreflightDuplicateSalaryRows, Zayra.Api.Migrations.AddMeritPlanning.AddSalaryRowExclusion, Zayra.Api.Migrations.AddMeritPlanning.AddEffectiveFirstOfMonthCheck })
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
+        // ENG (AddEngagementSurveys): published-template immutability and append-only responses — the migration's own text.
+        foreach (var ddl in Zayra.Api.Migrations.AddEngagementSurveys.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
+        // SUC (AddSuccession): the deferred one-approved-slate exclusion and the two immutability triggers EF cannot model.
+        foreach (var ddl in Zayra.Api.Migrations.AddSuccession.PostgresOnlyDdl)
         {
             await using var command = connection.CreateCommand();
             command.CommandText = ddl;

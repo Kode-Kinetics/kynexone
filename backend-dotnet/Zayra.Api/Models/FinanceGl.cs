@@ -14,6 +14,9 @@ public class GlAccount : ITenantOwned, ICompanyScoped
     public string Code { get; set; } = string.Empty;       // e.g. "5001"
     public string Name { get; set; } = string.Empty;       // e.g. "Basic Salary Expense"
     public string AccountType { get; set; } = "Expense";    // Asset | Liability | Expense | Equity | Revenue
+    /// <summary>The account string the client's ERP expects (e.g. "6100", "01-000-6100-00"). Journal
+    /// exports send this instead of <see cref="Code"/> when set.</summary>
+    public string? ExternalCode { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
@@ -118,8 +121,16 @@ public static class PayrollGlCatalog
         new Driver("DED:STATUTORY_ER",      "Deduction — Social Insurance (Employer)", "2106", "Social Insurance Employer Payable",   "Liability"),
         new Driver("DED:TAX",               "Deduction — Income Tax",        "2102", "Income Tax Payable",              "Liability"),
         new Driver("DED:LOAN",              "Deduction — Loans & Advances",  "2107", "Loan & Advance Deductions Payable","Liability"),
-        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "2104", "Attendance Adjustment Payable",   "Liability"),
-        new Driver("DED:LEAVE",             "Deduction — Leave",             "2105", "Leave Deduction Payable",         "Liability"),
+        // Attendance / late / LOP and unpaid-leave deductions are NOT owed to anyone: the employer simply
+        // pays less for time not worked. They used to credit 2104 "Attendance Adjustment Payable" and 2105
+        // "Leave Deduction Payable" — liabilities with no remittance group (RemitGroups.ForSource returns
+        // null for "Attendance"/"Leave") and therefore nothing that could ever clear them, so they grew on
+        // the balance sheet every month. They are CONTRA-EXPENSES now, exactly like DED:SETTLEMENT_RECOVERY
+        // → 5113: the credit reduces payroll cost, which is what an unpaid absence economically is.
+        // 20261010120000_RouteAbsenceDeductionsToContraExpense moves existing tenants' untouched seeded
+        // rows; balances already sitting in 2104/2105 are left for the accountant to reclassify.
+        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "5008", "Attendance & Late Deductions (contra)",  "Expense"),
+        new Driver("DED:LEAVE",             "Deduction — Leave",             "5009", "Unpaid Leave & LOP Deductions (contra)", "Expense"),
         new Driver("DED:FIXED_DEDUCTION",   "Deduction — Fixed",             "2103", "Fixed Deductions Payable",        "Liability"),
         new Driver("DED:OTHER",             "Deduction — Other",             "2199", "Other Deductions",                "Liability"),
         // POD-C3 — recovery of a prior void's ALREADY-DISBURSED net pay. It credits the 1420 ASSET the
@@ -130,6 +141,9 @@ public static class PayrollGlCatalog
         // Balancing entries
         new Driver("EMPLOYER_STATUTORY_EXPENSE", "Employer Statutory Expense", "5101", "Employer Social Insurance Expense", "Expense"),
         new Driver("NET_PAYABLE",           "Net Salaries Payable",          "2100", "Salaries Payable",                "Liability"),
+        // The explicit sub-unit rounding difference the Lock journal books so the STORED journal balances
+        // to the halala instead of being accepted ±0.01 out. Balancing: never selected by component routing.
+        new Driver("ROUNDING",              "Payroll Rounding Differences",  "5199", "Payroll Rounding Differences",    "Expense"),
         // POD-B1 SETTLEMENT — the cash/bank asset the net-pay and statutory-remittance disbursements
         // credit when a liability is cleared. Name/code deliberately match the "1000 - Cash/Bank"
         // string the Loans/Advances/Bonus modules already post to (AdvancesController.cs:336,
@@ -166,8 +180,9 @@ public static class PayrollGlCatalog
         // balance sheet. It credits a CONTRA-EXPENSE instead, so net employment cost is right and every
         // account this pod touches provably returns to zero.
         new Driver("DED:SETTLEMENT_RECOVERY","Deduction — Final Settlement Recovery","5113","Final Settlement Deductions (contra)","Expense"),
-        // The gratuity PROVISION POD-C2 will accrue monthly. C1 only CONSUMES it (see EosbProvisionLedger)
-        // and posts nothing to it until C2 exists, so today every settlement expenses the full gratuity.
+        // The gratuity PROVISION. POD-C2 accrues it monthly at payroll Lock for companies that switch
+        // payparameter.eosb_provisioning on; settlement approval consumes it (see EosbProvisionLedger) and
+        // releases any remainder. With provisioning off, a settlement expenses the full gratuity as before.
         new Driver("EOSB_PROVISION",        "End of Service Benefit Provision","2310","End of Service Benefit Provision","Liability"),
         // What the leaver is owed between approval and disbursement. Cleared by the payroll run's own
         // Lock journal, exactly the way POD-B1b clears Bonus Payable.
@@ -195,8 +210,9 @@ public static class PayrollGlCatalog
         Sys(tenantId, "DED:STATUTORY_EE",      "Deduction — Social Ins (EE)",   GlDriverCategories.Deduction, "CR", "Liability", "2101", "Social Insurance Payable (Employee)","Statutory","Any",   null,               21),
         Sys(tenantId, "DED:TAX",               "Deduction — Income Tax",        GlDriverCategories.Deduction, "CR", "Liability", "2102", "Income Tax Payable",               "Tax",       "Any",    null,               22),
         Sys(tenantId, "DED:LOAN",              "Deduction — Loans & Advances",  GlDriverCategories.Deduction, "CR", "Liability", "2107", "Loan & Advance Deductions Payable","Loan",      "Any",    null,               23),
-        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Liability", "2104", "Attendance Adjustment Payable",    "Attendance","Any",    null,               24),
-        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Liability", "2105", "Leave Deduction Payable",          "Leave",     "Any",    null,               25),
+        // Contra-expense, not a payable — see the catalog note above (no remittance path ever cleared 2104/2105).
+        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Expense",   "5008", "Attendance & Late Deductions (contra)", "Attendance","Any", null,          24),
+        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Expense",   "5009", "Unpaid Leave & LOP Deductions (contra)","Leave",     "Any", null,          25),
         Sys(tenantId, "DED:FIXED_DEDUCTION",   "Deduction — Fixed",             GlDriverCategories.Deduction, "CR", "Liability", "2103", "Fixed Deductions Payable",         null,        "Exact",  "FIXED_DEDUCTION",  26),
         Sys(tenantId, "DED:OTHER",             "Deduction — Other",             GlDriverCategories.Deduction, "CR", "Liability", "2199", "Other Deductions",                 null,        "Any",    null,               98),
         // POD-C3 — Exact match on the RECEIVABLE_RECOVERY component code so it is selected ahead of the
@@ -243,6 +259,8 @@ public static class PayrollGlCatalog
         // account by accident. They are resolved EXCLUSIVELY by explicit GlAccountResolver.AccountLabel.
         Sys(tenantId, "EOSB_PROVISION",        "End of Service Benefit Provision",GlDriverCategories.Balancing,"CR","Liability","2310", "End of Service Benefit Provision", null,        "Any",    null,               108),
         Sys(tenantId, "SETTLEMENT_PAYABLE",    "Final Settlement Payable",      GlDriverCategories.Balancing, "CR", "Liability", "2320", "Final Settlement Payable",         null,        "Any",    null,               109),
+        // Balancing: resolved only by explicit key from the Lock journal's rounding line, never by routing.
+        Sys(tenantId, "ROUNDING",              "Payroll Rounding Differences",  GlDriverCategories.Balancing, "DR", "Expense",   "5199", "Payroll Rounding Differences",     null,        "Any",    null,               110),
     };
 
     private static GlDriver Sys(
@@ -380,12 +398,18 @@ public static class GlEventTypes
     public static readonly string[] SettlementClearingEvents =
         { SettlementPayrollClearing, SettlementExternalPayment, SettlementAccrualReversal };
 
-    // ── POD-C2 SEAM — the monthly EOSB liability accrual ─────────────────────────────────────────
-    // C1 builds and READS this sub-ledger; it never WRITES an accrual. POD-C2 posts
-    // EosbProvisionAccrual (DR 5110 expense / CR 2310 provision) monthly per employee, and this pod's
-    // approve path then consumes the position first and expenses only the shortfall — with no rework.
-    /// <summary>POD-C2 (not written here): DR EOSB expense / CR 2310 provision, per employee per month.</summary>
+    // ── POD-C2 — the monthly EOSB liability accrual ──────────────────────────────────────────────
+    // Written INSIDE the payroll Lock journal (SourceEntityId = run) for a company whose
+    // payparameter.eosb_provisioning is StatutoryMonthly: per employee, CR 2310 for a rise in the
+    // obligation or DR 2310 for a fall (SourceEntityRef = employee id), against 5110 expense lines
+    // (SourceEntityRef = period). Settlement approval consumes the per-employee position first.
+    /// <summary>POD-C2: the monthly provision movement — DR 5110 / CR 2310 (or the reverse), per employee.</summary>
     public const string EosbProvisionAccrual = "EosbProvisionAccrual";
+    /// <summary>Approved actuarial true-up of the company's EOSB provision (DR/CR 5110 / 2310).</summary>
+    public const string EosbActuarialTrueUp = "EosbActuarialTrueUp";
+    /// <summary>Approved move of a legacy 2104/2105 absence-deduction balance to its contra-expense
+    /// (or a retained-earnings account chosen by the accountant).</summary>
+    public const string LegacyAbsenceReclass = "LegacyAbsenceReclass";
     /// <summary>POD-C1: DR 2310 provision — the settlement CONSUMES what C2 provided for this employee.</summary>
     public const string EosbProvisionConsumption = "EosbProvisionConsumption";
     /// <summary>Contra of a consumption when the settlement that took it is cancelled (re-opens the
@@ -418,6 +442,9 @@ public static class PayrollGlDescriptions
 {
     public const string NetPayable      = "Net salaries payable";
     public const string DeductionPrefix = "Payroll deduction: ";
+    public const string EmployerStatutory = "Employer statutory contributions (social insurance)";
+    /// <summary>The explicit sub-unit rounding line Lock books so the stored journal balances exactly.</summary>
+    public const string Rounding        = "Payroll rounding difference";
 }
 
 /// <summary>Statutory remittance groups for POD-B1. A group maps a deduction Source to the set of

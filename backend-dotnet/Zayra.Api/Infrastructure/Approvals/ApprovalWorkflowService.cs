@@ -16,6 +16,9 @@ using Zayra.Api.Application.Jawazat;
 using Zayra.Api.Infrastructure.Jawazat;
 
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Benefits;
+using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Documents;
 
 namespace Zayra.Api.Infrastructure.Approvals;
 
@@ -32,8 +35,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IDataProtector? _changeBaselineProtector;
     private readonly IDataScopeService _dataScopes;
     private readonly IHttpContextAccessor? _http;
+    private readonly IDocumentStorage? _documentStorage;
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
     private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
+
+    // The modules that raised an approved change re-check it before it is written (e.g. a merit award for someone who
+    // went on notice). Run here when a decision applies a change immediately, as the effective-date job does.
+    private readonly IReadOnlyList<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate> _effectiveChangeGates;
 
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
@@ -49,9 +57,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IApprovalRouter? router = null,
         IDataProtectionProvider? dataProtection = null,
         IDataScopeService? dataScopes = null,
-        IHttpContextAccessor? http = null)
+        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null,
+        IEnumerable<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate>? effectiveChangeGates = null)
     {
         _db = db;
+        _effectiveChangeGates = effectiveChangeGates?.ToList() ?? [];
         _audit = audit;
         _changeBaselineProtector = dataProtection is null ? null : EmployeeChangeBaseline.CreateProtector(dataProtection);
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
@@ -60,6 +70,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         _router = router ?? new ApprovalRouter(db, hierarchy);
         _leaveService = leaveService ?? new LeaveService(db, _router);
         _http = http;
+        _documentStorage = documentStorage;
         _dataScopes = dataScopes ?? new Zayra.Api.Infrastructure.Common.DataScopeService(db, http: http);
     }
 
@@ -82,7 +93,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto> CreateWorkflowAsync(Guid tenantId, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        if (BenefitClaims.IsGovernedBenefit(request.EntityName)
+            && request.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Every additional benefit approval step must name an explicit approver role with employees.approve authority.");
         EnsureRoleStepsNameARole(request);
+        await ValidateBenefitWorkflowRolesAsync(tenantId, request, cancellationToken);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, null, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, null, cancellationToken);
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
@@ -95,9 +110,26 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalWorkflowDto?> UpdateWorkflowAsync(Guid tenantId, Guid id, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var currentEntity = await _db.ApprovalWorkflows.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.EntityName).FirstOrDefaultAsync(cancellationToken);
+        if (BenefitClaims.IsGovernedBenefit(currentEntity)
+            || BenefitClaims.IsGovernedBenefit(request.EntityName))
+            return await FinanceDecisionSerializer.SerializeAsync(_db, "approval.workflow", tenantId, id,
+                () => UpdateWorkflowCoreAsync(tenantId, id, request, context, cancellationToken), cancellationToken);
+        return await UpdateWorkflowCoreAsync(tenantId, id, request, context, cancellationToken);
+    }
+
+    private async Task<ApprovalWorkflowDto?> UpdateWorkflowCoreAsync(Guid tenantId, Guid id, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
         var workflow = await _db.ApprovalWorkflows.Include(x => x.Steps).FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (workflow is null) return null;
+        if ((BenefitClaims.IsGovernedBenefit(workflow.EntityName) || BenefitClaims.IsGovernedBenefit(request.EntityName))
+            && await _db.ApprovalRequests.AnyAsync(x => x.TenantId == tenantId && x.WorkflowId == id && x.Status == "Pending", cancellationToken))
+            throw new InvalidOperationException("This benefit workflow has pending requests. Complete or withdraw them before changing its routing.");
+        if (BenefitClaims.IsGovernedBenefit(request.EntityName)
+            && request.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Every additional benefit approval step must name an explicit approver role with employees.approve authority.");
         EnsureRoleStepsNameARole(request);
+        await ValidateBenefitWorkflowRolesAsync(tenantId, request, cancellationToken);
         await EnsureWorkflowCodeUnique(tenantId, request.Code, id, cancellationToken);
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
@@ -234,22 +266,50 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     /// </summary>
     public async Task<ApprovalRequestDto?> WithdrawAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken)
     {
+        var benefitSubject = await _db.ApprovalRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && (x.EntityName == AdditionalBenefitGrants.EntityName || x.EntityName == BenefitClaims.EntityName))
+            .Select(x => x.RequestedForEmployeeId).FirstOrDefaultAsync(cancellationToken);
+        if (benefitSubject is int employeeId)
+        {
+            var employeeKey = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted)
+                .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("The benefit request employee is not available in your company scope.");
+            return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, employeeKey,
+                () => WithdrawCoreAsync(tenantId, approvalRequestId, reason, context, cancellationToken), cancellationToken);
+        }
+        return await WithdrawCoreAsync(tenantId, approvalRequestId, reason, context, cancellationToken);
+    }
+
+    private async Task<ApprovalRequestDto?> WithdrawCoreAsync(Guid tenantId, Guid approvalRequestId, string? reason, RequestContext context, CancellationToken cancellationToken)
+    {
         var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
         if (approval is null || !await CanViewRequestAsync(approval, context, cancellationToken)) return null;
         if (approval.Status != "Pending") throw new InvalidOperationException("Only a pending request can be withdrawn.");
         if (context.UserId is null || approval.RequestedByUserId != context.UserId)
             throw new InvalidOperationException("Only the person who requested this can withdraw it.");
-        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) && !BenefitClaims.IsGovernedBenefit(approval.EntityName))
             throw new InvalidOperationException("This kind of request is withdrawn from its own screen, not from the Approval Center.");
 
         var note = string.IsNullOrWhiteSpace(reason) ? "Withdrawn by the requester." : Clean(reason);
-        if (Guid.TryParse(approval.EntityId, out var changeId)
+        if (!BenefitClaims.IsGovernedBenefit(approval.EntityName) && Guid.TryParse(approval.EntityId, out var changeId)
             && await _db.EmployeeChangeRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == changeId, cancellationToken) is { } change)
         {
             if (!string.Equals(change.Status, EmployeeChangeStatuses.PendingApproval, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"This change is already '{change.Status}' and can no longer be withdrawn.");
             change.Status = EmployeeChangeStatuses.Cancelled;
             change.RejectionReason = note;
+        }
+        if (BenefitClaims.IsGovernedBenefit(approval.EntityName))
+        {
+            if (!AdditionalBenefitGrants.ResolveScope(context, _http).CanAccessCompany(approval.CompanyId)
+                && !(BenefitClaims.IsClaim(approval) && approval.RequestedByUserId == context.UserId
+                    && await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, context.UserId, approval.RequestedForEmployeeId ?? 0, cancellationToken)))
+                throw new InvalidOperationException("This benefit request is outside your company scope.");
+            _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
+            {
+                TenantId = tenantId, CompanyId = approval.CompanyId, UserId = context.UserId,
+                EntityName = approval.EntityName, EntityId = approval.Id.ToString(), Action = BenefitClaims.IsClaim(approval) ? "benefits.claim.withdrawn" : "benefits.additional.withdrawn",
+                Metadata = JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }),
+            });
         }
         approval.Status = "Cancelled";
         approval.CompletedAtUtc = DateTime.UtcNow;
@@ -263,7 +323,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         {
             throw new InvalidOperationException("This request was decided while you were withdrawing it. Refresh to see the outcome.", ex);
         }
-        await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
+        if (!BenefitClaims.IsGovernedBenefit(approval.EntityName)) await _audit.WriteAsync("approval.request_withdrawn", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { reason = note, stepOrder = approval.CurrentStepOrder }), cancellationToken);
         return await GetRequestAsync(tenantId, approval.Id, context, cancellationToken);
     }
@@ -278,7 +338,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             && await CanDecideRequestAsync(approval, context, cancellationToken, separationOfDuties: false);
         var requestedByCaller = context?.UserId is not null && approval.RequestedByUserId == context.UserId;
         var canWithdraw = approval.Status == "Pending" && requestedByCaller
-            && string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase);
+            && (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase) || BenefitClaims.IsGovernedBenefit(approval.EntityName));
         string? blockedReason = null;
         if (context is not null && !canDecide && approval.Status == "Pending")
         {
@@ -378,6 +438,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var entityName = Clean(request.EntityName);
+        if (BenefitClaims.IsGovernedBenefit(entityName))
+            throw new InvalidOperationException("Additional benefit approvals must be submitted from the employee Benefits page, not created directly.");
         if (string.Equals(entityName, JawazatConstants.ApprovalEntityName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Jawazat approvals are created by the governed Jawazat request workflow, not directly.");
         // A leave approval is the leave aggregate's routing projection (same id, balance reserved in
@@ -438,6 +500,22 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalRequestDto?> DecideAsync(Guid tenantId, Guid approvalRequestId, ApprovalDecisionRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var benefitSubject = await _db.ApprovalRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == approvalRequestId && (x.EntityName == AdditionalBenefitGrants.EntityName || x.EntityName == BenefitClaims.EntityName))
+            .Select(x => x.RequestedForEmployeeId).FirstOrDefaultAsync(cancellationToken);
+        if (benefitSubject is int employeeId)
+        {
+            var employeeKey = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted)
+                .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("The benefit request employee is not available in your company scope.");
+            return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, employeeKey,
+                () => DecideCoreAsync(tenantId, approvalRequestId, request, context, cancellationToken), cancellationToken);
+        }
+        return await DecideCoreAsync(tenantId, approvalRequestId, request, context, cancellationToken);
+    }
+
+    private async Task<ApprovalRequestDto?> DecideCoreAsync(Guid tenantId, Guid approvalRequestId, ApprovalDecisionRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
         var approval = await _db.ApprovalRequests.Include(x => x.Decisions).FirstOrDefaultAsync(x => x.Id == approvalRequestId && x.TenantId == tenantId, cancellationToken);
         if (approval is null) return null;
         if (approval.Status != "Pending") throw new InvalidOperationException("Approval request is already completed.");
@@ -459,8 +537,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             case DecisionBar.CredentialHandler:
                 throw new InvalidOperationException(Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message);
         }
+        await AdditionalBenefitGrants.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+        await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
+        // CMP: merit worksheet SoD beyond the subject bar (no employee on the worksheet decides it) + reject needs a reason.
+        await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ValidateDecisionAsync(_db, approval, requestedDecision, context, Clean(request.Comments), cancellationToken);
+        // SUC: nobody on a succession slate, or reporting to someone on it, decides it. No-op for other entities.
+        await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
         {
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
@@ -525,6 +609,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         {
             approval.Status = "Rejected";
             approval.CompletedAtUtc = DateTime.UtcNow;
+            await AdditionalBenefitGrants.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+            await BenefitClaims.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http), _documentStorage);
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
@@ -532,11 +618,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: a returned merit worksheet goes back to its manager for revision. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            // SUC: a rejected slate version is ReturnedForRevision with the approver's reason. No-op for anything else.
+            await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
         else if (step.IsFinalStep)
         {
             approval.Status = "Approved";
             approval.CompletedAtUtc = DateTime.UtcNow;
+            await AdditionalBenefitGrants.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
+            await BenefitClaims.ApplyAsync(_db, approval, normalizedDecision, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http), _documentStorage);
             await SyncEmployeeChangeDecisionAsync(approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             await JawazatApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken,
                 JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
@@ -549,6 +641,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: the final approval locks the merit worksheet. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
+            // SUC: the approved slate version supersedes the previous one in this same SaveChanges. No-op for anything else.
+            await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
         else
         {
@@ -581,6 +677,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
+        // SUC: after the commit, the slate's own audit row and the decision notice to its submitter. No-op for anything else.
+        await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.AfterCommitAsync(_db, _audit, _http?.HttpContext?.RequestServices, approval,
+            normalizedDecision, context, cancellationToken);
         return JawazatApprovalSync.IsJawazat(approval)
             ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
             : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
@@ -591,6 +690,18 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     /// holder (now: every manager.approve holder) in the tenant. New saves are refused; workflows already saved
     /// that way still load and route, so live requests are not stranded.
     /// </summary>
+    private async Task ValidateBenefitWorkflowRolesAsync(Guid tenantId, ApprovalWorkflowRequest request, CancellationToken ct)
+    {
+        if (!BenefitClaims.IsGovernedBenefit(request.EntityName)) return;
+        var roles = request.Steps.Select(x => x.ApproverRole.Trim().ToUpper()).Distinct().ToList();
+        var matches = await _db.Roles.AsNoTracking().Where(x => (x.TenantId == tenantId || x.TenantId == null)
+            && x.IsActive && !x.IsDeleted && roles.Contains(x.Name.ToUpper()))
+            .Select(x => new { x.Name, Permissions = x.RolePermissions.Select(p => p.Permission!.Key).ToList() }).ToListAsync(ct);
+        foreach (var role in roles)
+            if (!matches.Any(x => x.Name.ToUpper() == role && x.Permissions.Contains("employees.approve") && x.Permissions.Contains("approvals.decide")))
+                throw new InvalidOperationException($"Benefit approver role '{role}' must be active and hold both employees.approve and approvals.decide. Configure the role's authority before using it in this workflow.");
+    }
+
     internal static void EnsureRoleStepsNameARole(ApprovalWorkflowRequest request)
     {
         foreach (var step in request.Steps ?? Array.Empty<ApprovalWorkflowStepRequest>())
@@ -850,6 +961,22 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             catch (JawazatException) { return false; }
         }
 
+        if (AdditionalBenefitGrants.IsAdditional(approval))
+        {
+            try { await AdditionalBenefitGrants.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http)); }
+            catch (InvalidOperationException) { return false; }
+        }
+        if (BenefitClaims.IsClaim(approval))
+        {
+            try { await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http)); }
+            catch (InvalidOperationException) { return false; }
+        }
+        // SUC: the slate SoD outranks approvals.override, like the bars above.
+        if (Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.IsSlate(approval))
+        {
+            try { await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken); }
+            catch (InvalidOperationException) { return false; }
+        }
         var permissions = context.Permissions ?? Array.Empty<string>();
         if (permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase)))
             return true;
@@ -946,6 +1073,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
+        // The date has passed, so this decision writes the change now — the effective-date job will not see it. The
+        // originating module gets the same last word here as it gets in the job (a re-review approved late must not pay
+        // a merit award to someone who has since resigned). Refused ⇒ Cancelled with the reason; nothing is written.
+        if (await Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.CheckAsync(
+                _effectiveChangeGates, _db, approval.TenantId, change, employee, today, cancellationToken) is { } refusal)
+        {
+            Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.StageRefusal(_db, approval.TenantId, change, employee,
+                refusal with { NotifyUserId = refusal.NotifyUserId ?? change.RequestedByUserId }, approverId, "approval_decision");
+            return;
+        }
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         // A change the effective-date job sent back for review: the reviewer approved what the re-review showed,
         // so a value that moved since is refused, not overwritten (throws => nothing saved, request stays Pending;
@@ -1038,7 +1175,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             {
                 var profile = await _db.EmployeePayrollProfiles
                     .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && !x.IsDeleted, cancellationToken);
-                if (EmployeeChangeBaseline.Capture(employee, profile, changes.Keys) is { } baseline)
+                if (await EmployeeChangeBaseline.CaptureAsync(_db, employee, profile, changes.Keys, cancellationToken) is { } baseline)
                     sealedBaseline = EmployeeChangeBaseline.Protect(_changeBaselineProtector, change.Id, baseline);
             }
         }

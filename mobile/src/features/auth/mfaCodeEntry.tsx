@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { StyleSheet, Text, TextInput } from 'react-native';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from '@/theme/ThemeProvider';
 import {
   attemptsLeft,
   classifyMfaFailure,
@@ -77,13 +78,20 @@ export function MfaCodeInput({
   tone?: { text: string; placeholder: string; background: string; border: string };
 }) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
+  const colors = tone ?? {
+    text: theme.colors.text,
+    placeholder: theme.colors.textMuted,
+    background: theme.colors.surfaceInset,
+    border: theme.colors.hairline,
+  };
   return (
     <TextInput
       value={value}
       onChangeText={(text) => onChange(normalizeCode(text))}
       style={[
         styles.codeInput,
-        tone && { color: tone.text, backgroundColor: tone.background, borderColor: tone.border },
+        { color: colors.text, backgroundColor: colors.background, borderColor: colors.border },
       ]}
       keyboardType="number-pad"
       inputMode="numeric"
@@ -99,7 +107,7 @@ export function MfaCodeInput({
       secureTextEntry={false}
       accessibilityLabel={t('mfa.codeLabel')}
       placeholder="••••••"
-      placeholderTextColor={tone?.placeholder ?? 'rgba(255,255,255,0.25)'}
+      placeholderTextColor={colors.placeholder}
     />
   );
 }
@@ -107,9 +115,10 @@ export function MfaCodeInput({
 /** Plain-language error for the current state, with attempts left after a wrong code. */
 export function MfaCodeError({ state, color }: { state: CodeEntryState; color?: string }) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
   if (!state.error) return null;
   return (
-    <Text style={[styles.error, color ? { color } : null]} accessibilityLiveRegion="polite" accessibilityRole="alert">
+    <Text style={[styles.error, { color: color ?? theme.colors.status.danger.fg }]} accessibilityLiveRegion="polite" accessibilityRole="alert">
       {t(`mfa.errors.${state.error}`)}
       {state.error === 'wrongCode' || state.error === 'notAccepted' || state.error === 'waitForNextCode' ? `\n${t('mfa.attemptsLeft', { count: attemptsLeft(state) })}` : ''}
     </Text>
@@ -118,11 +127,8 @@ export function MfaCodeError({ state, color }: { state: CodeEntryState; color?: 
 
 const styles = StyleSheet.create({
   codeInput: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
-    color: '#fff',
     fontSize: 30,
     fontWeight: '800',
     letterSpacing: 12,
@@ -132,5 +138,5 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     paddingStart: 12,
   },
-  error: { color: '#FCA5A5', textAlign: 'center', marginTop: 12, fontSize: 13, lineHeight: 19 },
+  error: { textAlign: 'center', marginTop: 12, fontSize: 13, lineHeight: 19 },
 });

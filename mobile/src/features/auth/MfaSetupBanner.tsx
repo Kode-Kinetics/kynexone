@@ -1,18 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, AppState, Modal, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ScreenCapture from 'expo-screen-capture';
 import { authApi } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { classifyMfaFailure, formatEnforceDate, type MfaErrorKind } from '@/auth/mfaFlow';
-import { COLORS } from '@/config';
+import { MotionPressable } from '@/components/ui';
+import { useTabBarInset } from '@/navigation/tabBarInset';
+import { useTheme } from '@/theme/ThemeProvider';
+import type { KynexTheme } from '@/theme/tokens';
 import { MfaEnrollmentView } from './MfaEnrollmentView';
 import { createSecureSheet } from './secureSheet';
 
-// Bottom tab bars are a fixed 72 pt (MainTabs tabScreenOptions); float just above them.
-const TAB_BAR_HEIGHT = 72;
 
 /**
  * Signed-in prompt for privileged users who have not set up two-step sign-in.
@@ -22,7 +22,10 @@ const TAB_BAR_HEIGHT = 72;
  */
 export function MfaSetupBanner() {
   const { t, i18n } = useTranslation();
-  const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+  // An overlay laid out against the window, so it clears the floating tab bar itself.
+  const tabBarInset = useTabBarInset();
   const prompt = useAuthStore((s) => s.mfaPrompt);
   const dismissed = useAuthStore((s) => s.mfaPromptDismissed);
   const dismiss = useAuthStore((s) => s.dismissMfaPrompt);
@@ -79,16 +82,16 @@ export function MfaSetupBanner() {
   return (
     <>
       {!enrollment ? (
-        <View style={[styles.wrap, { bottom: TAB_BAR_HEIGHT + Math.max(insets.bottom, 0) + 10 }]} pointerEvents="box-none">
+        <View style={[styles.wrap, { bottom: tabBarInset }]} pointerEvents="box-none">
           <View style={styles.card}>
-            <TouchableOpacity
-              style={styles.main}
+            <MotionPressable
+              contentStyle={styles.main}
               onPress={() => void start()}
               disabled={starting}
               accessibilityRole="button"
               accessibilityHint={t('mfa.bannerAction')}
             >
-              <Ionicons name="shield-half-outline" size={22} color={COLORS.warning} />
+              <Ionicons accessible={false} name="shield-half-outline" size={22} color={theme.colors.status.warning.fg} />
               <View style={styles.textCol}>
                 <Text style={styles.message}>{message}</Text>
                 {startError ? (
@@ -97,22 +100,23 @@ export function MfaSetupBanner() {
                   </Text>
                 ) : null}
               </View>
-            </TouchableOpacity>
+            </MotionPressable>
             <View style={styles.actions}>
               {!enforced ? (
-                <TouchableOpacity onPress={dismiss} style={styles.secondary} accessibilityRole="button">
+                <MotionPressable onPress={dismiss} contentStyle={styles.secondary} accessibilityRole="button">
                   <Text style={styles.secondaryText}>{t('mfa.bannerDismiss')}</Text>
-                </TouchableOpacity>
+                </MotionPressable>
               ) : null}
-              <TouchableOpacity
+              <MotionPressable
                 onPress={() => void start()}
                 disabled={starting}
-                style={styles.primary}
+                haptic="commit"
+                contentStyle={styles.primary}
                 accessibilityRole="button"
                 accessibilityState={{ busy: starting }}
               >
-                {starting ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.primaryText}>{t('mfa.bannerAction')}</Text>}
-              </TouchableOpacity>
+                {starting ? <ActivityIndicator color={theme.colors.onFill} size="small" /> : <Text style={styles.primaryText}>{t('mfa.bannerAction')}</Text>}
+              </MotionPressable>
             </View>
           </View>
         </View>
@@ -148,27 +152,34 @@ export function MfaSetupBanner() {
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { position: 'absolute', start: 12, end: 12 },
-  card: {
-    backgroundColor: COLORS.navy,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(245,158,11,0.45)',
-    padding: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 10,
-  },
-  main: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  textCol: { flex: 1 },
-  message: { color: '#fff', fontSize: 14, lineHeight: 20, fontWeight: '600', textAlign: 'auto' },
-  error: { color: '#FCA5A5', fontSize: 12, lineHeight: 17, marginTop: 6, textAlign: 'auto' },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 12 },
-  secondary: { paddingVertical: 9, paddingHorizontal: 12 },
-  secondaryText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600' },
-  primary: { backgroundColor: COLORS.blue, borderRadius: 10, paddingVertical: 9, paddingHorizontal: 16, minWidth: 110, alignItems: 'center' },
-  primaryText: { color: '#fff', fontSize: 13, fontWeight: '800' },
-});
+function makeStyles(theme: KynexTheme) {
+  const c = theme.colors;
+  return StyleSheet.create({
+    wrap: { position: 'absolute', start: 12, end: 12 },
+    card: {
+      backgroundColor: c.cardRaised,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: c.status.warning.fg,
+      padding: 14,
+      ...theme.shadows.floating,
+    },
+    main: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+    textCol: { flex: 1 },
+    message: { ...theme.typography.subheadline, color: c.text, fontWeight: '600', textAlign: 'auto' },
+    error: { ...theme.typography.footnote, color: c.status.danger.fg, marginTop: 6, textAlign: 'auto' },
+    actions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 12 },
+    secondary: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 },
+    secondaryText: { ...theme.typography.footnote, color: c.textSecondary, fontWeight: '600' },
+    primary: {
+      backgroundColor: c.primaryFill,
+      borderRadius: theme.radius.sm,
+      minHeight: 44,
+      justifyContent: 'center',
+      paddingHorizontal: 16,
+      minWidth: 110,
+      alignItems: 'center',
+    },
+    primaryText: { ...theme.typography.footnote, color: c.onFill, fontWeight: '700' },
+  });
+}

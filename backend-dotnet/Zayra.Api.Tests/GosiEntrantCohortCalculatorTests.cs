@@ -6,8 +6,10 @@ namespace Zayra.Api.Tests;
 
 /// <summary>
 /// F02 — the KSA pack looks the Saudi annuities rates up by COHORT and period, and every result says which
-/// cohort and rate basis produced it. No new-entrant rate exists in the repository with a source, so none is
-/// applied: a new entrant is computed on the pre-3-July-2024 schedule and reported as NOT MODELLED.
+/// cohort and rate basis produced it. These tests run on a reader WITHOUT the new-entrant rows: no rate is
+/// invented in code, so a new entrant with no row for the period is computed on the pre-3-July-2024 schedule
+/// and reported as NOT MODELLED (fail closed). The seeded new-entrant schedule is pinned in
+/// <see cref="GosiNewEntrantScheduleTests"/>.
 /// </summary>
 public class GosiEntrantCohortCalculatorTests
 {
@@ -47,7 +49,7 @@ public class GosiEntrantCohortCalculatorTests
     }
 
     [Fact]
-    public async Task NewEntrant_IsReportedNotModelled_NeverSilentlyPricedAsAnExistingSubscriber()
+    public async Task NewEntrant_WithNoRateOnRecord_IsReportedNotModelled_NeverSilentlyPricedAsAnExistingSubscriber()
     {
         var r = await new KsaDeductionCalculator(Rules()).CalculateAsync(Saudi(new DateOnly(2025, 2, 1)));
 
@@ -74,21 +76,21 @@ public class GosiEntrantCohortCalculatorTests
     }
 
     [Fact]
-    public async Task NoNewEntrantRateIsInvented_TheExtensionPointIsEmpty()
+    public async Task NoNewEntrantRateIsInvented_WhenNoStatutoryRowExists()
     {
-        // The day the official schedule is supplied, this is the test that changes — together with the
-        // validator's GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED rule. Until then nothing may return a rate.
+        // The schedule lives ONLY in effective-dated statutory rows. With no row on record, nothing in code
+        // supplies a rate, and the status says so (the validator blocks on it).
         (await KsaGosiCohortSchedule.NewEntrantAnnuitiesAsync(Rules(), new DateOnly(2026, 9, 1), CancellationToken.None))
             .Should().BeNull();
         (await KsaGosiCohortSchedule.ResolveAnnuitiesAsync(Rules(), GosiCohorts.NewEntrant, new DateOnly(2026, 9, 1)))
-            .Status.Should().Be(GosiCohortRateStatus.NewEntrantScheduleNotModelled);
+            .Status.Should().Be(GosiCohortRateStatus.NewEntrantRateNotFound);
     }
 
     [Fact]
-    public async Task AmountsAreCohortIndependent_UntilTheNewEntrantScheduleIsModelled()
+    public async Task WithoutNewEntrantRows_AmountsFallBackToThePreReformFigure_AndAreFlagged()
     {
-        // Pins the money path: introducing the cohort changed NO figure for anyone. When a new-entrant
-        // schedule is modelled this test must change, deliberately.
+        // Without the new-entrant rows the figure is the pre-reform one for everyone (and the new entrant's
+        // status is NewEntrantRateNotFound, which blocks). With the seeded rows it differs from July 2025.
         var calc = new KsaDeductionCalculator(Rules());
         var unknown = await calc.CalculateAsync(Saudi(null));
         var existing = await calc.CalculateAsync(Saudi(new DateOnly(2016, 5, 10)));

@@ -69,8 +69,14 @@ CandidateAssessments
 CandidateDocuments
 Candidates
 ClientRateDefinitions
+CompCycleBudgets
+CompCycles
+CompFxRates
+CompGuidelines
 CompOffCredits
 CompOffUsages
+CompWorksheetLines
+CompWorksheets
 Companies
 CompanyComplianceProfiles
 CompanyCutovers
@@ -92,10 +98,18 @@ DataProtectionKeys
 DepartmentStaffingBudgets
 Departments
 Designations
+DevelopmentPlanActions
+DevelopmentPlans
 DocTypes
 DocumentChunks
 EOSBCalculations
 ESSDashboardPreferences
+EngagementActions
+EngagementSurveyAnswers
+EngagementSurveyInvitations
+EngagementSurveyResponses
+EngagementSurveyTemplates
+EngagementSurveys
 EmployeeAIQueryLogs
 EmployeeActionItems
 EmployeeAnnouncements
@@ -136,6 +150,7 @@ EmployeeTransferRequests
 EmployeeUserAccounts
 Employees
 EnterpriseIdentityProvisioningEvents
+ErpApiKeys
 Feedback360
 FinalSettlementLines
 FinanceGlEntries
@@ -147,6 +162,10 @@ GlDrivers
 GlJournalExportLines
 GlJournalExports
 GlPeriodCloses
+# POD-C2 — per-employee EOSB obligation witness behind the monthly provision (owner-approved 2026-10-10)
+EosbProvisionSnapshots
+# Maker-checker finance journals: EOSB actuarial true-up + legacy 2104/2105 reclass (one table, two kinds)
+GlAdjustmentRequests
 GoalProgressUpdates
 GosiContributionRules
 GradeEntitlements
@@ -164,6 +183,16 @@ InterviewSchedules
 IssuedLetters
 JobApplications
 JobOpenings
+LearningAssignmentRules
+LearningAssignments
+LearningAttempts
+LearningCourses
+LearningCredentials
+LearningEnrollments
+LearningLaunchSessions
+LearningPathItems
+LearningPaths
+LearningXapiStatements
 LeaveAIInsights
 LeaveAccrualRules
 LeaveApprovals
@@ -230,6 +259,8 @@ OvertimeTypes
 PIPCheckIns
 PassportRecords
 PasswordResetTokens
+PayBenchmarkRows
+PayBenchmarkSets
 PayComponents
 PayrollAIValidationResults
 PayrollAdjustments
@@ -305,7 +336,12 @@ ShiftDefinitions
 ShiftPolicies
 StaffingLevels
 StatutoryRules
+SuccessionCriticalPositions
+SuccessionNominations
+SuccessionSlateVersions
 SystemSettings
+TalentAssessments
+TalentPools
 TenantAiUsages
 TenantBrandings
 TenantFeatureFlags

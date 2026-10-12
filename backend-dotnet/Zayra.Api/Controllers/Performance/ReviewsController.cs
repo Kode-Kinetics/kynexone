@@ -10,6 +10,7 @@ using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
 
 namespace Zayra.Api.Controllers.Performance;
@@ -67,6 +68,7 @@ public class ReviewsController : ControllerBase
     /// Start Assessment button on each.
     /// </summary>
     [HttpGet]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(
         [FromQuery] Guid? cycleId,
         [FromQuery] int? employeeId,
@@ -85,7 +87,7 @@ public class ReviewsController : ControllerBase
 
         var tenantId = this.GetTenantId()!.Value;
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        var query = _db.AppraisalReviews.Where(r => r.TenantId == tenantId);
+        var query = _db.AppraisalReviews.AsNoTracking().Where(r => r.TenantId == tenantId);
         if (mine)
         {
             // Own reviews only, whatever the scope. A caller with no employee record has none.
@@ -104,22 +106,25 @@ public class ReviewsController : ControllerBase
             .OrderByDescending(r => r.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync(ct);
+        // The same redaction as GET /{id}: the manager's and HR's notes are for the rating-approver tier.
+        // (AsNoTracking rows — nothing here is written back.)
+        if (!HasPermission(RatingApproverPermission))
+            foreach (var item in items) { item.ManagerNotes = string.Empty; item.HrNotes = string.Empty; }
         return Ok(new { items, total, page, pageSize });
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
 
-        var review = await _db.AppraisalReviews.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        // GAP 5: data scope on single-record access — employee sees own, manager sees team, HR their
+        // companies. Out of scope is a 404, the same as a wrong id (ScopedRecordLookup).
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.AsNoTracking().Where(r => r.Id == id && r.TenantId == tenantId),
+            r => r.EmployeeId, ct);
         if (review is null) return NotFound();
-
-        // GAP 5: enforce data scope on single-record access — employee sees own, manager sees team
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(review.EmployeeId))
-            return Forbid();
 
         var template = await _db.PerformanceScorecardTemplates.AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == review.ScorecardTemplateId && t.TenantId == tenantId, ct);
@@ -162,25 +167,19 @@ public class ReviewsController : ControllerBase
         {
             review.ManagerNotes = string.Empty;
             review.HrNotes = string.Empty;
-            // Only show non-anonymous feedback entries to callers without sensitive access
-            feedback360 = feedback360.Where(f => !f.IsAnonymous).ToList();
         }
-        // Anonymous means anonymous to EVERY reader, including the approver tier that may now see the
-        // entry's content: the same rule FeedbackController.List360 applies. Before this branch was
-        // reachable it did not matter that the raw rows carried the author; now it would. (AsNoTracking
-        // rows — nothing here is written back.)
-        foreach (var anonymous in feedback360.Where(f => f.IsAnonymous))
-        {
-            anonymous.ReviewerName = "Anonymous";
-            anonymous.ReviewerEmployeeId = 0;
-        }
+        // 360 feedback goes through the ONE projection FeedbackController.List360 also uses, so the two
+        // endpoints cannot disagree: anonymous entries only for the approver tier, never with an author or
+        // a timestamp, and roles hidden when any anonymous role group is small (Feedback360View).
+        var feedback = Feedback360View.Project(feedback360, canViewSensitive);
 
-        return Ok(new { review, template, breakdown, competencies, goals, feedback360, auditLog, calibration, appeal });
+        return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal });
     }
 
     // ── Self-assessment ────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/self-assessment")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> SubmitSelfAssessment(
         Guid id, [FromBody] SelfAssessmentRequest req, CancellationToken ct)
     {
@@ -255,6 +254,7 @@ public class ReviewsController : ControllerBase
     // ── Manager review ─────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/manager-review")]
+    [HasPermission(PerformancePermissions.Write, PerformancePermissions.Approve)]
     public async Task<IActionResult> SubmitManagerReview(
         Guid id, [FromBody] ManagerReviewRequest req, CancellationToken ct)
     {
@@ -270,8 +270,8 @@ public class ReviewsController : ControllerBase
         // GAP 5: verify the caller's data scope includes this employee
         // (managers can only review their own direct reports, not any employee)
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(review.EmployeeId))
-            return Forbid();
+        if (!scope.CanAccessEmployee(review.EmployeeId))
+            return NotFound();
         var resolvedApprovers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, review.EmployeeId, "APPRAISAL", ct);
         var callerIsResolvedApprover = scope.CallerEmployeeId.HasValue
             && resolvedApprovers.Approvers.Any(a => a.EmployeeId == scope.CallerEmployeeId.Value);
@@ -351,8 +351,8 @@ public class ReviewsController : ControllerBase
             return Forbid();
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
-        var review = await _db.AppraisalReviews
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (review is null) return NotFound();
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { message = "A reason is required for any score override." });
@@ -387,8 +387,8 @@ public class ReviewsController : ControllerBase
             return Forbid();
         var tenantId = this.GetTenantId()!.Value;
         var userId   = this.GetUserId();
-        var review = await _db.AppraisalReviews
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (review is null) return NotFound();
         if (review.Status != "FinalApproval")
             return Conflict(new { error = "review_not_final_approval", message = $"Only a review in FinalApproval can be published (current: {review.Status})." });
@@ -424,6 +424,7 @@ public class ReviewsController : ControllerBase
     /// behalf, destroying the only evidence this endpoint exists to capture.
     /// </summary>
     [HttpPost("{id:guid}/acknowledge")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Acknowledge(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -460,6 +461,7 @@ public class ReviewsController : ControllerBase
     /// caller froze their compensation and left HR deciding an appeal HR itself had submitted.
     /// </summary>
     [HttpPost("{id:guid}/appeal")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> SubmitAppeal(Guid id, [FromBody] AppealRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -562,8 +564,7 @@ public class ReviewsController : ControllerBase
         var appeal = await _db.AppraisalAppeals
             .FirstOrDefaultAsync(a => a.Id == appealId && a.TenantId == tenantId, ct);
         if (appeal is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(appeal.EmployeeId)) return Forbid();
+        if (!await _scopeService.InScopeAsync(User, tenantId, appeal.EmployeeId, ct)) return NotFound();
         if (appeal.Status is not ("Submitted" or "UnderReview"))
             return Conflict(new { error = "appeal_already_decided", message = $"Appeal is already in '{appeal.Status}' status." });
 
@@ -614,8 +615,8 @@ public class ReviewsController : ControllerBase
     public async Task<IActionResult> ComputeAttendance(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var review = await _db.AppraisalReviews
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (review is null) return NotFound();
 
         var cycle = await _db.PerformanceCycles

@@ -3,7 +3,10 @@ import type { LocaleCode } from '../i18n/translations';
 
 export interface TransliterateResult {
   suggestion: string;
+  requiresManualEntry?: boolean;
 }
+
+export type TransliterateKind = 'generic' | 'person-name';
 
 /**
  * P0-6: sanctioned, in-house replacement for the removed MyMemory keystroke call.
@@ -14,8 +17,8 @@ export interface TransliterateResult {
  * cross-border transfer. Called only on an explicit user action (a "Suggest (AR)" button).
  */
 export const localizationApi = {
-  transliterate: (text: string, target: LocaleCode = 'ar') =>
+  transliterate: (text: string, target: LocaleCode = 'ar', kind?: TransliterateKind) =>
     client
-      .post<TransliterateResult>('/api/localization/transliterate', { text, target })
+      .post<TransliterateResult>('/api/localization/transliterate', { text, target, ...(kind ? { kind } : {}) })
       .then((r) => r.data),
 };

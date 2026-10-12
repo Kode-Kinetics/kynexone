@@ -487,6 +487,7 @@ export function EmployeeSelfServicePage() {
       id: `task-${item.id}`, tone: 'amber', icon: Clock,
       title: item.title,
       detail: item.dueAtUtc ? t('Due on {date}', { date: fx.date(item.dueAtUtc) }) : item.category,
+      action: item.category === 'EmployeeProfileCompletion' ? { label: t('Complete my details'), href: '/ess/onboarding' } : undefined,
     });
   }
 

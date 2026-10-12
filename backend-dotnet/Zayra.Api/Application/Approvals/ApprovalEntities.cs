@@ -35,6 +35,8 @@ public static class ApprovalEntities
     public static readonly IReadOnlyDictionary<string, string> ProducersWithEvidence =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            [Zayra.Api.Infrastructure.Benefits.BenefitClaims.EntityName] = "submitting a receipt-backed benefit reimbursement claim",
+            [Zayra.Api.Infrastructure.Benefits.AdditionalBenefitGrants.EntityName] = "submitting an additional individual benefit or amendment",
             // LeaveService.BuildApprovalProjection — the leave request's routing projection.
             [nameof(LeaveRequest)] = "submitting a leave request",
             // EmployeesController.RequestChange → IApprovalWorkflowService.CreateRequestAsync.
@@ -44,6 +46,10 @@ public static class ApprovalEntities
             // TimesheetService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync.
             [TimesheetConstants.ApprovalEntityName] = "submitting a timesheet",
             [Zayra.Api.Application.Jawazat.JawazatConstants.ApprovalEntityName] = "creating an employer-assisted Jawazat request",
+            // MeritPlanningService.SubmitWorksheetAsync → IApprovalWorkflowService.CreateRequestAsync.
+            [Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.EntityName] = "submitting a merit planning worksheet",
+            // SuccessionSlateService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync (ids and a hash only; no subject).
+            [Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.EntityName] = "submitting a succession slate version",
         };
 
     /// <summary>The producer entity names, for validation and for the refusal body.</summary>

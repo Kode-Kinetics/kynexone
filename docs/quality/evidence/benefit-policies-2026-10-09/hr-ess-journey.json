@@ -1,0 +1,32 @@
+{
+  "at": "2026-10-09T16:58:41.660Z",
+  "origin": "http://127.0.0.1:5281",
+  "employeeId": 13,
+  "errors": [],
+  "consoleErrors": [],
+  "steps": [
+    "custom policy \u2192 governed assignment \u2192 frozen claim cap"
+  ],
+  "employeeName": "Synthetic Benefit Payroll AD312E131",
+  "planId": "e9e48177-021c-4848-a82f-29eb5cb81555",
+  "planName": "Synthetic school support 65121660",
+  "policyCreatedInUi": true,
+  "enrollmentId": "aa0ad63b-500a-42eb-aa04-c5e77387eb3e",
+  "originalBenefitsPreserved": true,
+  "hrClaimId": "eac4d763-2f8a-48aa-ad42-8193d5bf886d",
+  "essClaimId": "3945507c-d3d4-49bf-90f7-44964feb38a3",
+  "balance": {
+    "canClaim": true,
+    "maximumAmount": 2000,
+    "reservedAmount": 0,
+    "approvedAmount": 425,
+    "remainingAmount": 1575,
+    "periodFrom": "2026-01-01",
+    "periodTo": "2026-12-31"
+  },
+  "essOwnClaim": true,
+  "hrClaim": true,
+  "independentApprovals": true,
+  "noHorizontalOverflow": true,
+  "complete": true
+}

@@ -176,7 +176,8 @@ public class PerformanceCycleRoleAccessTests
 
         var status = await ManagerReview(db, manager, w.OutsiderReviewId);
 
-        status.Should().Be(403);
+        // Out of the manager's scope reads as a wrong id (PERF_SCOPE_FIX: 404 for out-of-scope by-id).
+        status.Should().Be(404);
         (await ReviewOf(db, w.OutsiderReviewId)).Status.Should().Be("SelfAssessmentSubmitted");
     }
 
@@ -195,7 +196,7 @@ public class PerformanceCycleRoleAccessTests
         (await CreateGoal(db, manager, w.OutsiderId, weight: 40m)).Should().Be(403,
             "the manager's data scope is their reporting line");
         var outsiderGoal = await SeedGoalAsync(db, tenantId, w.OutsiderId);
-        (await ApproveGoal(db, manager, outsiderGoal)).Should().Be(403);
+        (await ApproveGoal(db, manager, outsiderGoal)).Should().Be(404, "out of scope reads as a wrong id");
     }
 
     public static IEnumerable<object[]> HrOnlyCycleSteps() => new[]
@@ -587,9 +588,9 @@ public class PerformanceCycleRoleAccessTests
         };
 
         (await Gate<AnalyticsController>(caller, nameof(AnalyticsController.CycleAnalytics),
-            () => Bind(new AnalyticsController(db), caller).CycleAnalytics(w.CycleId, Ct))).Should().Be(expected);
+            () => Bind(new AnalyticsController(db, new DataScopeService(db)), caller).CycleAnalytics(w.CycleId, Ct))).Should().Be(expected);
         (await Gate<AnalyticsController>(caller, nameof(AnalyticsController.Dashboard),
-            () => Bind(new AnalyticsController(db), caller).Dashboard(Ct))).Should().Be(expected);
+            () => Bind(new AnalyticsController(db, new DataScopeService(db)), caller).Dashboard(Ct))).Should().Be(expected);
     }
 
     // ── One connected cycle ────────────────────────────────────────────────────────────────────
@@ -851,10 +852,10 @@ public class PerformanceCycleRoleAccessTests
         Bind(new GoalsController(db, new DataScopeService(db), new HrmHierarchyService(db, new AuditService(db))), caller);
 
     private static CalibrationController Calibration(ZayraDbContext db, ClaimsPrincipal caller) =>
-        Bind(new CalibrationController(db, new PerformanceService(db)), caller);
+        Bind(new CalibrationController(db, new PerformanceService(db), new DataScopeService(db)), caller);
 
     private static CyclesController Cycles(ZayraDbContext db, ClaimsPrincipal caller) =>
-        Bind(new CyclesController(db, new PerformanceService(db)), caller);
+        Bind(new CyclesController(db, new PerformanceService(db), new DataScopeService(db)), caller);
 
     /// <summary>Every performance action carrying an <c>[Authorize(Roles=…)]</c> gate, with the roles it names.</summary>
     private static IEnumerable<(string Controller, string Action, string[] Roles, string[] Verbs)> RoleGatedPerformanceActions()

@@ -78,9 +78,20 @@ public static class PrivilegedMfaPolicy
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
+        // Engagement: suppressed aggregate results cut to the caller's scope (no person, no comment).
+        "engagement.read",
+        // LRN: the course catalogue, and training status of the people in one's data scope (a manager's own team).
+        "learning.read", "learning.report",
+        // SUC: the critical-position list (no candidate names), one's own development plan, and a line manager's
+        // nominations and development plans for their own reporting line (data-scoped).
+        "succession.read", "succession.self", "succession.nominate", "succession.devplans.read", "succession.devplans.manage",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
         "performance.write",
+        // CMP: a line manager plans merit for their own direct reports only (reporting-line scoped, approval-routed).
+        "compensation.plan",
+        // Follow-up actions from survey results, given to people in the caller's own scope.
+        "engagement.actions.manage",
     };
 
     /// <summary>
@@ -100,6 +111,7 @@ public static class PrivilegedMfaPolicy
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",
         "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
+        "finance.gl.period.reopen", // un-freezes closed books
         // Employee records and bulk changes.
         "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
         "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
@@ -117,6 +129,19 @@ public static class PrivilegedMfaPolicy
         // Release A: packages and renewal cases show each employee's pay terms (like payroll.read), and the manage keys
         // change contract terms — all four are privileged, the read keys included.
         "entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage",
+        // CMP: every key but plan shows or decides company-wide pay (read included, like payroll.read); equity reads
+        // pay by gender/nationality cohort.
+        "compensation.read", "compensation.manage", "compensation.approve", "compensation.benchmarks.manage", "compensation.equity.read",
+        // Engagement: running surveys and setting the minimum group size, reading free-text comments, and per-person
+        // answers of identified surveys.
+        "engagement.manage", "engagement.comments.read", "engagement.identified.read",
+        // LRN: authoring and publishing courses, assigning mandatory training, and correcting the training record
+        // (reset attempts, revoke or supersede certificates) change compliance evidence.
+        "learning.manage", "learning.assign", "learning.records.correct",
+        // SUC: candidate-level talent data (slates, assessments, 9-box placements, bench reports) is HR-confidential, and
+        // the manage keys designate positions, run calibration and put people on a succession slate.
+        "succession.positions.manage", "succession.pools.manage", "succession.assess", "succession.calibrate",
+        "succession.slates.read", "succession.slates.manage", "succession.reports.read",
     };
 
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);

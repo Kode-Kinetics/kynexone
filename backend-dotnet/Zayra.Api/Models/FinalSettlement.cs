@@ -329,6 +329,8 @@ public static class FinalSettlementGlDescriptions
     public const string ReversalPrefix          = "Final settlement accrual reversal: ";
     public const string PayrollClearingPrefix   = "Final settlement payable cleared via payroll: ";
     public const string ProvisionReliefPrefix   = "EOSB provision consumed on settlement: ";
+    /// <summary>POD-C2 — provision left over after the award (e.g. an Art. 85 reduction) released to 5110.</summary>
+    public const string ProvisionReleasePrefix  = "Unused EOSB provision released on settlement: ";
     public const string ResidualReclassPrefix   = "Residual employee debt reclassified on settlement: ";
     /// <summary>S2-B2 — settlement paid outside payroll (bank transfer / cheque / cash).</summary>
     public const string ExternalPaymentPrefix   = "Final settlement paid outside payroll: ";

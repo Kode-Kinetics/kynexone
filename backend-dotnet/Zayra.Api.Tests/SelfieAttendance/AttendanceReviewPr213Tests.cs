@@ -25,7 +25,9 @@ public sealed class AttendanceReviewPr213Tests
         var (db, tenantId) = await NewTenantAsync(withPolicy: true);
         var employee = await AddEmployeeAsync(db, tenantId, "CORR");
         var tz = TenantTimeZone.FromId(null);
-        var workDate = TenantTimeZone.LocalDate(tz, DateTime.UtcNow).AddDays(-7);
+        // This scenario needs a completed working day, not whichever weekday CI runs on.
+        var workDate = TenantTimeZone.LocalDate(tz, DateTime.UtcNow).AddDays(-1);
+        while (workDate.DayOfWeek != DayOfWeek.Monday) workDate = workDate.AddDays(-1);
         var dayStart = TenantTimeZone.LocalDayStartUtc(tz, workDate);
         var service = Service(db);
         // The day was processed with no punches: Absent.

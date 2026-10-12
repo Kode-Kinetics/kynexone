@@ -114,7 +114,7 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
   }
 
   const sections = page.getByRole('navigation', { name: 'Self-service sections' });
-  await expect(sections.getByRole('link')).toHaveText(['Overview', 'Pay', 'Leave and time', 'Requests', 'Benefits']);
+  await expect(sections.getByRole('link')).toHaveText(['Overview', 'Pay', 'Leave and time', 'Requests', 'Benefits', 'Surveys']);
   await expect(sections.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
 
   // Exceptions first: the missing punch, HR's reply and the expiring iqama, each with its next step.
@@ -230,7 +230,7 @@ test('outside Saudi Arabia there is no Exit and re-entry visa tab', async ({ pag
 test('a module switched off takes its section out of the workspace', async ({ page }) => {
   await boot(page, '/ess', { modules: [{ key: 'benefits', labelEn: 'Benefits', enabled: false, navPaths: ['/ess/benefits'] }] });
   const sections = page.getByRole('navigation', { name: 'Self-service sections' });
-  await expect(sections.getByRole('link')).toHaveText(['Overview', 'Pay', 'Leave and time', 'Requests'], { timeout: 60_000 });
+  await expect(sections.getByRole('link')).toHaveText(['Overview', 'Pay', 'Leave and time', 'Requests', 'Surveys'], { timeout: 60_000 });
 });
 
 test('a failed HR-requests read is never shown as "nothing needs your attention"', async ({ page }) => {

@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Performance;
@@ -39,6 +40,7 @@ public class ProbationController : ControllerBase
     public static readonly string[] AllowedHrDecisions = ["Confirmed", "Extended", "Terminated"];
 
     [HttpGet]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
         [FromQuery] int? employeeId,
@@ -58,14 +60,13 @@ public class ProbationController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
-        var r = await _db.ProbationReviews
-            .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
-        if (r is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        return scope.CanAccessEmployee(r.EmployeeId) ? Ok(r) : Forbid();
+        var r = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.ProbationReviews.Where(p => p.Id == id && p.TenantId == tenantId), p => p.EmployeeId, ct);
+        return r is null ? NotFound() : Ok(r);
     }
 
     [HttpPost]
@@ -73,13 +74,23 @@ public class ProbationController : ControllerBase
     public async Task<IActionResult> Create([FromBody] ProbationRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        // The employee must exist in this tenant AND be in the caller's scope (a company-A HR Officer
+        // cannot open a probation review on company B's employee). Out of scope is a 404 like a wrong id.
+        // The name, department and designation are read from the employee record, never from the body.
+        var employee = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.Employees.AsNoTracking().Where(e => e.Id == req.EmployeeId && e.TenantId == tenantId && !e.IsDeleted),
+            e => e.Id, ct);
+        if (employee is null)
+            return NotFound(new { error = "employee_not_found", message = "Employee was not found." });
+        if (req.ProbationEndDate < req.ProbationStartDate)
+            return BadRequest(new { error = "invalid_date_range", message = "Probation end date must be on or after its start date." });
         var rev = new ProbationReview
         {
             TenantId           = tenantId,
-            EmployeeId         = req.EmployeeId,
-            EmployeeName       = req.EmployeeName,
-            DepartmentName     = req.DepartmentName,
-            DesignationTitle   = req.DesignationTitle,
+            EmployeeId         = employee.Id,
+            EmployeeName       = employee.FullName,
+            DepartmentName     = employee.Department ?? string.Empty,
+            DesignationTitle   = employee.Designation ?? string.Empty,
             ProbationStartDate = req.ProbationStartDate,
             ProbationEndDate   = req.ProbationEndDate,
             ReviewDueDate      = req.ReviewDueDate,
@@ -103,8 +114,7 @@ public class ProbationController : ControllerBase
         // action. An unrecognised word here would arrive at HR as an unreadable instruction.
         if (req.Recommendation is not ("Confirm" or "Extend" or "Terminate"))
             return BadRequest(new { error = "invalid_recommendation", message = "Recommendation must be Confirm, Extend, or Terminate." });
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(r.EmployeeId)) return Forbid();
+        if (!await _scopeService.InScopeAsync(User, tenantId, r.EmployeeId, ct)) return NotFound();
 
         r.PerformanceSummary           = req.PerformanceSummary;
         r.OverallRating                = req.OverallRating;
@@ -167,8 +177,7 @@ public class ProbationController : ControllerBase
         var r = await _db.ProbationReviews
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (r is null) return NotFound();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if (!scope.CanAccessEmployee(r.EmployeeId)) return Forbid();
+        if (!await _scopeService.InScopeAsync(User, tenantId, r.EmployeeId, ct)) return NotFound();
         if (r.Status == "HRApproved" || r.Status == "Closed")
             return Conflict(new { error = "already_decided", message = $"This probation review is already '{r.Status}' with decision '{r.HrDecision}'." });
 

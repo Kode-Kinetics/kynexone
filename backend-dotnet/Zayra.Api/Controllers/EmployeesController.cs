@@ -18,6 +18,8 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Benefits;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
@@ -56,7 +58,8 @@ public class EmployeesController : ControllerBase
         // without this entry that write would have skipped the approval gosiReference always required.
         "socialInsuranceReference",
         // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
-        "bankRoutingCode", "accountNumber"
+        "bankRoutingCode", "accountNumber",
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown"
     };
 
     private readonly ZayraDbContext _db;
@@ -1721,6 +1724,11 @@ public class EmployeesController : ControllerBase
             var importedAtUtc = DateTime.UtcNow;
             foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
                 _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
+
+            // New imported hires get the same grade defaults as form-created employees. Existing
+            // records and their HR exceptions are not rewritten by an import/repair operation.
+            await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsForEmployeesAsync(
+                _db, createdRowMeta.Select(m => m.Emp).ToList(), GetUserId(), ct);
 
             // Every created row with a work email gets its staged login (contract §3), in this same transaction. A row
             // whose address is on the wrong domain, already someone's login, … gets none and shows as blocked.
@@ -3515,6 +3523,8 @@ public class EmployeesController : ControllerBase
                 {
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
+                    await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
+                        _db, employee, requestContext.UserId, ct);
 
                     foreach (var document in draftDocuments)
                     {
@@ -3684,21 +3694,37 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
-        // A WORK-EMAIL edit runs in ONE explicit transaction: the employee row lock WorkEmailLoginGuard takes holds to
-        // commit (serialising with invitations, links and reset links, which read the setter under the same lock), and
-        // the new address commits together with its employee.work_email_changed row — never one without the other.
+        // Work-email and draft entitlement edits commit atomically with their audit/default rows.
+        // Placement edits also serialize with activation and individual benefit writers.
+        var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
         if (!_db.Database.IsRelational()
-            || !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase)))
+            || (!placementEdit && !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))))
             return await UpdateEmployeeCoreAsync(id, request, cancellationToken);
 
         IActionResult? result = null;
+        var operationId = Guid.NewGuid();
+        var tenantId = RequireTenant();
         await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
             _db.ChangeTracker.Clear();
+            // A lost COMMIT acknowledgement must not duplicate a mixed grade + salary approval.
+            if (placementEdit && result is not null && await _db.AuditLogs.AsNoTracking()
+                .AnyAsync(x => x.Id == operationId && x.TenantId == tenantId, cancellationToken)) return;
             await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
             result = await UpdateEmployeeCoreAsync(id, request, cancellationToken);
             if (result is ObjectResult { StatusCode: >= 200 and < 300 } or OkResult or AcceptedResult)
+            {
+                if (placementEdit)
+                {
+                    var companyId = await _db.Employees.Where(x => x.Id == id && x.TenantId == tenantId)
+                        .Select(x => x.CompanyId).SingleAsync(cancellationToken);
+                    _db.AuditLogs.Add(new AuditLog { Id = operationId, TenantId = tenantId, CompanyId = companyId,
+                        UserId = GetUserId(), EntityName = nameof(Employee), EntityId = id.ToString(),
+                        Action = "employee.draft_benefits.update_committed" });
+                    await _db.SaveChangesAsync(cancellationToken);
+                }
                 await transaction.CommitAsync(cancellationToken);
+            }
             else
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -3711,7 +3737,21 @@ public class EmployeesController : ControllerBase
     private async Task<IActionResult> UpdateEmployeeCoreAsync(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+        var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
+        if (placementEdit && _db.Database.IsRelational())
+        {
+            var employeeKey = await _db.Employees.AsNoTracking()
+                .Where(x => x.Id == id && x.TenantId == tenantId).Select(x => (Guid?)x.PublicId)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (employeeKey is null) return NotFound();
+            await FinanceDecisionSerializer.AcquireAsync(_db, AdditionalBenefitGrants.LockScope,
+                tenantId, employeeKey.Value, cancellationToken);
+            await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+        }
+        var employeeQuery = _db.Employees.AsQueryable();
+        if (placementEdit) employeeQuery = employeeQuery.TagWith(RowLockingInterceptor.ForUpdateTag);
+        var employee = await employeeQuery.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
@@ -3736,6 +3776,30 @@ public class EmployeesController : ControllerBase
             return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " No change was applied." });
         }
         var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
+        if (sensitive.Count > 0 && !CanEditSensitive()) return Forbid();
+        // Rich payroll edits use the same approval route, but malformed values must never become
+        // unapplyable approvals. Validate the complete package before any immediate field is written.
+        try
+        {
+            foreach (var key in new[] { "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod" })
+            {
+                if (!request.Changes.TryGetValue(key, out var value)) continue;
+                if (value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null) || value.GetString()?.Length > 180)
+                    throw new InvalidOperationException($"{key} must be text of 180 characters or fewer.");
+                if (key == "salaryCurrency" && (value.GetString() is not { Length: 3 } currency || !currency.All(c => c is >= 'A' and <= 'Z')))
+                    throw new InvalidOperationException("Salary currency must be a three-letter uppercase currency code.");
+            }
+            await EmployeeSalaryBreakdownChanges.ValidateAsync(_db, employee, request.Changes, cancellationToken);
+            if (request.Changes.TryGetValue(EmployeeSalaryBreakdownChanges.Key, out var package))
+            {
+                var salaryDate = EmployeeSalaryBreakdownChanges.Read(package).EffectiveDate!.Value;
+                if (request.EffectiveDate != salaryDate)
+                    throw new InvalidOperationException("The change effective date must match the salary package effective date.");
+                if (salaryDate > DateOnly.FromDateTime(DateTime.UtcNow) && sensitive.Any(key => key != EmployeeSalaryBreakdownChanges.Key))
+                    throw new InvalidOperationException("Save a future salary package separately from other approval-required changes.");
+            }
+        }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
         if (request.Changes.TryGetValue("gosiFirstRegisteredOn", out var gosiFirstRegisteredOn)
@@ -3746,6 +3810,7 @@ public class EmployeesController : ControllerBase
         // resulting (department, designation) pair change routes through the guard on BOTH
         // persistence branches below (department/designation are not SensitiveFields, so they ride
         // the immediate branch even when mixed with sensitive fields).
+        var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
         // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
@@ -3756,7 +3821,6 @@ public class EmployeesController : ControllerBase
         {
             if (sensitive.Count > 0)
             {
-                if (!CanEditSensitive()) return Forbid();
                 var sensitiveChanges = request.Changes
                     .Where(x => SensitiveFields.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
@@ -3789,6 +3853,8 @@ public class EmployeesController : ControllerBase
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
+                    await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
                     await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
@@ -3849,6 +3915,8 @@ public class EmployeesController : ControllerBase
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
+            await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "Updated", request.EffectiveDate, cancellationToken);
@@ -3874,6 +3942,21 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
+    {
+        if (!changedFields.Contains("grade") || employee.Status != "Draft" || employee.ActivatedAtUtc is not null) return;
+        var term = employee.Grade.Trim();
+        if (term.Length == 0) { employee.GradeId = null; return; }
+        var candidates = await _db.Grades.AsNoTracking()
+            .Where(x => x.TenantId == employee.TenantId && x.IsActive && !x.IsDeleted
+                && (x.Code.ToLower() == term.ToLower() || x.Name.ToLower() == term.ToLower()))
+            .Take(2).ToListAsync(ct);
+        if (candidates.Count != 1)
+            throw new InvalidOperationException("Select one active grade from company master data before changing this draft employee's benefits.");
+        employee.GradeId = candidates[0].Id;
+        employee.Grade = candidates[0].Code;
     }
 
     /// <summary>F02 — a GOSI first-registration date is null (clear it back to Unknown) or an ISO calendar
@@ -4501,6 +4584,8 @@ public class EmployeesController : ControllerBase
             approval.Status = "Cancelled";
             approval.CompletedAtUtc = effectiveAt;
         }
+        // CMP: a merit worksheet whose approval was just closed goes back to Returned instead of staying Submitted.
+        await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.OnApprovalsClosedAsync(_db, tenantId, pendingApprovals, cancelReason, actorUserId: null, ct);
 
         var cancelledApprovalIds = pendingApprovals.Select(x => x.Id).ToHashSet();
         var assignedApprovals = await _db.ApprovalRequests
@@ -5540,6 +5625,25 @@ public class EmployeesController : ControllerBase
         await ResolveOne("branch", "Branch", draft.Branch,
             async () => (branchId, branchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, ct));
 
+        // Older drafts store a grade as text. Resolve the stable ID before provisioning benefits,
+        // retaining unrecognised legacy text rather than guessing at an entitlement-bearing grade.
+        var activeGrades = await _db.Grades.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+            .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
+        var gradeText = draft.Grade?.Trim() ?? string.Empty;
+        var gradeMatches = activeGrades.Where(x => string.Equals(x.Code, gradeText, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (gradeMatches.Count == 0 && gradeText.Length > 0)
+            gradeMatches = activeGrades.Where(x => string.Equals(x.Name, gradeText, StringComparison.OrdinalIgnoreCase)).ToList();
+        Guid? gradeId = gradeMatches.Count == 1 ? gradeMatches[0].Id : null;
+        if (gradeText.Length == 0 && desigId.HasValue)
+        {
+            var designationGradeId = await _db.Designations.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == desigId.Value && x.IsActive && !x.IsDeleted)
+                .Select(x => x.GradeId).SingleOrDefaultAsync(ct);
+            gradeId = activeGrades.FirstOrDefault(x => x.Id == designationGradeId)?.Id;
+        }
+        var gradeCode = activeGrades.FirstOrDefault(x => x.Id == gradeId)?.Code ?? draft.Grade ?? string.Empty;
+
         Guid? companyId = null;
         if (branchId.HasValue)
         {
@@ -5590,12 +5694,12 @@ public class EmployeesController : ControllerBase
                 .Select(x => x.CountryCode)
                 .FirstOrDefaultAsync(ct) ?? string.Empty
             : string.Empty;
-        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId, companyCountryCode);
+        return new DraftPlacement(deptId, deptName, desigId, desigTitle, branchId, branchName, companyId, companyCountryCode, gradeId, gradeCode);
     }
 
     private sealed record DraftPlacement(
         Guid? DepartmentId, string DepartmentName, Guid? DesignationId, string DesignationTitle,
-        Guid? BranchId, string BranchName, Guid? CompanyId, string CompanyCountryCode);
+        Guid? BranchId, string BranchName, Guid? CompanyId, string CompanyCountryCode, Guid? GradeId, string GradeCode);
 
     /// <summary>The employee record a draft becomes (without its code, which is allocated under the
     /// tenant lock). Shared by approval and the review screen's activation check.</summary>
@@ -5630,7 +5734,8 @@ public class EmployeesController : ControllerBase
         Status = EmployeeStatuses.Active,
         JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
         ContractType = draft.ContractType,
-        Grade = draft.Grade,
+        Grade = placement.GradeCode,
+        GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,
         ContractStartDate = draft.ContractStartDate,
         ContractEndDate = draft.ContractEndDate,
@@ -5988,6 +6093,7 @@ public class EmployeesController : ControllerBase
         // Payroll-profile bank columns the WPS/SIF export reads; approval-gated (SensitiveFields) and applied by
         // EmployeeChangeApplier.ApplyPayrollProfileAsync.
         "bankRoutingCode", "accountNumber",
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
     };
 
     /// <summary>

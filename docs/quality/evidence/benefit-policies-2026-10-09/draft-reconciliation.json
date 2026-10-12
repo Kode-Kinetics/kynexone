@@ -1,0 +1,34 @@
+{
+  "status": "passed",
+  "sourceCommit": "85df1fafc943e4d808358c9e250b0eb742e431d4",
+  "employeeId": 17,
+  "checks": [
+    {
+      "check": "Creation automatically assigns grade defaults",
+      "passed": true
+    },
+    {
+      "check": "Draft grade and date resolve to current eligible defaults",
+      "passed": true
+    },
+    {
+      "check": "Old defaults remain terminal history with unchanged terms",
+      "passed": true
+    },
+    {
+      "check": "Identical repeat edit does not create duplicate enrollments",
+      "passed": true
+    },
+    {
+      "check": "Returning to earlier grade creates fresh defaults and preserves history",
+      "passed": true
+    },
+    {
+      "check": "Individual exception blocks placement edit atomically",
+      "passed": true
+    }
+  ],
+  "utc": "2026-10-09T19:40:01.955001+00:00",
+  "runtimeCommit": "56920f11c5972dfb926be0739332d89ec8f78c06",
+  "note": "Application source unchanged between runtime commit and source commit; subsequent change only corrected regression test dates."
+}

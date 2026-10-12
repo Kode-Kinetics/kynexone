@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/auth/authStore';
 import { AuthStack } from './AuthStack';
 import { MainTabs } from './MainTabs';
 import { navigationRef } from './routes';
-import { GlassSurface, LiquidBackdrop } from '@/components/ui';
+import { LiquidBackdrop, Surface } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
@@ -13,6 +14,7 @@ import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize } = useAuthStore();
   const { theme } = useTheme();
+  const { t } = useTranslation();
 
   useEffect(() => {
     void initialize();
@@ -21,7 +23,7 @@ export function RootNavigator() {
   const navigationTheme = useMemo(() => ({
     dark: theme.isDark,
     colors: {
-      primary: theme.colors.primary,
+      primary: theme.colors.accent,
       background: theme.colors.canvas,
       card: theme.colors.surfaceStrong,
       text: theme.colors.text,
@@ -37,15 +39,18 @@ export function RootNavigator() {
     return (
       <View style={[styles.loading, { backgroundColor: theme.colors.canvas }]}>
         <LiquidBackdrop />
-        <GlassSurface style={styles.loadingCard} contentStyle={styles.loadingContent} radius={28}>
-          <View style={[styles.mark, { backgroundColor: theme.colors.primary }]}>
-            <Text style={styles.markText}>K</Text>
+        <Surface style={styles.loadingCard} contentStyle={styles.loadingContent} radius={theme.radius.xl}>
+          <View style={[styles.mark, { backgroundColor: theme.colors.primaryFill }]}>
+            <Text accessible={false} style={styles.markText}>K</Text>
           </View>
-          <ActivityIndicator color={theme.colors.cyan} size="small" />
-          <Text style={[theme.typography.caption, { color: theme.colors.textSecondary }]}>
-            Preparing your secure workspace…
+          <ActivityIndicator color={theme.colors.accent} size="small" />
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[theme.typography.footnote, styles.center, { color: theme.colors.textSecondary }]}
+          >
+            {t('kit.preparing')}
           </Text>
-        </GlassSurface>
+        </Surface>
       </View>
     );
   }
@@ -71,4 +76,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   markText: { color: '#FFFFFF', fontSize: 34, fontWeight: '800', letterSpacing: -1 },
+  center: { textAlign: 'center' },
 });

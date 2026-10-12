@@ -1,143 +1,178 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import React, { useContext, useEffect, useState } from 'react';
+import { I18nManager, Keyboard, LayoutChangeEvent, Platform, StyleSheet, Text, View } from 'react-native';
+import { BottomTabBarHeightCallbackContext, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, {
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
+import { useTranslation } from 'react-i18next';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface, MotionPressable } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
+import { motion } from '@/theme/motion';
+import { TAB_BAR_HEIGHT, tabBarBottomOffset, useTabBarInset } from './tabBarInset';
 
-const icons: Record<string, { active: any; inactive: any; label: string }> = {
-  Home: { active: 'home', inactive: 'home-outline', label: 'Home' },
-  Attendance: { active: 'location', inactive: 'location-outline', label: 'Attendance' },
-  Leave: { active: 'calendar', inactive: 'calendar-outline', label: 'Leave' },
-  Payslips: { active: 'wallet', inactive: 'wallet-outline', label: 'Payslips' },
-  Team: { active: 'people', inactive: 'people-outline', label: 'Team' },
-  Approvals: { active: 'checkmark-done', inactive: 'checkmark-done-outline', label: 'Approvals' },
-  More: { active: 'grid', inactive: 'grid-outline', label: 'More' },
-  Punch: { active: 'finger-print', inactive: 'finger-print-outline', label: 'Punch' },
-  Account: { active: 'person-circle', inactive: 'person-circle-outline', label: 'Account' },
+export { TAB_BAR_HEIGHT, useTabBarInset } from './tabBarInset';
+
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
+type NavKey = 'home' | 'attendance' | 'leave' | 'payslips' | 'team' | 'approvals' | 'more' | 'punch' | 'account';
+
+const TABS: Record<string, { active: IconName; inactive: IconName; labelKey: NavKey }> = {
+  Home: { active: 'home', inactive: 'home-outline', labelKey: 'home' },
+  Attendance: { active: 'location', inactive: 'location-outline', labelKey: 'attendance' },
+  Leave: { active: 'calendar', inactive: 'calendar-outline', labelKey: 'leave' },
+  Payslips: { active: 'wallet', inactive: 'wallet-outline', labelKey: 'payslips' },
+  Team: { active: 'people', inactive: 'people-outline', labelKey: 'team' },
+  Approvals: { active: 'checkmark-done', inactive: 'checkmark-done-outline', labelKey: 'approvals' },
+  More: { active: 'grid', inactive: 'grid-outline', labelKey: 'more' },
+  Punch: { active: 'finger-print', inactive: 'finger-print-outline', labelKey: 'punch' },
+  Account: { active: 'person-circle', inactive: 'person-circle-outline', labelKey: 'account' },
 };
 
+const INNER_PAD = 6;
+
+function useKeyboardShown(): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    // iOS: the keyboard covers the bar. Android (adjustResize) would lift it above the keyboard.
+    if (Platform.OS !== 'android') return;
+    const a = Keyboard.addListener('keyboardDidShow', () => setShown(true));
+    const b = Keyboard.addListener('keyboardDidHide', () => setShown(false));
+    return () => {
+      a.remove();
+      b.remove();
+    };
+  }, []);
+  return shown;
+}
+
+/**
+ * Floating capsule tab bar on real glass, with one selection lens that slides between tabs.
+ * The wrapper is transparent and absolutely positioned; MainTabs reserves the space it covers.
+ */
 export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
-  const { theme } = useTheme();
+  const { theme, reduceMotion } = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const inset = useTabBarInset();
+  const reportHeight = useContext(BottomTabBarHeightCallbackContext);
+  const keyboardShown = useKeyboardShown();
+  const [rowWidth, setRowWidth] = useState(0);
+  const count = state.routes.length;
+  const itemWidth = count ? (rowWidth - INNER_PAD * 2) / count : 0;
+  const lensX = useSharedValue(0);
+  const direction = I18nManager.isRTL ? -1 : 1;
+
+  // useBottomTabBarHeight() keeps working for any screen that asks.
+  useEffect(() => {
+    reportHeight?.(inset);
+  }, [inset, reportHeight]);
+
+  useEffect(() => {
+    const target = direction * state.index * itemWidth;
+    lensX.value = reduceMotion || !itemWidth ? target : withSpring(target, motion.springs.snappy);
+  }, [direction, itemWidth, lensX, reduceMotion, state.index]);
+
+  const lensStyle = useAnimatedStyle(() => ({ transform: [{ translateX: lensX.value }] }));
+
+  if (keyboardShown) return null;
 
   return (
     <View
-      style={[
-        styles.safeArea,
-        {
-          paddingBottom: Math.max(insets.bottom, 8),
-          backgroundColor: theme.colors.canvas,
-        },
-      ]}
+      pointerEvents="box-none"
+      style={[styles.wrapper, { bottom: tabBarBottomOffset(insets.bottom) }]}
     >
       <GlassSurface
-        interactive
-        radius={theme.radius.xxl}
+        glass
+        radius={TAB_BAR_HEIGHT / 2}
+        elevated
         style={styles.bar}
         contentStyle={styles.row}
-        tintColor={theme.isDark ? 'rgba(25,57,112,0.22)' : 'rgba(255,255,255,0.40)'}
       >
-        {state.routes.map((route, index) => {
-          const focused = state.index === index;
-          const descriptor = descriptors[route.key];
-          const meta = icons[route.name] ?? {
-            active: 'ellipse',
-            inactive: 'ellipse-outline',
-            label: descriptor.options.title ?? route.name,
-          };
+        <View
+          accessibilityRole="tablist"
+          accessibilityLabel={t('nav.tabsLabel')}
+          style={styles.items}
+          onLayout={(e: LayoutChangeEvent) => setRowWidth(e.nativeEvent.layout.width)}
+        >
+          {itemWidth > 0 ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.lens,
+                { width: itemWidth, backgroundColor: theme.isDark ? 'rgba(124,155,255,0.18)' : 'rgba(49,87,232,0.10)' },
+                lensStyle,
+              ]}
+            />
+          ) : null}
+          {state.routes.map((route, index) => {
+            const focused = state.index === index;
+            const options = descriptors[route.key].options;
+            const meta = TABS[route.name];
+            const label = meta
+              ? t(`nav.${meta.labelKey}`)
+              : typeof options.tabBarLabel === 'string'
+                ? options.tabBarLabel
+                : options.title ?? route.name;
 
-          const onPress = () => {
-            const event = navigation.emit({
-              type: 'tabPress',
-              target: route.key,
-              canPreventDefault: true,
-            });
-            if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
-          };
+            const onPress = () => {
+              const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+              if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
+            };
+            const onLongPress = () => navigation.emit({ type: 'tabLongPress', target: route.key });
 
-          return (
-            <MotionPressable
-              key={route.key}
-              accessibilityRole="tab"
-              accessibilityState={focused ? { selected: true } : {}}
-              accessibilityLabel={descriptor.options.tabBarAccessibilityLabel ?? meta.label}
-              onPress={onPress}
-              haptic="selection"
-              style={styles.item}
-              contentStyle={styles.itemPressable}
-            >
-              <AnimatedTabIcon focused={focused}>
-                <Ionicons
-                  name={focused ? meta.active : meta.inactive}
-                  size={22}
-                  color={focused ? theme.colors.primary : theme.colors.textMuted}
-                />
-              </AnimatedTabIcon>
-              <Text
-                numberOfLines={2}
-                style={[
-                  styles.label,
-                  {
-                    color: focused ? theme.colors.text : theme.colors.textMuted,
-                    fontWeight: focused ? '700' : '500',
-                  },
-                ]}
+            return (
+              <MotionPressable
+                key={route.key}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: focused }}
+                accessibilityLabel={options.tabBarAccessibilityLabel ?? label}
+                testID={options.tabBarTestID}
+                onPress={onPress}
+                onLongPress={onLongPress}
+                haptic={focused ? 'none' : 'selection'}
+                style={styles.item}
+                contentStyle={styles.itemBody}
               >
-                {meta.label}
-              </Text>
-            </MotionPressable>
-          );
-        })}
+                <Ionicons
+                  accessible={false}
+                  name={meta ? (focused ? meta.active : meta.inactive) : focused ? 'ellipse' : 'ellipse-outline'}
+                  size={22}
+                  color={focused ? theme.colors.accent : theme.colors.textSecondary}
+                />
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
+                  maxFontSizeMultiplier={1.3}
+                  style={[
+                    styles.label,
+                    { color: focused ? theme.colors.accent : theme.colors.textSecondary },
+                  ]}
+                >
+                  {label}
+                </Text>
+              </MotionPressable>
+            );
+          })}
+        </View>
       </GlassSurface>
     </View>
   );
 }
 
-function AnimatedTabIcon({ focused, children }: { focused: boolean; children: React.ReactNode }) {
-  const { theme, reduceMotion } = useTheme();
-  const selection = useSharedValue(focused ? 1 : 0);
-
-  useEffect(() => {
-    selection.value = reduceMotion
-      ? focused ? 1 : 0
-      : withSpring(focused ? 1 : 0, { damping: 15, stiffness: 240, mass: 0.68 });
-  }, [focused, reduceMotion, selection]);
-
-  const motion = useAnimatedStyle(() => ({
-    transform: [
-      { translateY: interpolate(selection.value, [0, 1], [0, -3]) },
-      { scale: interpolate(selection.value, [0, 1], [1, 1.1]) },
-    ],
-    opacity: interpolate(selection.value, [0, 1], [0.82, 1]),
-  }));
-
-  return (
-    <Animated.View
-      style={[
-        styles.iconWrap,
-        focused && { backgroundColor: theme.colors.surfaceSoft },
-        motion,
-      ]}
-    >
-      {children}
-    </Animated.View>
-  );
-}
-
 const styles = StyleSheet.create({
-  safeArea: { paddingHorizontal: 12, paddingTop: 8 },
-  bar: { minHeight: 68 },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 7 },
+  wrapper: { position: 'absolute', start: 0, end: 0, paddingHorizontal: 16, backgroundColor: 'transparent' },
+  bar: { height: TAB_BAR_HEIGHT },
+  row: { justifyContent: 'center' },
+  items: { flex: 1, flexDirection: 'row', alignItems: 'stretch', padding: INNER_PAD },
+  lens: {
+    position: 'absolute',
+    top: INNER_PAD,
+    bottom: INNER_PAD,
+    start: INNER_PAD,
+    borderRadius: (TAB_BAR_HEIGHT - INNER_PAD * 2) / 2,
+  },
   item: { flex: 1 },
-  itemPressable: { alignItems: 'center', justifyContent: 'center', minHeight: 54, gap: 2 },
-  iconWrap: { width: 38, height: 32, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  label: { fontSize: 11, lineHeight: 14, textAlign: 'center' },
+  itemBody: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 1, paddingHorizontal: 2 },
+  // Constant weight: the selected tab never changes width.
+  label: { fontSize: 11, lineHeight: 13, fontWeight: '600', textAlign: 'center' },
 });

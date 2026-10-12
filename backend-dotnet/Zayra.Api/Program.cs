@@ -291,7 +291,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 }
             }
         };
-    });
+    })
+    // ERP machine access. NOT a default scheme: it authenticates only on actions carrying
+    // [ErpApiKeyAccess] (see Infrastructure/Auth/ErpApiKeys.cs for the three locks).
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, ErpApiKeyAuthenticationHandler>(
+        ErpApiKeyDefaults.Scheme, _ => { });
+builder.Services.AddSingleton<ErpApiKeyValidator>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ErpApiKeyScopeAuthorizationHandler>();
 builder.Services.AddAuthorization(options =>
 {
     // PlatformAdmin: must carry both the platform-admin claim AND the platform audience.
@@ -435,6 +441,7 @@ builder.Services.AddScoped<IAiAdvisoryService, AiAdvisoryService>();
 builder.Services.AddScoped<Zayra.Api.Application.Shifts.IRosterPlannerService, Zayra.Api.Infrastructure.Shifts.RosterPlannerService>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupStatutoryDefaults, Zayra.Api.Infrastructure.Setup.SetupStatutoryDefaults>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupAssistantService, Zayra.Api.Infrastructure.Setup.SetupAssistantService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Setup.PolicyExtractionService>();
 builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiService, Zayra.Api.Infrastructure.Recruitment.RecruitmentAiService>();
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();
 builder.Services.AddScoped<IQiwaIntegrationService, QiwaIntegrationService>();
@@ -459,6 +466,22 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFor
     Zayra.Api.Infrastructure.Finance.QuickBooksIifJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
     Zayra.Api.Infrastructure.Finance.OracleGlInterfaceCsvFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.OracleFusionFbdiJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.SapS4GeneralJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.D365GeneralJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.OdooAccountMoveFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.NetSuiteJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.XeroManualJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.ZohoBooksJournalFormatter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
+    Zayra.Api.Infrastructure.Finance.QuickBooksOnlineJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
     Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
@@ -573,6 +596,18 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
+// CMP — merit planning, pay benchmarks, pay equity (opt-in feature 'compensation').
+Zayra.Api.Infrastructure.Compensation.CompensationServiceCollectionExtensions.AddCompensation(builder.Services);
+// LRN — learning management: every registration (services, sweep worker, the cmi5 CORS provider) in one extension.
+// Gated per tenant by the learning opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearning(builder.Services, builder.Configuration);
+// SUC — succession and career development: services, the eligibility sweep, the LRN completion listener and the retention
+// rule, in one extension. Gated per tenant by the succession opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Succession.SuccessionServiceCollectionExtensions.AddSuccession(builder.Services, builder.Configuration);
+
+// ENG — engagement surveys (services, the survey worker and the comment retention rule). Gated per tenant by the
+// opt-in `engagement` flag (OptInFeatures): off unless the platform enables it.
+Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEngagement(builder.Services);
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
@@ -752,6 +787,22 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // ERP API keys: a budget per presented key (partitioned by the key's hash, never its non-secret
+    // prefix, so knowing a prefix does not let anyone drain another tenant's budget). Requests without a
+    // key — people using the same endpoints — are not limited by this policy.
+    o.AddPolicy(ErpApiKeyDefaults.RateLimitPolicy, ctx =>
+        ErpApiKeyCodec.TryRead(ctx.Request, out var presentedKey, out _)
+            ? RateLimitPartition.GetFixedWindowLimiter(
+                "erp:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(presentedKey)))[..24],
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit          = rl.GetValue("ErpApiKeyPermitLimit", 120),
+                    Window               = TimeSpan.FromSeconds(rl.GetValue("ErpApiKeyWindowSeconds", 60)),
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit           = 0,
+                })
+            : RateLimitPartition.GetNoLimiter("erp:none"));
+
     // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
     // prevent spam / storage-exhaustion since these insert rows without any auth.
     o.AddPolicy("public_write", ctx =>
@@ -771,6 +822,20 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "KynexOne Workforce API", Version = "v1" });
     options.CustomSchemaIds(Zayra.Api.Infrastructure.OpenApi.SwaggerSchemaIds.For);
+    // The ERP description: only the actions that accept an API key. Served in every environment by
+    // GET /api/finance/gl/api-keys/openapi.json; the full "v1" document stays Development-only.
+    options.SwaggerDoc(ErpApiKeyDefaults.OpenApiDocument, new OpenApiInfo
+    {
+        Title = "KynexOne ERP journal API",
+        Version = "v1",
+        Description = "Pull GL journal exports and record whether your ERP posted them. Authenticate with "
+            + "'Authorization: ApiKey kx_live_…' (or 'X-Api-Key'). Keys are created by an administrator under "
+            + "Setup → GL & rates → ERP API access.",
+    });
+    options.DocInclusionPredicate((document, api) => document == ErpApiKeyDefaults.OpenApiDocument
+        ? api.ActionDescriptor.EndpointMetadata.OfType<ErpApiKeyAccessAttribute>().Any()
+        : api.GroupName == null || api.GroupName == document);
+    options.DocumentFilter<Zayra.Api.Infrastructure.OpenApi.ErpApiKeyOpenApiFilter>();
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header using the Bearer scheme. Example: Bearer {token}",
@@ -842,6 +907,9 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors("kynexone");
+// Lock 1 for ERP API keys (and the per-call audit row): a key presented anywhere but an allow-listed
+// action is refused here, before rate limiting, authentication or the action.
+app.Use(ErpApiKeyRequestGuard.BeforeAuthentication);
 app.UseRateLimiter();
 if (app.Environment.IsDevelopment())
 {
@@ -858,6 +926,8 @@ app.UseTenantLogScope();
 app.Use((context, next) =>
     Zayra.Api.Infrastructure.Http.AudienceRouteGuard.InvokeAsync(context, next, jwtOptions.PlatformAudience));
 app.UseAuthorization();
+// Lock 3: an API-key principal never reaches an action that has not opted in.
+app.Use(ErpApiKeyRequestGuard.AfterAuthorization);
 app.MapControllers();
 app.MapGet("/health/live", () => Results.Ok(new
 {

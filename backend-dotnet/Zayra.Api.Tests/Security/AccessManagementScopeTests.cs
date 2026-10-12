@@ -178,7 +178,7 @@ public class AccessManagementScopeTests
             try
             {
                 await service.CreateUserAsync(w.TenantId,
-                    new CreateUserRequest(email, email, "StrongPassword!123", new[] { "Admin" }),
+                    new CreateUserRequest(email, email, "StrongPassword!123", new[] { "Admin" }, IsGroupScope: true),
                     new RequestContext("127.0.0.1", "tests", callerId, w.TenantId),
                     CancellationToken.None);
                 return null;
@@ -197,6 +197,78 @@ public class AccessManagementScopeTests
         await using var verify = _fx.CreateDb();
         (await verify.Users.CountAsync(x => x.TenantId == w.TenantId && x.IsActive
             && x.UserRoles.Any(ur => ur.Role!.NormalizedName == "ADMIN"))).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CreateCompanyAdministrator_CommitsRoleAndCompanyGrantAtomically()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var service = CreateService(db);
+        var email = $"company-admin-{Guid.NewGuid():N}@example.test";
+
+        var created = await service.CreateUserAsync(
+            w.TenantId,
+            new CreateUserRequest(email, "Company Administrator", "StrongPassword!123", new[] { "Admin" }, w.CompanyA),
+            new RequestContext("127.0.0.1", "tests", callerId, w.TenantId),
+            CancellationToken.None);
+
+        created.IsGroupScope.Should().BeFalse();
+        db.ChangeTracker.Clear();
+        var persisted = await db.Users.IgnoreQueryFilters().AsNoTracking()
+            .Include(user => user.UserRoles).ThenInclude(userRole => userRole.Role)
+            .Include(user => user.EntityAccesses)
+            .SingleAsync(user => user.Id == created.Id);
+        persisted.UserRoles.Should().ContainSingle(userRole => userRole.Role!.NormalizedName == "ADMIN");
+        persisted.EntityAccesses.Should().ContainSingle(grant =>
+            grant.IsActive
+            && grant.CompanyId == w.CompanyA
+            && grant.GrantMode == EntityGrantModes.SelectedCompanies
+            && grant.Role == "Company Administrator");
+    }
+
+    [Fact]
+    public async Task CreateGroupAdministrator_RequiresExplicitGroupScopeAndCreatesNoCompanyGrant()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var service = CreateService(db);
+        var email = $"group-admin-{Guid.NewGuid():N}@example.test";
+
+        var created = await service.CreateUserAsync(
+            w.TenantId,
+            new CreateUserRequest(email, "Group Administrator", "StrongPassword!123", new[] { "Admin" }, IsGroupScope: true),
+            new RequestContext("127.0.0.1", "tests", callerId, w.TenantId),
+            CancellationToken.None);
+
+        created.IsGroupScope.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        (await db.UserEntityAccesses.IgnoreQueryFilters().CountAsync(grant => grant.UserId == created.Id)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreateAdministrator_WithoutExplicitScope_IsRejectedBeforeMutation()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var service = CreateService(db);
+        var email = $"ambiguous-admin-{Guid.NewGuid():N}@example.test";
+
+        var act = () => service.CreateUserAsync(
+            w.TenantId,
+            new CreateUserRequest(email, "Ambiguous Administrator", "StrongPassword!123", new[] { "Admin" }),
+            new RequestContext("127.0.0.1", "tests", callerId, w.TenantId),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*explicitly grant group-wide access*");
+        (await db.Users.IgnoreQueryFilters().AnyAsync(user => user.TenantId == w.TenantId && user.Email == email)).Should().BeFalse();
     }
 
     private async Task<World> SeedWorld()

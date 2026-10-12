@@ -8,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
 
@@ -216,6 +217,26 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var callerScope = this.GetEntityScope();
+            var createsAdministrator = request.Roles.Any(role =>
+                string.Equals(role?.Trim(), "Admin", StringComparison.OrdinalIgnoreCase));
+            if (request.IsGroupScope && !this.HasGroupEntityScope()) return Forbid();
+            if (request.IsGroupScope && request.CompanyId.HasValue)
+                return BadRequest(new { message = "Choose either group-wide access or one company, not both." });
+            // An administrator without an explicit scope is a privilege-escalation ambiguity. Keep
+            // legacy non-admin service accounts compatible, while requiring every new Admin to be
+            // deliberately bound to either one company or the group.
+            if (createsAdministrator && !request.IsGroupScope && !request.CompanyId.HasValue)
+                return BadRequest(new { message = "Choose the company this administrator will support, or explicitly grant group-wide access." });
+            if (request.CompanyId.HasValue)
+            {
+                if (!callerScope.CanAccessCompany(request.CompanyId.Value)) return Forbid();
+                var targetExists = await ScopedBypass.TenantWide(_db.Companies, tenantId.Value,
+                        "Validate the authorised administrator target across the tenant company catalog.")
+                    .AsNoTracking()
+                    .AnyAsync(c => c.Id == request.CompanyId.Value && c.IsActive && !c.IsDeleted, cancellationToken);
+                if (!targetExists) return BadRequest(new { message = "Choose an active company in this workspace." });
+            }
 
             // Enforce user limit
             var sub = await _db.TenantSubscriptions

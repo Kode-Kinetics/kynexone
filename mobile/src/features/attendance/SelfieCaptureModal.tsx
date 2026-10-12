@@ -218,7 +218,7 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
           >
             <Ionicons name="close" size={24} color="#FFFFFF" />
           </MotionPressable>
-          <GlassSurface elevated={false} radius={999} tintColor="rgba(8,15,32,0.52)" contentStyle={styles.titlePill}>
+          <GlassSurface glass elevated={false} radius={999} tintColor="rgba(8,15,32,0.52)" contentStyle={styles.titlePill}>
             <Ionicons name="camera-outline" size={17} color="#A5F3FC" />
             <Text style={styles.titleText} numberOfLines={1}>{t('selfie.capture.title', { action })}</Text>
           </GlassSurface>
@@ -228,7 +228,13 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
         <View style={styles.flex} />
 
         <View style={[styles.bottom, { paddingBottom: Math.max(insets.bottom, 18) }]}>
-          <GlassSurface radius={26} tintColor="rgba(8,15,32,0.72)" contentStyle={styles.panel}>
+          <GlassSurface
+            glass
+            radius={26}
+            tintColor="rgba(8,15,32,0.72)"
+            style={styles.capturePanel}
+            contentStyle={styles.panel}
+          >
             {demoNotice ? (
               <View style={styles.demoRow} accessibilityLabel={demoNotice}>
                 <Ionicons name="warning-outline" size={15} color="#FCD34D" />
@@ -313,7 +319,7 @@ function TextAction({ label, onPress, disabled }: { label: string; onPress: () =
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#020617' },
   // Opaque: nothing of the camera or the photo shows through in the app-switcher snapshot.
-  cover: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: '#020617' },
+  cover: { position: 'absolute', top: 0, bottom: 0, start: 0, end: 0, backgroundColor: '#020617' },
   flex: { flex: 1 },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, gap: 10 },
   iconButton: {
@@ -328,6 +334,7 @@ const styles = StyleSheet.create({
   titlePill: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingVertical: 9, flexShrink: 1 },
   titleText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', flexShrink: 1 },
   bottom: { paddingHorizontal: 16 },
+  capturePanel: { width: '100%' },
   panel: { padding: 18, gap: 14 },
   heading: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
   body: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },

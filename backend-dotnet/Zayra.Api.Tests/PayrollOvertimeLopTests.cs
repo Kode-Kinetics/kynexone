@@ -89,7 +89,7 @@ public class PayrollOvertimeLopTests
         Assert.NotNull(lopLine);
         Assert.Equal(expectedLop, lopLine.Amount);
 
-        // Source must be "Attendance" for GL routing to account 2104
+        // Source must be "Attendance" for GL routing to DED:ATTENDANCE (5008 contra-expense)
         Assert.Equal("Attendance", lopLine.Source);
     }
 

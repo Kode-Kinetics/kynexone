@@ -41,3 +41,6 @@ database/DANGER_*
 KynexOne-QA-Report
 # Local developer Makefile (Docker helpers), not shared.
 Makefile
+
+# Local document storage written by a running API (e2e / acceptance stacks); never committed
+backend-dotnet/Zayra.Api/storage/

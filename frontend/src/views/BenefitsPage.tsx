@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, CircleSlash, HeartPulse, Link2, Loader2, Pencil, Plus, RefreshCw, Search, ShieldCheck, UserPlus, X, XCircle,
+  AlertTriangle, CheckCircle2, CircleSlash, HeartPulse, Loader2, Pencil, Plus, RefreshCw, Search, ShieldCheck, UserPlus, XCircle,
 } from 'lucide-react';
 import {
   benefitsApi, benefitsErrorMessage,
-  type BenefitDeductionCandidate, type BenefitEligibilityCheck, type BenefitEligibilityRule,
-  type BenefitEnrollment, type BenefitEnrollmentDetail, type BenefitPlan,
+  type BenefitEligibilityCheck, type BenefitEligibilityRule,
+  type BenefitEnrollment, type BenefitPlan,
 } from '@/src/api/benefits';
 import { employeesApi, type EmployeeListItem } from '@/src/api/employees';
 import { gradesApi, type GradeDto } from '@/src/api/organization';
@@ -17,63 +17,37 @@ import { useAppToast } from '@/src/components/ui/AppToast';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useReleaseA } from '@/src/lib/releaseA';
 import Link from 'next/link';
+import type { BenefitEmployee } from '@/src/components/benefits/AdditionalBenefitForm';
+import { BenefitChecklist } from '@/src/components/benefits/BenefitChecklist';
+import { AdditionalBenefitRequestDetail } from '@/src/components/benefits/AdditionalBenefitRequestDetail';
+import { AdditionalBenefitApprovalSetup } from '@/src/components/benefits/AdditionalBenefitApprovalSetup';
+import { BenefitPaymentPolicyEditor, BenefitPolicySummary, DEFAULT_PAYMENT_POLICY } from '@/src/components/benefits/BenefitPaymentPolicy';
+import { AssignmentLabel, EnrollmentDrawer } from '@/src/components/benefits/BenefitEnrollmentDrawer';
+import { INPUT, LABEL, PRIMARY, SECONDARY, CARD, COVERAGE_TIERS, today, enrollmentStatus, StatusPill, Modal, FormError } from '@/src/components/benefits/benefitUi';
 
 // ── shared styling ──────────────────────────────────────────────────────────────
 
-const INPUT = 'mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-100';
-const LABEL = 'block text-xs font-medium text-slate-600 dark:text-slate-300';
-const PRIMARY = 'flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-2 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50';
-const SECONDARY = 'flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.08]';
-const CARD = 'rounded-2xl border border-slate-200/80 bg-white dark:border-white/[0.06] dark:bg-white/[0.03]';
-
-const PLAN_TYPES = ['Medical', 'Dental', 'Life', 'Vision', 'Pension', 'Education', 'Housing', 'Transport', 'Other'];
-const COVERAGE_TIERS = ['Employee', 'Employee + Spouse', 'Employee + Children', 'Family'];
-const today = () => new Date().toISOString().slice(0, 10);
+const PLAN_TYPES = ['Medical', 'Dental', 'Life', 'Vision', 'Pension', 'Education', 'Housing', 'Transport', 'Allowance', 'Reimbursement', 'Custom'];
 const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const range = (from: string, to: string | null) => `${from} → ${to ?? 'open-ended'}`;
-
-function StatusPill({ active, label }: { active: boolean; label?: string }) {
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${active
-      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[0.12] dark:text-emerald-300'
-      : 'bg-slate-200 text-slate-600 dark:bg-white/[0.08] dark:text-slate-300'}`}>
-      {label ?? (active ? 'Active' : 'Inactive')}
-    </span>
-  );
-}
-
-function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label={title}>
-      <div className={`max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-white/[0.08] dark:bg-[#0c1120] ${wide ? 'max-w-2xl' : 'max-w-md'}`}>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{title}</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]"><X className="h-4 w-4" /></button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function FormError({ message }: { message: string | null }) {
-  if (!message) return null;
-  return <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:bg-rose-500/[0.08] dark:text-rose-300">{message}</p>;
-}
 
 // ── page ────────────────────────────────────────────────────────────────────────
 
 type Tab = 'plans' | 'enrollments';
 
 export function BenefitsPage() {
+  const { t } = useLocale();
   const { hasRole, hasPermission } = useAuth();
   const { companies, companyVersion } = useCompany();
   const canManagePlans = hasRole('Admin') || hasRole('HR Manager');
   const canEnroll = canManagePlans || hasRole('HR Officer');
-  // Contributions and payroll-deduction links need employees.approve (BenefitsController).
   const canRecordMoney = hasPermission('employees.approve');
+  const releaseA = useReleaseA();
+  const canApplyException = canRecordMoney && !releaseA;
+  const canProposeAdditional = hasPermission('employees.write') && !releaseA;
 
   const [tab, setTab] = useState<Tab>('plans');
+  const [planSearch, setPlanSearch] = useState('');
   const [plans, setPlans] = useState<BenefitPlan[]>([]);
   const [enrollments, setEnrollments] = useState<BenefitEnrollment[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
@@ -83,6 +57,8 @@ export function BenefitsPage() {
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [planModal, setPlanModal] = useState<{ mode: 'create' } | { mode: 'edit'; plan: BenefitPlan } | null>(null);
   const [enrollFor, setEnrollFor] = useState<{ planId?: string } | null>(null);
+  const [additionalFor, setAdditionalFor] = useState<{ employee?: BenefitEmployee; planId?: string } | null>(null);
+  const [additionalRequestId, setAdditionalRequestId] = useState<string | null>(null);
   const [openEnrollmentId, setOpenEnrollmentId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -104,16 +80,23 @@ export function BenefitsPage() {
     gradesApi.listAll().then(setGrades).catch(() => setGrades([]));
   }, []);
 
+  const companyById = useMemo(() => new Map(companies.map((company) => [company.id, company.name])), [companies]);
+  const gradeById = useMemo(() => new Map(grades.map((grade) => [grade.id, grade.name])), [grades]);
   const companyName = useCallback((id: string | null) =>
-    id === null ? 'All companies' : (companies.find((c) => c.id === id)?.name ?? 'Company'), [companies]);
+    id === null ? 'All companies' : (companyById.get(id) ?? 'Company'), [companyById]);
   const gradeName = useCallback((id: string | null) =>
-    id === null ? 'Any grade' : (grades.find((g) => g.id === id)?.name ?? 'Grade'), [grades]);
+    id === null ? 'Any grade' : (gradeById.get(id) ?? 'Grade'), [gradeById]);
 
   const selectedPlan = plans.find((p) => p.id === selectedPlanId) ?? null;
   const enrolledCount = useMemo(() => {
-    const m = new Map<string, number>();
-    enrollments.filter((e) => e.status === 'Active').forEach((e) => m.set(e.benefitPlanId, (m.get(e.benefitPlanId) ?? 0) + 1));
-    return m;
+    const employeesByPlan = new Map<string, Set<number>>();
+    for (const enrollment of enrollments) {
+      if (!['Active', 'Scheduled'].includes(enrollmentStatus(enrollment))) continue;
+      const employees = employeesByPlan.get(enrollment.benefitPlanId) ?? new Set<number>();
+      employees.add(enrollment.employeeId);
+      employeesByPlan.set(enrollment.benefitPlanId, employees);
+    }
+    return new Map([...employeesByPlan].map(([planId, employees]) => [planId, employees.size]));
   }, [enrollments]);
   const activePlans = plans.filter((p) => p.isActive);
 
@@ -122,10 +105,11 @@ export function BenefitsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Plans, eligibility, enrolments, contributions and payroll deduction links</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{releaseA ? 'Plans, employee enrolments and contributions' : 'Grade benefits, employee enrolments, exceptions and contributions'}</p>
         </div>
-        {!loading && !error && plans.length > 0 && (
-          <div className="flex gap-2">
+        {!loading && !error && (plans.length > 0 || enrollments.length > 0) && (
+          <div className="flex flex-wrap gap-2">
+            {canProposeAdditional && <button type="button" className={SECONDARY} onClick={() => setAdditionalFor({})}><Plus className="h-3.5 w-3.5" />{t('Manage benefits')}</button>}
             {canEnroll && (
               <button type="button" className={SECONDARY} disabled={activePlans.length === 0} onClick={() => setEnrollFor({})}>
                 <UserPlus className="h-3.5 w-3.5" /> Enrol employee
@@ -133,12 +117,14 @@ export function BenefitsPage() {
             )}
             {canManagePlans && (
               <button type="button" className={PRIMARY} onClick={() => setPlanModal({ mode: 'create' })}>
-                <Plus className="h-3.5 w-3.5" /> New plan
+                <Plus className="h-3.5 w-3.5" /> {t('Add benefit plan')}
               </button>
             )}
           </div>
         )}
       </div>
+
+      {!releaseA && <div className="flex flex-wrap gap-2"><AdditionalBenefitApprovalSetup /><AdditionalBenefitApprovalSetup entityName="BenefitClaim" /></div>}
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">
@@ -170,8 +156,12 @@ export function BenefitsPage() {
 
           {tab === 'plans' ? (
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-              <PlanList plans={plans} selectedId={selectedPlanId} onSelect={setSelectedPlanId}
-                companyName={companyName} enrolledCount={enrolledCount} />
+              <div className="space-y-3">
+                <label className={LABEL}>{t('Find a benefit plan')}<input type="search" className={INPUT} value={planSearch} onChange={event => setPlanSearch(event.target.value)} placeholder={t('Search by name, code or category')} /></label>
+                <PlanList plans={plans.filter(plan => !planSearch.trim() || [plan.name, plan.code, plan.planType].some(value => value.toLocaleLowerCase().includes(planSearch.trim().toLocaleLowerCase())))} selectedId={selectedPlanId} onSelect={setSelectedPlanId}
+                  companyName={companyName} enrolledCount={enrolledCount} />
+                {planSearch.trim() && !plans.some(plan => [plan.name, plan.code, plan.planType].some(value => value.toLocaleLowerCase().includes(planSearch.trim().toLocaleLowerCase()))) && <p role="status" className="p-3 text-sm text-slate-500">{t('No benefit plans match your search.')}</p>}
+              </div>
               {selectedPlan ? (
                 <PlanDetail key={selectedPlan.id} plan={selectedPlan} companyName={companyName} gradeName={gradeName}
                   companies={companies} grades={grades} canManage={canManagePlans} canEnroll={canEnroll}
@@ -202,13 +192,17 @@ export function BenefitsPage() {
       )}
       {enrollFor && (
         <EnrollModal
+          canApplyException={canProposeAdditional}
+          onAdditional={(employee, planId) => { setEnrollFor(null); setAdditionalFor({ employee, planId }); }}
           plans={activePlans} initialPlanId={enrollFor.planId}
           onClose={() => setEnrollFor(null)}
           onEnrolled={() => { setEnrollFor(null); setTab('enrollments'); void load(); }}
         />
       )}
+      {additionalFor && <BenefitChecklist plans={activePlans} employee={additionalFor.employee} initialPlanId={additionalFor.planId} onClose={() => setAdditionalFor(null)} onChanged={() => void load()} />}
+      {additionalRequestId && <AdditionalBenefitRequestDetail requestId={additionalRequestId} onClose={() => setAdditionalRequestId(null)} />}
       {openEnrollmentId && (
-        <EnrollmentDrawer enrollmentId={openEnrollmentId} plans={plans} canRecord={canRecordMoney}
+        <EnrollmentDrawer key={openEnrollmentId} enrollmentId={openEnrollmentId} plans={plans} canRecord={canRecordMoney} canApplyException={canApplyException} onChanged={(id) => { setOpenEnrollmentId(id); void load(); }}
           onClose={() => setOpenEnrollmentId(null)} />
       )}
     </div>
@@ -218,10 +212,11 @@ export function BenefitsPage() {
 // ── empty state: guided first plan ──────────────────────────────────────────────
 
 function FirstPlanSetup({ canManage, onCreate }: { canManage: boolean; onCreate: () => void }) {
+  const releaseA = useReleaseA();
   const steps = [
     { n: 1, title: 'Create a plan', body: 'Medical, dental, life or any other benefit, with its currency and effective dates.' },
-    { n: 2, title: 'Set eligibility (optional)', body: 'Limit the plan to a company or a grade. With no rules, everyone in the plan’s scope is eligible.' },
-    { n: 3, title: 'Enrol employees', body: 'Eligibility is checked before you submit, then record contributions and link payroll deductions.' },
+    { n: 2, title: 'Set grade eligibility', body: 'Choose one or more grades. A plan cannot enrol employees until an effective grade rule exists.' },
+    { n: 3, title: 'Assign by grade', body: releaseA ? 'Configure employee package defaults in Benefits by grade.' : 'New employees receive eligible benefits for their grade. Authorized HR can record individual exceptions later.' },
   ];
   return (
     <div data-testid="benefits-empty" className={`${CARD} p-8`}>
@@ -245,7 +240,7 @@ function FirstPlanSetup({ canManage, onCreate }: { canManage: boolean; onCreate:
             <Plus className="h-4 w-4" /> Create your first plan
           </button>
         ) : (
-          <p className="text-xs text-slate-500 dark:text-slate-400">Ask an Admin or HR Manager to create the first plan.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Ask your client Admin to create the first plan and configure its grade entitlements.</p>
         )}
       </div>
     </div>
@@ -268,7 +263,7 @@ function PlanList({ plans, selectedId, onSelect, companyName, enrolledCount }: {
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{p.name}</p>
             <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-              <span className="font-mono">{p.code}</span> · {p.planType} · {p.currency} · {companyName(p.companyId)}
+              <span className="font-mono">{p.code}</span> · {p.planType} · {p.classification} · {p.currency} · {companyName(p.companyId)}
             </p>
             <p className="text-[11px] text-slate-400">{range(p.effectiveFrom, p.effectiveTo)}</p>
           </div>
@@ -319,7 +314,8 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{plan.name}</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400"><span className="font-mono">{plan.code}</span> · {plan.planType} · {plan.currency}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400"><span className="font-mono">{plan.code}</span> · {plan.planType} · {plan.classification} · {plan.currency}</p>
+          <BenefitPolicySummary policy={plan.paymentPolicy} currency={plan.currency} />
         </div>
         <div className="flex gap-2">
           {canManage && <button type="button" className={SECONDARY} onClick={onEdit}><Pencil className="h-3.5 w-3.5" /> Edit plan</button>}
@@ -329,19 +325,22 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
       <dl className="grid grid-cols-2 gap-3 text-xs">
         <div><dt className="text-slate-500 dark:text-slate-400">Company scope</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{companyName(plan.companyId)}</dd></div>
         <div><dt className="text-slate-500 dark:text-slate-400">Effective</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{range(plan.effectiveFrom, plan.effectiveTo)}</dd></div>
-        <div><dt className="text-slate-500 dark:text-slate-400">Enrolment</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{plan.requiresEnrollment ? 'Requires enrolment' : 'Automatic'}</dd></div>
+        <div><dt className="text-slate-500 dark:text-slate-400">Enrolment</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{rulesFrozen ? 'Employee package' : 'Automatic by grade on employee creation'}</dd></div>
+        <div><dt className="text-slate-500 dark:text-slate-400">Policy class</dt><dd className="font-semibold text-slate-800 dark:text-slate-100">{plan.classification}</dd></div>
         <div><dt className="text-slate-500 dark:text-slate-400">Status</dt><dd><StatusPill active={plan.isActive} /></dd></div>
       </dl>
 
       <section>
         <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Eligibility rules</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Grade benefits</h3>
           {canEditRules && !adding && (
             <button type="button" className={SECONDARY} onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" /> Add rule</button>
           )}
         </div>
         <p className="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
-          An employee is eligible when they match any active rule in effect on their start date. With no rules in effect, the plan is open to everyone in its company scope.
+          {plan.classification === 'Mandatory'
+            ? 'Mandatory minimum coverage cannot be denied by grade. Grade rules may still define enhanced tiers above that floor.'
+            : rulesFrozen ? 'Configure grade defaults in Benefits by grade. Existing rules remain available for reference.' : 'New employees automatically receive the benefits configured for their grade, subject to the effective dates and eligibility conditions below.'}
         </p>
         {rulesFrozen && (
           <p data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300">
@@ -359,7 +358,9 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
           <FormError message={rulesError} />
         ) : rules.length === 0 ? (
           <div data-testid="rules-empty" className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">
-            No eligibility rules. Every employee in <span className="font-semibold">{companyName(plan.companyId)}</span> can be enrolled.
+            {plan.classification === 'Mandatory'
+              ? 'No grade enhancement rules. Employees remain eligible for the mandatory minimum.'
+              : 'No grade eligibility rules. Add at least one grade before employees can be enrolled in this plan.'}
           </div>
         ) : (
           <ul className="space-y-1.5" data-testid="rules-list">
@@ -367,13 +368,16 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
               <li key={r.id} className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${r.isActive
                 ? 'border-slate-200 dark:border-white/[0.06]' : 'border-dashed border-slate-200 opacity-60 dark:border-white/[0.06]'}`}>
                 <div>
-                  <p className="font-semibold text-slate-800 dark:text-slate-100">{companyName(r.companyId)} · {gradeName(r.gradeId)}</p>
-                  <p className="text-slate-500 dark:text-slate-400">{range(r.effectiveFrom, r.effectiveTo)}</p>
+                  <p className="font-semibold text-slate-800 dark:text-slate-100">{r.tierName || gradeName(r.gradeId)}</p>
+                  <p className="text-slate-500 dark:text-slate-400">{companyName(r.companyId)} · {gradeName(r.gradeId)}{r.gradeMatchMode === 'LevelAndAbove' ? ' and above' : ''} · {range(r.effectiveFrom, r.effectiveTo)}</p>
+                  <p className="text-slate-500 dark:text-slate-400">{r.maxBenefitAmount === null ? 'No monetary cap' : `Up to ${money(r.maxBenefitAmount)} ${plan.currency}`} · {r.limitPeriod.replace(/([A-Z])/g, ' $1').trim()}</p>
+                  {(r.minimumServiceMonths > 0 || r.requireProbationCompleted) && <p className="text-slate-500 dark:text-slate-400">{r.minimumServiceMonths > 0 ? `${r.minimumServiceMonths} months service` : ''}{r.minimumServiceMonths > 0 && r.requireProbationCompleted ? ' · ' : ''}{r.requireProbationCompleted ? 'Probation completed' : ''}</p>}
+                  {r.customCriteriaNote && <p className="mt-1 text-slate-500 dark:text-slate-400">{r.customCriteriaNote}</p>}
                 </div>
                 <div className="flex items-center gap-2">
                   <StatusPill active={r.isActive} />
                   {canEditRules && r.isActive && (
-                    <button type="button" onClick={() => void deactivate(r)} className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/[0.08]" aria-label="Deactivate rule">
+                    <button type="button" onClick={() => void deactivate(r)} className="rounded-lg p-1 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-500/[0.08] dark:hover:text-rose-300" aria-label="Deactivate rule">
                       <CircleSlash className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -383,7 +387,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
           </ul>
         )}
         {activeRules.length > 0 && (
-          <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{activeRules.length} active rule(s) restrict this plan.</p>
+          <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{activeRules.length} active grade assignment(s). {!rulesFrozen && 'Authorized HR can apply individual exceptions after enrolment.'}</p>
         )}
       </section>
     </div>
@@ -397,6 +401,13 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
   const toast = useAppToast();
   const [companyId, setCompanyId] = useState('');
   const [gradeId, setGradeId] = useState('');
+  const [gradeMatchMode, setGradeMatchMode] = useState<'Exact' | 'LevelAndAbove'>('Exact');
+  const [tierName, setTierName] = useState('');
+  const [maxBenefitAmount, setMaxBenefitAmount] = useState('');
+  const [limitPeriod, setLimitPeriod] = useState<'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime'>('PerEnrollment');
+  const [minimumServiceMonths, setMinimumServiceMonths] = useState('0');
+  const [requireProbationCompleted, setRequireProbationCompleted] = useState(false);
+  const [customCriteriaNote, setCustomCriteriaNote] = useState('');
   const [from, setFrom] = useState(planFrom);
   const [to, setTo] = useState('');
   const [saving, setSaving] = useState(false);
@@ -404,10 +415,24 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId && !gradeId) { setError('Pick a company, a grade, or both. A rule with neither would match everyone.'); return; }
+    if (!gradeId) { setError('Select a grade. Benefit eligibility must be grade-based.'); return; }
+    if (maxBenefitAmount !== '' && Number(maxBenefitAmount) <= 0) { setError('Maximum amount must be greater than zero.'); return; }
     setSaving(true); setError(null);
     try {
-      await benefitsApi.addRule(planId, { companyId: companyId || null, gradeId: gradeId || null, effectiveFrom: from, effectiveTo: to || null, isActive: true });
+      await benefitsApi.addRule(planId, {
+        companyId: companyId || null,
+        gradeId,
+        gradeMatchMode,
+        tierName: tierName.trim() || null,
+        maxBenefitAmount: maxBenefitAmount === '' ? null : Number(maxBenefitAmount),
+        limitPeriod,
+        minimumServiceMonths: Number(minimumServiceMonths) || 0,
+        requireProbationCompleted,
+        customCriteriaNote: customCriteriaNote.trim() || null,
+        effectiveFrom: from,
+        effectiveTo: to || null,
+        isActive: true,
+      });
       toast.success('Eligibility rule added.');
       onAdded();
     } catch (err) { setError(benefitsErrorMessage(err, 'Could not add the rule.')); }
@@ -425,10 +450,33 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
           </select>
         </label>
         <label className={LABEL}>Grade
-          <select className={INPUT} value={gradeId} onChange={(e) => setGradeId(e.target.value)} aria-label="Rule grade">
-            <option value="">Any grade</option>
-            {grades.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.code})</option>)}
+          <select required className={INPUT} value={gradeId} onChange={(e) => setGradeId(e.target.value)} aria-label="Rule grade">
+            <option value="">Select grade…</option>
+            {[...grades].sort((a, b) => a.level - b.level).map((g) => <option key={g.id} value={g.id}>{g.name} ({g.code}) · level {g.level}</option>)}
           </select>
+        </label>
+        <label className={LABEL}>Grade coverage
+          <select className={INPUT} value={gradeMatchMode} onChange={(e) => setGradeMatchMode(e.target.value as 'Exact' | 'LevelAndAbove')}>
+            <option value="Exact">Selected grade only</option>
+            <option value="LevelAndAbove">Selected grade and above</option>
+          </select>
+        </label>
+        <label className={LABEL}>Tier name
+          <input className={INPUT} maxLength={120} value={tierName} onChange={(e) => setTierName(e.target.value)} placeholder="Vehicle Starter" />
+        </label>
+        <label className={LABEL}>Maximum amount (optional)
+          <input type="number" min="0.01" step="0.01" className={INPUT} value={maxBenefitAmount} onChange={(e) => setMaxBenefitAmount(e.target.value)} placeholder="500.00" />
+        </label>
+        <label className={LABEL}>Limit period
+          <select className={INPUT} value={limitPeriod} onChange={(e) => setLimitPeriod(e.target.value as typeof limitPeriod)}>
+            <option value="PerEnrollment">Per enrollment</option>
+            <option value="Monthly">Monthly</option>
+            <option value="Annual">Annual</option>
+            <option value="Lifetime">Lifetime</option>
+          </select>
+        </label>
+        <label className={LABEL}>Minimum service (months)
+          <input type="number" min="0" max="600" step="1" className={INPUT} value={minimumServiceMonths} onChange={(e) => setMinimumServiceMonths(e.target.value)} />
         </label>
         <label className={LABEL}>Effective from
           <input type="date" required className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -437,6 +485,12 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
           <input type="date" className={INPUT} value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
       </div>
+      <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+        <input type="checkbox" checked={requireProbationCompleted} onChange={(e) => setRequireProbationCompleted(e.target.checked)} /> Require completed probation
+      </label>
+      <label className={LABEL}>Custom policy note
+        <textarea className={INPUT} rows={2} maxLength={1000} value={customCriteriaNote} onChange={(e) => setCustomCriteriaNote(e.target.value)} placeholder="Visible policy detail, approval condition, or benefit-specific instruction" />
+      </label>
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onCancel} className="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.05]">Cancel</button>
         <button type="submit" disabled={saving} className={PRIMARY}>{saving ? 'Saving…' : 'Save rule'}</button>
@@ -451,11 +505,15 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 }) {
   const toast = useAppToast();
   const editing = initial !== null;
+  const [paymentPolicy, setPaymentPolicy] = useState(initial?.paymentPolicy ?? DEFAULT_PAYMENT_POLICY);
+  const initialUsesCustomType = !!initial && !PLAN_TYPES.includes(initial.planType);
+  const [customPlanType, setCustomPlanType] = useState(initialUsesCustomType ? initial!.planType : '');
   const [form, setForm] = useState({
     companyId: initial?.companyId ?? '',
     code: initial?.code ?? '',
     name: initial?.name ?? '',
-    planType: initial?.planType ?? 'Medical',
+    planType: initialUsesCustomType ? 'Custom' : (initial?.planType ?? 'Medical'),
+    classification: initial?.classification ?? 'Discretionary',
     currency: initial?.currency ?? 'SAR',
     effectiveFrom: initial?.effectiveFrom ?? `${new Date().getFullYear()}-01-01`,
     effectiveTo: initial?.effectiveTo ?? '',
@@ -469,17 +527,21 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (form.effectiveTo && form.effectiveTo < form.effectiveFrom) { setError('Effective to cannot be before effective from.'); return; }
+    if (form.planType === 'Custom' && !customPlanType.trim()) { setError('Enter a custom benefit type.'); return; }
     setSaving(true); setError(null);
     try {
       const body = {
-        name: form.name.trim(), planType: form.planType, currency: form.currency.trim().toUpperCase(),
+        name: form.name.trim(), planType: form.planType === 'Custom' ? customPlanType.trim() : form.planType, classification: form.classification, currency: form.currency.trim().toUpperCase(),
         effectiveFrom: form.effectiveFrom, effectiveTo: form.effectiveTo || null,
         requiresEnrollment: form.requiresEnrollment, isActive: form.isActive,
+        paymentPolicy, expectedPolicyVersion: initial?.policyVersion ?? 0,
       };
       const saved = editing
         ? await benefitsApi.updatePlan(initial!.id, body)
         : await benefitsApi.createPlan({ ...body, companyId: form.companyId || null, code: form.code.trim().toUpperCase() });
-      toast.success(editing ? 'Plan updated.' : 'Plan created. Add eligibility rules or enrol employees next.');
+      toast.success(editing ? 'Plan updated.' : form.classification === 'Mandatory'
+        ? 'Mandatory plan created. Grade rules can define optional enhancements.'
+        : 'Plan created. Add at least one grade eligibility rule before enrolling employees.');
       onSaved(saved);
     } catch (err) { setError(benefitsErrorMessage(err, editing ? 'Could not update the plan.' : 'Could not create the plan.')); }
     finally { setSaving(false); }
@@ -496,6 +558,16 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
           <label className={LABEL}>Plan type
             <select className={INPUT} value={form.planType} onChange={(e) => set('planType', e.target.value)}>
               {PLAN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          {form.planType === 'Custom' && <label className={LABEL}>Custom benefit type
+            <input required className={INPUT} maxLength={120} value={customPlanType} onChange={(e) => setCustomPlanType(e.target.value)} placeholder="e.g. Home office allowance" />
+          </label>}
+          <label className={LABEL}>Policy class
+            <select className={INPUT} value={form.classification} onChange={(e) => set('classification', e.target.value as typeof form.classification)}>
+              <option value="Discretionary">Discretionary — grade eligibility</option>
+              <option value="Contractual">Contractual — grade eligibility</option>
+              <option value="Mandatory">Mandatory minimum — no grade exclusion</option>
             </select>
           </label>
         </div>
@@ -519,10 +591,8 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
             <input type="date" value={form.effectiveTo} onChange={(e) => set('effectiveTo', e.target.value)} className={INPUT} />
           </label>
         </div>
+        <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
         {editing && <p className="text-[11px] text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
-        <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-          <input type="checkbox" checked={form.requiresEnrollment} onChange={(e) => set('requiresEnrollment', e.target.checked)} /> Requires enrolment
-        </label>
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> Active (open for enrolment)
         </label>
@@ -537,9 +607,10 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 
 // ── enrolment with eligibility preview ──────────────────────────────────────────
 
-function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
-  plans: BenefitPlan[]; initialPlanId?: string; onClose: () => void; onEnrolled: () => void;
+function EnrollModal({ plans, initialPlanId, canApplyException, onAdditional, onClose, onEnrolled }: {
+  onAdditional: (employee: BenefitEmployee, planId: string) => void; canApplyException: boolean; plans: BenefitPlan[]; initialPlanId?: string; onClose: () => void; onEnrolled: () => void;
 }) {
+  const { t } = useLocale();
   const toast = useAppToast();
   const [planId, setPlanId] = useState(initialPlanId ?? plans[0]?.id ?? '');
   const plan = plans.find((p) => p.id === planId) ?? null;
@@ -553,6 +624,7 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
     return plan && t < plan.effectiveFrom ? plan.effectiveFrom : t;
   });
   const [to, setTo] = useState('');
+  const [requestedAmount, setRequestedAmount] = useState('');
   const [check, setCheck] = useState<BenefitEligibilityCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -566,8 +638,8 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
     if (q.length < 2) { setResults([]); return; }
     const t = setTimeout(() => {
       setSearching(true);
-      employeesApi.list({ search: q, status: 'Active', pageSize: 8 })
-        .then((r) => setResults(r.items ?? []))
+      employeesApi.list({ search: q, pageSize: 8 })
+        .then((r) => setResults((r.items ?? []).filter(item => !['Offboarded', 'Terminated', 'Deleted', 'Exited'].includes(item.status))))
         .catch(() => setResults([]))
         .finally(() => setSearching(false));
     }, 250);
@@ -589,12 +661,32 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
     return () => { cancelled = true; clearTimeout(t); };
   }, [planId, employee, from]);
 
+  const canGrantException = !!check && canApplyException && !check.alreadyEnrolled
+    && ['plan_active', 'company_scope', 'plan_window'].every(key => check.checks.some(item => item.key === key && item.passed));
+  const canSubmit = !!check && !check.alreadyEnrolled && check.eligible;
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!employee || !check?.eligible) return;
+    if (!employee || !canSubmit || !check) return;
+    const parsedAmount = requestedAmount.trim() ? Number(requestedAmount) : null;
+    if (parsedAmount !== null && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
+      setError('Requested benefit amount must be greater than zero.');
+      return;
+    }
+    if (parsedAmount !== null && check.maximumBenefitAmount !== null && parsedAmount > check.maximumBenefitAmount) {
+      setError(`Requested benefit amount cannot exceed ${money(check.maximumBenefitAmount)} ${check.currency}.`);
+      return;
+    }
     setSaving(true); setError(null);
     try {
-      await benefitsApi.enroll({ benefitPlanId: planId, employeeId: employee.id, coverageTier: tier, effectiveFrom: from, effectiveTo: to || null });
+      await benefitsApi.enroll({
+        benefitPlanId: planId,
+        employeeId: employee.id,
+        coverageTier: tier,
+        effectiveFrom: from,
+        effectiveTo: to || null,
+        requestedBenefitAmount: parsedAmount,
+      });
       toast.success(`${employee.fullName} enrolled in ${plan?.name ?? 'the plan'}.`);
       onEnrolled();
     } catch (err) { setError(benefitsErrorMessage(err, 'Could not enrol the employee.')); }
@@ -631,7 +723,7 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
                       <button type="button" role="option" aria-selected={false} onClick={() => { setEmployee(r); setResults([]); }}
                         className="flex w-full items-center justify-between px-3 py-2 text-start text-sm hover:bg-slate-50 dark:hover:bg-white/[0.04]">
                         <span className="text-slate-800 dark:text-slate-100">{r.fullName}</span>
-                        <span className="font-mono text-xs text-slate-400">{r.employeeCode} · {r.department}</span>
+                        <span className="font-mono text-xs text-slate-400">{r.employeeCode} · {t(r.status)} · {r.department}</span>
                       </button>
                     </li>
                   ))}
@@ -657,9 +749,32 @@ function EnrollModal({ plans, initialPlanId, onClose, onEnrolled }: {
 
         <EligibilityPanel employeeChosen={!!employee} checking={checking} check={check} error={checkError} />
 
+        {canGrantException && !check?.eligible && employee && <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-500/20 dark:bg-amber-500/5">
+          <p className="text-slate-600 dark:text-slate-300">{t('Additional benefits require a separate request and independent approval.')}</p>
+          <button type="button" className={SECONDARY} onClick={() => onAdditional({ id: employee.id, fullName: employee.fullName }, planId)}>{t('Manage benefits')}</button>
+        </div>}
+
+        {check && check.eligible && (
+          <label className={LABEL}>Enrollment value (optional)
+            <input
+              type="number"
+              min="0.01"
+              max={check.maximumBenefitAmount ?? undefined}
+              step="0.01"
+              className={INPUT}
+              value={requestedAmount}
+              onChange={(e) => setRequestedAmount(e.target.value)}
+              placeholder={check.maximumBenefitAmount === null ? 'Enter value if applicable' : `Up to ${money(check.maximumBenefitAmount)} ${check.currency}`}
+            />
+            <span className="mt-1 block text-[11px] font-normal text-slate-500 dark:text-slate-400">
+              Records the value approved for this employee without changing the client-configured grade limit.
+            </span>
+          </label>
+        )}
+
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.05]">Cancel</button>
-          <button type="submit" disabled={saving || !check?.eligible || checking} className={PRIMARY}>
+          <button type="submit" disabled={saving || !canSubmit || checking} className={PRIMARY}>
             {saving ? 'Enrolling…' : 'Enrol'}
           </button>
         </div>
@@ -691,6 +806,13 @@ function EligibilityPanel({ employeeChosen, checking, check, error }: {
       <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300">
         {check.employeeName} · {check.companyName ?? 'No company'} · {check.gradeName ?? 'No grade'} · from {check.effectiveFrom}
       </p>
+      {check.eligible && (check.tierName || check.maximumBenefitAmount !== null) && (
+        <div className="mt-2 rounded-lg border border-emerald-200/70 bg-white/70 px-3 py-2 text-xs dark:border-emerald-500/20 dark:bg-white/[0.03]">
+          <p className="font-semibold text-slate-800 dark:text-slate-100">Resolved entitlement: {check.tierName || 'Standard tier'}</p>
+          <p className="mt-0.5 text-slate-600 dark:text-slate-300">{check.maximumBenefitAmount === null ? 'No monetary cap configured' : `Maximum ${money(check.maximumBenefitAmount)} ${check.currency}`} {check.limitPeriod ? `· ${check.limitPeriod.replace(/([A-Z])/g, ' $1').trim()}` : ''}</p>
+          {check.customCriteriaNote && <p className="mt-1 text-slate-500 dark:text-slate-400">{check.customCriteriaNote}</p>}
+        </div>
+      )}
       <ul className="mt-2 space-y-1">
         {check.checks.map((c) => (
           <li key={c.key} className="flex items-start gap-1.5 text-xs">
@@ -719,11 +841,11 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
   const [companyId, setCompanyId] = useState('');
   const [q, setQ] = useState('');
   const planName = (id: string) => plans.find((p) => p.id === id)?.name ?? 'Plan';
-  const statuses = [...new Set(enrollments.map((e) => e.status))].sort();
+  const statuses = [...new Set(enrollments.map(enrollmentStatus))].sort();
 
   const rows = enrollments.filter((e) =>
     (!planId || e.benefitPlanId === planId) &&
-    (!status || e.status === status) &&
+    (!status || enrollmentStatus(e) === status) &&
     (!companyId || e.companyId === companyId) &&
     (!q.trim() || e.employeeName.toLowerCase().includes(q.trim().toLowerCase())));
 
@@ -732,7 +854,7 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
       <div data-testid="enrollments-empty" className={`${CARD} flex flex-col items-center gap-3 p-10 text-center`}>
         <UserPlus className="h-10 w-10 text-slate-300 dark:text-slate-600" />
         <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No one is enrolled yet</p>
-        <p className="max-w-md text-xs text-slate-500 dark:text-slate-400">Enrol an employee in a plan. Their eligibility is checked before you submit.</p>
+        <p className="max-w-md text-xs text-slate-500 dark:text-slate-400">Eligible grade benefits are assigned when an employee is created. You can also enrol existing employees here.</p>
         {canEnroll && <button type="button" className={PRIMARY} onClick={onEnroll}><UserPlus className="h-3.5 w-3.5" /> Enrol employee</button>}
       </div>
     );
@@ -769,6 +891,7 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
             <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
               <th className="px-4 py-2.5 font-semibold">Employee</th>
               <th className="px-4 py-2.5 font-semibold">Plan</th>
+              <th className="px-4 py-2.5 font-semibold">Assignment</th>
               <th className="px-4 py-2.5 font-semibold">Coverage</th>
               <th className="px-4 py-2.5 font-semibold">Company</th>
               <th className="px-4 py-2.5 font-semibold">Effective</th>
@@ -777,187 +900,20 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={6} className="px-4 py-6 text-center text-xs text-slate-500 dark:text-slate-400">No enrolments match these filters.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-xs text-slate-500 dark:text-slate-400">No enrolments match these filters.</td></tr>
             ) : rows.map((e) => (
               <tr key={e.id} onClick={() => onOpen(e.id)} className="cursor-pointer border-b border-slate-50 last:border-0 hover:bg-slate-50 dark:border-white/[0.03] dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-100">{e.employeeName}</td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{planName(e.benefitPlanId)}</td>
+                <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300"><AssignmentLabel enrollment={e} /></td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{e.coverageTier}</td>
                 <td className="px-4 py-2.5 text-slate-600 dark:text-slate-300">{companyName(e.companyId)}</td>
                 <td className="px-4 py-2.5 text-slate-500 dark:text-slate-400">{range(e.effectiveFrom, e.effectiveTo)}</td>
-                <td className="px-4 py-2.5"><StatusPill active={e.status === 'Active'} label={e.status} /></td>
+                <td className="px-4 py-2.5"><StatusPill active={enrollmentStatus(e) === 'Active'} label={enrollmentStatus(e)} /></td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-function EnrollmentDrawer({ enrollmentId, plans, canRecord, onClose }: {
-  enrollmentId: string; plans: BenefitPlan[]; canRecord: boolean; onClose: () => void;
-}) {
-  const toast = useAppToast();
-  const [detail, setDetail] = useState<BenefitEnrollmentDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [candidates, setCandidates] = useState<BenefitDeductionCandidate[] | null>(null);
-  const [contrib, setContrib] = useState({ employeeAmount: '', employerAmount: '', frequency: 'Monthly', payrollComponentCode: '', effectiveFrom: today() });
-  const [link, setLink] = useState({ contributionId: '', deductionId: '', amount: '' });
-  const [busy, setBusy] = useState<'contrib' | 'link' | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [d, c] = await Promise.all([benefitsApi.getEnrollment(enrollmentId), benefitsApi.deductionCandidates(enrollmentId)]);
-      setDetail(d); setCandidates(c);
-      setLink((l) => ({ ...l, contributionId: l.contributionId || d.contributions[0]?.id || '' }));
-    } catch (e) { setError(benefitsErrorMessage(e, 'Could not load the enrolment.')); }
-  }, [enrollmentId]);
-  useEffect(() => { void load(); }, [load]);
-
-  const plan = detail ? plans.find((p) => p.id === detail.enrollment.benefitPlanId) : null;
-  const currency = plan?.currency ?? '';
-
-  const addContribution = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const ee = Number(contrib.employeeAmount || 0), er = Number(contrib.employerAmount || 0);
-    if (ee < 0 || er < 0) { setFormError('Contribution amounts cannot be negative.'); return; }
-    setBusy('contrib'); setFormError(null);
-    try {
-      await benefitsApi.addContribution(enrollmentId, {
-        employeeAmount: ee, employerAmount: er, frequency: contrib.frequency, payrollComponentCode: contrib.payrollComponentCode || null,
-        effectiveFrom: contrib.effectiveFrom, effectiveTo: null, isActive: true,
-      });
-      toast.success('Contribution recorded.');
-      setContrib((c) => ({ ...c, employeeAmount: '', employerAmount: '' }));
-      void load();
-    } catch (err) { setFormError(benefitsErrorMessage(err, 'Could not record the contribution.')); }
-    finally { setBusy(null); }
-  };
-
-  const linkDeduction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!link.contributionId || !link.deductionId) return;
-    setBusy('link'); setFormError(null);
-    try {
-      await benefitsApi.linkDeduction(enrollmentId, {
-        benefitContributionId: link.contributionId, payrollDeductionId: link.deductionId,
-        linkedAmount: link.amount === '' ? null : Number(link.amount),
-      });
-      toast.success('Payroll deduction linked.');
-      setLink((l) => ({ ...l, deductionId: '', amount: '' }));
-      void load();
-    } catch (err) { setFormError(benefitsErrorMessage(err, 'Could not link the deduction.')); }
-    finally { setBusy(null); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-label="Enrolment detail">
-      <div className="h-full w-full max-w-xl overflow-y-auto border-s border-slate-200 bg-white p-5 shadow-2xl dark:border-white/[0.08] dark:bg-[#0c1120]">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">Enrolment</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]"><X className="h-4 w-4" /></button>
-        </div>
-        {error ? (
-          <div className="space-y-2"><FormError message={error} /><button type="button" className={SECONDARY} onClick={() => void load()}><RefreshCw className="h-3.5 w-3.5" /> Retry</button></div>
-        ) : !detail ? (
-          <div className="space-y-3" aria-busy="true"><div className="h-16 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" /><div className="h-40 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" /></div>
-        ) : (
-          <div className="space-y-5">
-            <div>
-              <p className="text-base font-bold text-slate-800 dark:text-slate-100">{detail.enrollment.employeeName}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{plan?.name ?? 'Plan'} · {detail.enrollment.coverageTier} · {range(detail.enrollment.effectiveFrom, detail.enrollment.effectiveTo)}</p>
-            </div>
-            <FormError message={formError} />
-
-            <section>
-              <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">Contributions</h3>
-              {detail.contributions.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">No contributions recorded. Record the employee and employer share below.</p>
-              ) : (
-                <table className="w-full text-start text-xs" data-testid="contributions-table">
-                  <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    <th className="py-1 font-semibold">From</th><th className="py-1 text-end font-semibold">Employee</th><th className="py-1 text-end font-semibold">Employer</th><th className="py-1 font-semibold">Frequency</th><th className="py-1 font-semibold">Pay code</th>
-                  </tr></thead>
-                  <tbody>{detail.contributions.map((c) => (
-                    <tr key={c.id} className="border-t border-slate-100 dark:border-white/[0.04]">
-                      <td className="py-1.5 text-slate-600 dark:text-slate-300">{c.effectiveFrom}</td>
-                      <td className="py-1.5 text-end font-mono text-slate-800 dark:text-slate-100">{money(c.employeeAmount)} {currency}</td>
-                      <td className="py-1.5 text-end font-mono text-slate-800 dark:text-slate-100">{money(c.employerAmount)} {currency}</td>
-                      <td className="py-1.5 text-slate-600 dark:text-slate-300">{c.frequency}</td>
-                      <td className="py-1.5 font-mono text-slate-500 dark:text-slate-400">{c.payrollComponentCode || '—'}</td>
-                    </tr>))}
-                  </tbody>
-                </table>
-              )}
-              {canRecord && (
-                <form onSubmit={addContribution} aria-label="Record contribution" className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-3 dark:border-white/[0.06]">
-                  <label className={LABEL}>Employee share
-                    <input type="number" min={0} step="0.01" required className={INPUT} value={contrib.employeeAmount} onChange={(e) => setContrib((c) => ({ ...c, employeeAmount: e.target.value }))} aria-label="Employee share" />
-                  </label>
-                  <label className={LABEL}>Employer share
-                    <input type="number" min={0} step="0.01" required className={INPUT} value={contrib.employerAmount} onChange={(e) => setContrib((c) => ({ ...c, employerAmount: e.target.value }))} aria-label="Employer share" />
-                  </label>
-                  <label className={LABEL}>Frequency
-                    <select className={INPUT} value={contrib.frequency} onChange={(e) => setContrib((c) => ({ ...c, frequency: e.target.value }))}>
-                      {['Monthly', 'Quarterly', 'Annual', 'One-off'].map((f) => <option key={f} value={f}>{f}</option>)}
-                    </select>
-                  </label>
-                  <label className={LABEL}>Payroll component code
-                    <input className={INPUT} value={contrib.payrollComponentCode} placeholder="MED-EE" onChange={(e) => setContrib((c) => ({ ...c, payrollComponentCode: e.target.value }))} />
-                  </label>
-                  <label className={LABEL}>Effective from
-                    <input type="date" required className={INPUT} value={contrib.effectiveFrom} onChange={(e) => setContrib((c) => ({ ...c, effectiveFrom: e.target.value }))} />
-                  </label>
-                  <div className="flex items-end justify-end"><button type="submit" disabled={busy !== null} className={PRIMARY}>{busy === 'contrib' ? 'Saving…' : 'Record contribution'}</button></div>
-                </form>
-              )}
-            </section>
-
-            <section>
-              <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">Payroll deduction links</h3>
-              {detail.links.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">No payroll deductions linked yet.</p>
-              ) : (
-                <ul className="space-y-1.5" data-testid="links-list">
-                  {detail.links.map((l) => (
-                    <li key={l.id} className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2 text-xs dark:border-white/[0.06]">
-                      <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300"><Link2 className="h-3.5 w-3.5" /> Run {l.payrollRunId.slice(0, 8)}</span>
-                      <span className="font-mono font-semibold text-slate-800 dark:text-slate-100">{money(l.linkedAmount)} {currency}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {canRecord && (
-                detail.contributions.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">Record a contribution first; a deduction is linked to a contribution.</p>
-                ) : candidates && candidates.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">This employee has no unlinked, non-statutory payroll deductions to link. Deductions appear here once a payroll run includes one.</p>
-                ) : (
-                  <form onSubmit={linkDeduction} aria-label="Link payroll deduction" className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-3 dark:border-white/[0.06]">
-                    <label className={LABEL}>Contribution
-                      <select className={INPUT} value={link.contributionId} onChange={(e) => setLink((l) => ({ ...l, contributionId: e.target.value }))}>
-                        {detail.contributions.map((c) => <option key={c.id} value={c.id}>From {c.effectiveFrom} · EE {money(c.employeeAmount)}</option>)}
-                      </select>
-                    </label>
-                    <label className={LABEL}>Payroll deduction
-                      <select className={INPUT} required value={link.deductionId} onChange={(e) => setLink((l) => ({ ...l, deductionId: e.target.value }))}>
-                        <option value="">Select…</option>
-                        {(candidates ?? []).map((d) => <option key={d.id} value={d.id}>{d.year}-{String(d.month).padStart(2, '0')} · {d.componentName || d.componentCode} · {money(d.amount)}</option>)}
-                      </select>
-                    </label>
-                    <label className={LABEL}>Linked amount (optional)
-                      <input type="number" min={0} step="0.01" className={INPUT} placeholder="Defaults to deduction amount" value={link.amount} onChange={(e) => setLink((l) => ({ ...l, amount: e.target.value }))} />
-                    </label>
-                    <div className="flex items-end justify-end"><button type="submit" disabled={busy !== null || !link.deductionId} className={PRIMARY}>{busy === 'link' ? 'Linking…' : 'Link deduction'}</button></div>
-                  </form>
-                )
-              )}
-            </section>
-          </div>
-        )}
       </div>
     </div>
   );

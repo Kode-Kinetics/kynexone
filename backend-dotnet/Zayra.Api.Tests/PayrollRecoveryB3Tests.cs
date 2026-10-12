@@ -72,6 +72,7 @@ public class PayrollRecoveryB3Tests
             new(ClaimTypes.Name, "finance"),
             new("permission", "finance.gl.manage"),
             new("permission", "finance.gl.read"),
+            new("permission", "finance.gl.period.reopen"),
         };
         var httpCtx = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
         return new FinanceGlController(db) { ControllerContext = new ControllerContext { HttpContext = httpCtx } };

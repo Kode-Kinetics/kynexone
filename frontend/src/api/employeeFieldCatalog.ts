@@ -112,7 +112,8 @@ const APPROVAL_REQUIRED_EDIT_KEYS = new Set<string>([
   // The GPSSA/GRSIA/PIFSS/SPF/SIO counterpart of gosiReference — approval-gated server-side too.
   'socialinsurancereference',
   // Where the WPS/SIF line pays — approval-gated server-side with the IBAN.
-  'bankroutingcode', 'accountnumber',
+  'bankroutingcode', 'accountnumber', 'molid', 'salarycurrency', 'payrollgroup',
+  'salarystructurereference', 'paymentmethod', 'salarybreakdown',
 ]);
 
 /** True when saving this edit key submits a change request instead of writing immediately. */
@@ -156,7 +157,28 @@ export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Payroll & Banking', key: 'salary', label: 'Salary', type: 'number' },
   { section: 'Payroll & Banking', key: 'bankName', label: 'Bank name' },
   { section: 'Payroll & Banking', key: 'bankIban', label: 'IBAN' },
+  { section: 'Payroll & Banking', key: 'accountNumber', label: 'Account number' },
+  { section: 'Payroll & Banking', key: 'bankRoutingCode', label: 'Bank routing / sort code' },
+  { section: 'Payroll & Banking', key: 'molId', label: 'MOL ID / National labour number' },
+  { section: 'Payroll & Banking', key: 'salaryCurrency', label: 'Salary currency', type: 'select', options: SALARY_CURRENCY_OPTIONS },
+  { section: 'Payroll & Banking', key: 'paymentMethod', label: 'Payment method', type: 'select', options: PAYMENT_METHOD_OPTIONS },
+  { section: 'Payroll & Banking', key: 'payrollGroup', label: 'Payroll group' },
+  { section: 'Payroll & Banking', key: 'salaryStructureReference', label: 'Salary structure reference' },
 ];
+
+/** UI keys group back into one atomic, approval-controlled salaryBreakdown change. */
+export const SALARY_BREAKDOWN_EDIT_FIELDS: EmployeeEditField[] = [
+  { key: 'basicSalary', label: 'Basic salary', type: 'number' },
+  { key: 'currency', label: 'Breakdown currency', type: 'select', options: SALARY_CURRENCY_OPTIONS },
+  { key: 'effectiveDate', label: 'Effective date', type: 'date' },
+  { key: 'housingAllowance', label: 'Housing allowance', type: 'number' },
+  { key: 'transportAllowance', label: 'Transport allowance', type: 'number' },
+  { key: 'foodAllowance', label: 'Food allowance', type: 'number' },
+  { key: 'mobileAllowance', label: 'Mobile allowance', type: 'number' },
+  { key: 'otherAllowance', label: 'Other allowance', type: 'number' },
+  { key: 'fixedDeduction', label: 'Fixed deduction', type: 'number' },
+  { key: 'salaryStructureCode', label: 'Salary structure code' },
+].map((field) => ({ ...field, type: field.type as FieldInputType | undefined, key: `salaryBreakdown.${field.key}`, section: 'Salary', sensitive: true }));
 
 // Passport is common to every GCC jurisdiction.
 const COMMON_COMPLIANCE_FIELDS: EmployeeComplianceField[] = [

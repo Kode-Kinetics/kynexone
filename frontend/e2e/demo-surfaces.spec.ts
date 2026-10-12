@@ -174,10 +174,18 @@ test.describe('Timesheets', () => {
 
     expect(sheet.status).toBe('Draft');
     const minutes = 7 * 60;
+    // Use a day whose attendance can support the entry. The weekly period starts on Sunday, but
+    // Sunday can legitimately carry an Absent/0-minute record; blindly writing to periodStart then
+    // proves only that the over-allocation guard works. Prefer a recorded working day and fall back
+    // to a no-record day, which the product intentionally permits for off-device field staff.
+    const workDay = sheet.days.find((day: { attendanceMinutes: number | null }) =>
+      day.attendanceMinutes !== null && day.attendanceMinutes >= minutes,
+    ) ?? sheet.days.find((day: { attendanceMinutes: number | null }) => day.attendanceMinutes === null);
+    expect(workDay, 'the fixture must offer a day that can accept seven entered hours').toBeTruthy();
     const saved = await request.put(`/api/ess/timesheets/${sheet.id}/entries`, {
       headers: auth,
       data: {
-        entries: [{ workDate: sheet.periodStart, minutes, notes: 'e2e verification' }],
+        entries: [{ workDate: workDay.date, minutes, notes: 'e2e verification' }],
         version: sheet.version,
       },
     });
@@ -190,16 +198,16 @@ test.describe('Timesheets', () => {
     // (e2e/bootstrap/provision.ts) provisions only LEAVE-APPROVAL — so on the fixture
     // tenants the grid fills in and the Submit button can never succeed.
     const submitted = await request.post(`/api/ess/timesheets/${sheet.id}/submit`, { headers: auth });
+    const submitBody = await submitted.json();
     if (submitted.status() === 422) {
-      const body = await submitted.json();
       expect(
-        body.code,
+        submitBody.code,
         'timesheet submission is blocked. If this is `no_approval_route`, the tenant is missing an ' +
         'active ApprovalWorkflow for entity "Timesheet" — seed one as part of demo preparation.',
       ).not.toBe('no_approval_route');
     }
-    expect(submitted.status()).toBe(200);
-    expect((await submitted.json()).status).toBe('Submitted');
+    expect(submitted.status(), `timesheet submit failed: ${JSON.stringify(submitBody)}`).toBe(200);
+    expect(submitBody.status).toBe('Submitted');
   });
 
   // Driven as an EMPLOYEE, not as the tenant administrator.

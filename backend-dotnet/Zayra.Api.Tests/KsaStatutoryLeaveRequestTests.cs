@@ -213,10 +213,13 @@ public class KsaStatutoryLeaveRequestTests
         // The law is a floor: a company that grants 84 WORKING days gives more than 12 weeks, and the
         // request is honoured as the policy counts it.
         var f = await SeedAsync("MAT", "Maternity Leave", "Parental", calendarPolicy: false, policyDays: 84m);
+        // With Fri/Sat rest days, 117 days starting Monday contain exactly 84 working days.
+        // A moving start weekday can contain 85 (Sunday), which correctly exceeds this policy.
+        var monday = Base.AddDays(((int)DayOfWeek.Monday - (int)Base.DayOfWeek + 7) % 7);
 
-        var submitted = await Submit(f, Base, 117);
+        var submitted = await Submit(f, monday, 117);
 
-        submitted.TotalDays.Should().BeLessThanOrEqualTo(84m);
+        submitted.TotalDays.Should().Be(84m);
     }
 
     // ── Same event: backdated splits, and a more generous company policy ──────────────────

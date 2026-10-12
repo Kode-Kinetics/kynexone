@@ -1,12 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Circle, Database, Download, Eye, FileSpreadsheet, GitBranch, Info, Pencil, RefreshCw, Rocket, ShieldCheck, Sparkles, Trash2, UploadCloud, Wand2, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, CheckCircle2, ChevronRight, Eye, Info, Pencil, Plus, ShieldCheck, Trash2, Users, Wand2 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { SetupPolicyEditor } from './SetupPolicyEditor';
+import type { CompanyDto } from '../api/organization';
 import { tenantAdminApi } from '../api/intelligence';
 import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
-import { orgStructureImportApi, setupAssistantApi, type CompanyProfile, type MigrationImportBatchDto, type OrgStructureImportRequest, type OrgStructureImportResult, type SetupDraft } from '../api/setupAssistant';
+import { setupAssistantApi, type CompanyProfile, type SetupDraft, type SetupConfiguration } from '../api/setupAssistant';
+import { useCompany } from '../contexts/CompanyContext';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -32,11 +36,6 @@ const WEEKEND_PATTERNS: [string, string][] = [
   ['Fri', 'Friday only'],
   ['Sun', 'Sunday only'],
 ];
-const LEAVE_YEAR_BASES: [string, string][] = [
-  ['Calendar', 'Calendar year (1 January)'],
-  ['JoiningDate', "Each employee's joining date"],
-  ['Fiscal', 'Our fiscal year'],
-];
 const WORKFORCE_MIX: [string, string][] = [
   ['MostlyNational', 'Mostly nationals'],
   ['Mixed', 'Mixed nationals and expatriates'],
@@ -55,9 +54,6 @@ const ATTENDANCE_CAPTURE: [string, string][] = [
 ];
 const PAY_CYCLES: [string, string][] = [
   ['Monthly', 'Monthly'],
-  ['SemiMonthly', 'Twice a month'],
-  ['Biweekly', 'Every two weeks'],
-  ['Weekly', 'Weekly'],
 ];
 const LANGUAGES: [string, string][] = [
   ['en', 'English'],
@@ -70,13 +66,47 @@ const TIMEZONES = [
 ];
 const CURRENCIES = ['SAR', 'AED', 'QAR', 'KWD', 'BHD', 'OMR', 'USD', 'EUR', 'GBP', 'INR', 'EGP'];
 
-type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization';
+type SectionKey = 'entity' | 'org' | 'leave' | 'leavePolicies' | 'shifts' | 'attendance' | 'payroll' | 'holidays' | 'governance' | 'localization' | 'benefits';
 
-export function AiSetupAssistant() {
+
+const SETUP_STEPS = [
+  { title: 'Company details', description: 'Your organization at a glance', heading: 'Start with your company', help: 'Tell us about your organization. Your legal entity, country, currency and industry are required to prepare your draft.' },
+  { title: 'Working week', description: 'Schedules, attendance and leave', heading: 'How does your team work?', help: 'Choose the working arrangements your team uses. You can review the proposed policies before applying them.' },
+  { title: 'People & pay', description: 'Pay structure and approvals', heading: 'Set your people and pay preferences', help: 'These choices shape your draft. Check them against your company policies before continuing.' },
+  { title: 'Grades & benefits', description: 'Salary bands and benefit plans', heading: 'Configure your grades and benefits', help: 'Use your established company policy or review an AI-assisted grade draft.' },
+  { title: 'Review & create', description: 'Choose, preview and apply', heading: 'Choose what to include', help: 'Generate a draft, review the proposed records, then apply when you are ready.' },
+];
+const APPROVAL_MODELS = [['DepartmentHead', 'Department head, then HR'], ['SupervisorFirst', 'Supervisor, department head, then HR']];
+
+export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[]; }) {
   // Release A: grade allowances and benefits are set in Benefits by grade, so the draft's legacy grade pay lines are
   // neither shown nor sent (the server would skip them and say so).
   const releaseA = useReleaseA();
   const t = useT();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { accountType, isGroupScope, selectedCompanyId, setSelectedCompany } = useCompany();
+  const requestedCompanyId = searchParams?.get('companyId') ?? '';
+  const requestedCompany = requestedCompanyId
+    ? companies.find(company => company.id === requestedCompanyId && company.isActive && company.approvalStatus === 'Active')
+    : undefined;
+  useEffect(() => {
+    if (accountType !== 'Group' || !isGroupScope || !requestedCompanyId) return;
+    if (requestedCompany && selectedCompanyId !== requestedCompanyId) {
+      setSelectedCompany(requestedCompanyId);
+    }
+  }, [accountType, isGroupScope, requestedCompany, requestedCompanyId, selectedCompanyId, setSelectedCompany]);
+  // Single-company workspaces retain the established setup flow. A Group workspace must bind
+  // every draft to an immutable company record before company-owned settings can be edited.
+  const targetCompany = accountType === 'Group'
+    ? requestedCompanyId
+      ? requestedCompany
+      : companies.find(company => company.id === selectedCompanyId && company.isActive && company.approvalStatus === 'Active')
+        ?? (!isGroupScope ? companies.find(company => company.isActive && company.approvalStatus === 'Active') : undefined)
+    : undefined;
+  const requestedCompanyUnavailable = accountType === 'Group' && !!requestedCompanyId && !requestedCompany;
+  const requiresCompanySelection = accountType === 'Group' && isGroupScope && !targetCompany;
+  const canIncludeSharedSetup = accountType !== 'Group';
   // Blank until the workspace answers. These used to be hardcoded 'SA' and 'SAR', which meant the
   // assistant asked an admin to re-key what the workspace already knew and, worse, quietly priced
   // the draft in whatever the boxes happened to say. A currency is not visibly wrong on screen —
@@ -86,10 +116,11 @@ export function AiSetupAssistant() {
   const [size, setSize] = useState('51-200');
   const [currency, setCurrency] = useState('');
   const [profileSource, setProfileSource] = useState<'loading' | 'workspace' | 'unstated'>('loading');
+  const [policyGuideOpen, setPolicyGuideOpen] = useState(false);
   const [legalEntityName, setLegalEntityName] = useState('');
-  const [branchCity, setBranchCity] = useState('Riyadh');
+  const [branchCity, setBranchCity] = useState('');
   const [operatingModel, setOperatingModel] = useState('Functional');
-  const [payrollModel, setPayrollModel] = useState('GradeBased');
+  const payrollModel = 'GradeBased';
   const [approvalModel, setApprovalModel] = useState('DepartmentHead');
   const [strictEntityScope, setStrictEntityScope] = useState(true);
   const [requireCostCenterForPayroll, setRequireCostCenterForPayroll] = useState(true);
@@ -110,16 +141,22 @@ export function AiSetupAssistant() {
   const [defaultLanguage, setDefaultLanguage] = useState('en');
   const [sections, setSections] = useState<Record<SectionKey, boolean>>({
     entity: true, org: true, leave: true, leavePolicies: true, shifts: true,
-    attendance: true, payroll: true, holidays: true, governance: true, localization: true,
+    attendance: true, payroll: true, holidays: true, governance: true, localization: true, benefits: true,
   });
 
+  const [configuration, setConfiguration] = useState<SetupConfiguration>({ attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], grades: null, leavePolicies: null, benefitPlans: [] });
+  const [step, setStep] = useState(0);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  const profileRevision = useRef(0);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
   const [engine, setEngine] = useState('');
   const [genNotes, setGenNotes] = useState<string[]>([]);
   const [draft, setDraft] = useState<SetupDraft | null>(null);
-  const [done, setDone] = useState<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string }> } | null>(null);
+  const [draftCompanyId, setDraftCompanyId] = useState<string | null>(null);
+  const [done, setDone] = useState<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string; }>; } | null>(null);
 
   // The workspace's own country and currency. Setup - Localization is where a tenant states these;
   // reading them here is what stops the draft disagreeing with the rest of the product. An empty
@@ -131,34 +168,134 @@ export function AiSetupAssistant() {
         if (cancelled) return;
         const c = (loc?.countryCode ?? '').trim().toUpperCase();
         const cur = (loc?.currencyCode ?? '').trim().toUpperCase();
-        if (c) setCountry(c);
-        if (cur) setCurrency(cur);
+        if (c) setCountry(current => current || c);
+        if (cur) setCurrency(current => current || cur);
         setProfileSource(c || cur ? 'workspace' : 'unstated');
       })
       .catch(() => { if (!cancelled) setProfileSource('unstated'); });
     return () => { cancelled = true; };
   }, []);
 
+  // A setup draft belongs to one immutable company ID. Changing the group switcher changes the
+  // target, prefills legal identity from the authoritative company record, and invalidates any
+  // draft prepared for the prior company.
+  useEffect(() => {
+    profileRevision.current += 1;
+    setDraft(null);
+    setDraftCompanyId(null);
+    setDone(null);
+    setStep(0);
+    if (!targetCompany) return;
+    setLegalEntityName(targetCompany.legalNameEn);
+    setCountry(targetCompany.countryCode || '');
+    setCurrency(targetCompany.defaultCurrency || '');
+  }, [targetCompany?.id]);
+
+  // Company administrators may prepare and apply only records that are company/branch owned.
+  // Shared catalogs and workspace defaults stay under the group administrator's baseline.
+  useEffect(() => {
+    if (canIncludeSharedSetup) return;
+    setSections({
+      entity: true, org: false, leave: false, leavePolicies: true, shifts: false,
+      attendance: false, payroll: false, holidays: true, governance: false, localization: false, benefits: true,
+    });
+  }, [canIncludeSharedSetup]);
+
+  useEffect(() => {
+    profileRevision.current += 1;
+    setDraft(null);
+    setDraftCompanyId(null);
+    setError('');
+  }, [country, currency, industry, size, legalEntityName, branchCity, operatingModel, payrollModel,
+    approvalModel, strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
+    notes, workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays, targetCompany?.id,
+    workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage, sections, configuration]);
+
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+
+  const goToStep = (next: number) => {
+    if (loading || applying) return;
+    if (next > 0 && (!legalEntityName.trim() || !industry.trim() || !country || !currency)) {
+      setError('Add your legal entity name, industry, country and currency to continue.');
+      setStep(0);
+      return;
+    }
+    setError('');
+    setStep(next);
+    requestAnimationFrame(() => headingRef.current?.focus());
+  };
+
   const toggle = (k: SectionKey) => setSections(s => ({ ...s, [k]: !s[k] }));
+  const companyOwnedSections = new Set<SectionKey>(['entity', 'leavePolicies', 'holidays', 'benefits']);
+  const sectionAvailable = (key: SectionKey) => canIncludeSharedSetup || companyOwnedSections.has(key);
   const selectedCount = Object.values(sections).filter(Boolean).length;
   // Full Record<SectionKey, boolean> literal — an Object.fromEntries shortcut would widen
   // to { [k: string]: boolean } and fail the strict Record<SectionKey, boolean> assignment.
   const setAllSections = (value: boolean) =>
     setSections({
-      entity: value, org: value, leave: value, leavePolicies: value, shifts: value,
-      attendance: value, payroll: value, holidays: value, governance: value, localization: value,
+      entity: value && sectionAvailable('entity'), org: value && sectionAvailable('org'), leave: value && sectionAvailable('leave'), leavePolicies: value,
+      shifts: value && sectionAvailable('shifts'), attendance: value && sectionAvailable('attendance'), payroll: value && sectionAvailable('payroll'), holidays: value,
+      governance: value && sectionAvailable('governance'), localization: value && sectionAvailable('localization'), benefits: value && sectionAvailable('benefits'),
     });
-  const sectionCount = 10;
+  const sectionCount = 11;
+
+  const policyProfile: CompanyProfile = {
+    companyId: targetCompany?.id,
+    countryCode: country, industry, companySize: size, currencyCode: currency,
+    legalEntityName, branchCity, operatingModel, payrollModel, approvalModel,
+    strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
+    notes, sections, workPattern, weekendPattern, leaveYearBasis, probationMonths,
+    noticePeriodDays, workforceMix, overtimeHandling, attendanceCapture, payCycle,
+    timeZone, defaultLanguage, configuration,
+  };
+  const acceptProfileSuggestions = (patch: Partial<CompanyProfile>) => {
+    if (patch.countryCode !== undefined) setCountry(patch.countryCode);
+    if (patch.industry !== undefined) setIndustry(patch.industry);
+    if (patch.companySize !== undefined) setSize(patch.companySize);
+    if (patch.currencyCode !== undefined) setCurrency(patch.currencyCode);
+    if (patch.legalEntityName !== undefined) setLegalEntityName(patch.legalEntityName);
+    if (patch.branchCity !== undefined) setBranchCity(patch.branchCity);
+    if (patch.operatingModel !== undefined) setOperatingModel(patch.operatingModel);
+    if (patch.approvalModel !== undefined) setApprovalModel(patch.approvalModel);
+    if (patch.leaveYearBasis !== undefined) setLeaveYearBasis(patch.leaveYearBasis);
+    if (patch.workPattern !== undefined) setWorkPattern(patch.workPattern);
+    if (patch.weekendPattern !== undefined) setWeekendPattern(patch.weekendPattern);
+    if (patch.probationMonths !== undefined) setProbationMonths(patch.probationMonths);
+    if (patch.noticePeriodDays !== undefined) setNoticePeriodDays(patch.noticePeriodDays);
+    if (patch.workforceMix !== undefined) setWorkforceMix(patch.workforceMix);
+    if (patch.overtimeHandling !== undefined) setOvertimeHandling(patch.overtimeHandling);
+    if (patch.attendanceCapture !== undefined) setAttendanceCapture(patch.attendanceCapture);
+    if (patch.payCycle !== undefined) setPayCycle(patch.payCycle);
+    if (patch.timeZone !== undefined) setTimeZone(patch.timeZone);
+    if (patch.defaultLanguage !== undefined) setDefaultLanguage(patch.defaultLanguage);
+  };
 
   const generate = async () => {
+    if (!configuration.attendanceMethods?.length || !configuration.overtimeModes?.length) {
+      setError(t('Select at least one time-recording method and overtime option.')); setStep(1); return;
+    }
+    if (configuration.grades?.some(g => !g.code.trim() || !g.name.trim() || !Number.isFinite(g.minSalary + g.midSalary + g.maxSalary) || g.minSalary < 0 || g.minSalary > g.midSalary || g.midSalary > g.maxSalary)) {
+      setError(t('Complete each grade and keep minimum salary at or below midpoint and maximum.')); setStep(3); return;
+    }
+    if (configuration.benefitPlans?.some(b => !b.code.trim() || !b.name.trim() || !b.planType.trim() || !b.effectiveFrom || (b.effectiveTo && b.effectiveTo < b.effectiveFrom))) {
+      setError(t('Complete each benefit plan and check its effective dates.')); setStep(3); return;
+    }
+    if (configuration.leavePolicies?.some(p => !p.name.trim() || !p.leaveTypeCode.trim() || !Number.isFinite(p.annualEntitlementDays) || p.annualEntitlementDays < 0)) {
+      setError(t('Complete each leave policy name, type and entitlement.')); setStep(1); return;
+    }
+    if (!legalEntityName.trim()) { setError('Choose an existing legal entity or enter its registered name.'); return; }
     if (!industry.trim()) { setError('Tell me your industry so the suggestions fit.'); return; }
     if (!country) { setError('Pick the country this workspace operates in — the statutory defaults, holidays and working week all follow it.'); return; }
     // Generating without one would price every salary band in a currency nobody chose, and a band
     // in the wrong currency looks exactly like a band in the right one.
     if (!currency) { setError('Pick the currency before generating — salary bands are drafted in it, and a wrong currency is not visible on the figures.'); return; }
+    if (selectedCount === 0) { setError('Select at least one section to include.'); return; }
+    const revision = profileRevision.current;
+    const generatedForCompanyId = targetCompany?.id ?? null;
     setLoading(true); setError(''); setDone(null);
     try {
       const profile: CompanyProfile = {
+        companyId: targetCompany?.id,
         countryCode: country, industry: industry.trim(), companySize: size, currencyCode: currency,
         legalEntityName: legalEntityName.trim() || undefined,
         branchCity: branchCity.trim() || undefined,
@@ -181,11 +318,15 @@ export function AiSetupAssistant() {
         payCycle,
         timeZone: timeZone || undefined,
         defaultLanguage,
+        configuration: { ...configuration, grades: configuration.grades?.map(g => ({ ...g, currency })) ?? configuration.grades, benefitPlans: configuration.benefitPlans?.map(b => ({ ...b, currency, gradeCodes: b.gradeCodes.map(code => code.trim()).filter(Boolean) })) },
       };
       const r = await setupAssistantApi.preview(profile);
-      setDraft(r.draft); setEngine(r.engine); setGenNotes(r.notes);
+      if (revision !== profileRevision.current || generatedForCompanyId !== (targetCompany?.id ?? null)) return;
+      if (r.configurationVersion !== 1) { setError(t('The setup service needs an update to support these policy settings. Your entries are preserved; no configuration has been applied.')); return; }
+      setDraft(r.draft); setDraftCompanyId(generatedForCompanyId); setEngine(r.engine); setGenNotes(r.notes);
+      requestAnimationFrame(() => headingRef.current?.focus());
     } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { message?: string } } };
+      const err = e as { response?: { status?: number; data?: { message?: string; }; }; };
       if (err?.response?.status === 403) {
         setError("You don't have access to the setup assistant (Admin or HR Manager role required).");
       } else {
@@ -195,16 +336,20 @@ export function AiSetupAssistant() {
   };
 
   const apply = async () => {
-    if (!draft) return;
+    if (!draft || !legalEntityName.trim()) return;
+    if (draftCompanyId !== (targetCompany?.id ?? null)) {
+      setError('This draft belongs to a different company. Generate a new draft for the selected company before applying.');
+      return;
+    }
     setApplying(true); setError('');
     try {
-      const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined);
+      const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined, targetCompany?.id);
       setDone(r);
     } catch (e: unknown) {
       // Keep the draft in state on 403 so an admin can apply the exact reviewed draft.
       // The axios interceptor already fires a global access-denied toast; add only the
       // inline, domain-specific message here (no second toast).
-      const err = e as { response?: { status?: number; data?: { message?: string } } };
+      const err = e as { response?: { status?: number; data?: { message?: string; }; }; };
       if (err?.response?.status === 403) {
         setError("Applying requires the 'organization.setup.apply' permission. Your account can preview a setup but not commit it — ask an administrator to apply this reviewed draft, or to grant you the permission.");
       } else {
@@ -241,17 +386,93 @@ export function AiSetupAssistant() {
 
   const totalItems = draft
     ? draft.departments.length + draft.designations.length + draft.grades.length +
-      draft.branches.length + draft.costCenters.length + (releaseA ? 0 : draft.gradePayComponents.length) +
-      draft.leaveTypes.length + draft.shifts.length + draft.payComponents.length +
-      draft.statutoryRules.length + (draft.workingWeek ? 1 : 0) +
-      (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0) +
-      draft.leavePolicies.length + (draft.holidayCalendar?.holidays.length ?? 0) +
-      (draft.attendancePolicy ? 1 : 0) +
-      // The multipliers are rows of their own once applied, so they count as items here too —
-      // otherwise the button promises fewer than the apply writes.
-      (draft.overtimePolicy ? 1 + draft.overtimePolicy.multipliers.length : 0) +
-      (draft.localization ? 1 : 0)
+    draft.branches.length + draft.costCenters.length + (releaseA ? 0 : draft.gradePayComponents.length) +
+    draft.leaveTypes.length + draft.shifts.length + draft.payComponents.length +
+    draft.statutoryRules.length + (draft.workingWeek ? 1 : 0) +
+    (draft.employeeIdRule ? 1 : 0) + (draft.hrConfig ? 1 : 0) +
+    draft.leavePolicies.length + (draft.holidayCalendar?.holidays.length ?? 0) +
+    (draft.attendancePolicy ? 1 : 0) +
+    // The multipliers are rows of their own once applied, so they count as items here too —
+    // otherwise the button promises fewer than the apply writes.
+    (draft.overtimePolicy ? 1 + draft.overtimePolicy.multipliers.length : 0) +
+    (draft.localization ? 1 : 0) + (draft.benefitPlans?.length ?? 0)
     : 0;
+
+  if (requestedCompanyUnavailable) {
+    return (
+      <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10" role="alert">
+        <h2 className="text-base font-semibold text-amber-950 dark:text-amber-100">This company is not available for setup</h2>
+        <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">The link may point to an inactive, removed, or inaccessible company. No other company has been selected in its place.</p>
+        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+      </section>
+    );
+  }
+
+  if (requiresCompanySelection) {
+    const activeCompanies = companies.filter(company => company.isActive && company.approvalStatus === 'Active');
+    const pendingCompanies = companies.filter(company => !company.isActive || company.approvalStatus !== 'Active');
+    return (
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" aria-labelledby="group-setup-heading">
+        <div className="border-b border-slate-200 bg-gradient-to-r from-sapphire/[0.07] to-transparent px-5 py-5 dark:border-white/10 dark:from-cyanAccent/[0.07] sm:px-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sapphire text-white shadow-sm dark:bg-cyanAccent dark:text-slate-950"><Building2 className="h-5 w-5" /></span>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-sapphire dark:text-cyanAccent">Group workspace</p>
+                <h2 id="group-setup-heading" className="mt-1 text-xl font-semibold text-slate-950 dark:text-white">Choose a company to configure</h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">Each draft is locked to one legal entity. Company records stay inside that company; group-wide catalogs and policy baselines remain controlled by group administrators.</p>
+              </div>
+            </div>
+            <Link href="/setup?tab=companies" className="btn-primary"><Plus className="h-4 w-4" />Add company</Link>
+          </div>
+        </div>
+        <div className="grid gap-5 p-5 sm:p-6 xl:grid-cols-[minmax(0,1fr)_300px]">
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Active companies</h3>
+              <span className="text-xs text-slate-500">{activeCompanies.length} ready for setup</span>
+            </div>
+            {activeCompanies.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 px-5 py-10 text-center dark:border-white/15">
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-100">No active company is available yet.</p>
+                <p className="mt-1 text-xs text-slate-500">Create a legal entity or wait for its activation before starting Setup Studio.</p>
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {activeCompanies.map(company => (
+                  <button key={company.id} type="button" onClick={() => setSelectedCompany(company.id)}
+                    className="group flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 p-4 text-start transition hover:border-sapphire/50 hover:bg-sapphire/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:border-white/10 dark:hover:border-cyanAccent/40 dark:hover:bg-cyanAccent/[0.04]">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-sapphire/10 group-hover:text-sapphire dark:bg-white/[0.06] dark:text-slate-300"><Building2 className="h-4 w-4" /></span>
+                    <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">{company.legalNameEn}</span><span className="mt-1 block truncate text-xs text-slate-500">{company.countryCode} · {company.defaultCurrency} · {company.jurisdiction || 'Jurisdiction pending'}</span></span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 rtl:rotate-180" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <aside className="space-y-3 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.03]" aria-label="Group setup workflow">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Group rollout</h3>
+            {[
+              ['1', 'Create the legal entity', 'Registration, country, currency and activation status.'],
+              ['2', 'Assign its administrator', 'Use User Management after the company is active.'],
+              ['3', 'Configure this company', 'Open a company-bound draft, review and apply.'],
+            ].map(([number, title, detail]) => <div key={number} className="flex gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">{number}</span><div><p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{title}</p><p className="mt-0.5 text-[11px] leading-4 text-slate-500">{detail}</p></div></div>)}
+            <Link href="/user-management" className="btn-secondary mt-2 w-full justify-center"><Users className="h-4 w-4" />Manage administrators</Link>
+            <div className="border-t border-slate-200 pt-3 dark:border-white/10">
+              <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">Shared group baseline</p>
+              <p className="mt-1 text-[11px] leading-4 text-slate-500">Configure shared catalogs once, then let each company use them without copying conflicting versions.</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <Link href="/setup?tab=grades" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Grades</Link>
+                <Link href="/setup?tab=masterData" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Master data</Link>
+                <Link href="/setup?tab=statutoryRules" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Statutory rules</Link>
+              </div>
+            </div>
+          </aside>
+        </div>
+        {pendingCompanies.length > 0 && <div className="border-t border-slate-200 px-5 py-3 text-xs text-amber-700 dark:border-white/10 dark:text-amber-300">{pendingCompanies.length} compan{pendingCompanies.length === 1 ? 'y is' : 'ies are'} awaiting activation and cannot be configured yet.</div>}
+      </section>
+    );
+  }
 
   if (done) {
     return (
@@ -269,980 +490,582 @@ export function AiSetupAssistant() {
         {(done.skipped?.gradePayComponents?.count ?? 0) > 0 && <p role="status" className="mt-3 text-xs text-amber-800 dark:text-amber-200">
           {t('{count} grade pay line(s) were not saved: grade allowances and benefits are set in Benefits by grade.', { count: done.skipped!.gradePayComponents.count })}
         </p>}
-        <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); }}>Run again</button>
+        <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); setPolicyGuideOpen(false); setStep(0); }}>Start another setup</button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      {/* Intro */}
-      <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
-        <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
-        <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">AI Setup Assistant</h3>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            Describe your company and I&apos;ll propose a starter configuration wired to legal entity, branch, cost center, grade, designation, payroll, governance, and statutory setup. You review everything before it&apos;s applied.
-          </p>
-        </div>
-      </div>
-
-      {/* Guided form */}
-      <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/[0.03] sm:grid-cols-2">
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Country</span>
-          <select className="select w-full" value={country} onChange={e => { setCountry(e.target.value); setDraft(null); }}>
-            <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a country…'}</option>
-            {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
-          </select>
-          {profileSource === 'workspace' && country && (
-            <span className="mt-1 block text-[11px] text-slate-400">From your workspace settings.</span>
-          )}
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Industry</span>
-          <input className="input w-full" value={industry} onChange={e => { setIndustry(e.target.value); setDraft(null); }} placeholder="e.g. Construction, Retail, Healthcare" />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Legal entity name</span>
-          <input className="input w-full" value={legalEntityName} onChange={e => { setLegalEntityName(e.target.value); setDraft(null); }} placeholder="e.g. Zayra Demo LLC" />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Head office city</span>
-          <input className="input w-full" value={branchCity} onChange={e => { setBranchCity(e.target.value); setDraft(null); }} />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Company size</span>
-          <select className="select w-full" value={size} onChange={e => setSize(e.target.value)}>
-            {SIZES.map(s => <option key={s} value={s}>{s} employees</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Currency</span>
-          <select className="select w-full" value={currency} onChange={e => { setCurrency(e.target.value); setDraft(null); }}>
-            <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a currency…'}</option>
-            {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <span className={`mt-1 block text-[11px] ${currency ? 'text-slate-400' : 'text-amber-600 dark:text-amber-400'}`}>
-            {currency
-              ? (profileSource === 'workspace' ? 'From your workspace settings. Every salary band is drafted in it.' : 'Every salary band is drafted in this currency.')
-              : 'Your workspace has not stated a currency. Set it in Setup \u2192 Localization, or pick one here.'}
-          </span>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Operating model</span>
-          <select className="select w-full" value={operatingModel} onChange={e => setOperatingModel(e.target.value)}>
-            {['Functional', 'Matrix', 'Multi-Branch', 'Project-Based', 'Shared Services'].map(x => <option key={x} value={x}>{x}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Payroll model</span>
-          <select className="select w-full" value={payrollModel} onChange={e => setPayrollModel(e.target.value)}>
-            {['GradeBased', 'PositionBased', 'ProjectAllowance', 'HourlyShift', 'Mixed'].map(x => <option key={x} value={x}>{x}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Approval routing</span>
-          <select className="select w-full" value={approvalModel} onChange={e => setApprovalModel(e.target.value)}>
-            {['DepartmentHead', 'SupervisorFirst', 'HRFinal', 'FinancePayrollReview'].map(x => <option key={x} value={x}>{x}</option>)}
-          </select>
-        </label>
-        <div className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
-          {[
-            ['Strict entity scope', strictEntityScope, setStrictEntityScope],
-            ['Require cost center for payroll', requireCostCenterForPayroll, setRequireCostCenterForPayroll],
-            ['Require grade for approval policy', requireGradeForApprovalPolicy, setRequireGradeForApprovalPolicy],
-          ].map(([label, value, setter]) => (
-            <label key={String(label)} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
-              <input type="checkbox" checked={Boolean(value)} onChange={e => (setter as (v: boolean) => void)(e.target.checked)} className="h-4 w-4 accent-sapphire" />
-              {String(label)}
-            </label>
-          ))}
-        </div>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How do people work?</span>
-          <select className="select w-full" value={workPattern} onChange={e => { setWorkPattern(e.target.value); setDraft(null); }}>
-            {WORK_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <span className="mt-1 block text-[11px] text-slate-400">Sets the shifts and the standard working day.</span>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Weekend (days off)</span>
-          <select className="select w-full" value={weekendPattern} onChange={e => { setWeekendPattern(e.target.value); setDraft(null); }}>
-            {WEEKEND_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <span className="mt-1 block text-[11px] text-slate-400">Every leave day and overtime hour is counted against this.</span>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">How is time recorded?</span>
-          <select className="select w-full" value={attendanceCapture} onChange={e => { setAttendanceCapture(e.target.value); setDraft(null); }}>
-            {ATTENDANCE_CAPTURE.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <span className="mt-1 block text-[11px] text-slate-400">Decides the lateness grace the policy can honestly claim.</span>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Overtime</span>
-          <select className="select w-full" value={overtimeHandling} onChange={e => { setOvertimeHandling(e.target.value); setDraft(null); }}>
-            {OVERTIME_HANDLING.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Pay cycle</span>
-          <select className="select w-full" value={payCycle} onChange={e => { setPayCycle(e.target.value); setDraft(null); }}>
-            {PAY_CYCLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Workforce</span>
-          <select className="select w-full" value={workforceMix} onChange={e => { setWorkforceMix(e.target.value); setDraft(null); }}>
-            {WORKFORCE_MIX.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-          <span className="mt-1 block text-[11px] text-slate-400">Expatriate staff carry allowances nationals do not.</span>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Leave year runs from</span>
-          <select className="select w-full" value={leaveYearBasis} onChange={e => { setLeaveYearBasis(e.target.value); setDraft(null); }}>
-            {LEAVE_YEAR_BASES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Probation (months)</span>
-            <input type="number" min={0} max={24} className="input w-full" value={probationMonths}
-              onChange={e => { setProbationMonths(Math.max(0, Math.min(24, Number(e.target.value) || 0))); setDraft(null); }} />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Notice (days)</span>
-            <input type="number" min={0} max={365} className="input w-full" value={noticePeriodDays}
-              onChange={e => { setNoticePeriodDays(Math.max(0, Math.min(365, Number(e.target.value) || 0))); setDraft(null); }} />
-          </label>
-        </div>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Working language</span>
-          <select className="select w-full" value={defaultLanguage} onChange={e => { setDefaultLanguage(e.target.value); setDraft(null); }}>
-            {LANGUAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Time zone</span>
-          <select className="select w-full" value={timeZone} onChange={e => { setTimeZone(e.target.value); setDraft(null); }}>
-            {TIMEZONES.map(tz => <option key={tz || 'auto'} value={tz}>{tz || 'Match the country'}</option>)}
-          </select>
-          <span className="mt-1 block text-[11px] text-slate-400">Every timestamp in the product is shown in this zone.</span>
-        </label>
-        <label className="block sm:col-span-2">
-          <span className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
-          <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
-        </label>
-        <fieldset role="group" aria-label="Sections to include in the draft" className="sm:col-span-2">
-          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{selectedCount} of {sectionCount} selected</span>
-              <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select all</button>
-              <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
-            </div>
+    <div className="setup-studio overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
+      <div className="grid lg:grid-cols-[200px_minmax(0,1fr)]">
+        <aside className="setup-step-rail border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
+          <nav aria-label="Company setup steps">
+            <ol className="grid grid-cols-5 gap-1.5 lg:grid-cols-1">
+              {SETUP_STEPS.map((item, index) => (
+                <li key={t(item.title)}>
+                  <button type="button" onClick={() => goToStep(index)} disabled={loading || applying}
+                    aria-current={step === index ? 'step' : undefined}
+                    className={`flex w-full items-center justify-center rounded-lg px-2 py-3 text-start lg:items-start lg:justify-start lg:gap-3 lg:px-3 lg:py-2 transition-colors disabled:opacity-60 ${step === index ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
+                    <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${step === index ? 'border-sapphire bg-sapphire text-white' : 'border-slate-300 dark:border-slate-600'}`}>{index + 1}</span>
+                    <span className="sr-only lg:not-sr-only"><span className="block text-sm font-semibold">{t(item.title)}</span><span className={`mt-0.5 hidden text-xs leading-5 ${step === index ? 'lg:block' : ''} ${step === index ? 'text-blue-700 dark:text-blue-200' : 'text-slate-500 dark:text-slate-400'}`}>{t(item.description)}</span></span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200 lg:hidden">{step + 1} / {SETUP_STEPS.length} · {t(SETUP_STEPS[step].title)}</p>
+          </nav>
+          <div className="setup-control-note mt-4 hidden border-t border-slate-200 pt-4 dark:border-white/10 lg:block">
+            <ShieldCheck className="mb-2 h-5 w-5 text-slate-500 dark:text-slate-400" aria-hidden="true" />
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200">You stay in control</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">The assistant prepares a draft. Nothing changes in your workspace until you review and apply it.</p>
           </div>
-          <p className="mb-2 text-xs text-slate-400">Pick which parts of the starter configuration the assistant proposes. These are selections, not actions — nothing is generated until you choose Generate draft below.</p>
-          <div className="flex flex-wrap gap-2">
-            {([
-              ['entity', 'Entity & cost centers'], ['org', 'Org structure'],
-              ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
-              ['shifts', 'Shifts & working week'], ['attendance', 'Attendance & overtime'],
-              ['payroll', 'Payroll & statutory'], ['holidays', 'Public holidays'],
-              ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'],
-            ] as [SectionKey, string][]).map(([k, label]) => (
-              <label key={k}
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition ${
-                  sections[k]
-                    ? 'border-sapphire bg-sapphire/[0.06] text-slate-900 dark:border-cyanAccent/40 dark:bg-cyanAccent/[0.06] dark:text-white'
-                    : 'border-slate-200 text-slate-500 hover:border-slate-300 dark:border-white/10 dark:text-slate-300'
-                }`}>
-                <input type="checkbox" checked={sections[k]} onChange={() => toggle(k)} aria-label={`Include ${label} in the generated draft`} className="h-4 w-4 accent-sapphire" />
-                {sections[k] ? <CheckCircle2 className="h-3.5 w-3.5 text-sapphire dark:text-cyanAccent" /> : <Circle className="h-3.5 w-3.5 text-slate-300 dark:text-white/30" />}
-                {label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      </div>
-
-      {error && <p className="text-sm text-red-500">{error}</p>}
-
-      {/* Two-step ribbon: preview (Step 1) then review & apply (Step 2) */}
-      <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium">
-        <span className={`rounded-full px-2.5 py-1 ${!draft ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>Step 1 · Generate draft (preview only)</span>
-        <span className="text-slate-300 dark:text-white/30">→</span>
-        <span className={`rounded-full px-2.5 py-1 ${draft ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>Step 2 · Review &amp; apply</span>
-      </div>
-
-      <div className="flex flex-wrap items-start gap-3">
-        <div>
-          <button type="button" className={`${draft ? 'btn-secondary' : 'btn-primary'} flex items-center gap-1.5`} onClick={generate}
-            disabled={loading || selectedCount === 0 || !industry.trim() || !country || !currency}
-            title={!industry.trim() ? 'Add your industry first.' : !country ? 'Pick a country first.' : !currency ? 'Pick a currency first.' : selectedCount === 0 ? 'Select at least one section to include.' : undefined}>
-            <Wand2 className="h-4 w-4" />
-            {loading ? 'Thinking…' : draft ? 'Regenerate draft' : 'Generate draft'}
-          </button>
-          <p className={`mt-1 text-[11px] ${!industry.trim() || !country || !currency || selectedCount === 0 ? 'text-rose-500' : 'text-slate-400'}`}>
-            {!industry.trim() ? 'Add your industry first.'
-              : !country ? 'Pick a country first.'
-              : !currency ? 'Pick a currency first — salary bands are drafted in it.'
-              : selectedCount === 0 ? 'Select at least one section to include.'
-              : 'Preview only — nothing is written to your workspace yet.'}
-          </p>
-        </div>
-        {draft && (
-          <div>
-            <button type="button" className="btn-primary flex items-center gap-1.5" onClick={apply} disabled={applying || totalItems === 0}
-              title={totalItems === 0 ? 'Remove-all left nothing to apply — regenerate or add rows.' : undefined}>
-              <CheckCircle2 className="h-4 w-4" />
-              {applying ? 'Applying…' : `Apply ${totalItems} item(s) to workspace`}
-            </button>
-            {totalItems === 0 && <p className="mt-1 text-[11px] text-rose-500">Remove-all left nothing to apply — regenerate or add rows.</p>}
-          </div>
-        )}
-      </div>
-
-      {/* Preview */}
-      {draft && (
-        <div className="space-y-4">
-          {/* Draft-only banner */}
-          <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
-            <Eye className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              Draft only — nothing has been saved yet. Review the <span className="font-semibold text-slate-900 dark:text-white">{totalItems}</span> item(s) below, remove anything you don&apos;t want, then apply to write them to your workspace.
-            </p>
-          </div>
-
-          {/* Provenance: how the draft was generated (surfaces engine + genNotes, incl. the deterministic-template note) */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex flex-wrap items-center gap-2">
-              <Info className="h-4 w-4 text-slate-500 dark:text-slate-400" />
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">How this draft was generated</p>
-              {engine && <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{engine}</span>}
-            </div>
-            {genNotes.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {genNotes.map((n, i) => (
-                  <p key={i} className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{n}
-                  </p>
-                ))}
+        </aside>
+        <div className="setup-studio-content min-w-0 p-5">
+          {targetCompany && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] px-4 py-3 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
+              <div className="flex min-w-0 items-center gap-3">
+                <Building2 className="h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
+                <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900 dark:text-white">Setting up {targetCompany.legalNameEn}</p><p className="text-xs text-slate-500">{targetCompany.countryCode} · {targetCompany.defaultCurrency} · Protected company scope</p></div>
               </div>
-            )}
-          </div>
-
-          <DraftSection title="Branches"
-            rows={draft.branches.map((x, i) => ({
-              code: x.code,
-              desc: `${x.nameEn} · ${x.city}${x.isHeadOffice ? ' · Head office' : ''}`,
-              fields: [
-                txt('Name', x.nameEn, v => patch('branches', i, { nameEn: v })),
-                txt('City', x.city, v => patch('branches', i, { city: v })),
-                boolf('Head office', x.isHeadOffice, v => patch('branches', i, { isHeadOffice: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('branches', i)} />
-
-          <DraftSection title="Departments"
-            rows={draft.departments.map((x, i) => ({
-              code: x.code, desc: x.nameEn,
-              fields: [txt('Name', x.nameEn, v => patch('departments', i, { nameEn: v }))],
-            }))}
-            onRemove={i => removeAt('departments', i)} />
-
-          <DraftSection title="Cost Centers"
-            rows={draft.costCenters.map((x, i) => ({
-              code: x.code,
-              desc: `${x.name}${x.departmentCode ? ` · ${x.departmentCode}` : ''}`,
-              fields: [txt('Name', x.name, v => patch('costCenters', i, { name: v }))],
-            }))}
-            onRemove={i => removeAt('costCenters', i)} />
-
-          <DraftSection title="Designations"
-            rows={draft.designations.map((x, i) => ({
-              code: x.code,
-              desc: `${x.titleEn}${x.departmentCode ? ` · ${x.departmentCode}` : ''}${x.gradeCode ? ` · ${x.gradeCode}` : ''}${x.isManagerRole ? ' · Manager' : ''}`,
-              fields: [
-                txt('Title', x.titleEn, v => patch('designations', i, { titleEn: v })),
-                selectf('Grade', x.gradeCode, draft.grades.map(g => g.code), v => patch('designations', i, { gradeCode: v })),
-                boolf('Manager role', x.isManagerRole, v => patch('designations', i, { isManagerRole: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('designations', i)} />
-
-          <DraftSection title="Grades"
-            rows={draft.grades.map((x, i) => ({
-              code: x.code,
-              desc: `${x.name} (L${x.level}) · ${x.currency} ${x.minSalary}-${x.maxSalary}`,
-              // The currency is shown but not editable: it is the workspace's, set once at the top,
-              // and letting a single band drift to another currency is the bug this screen just fixed.
-              fields: [
-                txt('Name', x.name, v => patch('grades', i, { name: v })),
-                numf(`Min (${x.currency})`, x.minSalary, v => patch('grades', i, { minSalary: v })),
-                numf(`Mid (${x.currency})`, x.midSalary, v => patch('grades', i, { midSalary: v })),
-                numf(`Max (${x.currency})`, x.maxSalary, v => patch('grades', i, { maxSalary: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('grades', i)} />
-
-          {releaseA
-            ? <p className="rounded-xl border border-slate-200 p-3 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
-                {t('Grade allowances and benefits are set in Benefits by grade, so this draft has no grade pay lines.')}{' '}
-                <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link>
-              </p>
-            : <DraftSection title="Grade Pay Components"
-            rows={draft.gradePayComponents.map((x, i) => ({
-              code: x.componentCode,
-              desc: `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`,
-              fields: [
-                txt('Name', x.componentName, v => patch('gradePayComponents', i, { componentName: v })),
-                ...(x.calculationType === 'PercentOfBasic'
-                  ? [numf('Percent of basic', x.percentage, v => patch('gradePayComponents', i, { percentage: v }), 0, 100)]
-                  : [numf('Amount', x.amount, v => patch('gradePayComponents', i, { amount: v }))]),
-                boolf('Taxable', x.isTaxable, v => patch('gradePayComponents', i, { isTaxable: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('gradePayComponents', i)} />}
-
-          <DraftSection title="Leave Types"
-            rows={draft.leaveTypes.map((x, i) => ({
-              code: x.code,
-              desc: `${x.nameEn} · ${x.isPaid ? 'Paid' : 'Unpaid'} · max ${x.maxConsecutiveDays}d`,
-              fields: [
-                txt('Name', x.nameEn, v => patch('leaveTypes', i, { nameEn: v })),
-                numf('Max consecutive days', x.maxConsecutiveDays, v => patch('leaveTypes', i, { maxConsecutiveDays: v }), 0, 365),
-                boolf('Paid', x.isPaid, v => patch('leaveTypes', i, { isPaid: v })),
-                boolf('Attachment required', x.requiresAttachment, v => patch('leaveTypes', i, { requiresAttachment: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('leaveTypes', i)} />
-
-          <DraftSection title="Leave Entitlement"
-            rows={draft.leavePolicies.map((x, i) => ({
-              code: x.leaveTypeCode,
-              desc: `${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
-                ` · ${x.payrollImpact === 'Unpaid' ? 'unpaid' : 'full pay'}` +
-                `${x.noticeRequiredDays > 0 ? ` · ${x.noticeRequiredDays}d notice` : ''}` +
-                `${x.appliesOnProbation ? ' · available on probation' : ''}`,
-              fields: [
-                numf('Days per year', x.annualEntitlementDays, v => patch('leavePolicies', i, { annualEntitlementDays: v }), 0, 365, 0.5),
-                selectf('Accrual', x.accrualMethod, ['Yearly', 'Monthly'], v => patch('leavePolicies', i, { accrualMethod: v })),
-                numf('Notice days', x.noticeRequiredDays, v => patch('leavePolicies', i, { noticeRequiredDays: v }), 0, 365),
-                numf('Max per request', x.maximumDaysPerRequest, v => patch('leavePolicies', i, { maximumDaysPerRequest: v }), 0, 365),
-                boolf('Encashable', x.encashmentAllowed, v => patch('leavePolicies', i, { encashmentAllowed: v })),
-                boolf('On probation', x.appliesOnProbation, v => patch('leavePolicies', i, { appliesOnProbation: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('leavePolicies', i)} />
-
-          <DraftSection title="Shifts"
-            rows={draft.shifts.map((x, i) => ({
-              code: x.code,
-              desc: `${x.name} · ${x.start}–${x.end}`,
-              fields: [
-                txt('Name', x.name, v => patch('shifts', i, { name: v })),
-                txt('Start (HH:mm)', x.start, v => patch('shifts', i, { start: v })),
-                txt('End (HH:mm)', x.end, v => patch('shifts', i, { end: v })),
-                numf('Break minutes', x.breakMinutes, v => patch('shifts', i, { breakMinutes: v }), 0, 240),
-              ],
-            }))}
-            onRemove={i => removeAt('shifts', i)} />
-
-          {draft.workingWeek && (
-            <DraftSection title="Working Week"
-              rows={[{
-                code: 'WEEK',
-                desc: `${draft.workingWeek.workWeek} · starts ${draft.workingWeek.weekStartDay}`,
-                fields: [
-                  selectf('Working week', draft.workingWeek.workWeek, ['Sun-Thu', 'Mon-Fri', 'Mon-Sat', 'Sat-Thu'], v => patchOne('workingWeek', { workWeek: v })),
-                  selectf('Week starts', draft.workingWeek.weekStartDay, ['Sunday', 'Monday', 'Saturday'], v => patchOne('workingWeek', { weekStartDay: v })),
-                ],
-              }]}
-              onRemove={() => setDraft(d => d ? { ...d, workingWeek: null } : d)} />
-          )}
-
-          <DraftSection title="Payroll Components"
-            rows={draft.payComponents.map((x, i) => ({
-              code: x.code,
-              desc: `${x.name} · ${x.componentType} · ${x.calculationType === 'Percentage' ? `${x.percentage}%` : x.amount}`,
-              fields: [
-                txt('Name', x.name, v => patch('payComponents', i, { name: v })),
-                ...(x.calculationType === 'Percentage'
-                  ? [numf('Percentage', x.percentage, v => patch('payComponents', i, { percentage: v }), 0, 100)]
-                  : [numf('Amount', x.amount, v => patch('payComponents', i, { amount: v }))]),
-                boolf('Taxable', x.isTaxable, v => patch('payComponents', i, { isTaxable: v })),
-              ],
-            }))}
-            onRemove={i => removeAt('payComponents', i)} />
-
-          <DraftSection title="Statutory Rules"
-            rows={draft.statutoryRules.map((x, i) => ({
-              code: x.ruleKey,
-              desc: `${x.ruleValue} — ${x.description}`,
-              // The VALUE is editable; the key is not. A renamed key is a rule nothing reads.
-              fields: [txt('Value', x.ruleValue, v => patch('statutoryRules', i, { ruleValue: v }))],
-            }))}
-            onRemove={i => removeAt('statutoryRules', i)} />
-
-          {draft.employeeIdRule && (
-            <DraftSection title="Employee ID Rule"
-              rows={[{
-                code: 'ID',
-                desc: `${draft.employeeIdRule.companyPrefix} · pad ${draft.employeeIdRule.paddingLength} · next ${draft.employeeIdRule.nextSequence}`,
-                fields: [
-                  txt('Prefix', draft.employeeIdRule.companyPrefix, v => patchOne('employeeIdRule', { companyPrefix: v })),
-                  numf('Padding', draft.employeeIdRule.paddingLength, v => patchOne('employeeIdRule', { paddingLength: v }), 1, 12),
-                  numf('Next sequence', draft.employeeIdRule.nextSequence, v => patchOne('employeeIdRule', { nextSequence: v }), 1),
-                  boolf('Allow manual override', draft.employeeIdRule.allowManualOverride, v => patchOne('employeeIdRule', { allowManualOverride: v })),
-                ],
-              }]}
-              onRemove={() => setDraft(d => d ? { ...d, employeeIdRule: null } : d)} />
-          )}
-
-          {draft.attendancePolicy && (
-            <DraftSection title="Attendance Policy"
-              rows={[{
-                code: draft.attendancePolicy.code,
-                desc: `${draft.attendancePolicy.graceMinutes}min grace · late after ${draft.attendancePolicy.lateThresholdMinutes}min` +
-                  ` · ${Math.round(draft.attendancePolicy.standardWorkMinutes / 60 * 10) / 10}h day` +
-                  ` · ${draft.attendancePolicy.breakMinutes}min break` +
-                  ` · rounded to the ${draft.attendancePolicy.roundingRule === 'NearestMinute' ? 'minute' : 'quarter-hour'}`,
-                fields: [
-                  numf('Grace minutes', draft.attendancePolicy.graceMinutes, v => patchOne('attendancePolicy', { graceMinutes: v }), 0, 120),
-                  numf('Late after (min)', draft.attendancePolicy.lateThresholdMinutes, v => patchOne('attendancePolicy', { lateThresholdMinutes: v }), 0, 480),
-                  numf('Standard day (min)', draft.attendancePolicy.standardWorkMinutes, v => patchOne('attendancePolicy', { standardWorkMinutes: v }), 60, 960),
-                  numf('Break (min)', draft.attendancePolicy.breakMinutes, v => patchOne('attendancePolicy', { breakMinutes: v }), 0, 240),
-                  // Only the two the overtime engine can evaluate; a third would be stored and ignored.
-                  selectf('Rounding', draft.attendancePolicy.roundingRule, ['NearestMinute', 'Nearest15'], v => patchOne('attendancePolicy', { roundingRule: v })),
-                ],
-              }]}
-              onRemove={() => setDraft(d => d ? { ...d, attendancePolicy: null } : d)} />
-          )}
-
-          {draft.overtimePolicy && (
-            <DraftSection title="Overtime Policy"
-              rows={[
-                {
-                  code: draft.overtimePolicy.code,
-                  desc: `${draft.overtimePolicy.standardMonthlyHours}h/month basis · min ${draft.overtimePolicy.minimumMinutes}min` +
-                    ` · max ${Math.round(draft.overtimePolicy.maximumMinutesPerDay / 60)}h/day` +
-                    `${draft.overtimePolicy.allowCompOffConversion ? ' · time off in lieu allowed' : ''}`,
-                  fields: [
-                    numf('Monthly hours basis', draft.overtimePolicy.standardMonthlyHours, v => patchOne('overtimePolicy', { standardMonthlyHours: v }), 1, 400),
-                    numf('Minimum minutes', draft.overtimePolicy.minimumMinutes, v => patchOne('overtimePolicy', { minimumMinutes: v }), 0, 480),
-                    numf('Max minutes/day', draft.overtimePolicy.maximumMinutesPerDay, v => patchOne('overtimePolicy', { maximumMinutesPerDay: v }), 0, 960),
-                    boolf('Time off in lieu', draft.overtimePolicy.allowCompOffConversion, v => patchOne('overtimePolicy', { allowCompOffConversion: v })),
-                  ],
-                },
-                ...draft.overtimePolicy.multipliers.map((m, mi) => ({
-                  code: m.dayCategory,
-                  desc: `×${m.multiplier} of the hourly rate`,
-                  // Floored at 1: below that an overtime hour pays less than an ordinary one, and
-                  // the payroll run would floor it at the statutory rate anyway.
-                  fields: [numf('Multiplier', m.multiplier, v => setDraft(d => d?.overtimePolicy
-                    ? { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.map((x, n) => n === mi ? { ...x, multiplier: v } : x) } }
-                    : d), 1, 5, 0.25)],
-                })),
-              ]}
-              onRemove={i => setDraft(d => {
-                if (!d?.overtimePolicy) return d;
-                if (i === 0) return { ...d, overtimePolicy: null };
-                return { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.filter((_, n) => n !== i - 1) } };
-              })} />
-          )}
-
-          {draft.holidayCalendar && (
-            <DraftSection title={`Public Holidays ${draft.holidayCalendar.calendarYear}`}
-              rows={draft.holidayCalendar.holidays.map((h, i) => ({
-                code: h.date,
-                desc: `${h.nameEn}${h.nameAr ? ` · ${h.nameAr}` : ''}${h.isOptional ? ' · optional' : ''}`,
-                fields: [
-                  txt('Name', h.nameEn, v => setDraft(d => d?.holidayCalendar
-                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, nameEn: v } : x) } } : d)),
-                  txt('Date (YYYY-MM-DD)', h.date, v => setDraft(d => d?.holidayCalendar
-                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, date: v } : x) } } : d)),
-                  boolf('Optional', h.isOptional, v => setDraft(d => d?.holidayCalendar
-                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, isOptional: v } : x) } } : d)),
-                ],
-              }))}
-              onRemove={i => setDraft(d => d && d.holidayCalendar
-                ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.filter((_, n) => n !== i) } }
-                : d)} />
-          )}
-
-          {draft.localization && (
-            <DraftSection title="Language & Time Zone"
-              rows={[{
-                code: 'LOCALE',
-                desc: `${draft.localization.defaultLanguage === 'ar' ? 'Arabic' : 'English'} · ${draft.localization.defaultTimezone}` +
-                  ` · ${draft.localization.dateFormat}` +
-                  `${draft.localization.rtlEnabled ? ' · right-to-left supported' : ''}` +
-                  `${draft.localization.hijriDatesEnabled ? ' · Hijri dates shown' : ''}`,
-                fields: [
-                  selectf('Language', draft.localization.defaultLanguage, ['en', 'ar'], v => patchOne('localization', { defaultLanguage: v })),
-                  selectf('Time zone', draft.localization.defaultTimezone, TIMEZONES.filter(Boolean), v => patchOne('localization', { defaultTimezone: v })),
-                  selectf('Date format', draft.localization.dateFormat, ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'], v => patchOne('localization', { dateFormat: v })),
-                  boolf('Right-to-left', draft.localization.rtlEnabled, v => patchOne('localization', { rtlEnabled: v })),
-                  boolf('Show Hijri dates', draft.localization.hijriDatesEnabled, v => patchOne('localization', { hijriDatesEnabled: v })),
-                ],
-              }]}
-              onRemove={() => setDraft(d => d ? { ...d, localization: null } : d)} />
-          )}
-
-          {draft.hrConfig && (
-            <DraftSection title="HR Governance"
-              rows={[{
-                code: 'GOV',
-                desc: `${draft.hrConfig.requireImportPreviewBeforeCommit ? 'Preview required' : 'Direct import'} · ${draft.hrConfig.requireCostCenterForPayroll ? 'Cost center required' : 'Cost center optional'} · ${draft.hrConfig.requireGradeForApprovalPolicy ? 'Grade approval rules' : 'General approval rules'}`,
-                fields: [
-                  boolf('Preview before import', draft.hrConfig.requireImportPreviewBeforeCommit, v => patchOne('hrConfig', { requireImportPreviewBeforeCommit: v })),
-                  boolf('Cost center for payroll', draft.hrConfig.requireCostCenterForPayroll, v => patchOne('hrConfig', { requireCostCenterForPayroll: v })),
-                  boolf('Grade for approval policy', draft.hrConfig.requireGradeForApprovalPolicy, v => patchOne('hrConfig', { requireGradeForApprovalPolicy: v })),
-                  boolf('Dept head approval', draft.hrConfig.useDeptHeadApproval, v => patchOne('hrConfig', { useDeptHeadApproval: v })),
-                  boolf('HR final approval', draft.hrConfig.useHrFinalApproval, v => patchOne('hrConfig', { useHrFinalApproval: v })),
-                ],
-              }]}
-              onRemove={() => setDraft(d => d ? { ...d, hrConfig: null } : d)} />
-          )}
-        </div>
-      )}
-
-      <OrgStructureImportPanel />
-    </div>
-  );
-}
-
-const IMPORT_KEYS: { key: keyof OrgStructureImportRequest; section: string; label: string; phase: string; dependsOn: string[]; required: string[] }[] = [
-  { key: 'companiesCsv', section: 'companies', label: 'Legal entities', phase: 'Foundation', dependsOn: [], required: ['LegalNameEn', 'CountryCode', 'DefaultCurrency'] },
-  { key: 'branchesCsv', section: 'branches', label: 'Branches', phase: 'Entity wiring', dependsOn: ['companies'], required: ['CompanyLegalName', 'Code', 'NameEn'] },
-  { key: 'costCentersCsv', section: 'costCenters', label: 'Cost centers', phase: 'Finance wiring', dependsOn: ['companies'], required: ['CompanyLegalName', 'Code', 'Name'] },
-  { key: 'departmentsCsv', section: 'departments', label: 'Departments', phase: 'Org hierarchy', dependsOn: ['branches', 'costCenters'], required: ['Code', 'NameEn'] },
-  { key: 'gradesCsv', section: 'grades', label: 'Grades & salary bands', phase: 'Compensation rules', dependsOn: [], required: ['Code', 'Name', 'MinSalary', 'MaxSalary'] },
-  { key: 'gradePayComponentsCsv', section: 'gradePayComponents', label: 'Grade pay breakdown', phase: 'Payroll rules', dependsOn: ['grades'], required: ['GradeCode', 'ComponentCode', 'ComponentName'] },
-  { key: 'designationsCsv', section: 'designations', label: 'Designations', phase: 'Position eligibility', dependsOn: ['departments', 'grades'], required: ['Code', 'TitleEn'] },
-  { key: 'positionsCsv', section: 'positions', label: 'Positions', phase: 'Headcount control', dependsOn: ['companies', 'branches', 'departments', 'designations', 'grades'], required: ['Code', 'Title'] },
-];
-
-function OrgStructureImportPanel() {
-  // Release A: the grade pay breakdown file is not offered — the server would skip its rows (they are set in Benefits by grade).
-  const releaseA = useReleaseA();
-  const importKeys = releaseA ? IMPORT_KEYS.filter(x => x.key !== 'gradePayComponentsCsv') : IMPORT_KEYS;
-  const [payload, setPayload] = useState<OrgStructureImportRequest>({});
-  const [batch, setBatch] = useState<MigrationImportBatchDto | null>(null);
-  const [loading, setLoading] = useState('');
-  const [error, setError] = useState('');
-  const [packageName, setPackageName] = useState('');
-  const [fileNames, setFileNames] = useState<Partial<Record<keyof OrgStructureImportRequest, string>>>({});
-  const [templateDownloaded, setTemplateDownloaded] = useState(false);
-  const resultsRef = useRef<HTMLDivElement>(null);
-
-  // Any payload mutation changes the package checksum, so a prior dry-run is no longer
-  // committable — drop the batch to force re-validation (§6 invalidation rule).
-  const setFile = async (key: keyof OrgStructureImportRequest, file?: File) => {
-    if (!file) return;
-    setPayload(p => ({ ...p, [key]: undefined }));
-    const text = await file.text();
-    setPayload(p => ({ ...p, [key]: text }));
-    setFileNames(f => ({ ...f, [key]: file.name }));
-    setTemplateDownloaded(false);
-    setBatch(null);
-  };
-
-  const clearFile = (key: keyof OrgStructureImportRequest) => {
-    setPayload(p => ({ ...p, [key]: undefined }));
-    setFileNames(f => { const next = { ...f }; delete next[key]; return next; });
-    setBatch(null);
-  };
-
-  const setPackageFile = async (file?: File) => {
-    if (!file) return;
-    setError('');
-    const text = await file.text();
-    const parsed = splitOrgPackage(text);
-    if (Object.values(parsed).every(v => !v)) {
-      setError('Package file was not recognized. Use the generated package format with # companies, # branches, # departments, and related sections.');
-      return;
-    }
-    setPayload(p => ({ ...p, ...parsed }));
-    setPackageName(file.name);
-    setTemplateDownloaded(false);
-    setBatch(null);
-  };
-
-  const clearPackage = () => {
-    setPayload({});
-    setFileNames({});
-    setPackageName('');
-    setBatch(null);
-  };
-
-  const template = async () => {
-    setLoading('template'); setError('');
-    try {
-      downloadText(await orgStructureImportApi.template(), 'organization-structure-import-package.txt');
-      setTemplateDownloaded(true);
-    }
-    catch { setError('Could not download organization structure template.'); }
-    finally { setLoading(''); }
-  };
-
-  const runValidation = async () => {
-    setLoading('dryrun'); setError('');
-    try {
-      const dto = await orgStructureImportApi.dryRun(payload);
-      setBatch(dto);
-      requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
-    } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not validate the organization structure package.');
-    } finally { setLoading(''); }
-  };
-
-  const commitImport = async () => {
-    if (!batch) return;
-    setLoading('commit'); setError('');
-    try {
-      const dto = await orgStructureImportApi.commitBatch(batch.id);
-      setBatch(dto);
-      requestAnimationFrame(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
-    } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: unknown } };
-      const status = err?.response?.status;
-      const data = err?.response?.data;
-      // 422: CommitBatch re-validates against live DB state and returns a full batch DTO
-      // carrying the blocking findings when the workspace changed since dry-run (or the
-      // stored payload can't be read). Surface those findings and prompt a re-validate.
-      if (status === 422 && isBatchDto(data)) {
-        setBatch(data);
-        setError('The workspace changed since validation — resolve the findings and run validation again.');
-      } else if (status === 409) {
-        // Fires when the batch is no longer DryRunPassed (e.g. Committing/Failed). §6 nulls
-        // the batch on any payload change, so in practice we only ever commit a clean batch;
-        // this is a defensive branch and the copy avoids overstating a checksum re-check.
-        if (isBatchDto(data)) setBatch(data);
-        setError('This batch is no longer in a committable state — run validation again.');
-      } else {
-        setError((data as { message?: string })?.message ?? 'Could not commit the governed import.');
-      }
-    } finally { setLoading(''); }
-  };
-
-  const refreshStatus = async () => {
-    if (!batch) return;
-    setLoading('refresh'); setError('');
-    try { setBatch(await orgStructureImportApi.getBatch(batch.id)); }
-    catch { setError('Could not refresh the batch status.'); }
-    finally { setLoading(''); }
-  };
-
-  const hasAny = Object.values(payload).some(Boolean);
-  const loadedCount = importKeys.filter(x => payload[x.key]).length;
-  const totalRows = importKeys.reduce((sum, x) => sum + countCsvRows(payload[x.key]), 0);
-  const blockingCount = batch?.errorRows ?? 0;
-  const warningCount = batch?.result?.warnings ?? 0;
-  const blockingGroups = groupFindings(batch?.result ?? null, 'errors');
-  const warningGroups = groupFindings(batch?.result ?? null, 'warnings');
-  const canCommit = batch?.status === 'DryRunPassed';
-  const commitReason = !batch ? 'Run validation first.'
-    : batch.status === 'DryRunBlocked' ? `Resolve ${blockingCount} blocking issue(s), then run validation again.`
-    : batch.status === 'Committed' ? 'Already committed.'
-    : batch.status === 'DryRunPassed' ? ''
-    : 'This batch is no longer committable — run validation again.';
-  const readiness: { label: string; tone: 'neutral' | 'success' | 'danger' } =
-    batch?.status === 'DryRunBlocked' ? { label: 'Blocked', tone: 'danger' }
-    : batch?.status === 'DryRunPassed' ? { label: 'Ready', tone: 'success' }
-    : batch?.status === 'Committed' ? { label: 'Committed', tone: 'success' }
-    : { label: 'Pending', tone: 'neutral' };
-  const validationBanner = batch?.status === 'DryRunPassed'
-    ? 'Validation complete — package is clean and ready to commit.'
-    : batch?.status === 'DryRunBlocked'
-    ? `Validation complete — ${blockingCount} blocking issue(s) and ${warningCount} warning(s) found.`
-    : batch?.status === 'Committed'
-    ? 'Committed to master data.'
-    : '';
-  const runway = [
-    { label: 'Load', done: hasAny, active: hasAny && !batch },
-    { label: 'Validate', done: Boolean(batch && batch.status !== 'DryRunBlocked'), active: batch?.status === 'DryRunBlocked' },
-    { label: 'Commit', done: batch?.status === 'Committed', active: batch?.status === 'DryRunPassed' },
-  ];
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]">
-      <div className="border-b border-slate-100 bg-slate-50/80 p-5 dark:border-white/[0.06] dark:bg-white/[0.04]">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Organization Migration Cockpit</h3>
-            <p className="mt-1 max-w-3xl text-xs text-slate-500 dark:text-slate-400">
-              Import a complete existing organization structure with dependency validation across legal entity, branch, cost center, department, grade, payroll breakdown, and designation eligibility before anything is committed.
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            <button type="button" className="btn-secondary text-xs" onClick={template} disabled={loading === 'template'}><Download className="h-3.5 w-3.5" /> {loading === 'template' ? 'Downloading…' : 'Download template'}</button>
-            {templateDownloaded && <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-300">Template downloaded — fill it in and upload it above.</span>}
-          </div>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          {runway.map((step, idx) => (
-            <div key={step.label} className={`rounded-lg border p-3 ${step.done ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200' : step.active ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200' : 'border-slate-200 bg-white text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400'}`}>
-              <div className="flex items-center gap-2 text-xs font-semibold">
-                <span className="grid h-6 w-6 place-items-center rounded-full bg-white/70 text-[11px] dark:bg-black/20">{idx + 1}</span>
-                {step.label}
-              </div>
+              {accountType === 'Group' && isGroupScope && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Change company</button>}
+              {accountType === 'Group' && <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-500/10 dark:text-blue-200">{isGroupScope ? 'Group admin · Company setup' : 'Company administrator'}</span>}
             </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
-        <div>
-          <div className="rounded-xl border border-dashed border-sapphire/30 bg-sapphire/[0.03] p-4 dark:border-cyanAccent/25 dark:bg-cyanAccent/[0.04]">
-            <p className="mb-3 flex items-start gap-2 rounded-lg bg-white/70 px-3 py-2 text-[11px] text-slate-500 dark:bg-black/20 dark:text-slate-300">
-              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sapphire dark:text-cyanAccent" />
-              Files are read in your browser only. Nothing is sent to the server until you Run validation, and nothing is written until you Commit.
-            </p>
-            <div className="flex items-start gap-3">
-              <UploadCloud className="mt-0.5 h-5 w-5 text-sapphire dark:text-cyanAccent" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">Upload one migration package</p>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Use the generated package with named sections, or upload individual CSV files below for controlled remediation.</p>
-                <input type="file" accept=".txt,.csv,text/plain,text/csv" onChange={e => setPackageFile(e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
-                {packageName && (
-                  <p className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-emerald-600 dark:text-emerald-300">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Loaded {packageName} — {loadedCount} section(s), {totalRows} row(s). Not written yet.
-                    <button type="button" className="text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200" onClick={clearPackage}>Clear</button>
-                  </p>
-                )}
-                <p className="mt-2 text-[11px] text-slate-400">Need the format? Download template — a starter package (.txt) with the exact section headers and one filled, consistent example row per section. Edit it, then upload it above. Some sections (companies, grades) require group-level access to import.</p>
-              </div>
-            </div>
+          )}
+          <div hidden={step === 0 && policyGuideOpen} className="setup-studio-heading mb-4">
+            <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{step === 4 && draft ? 'Review your setup draft' : t(SETUP_STEPS[step].heading)}</h2>
+            <p className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-400 ${step === 0 ? 'xl:sr-only' : ''}`}>{step === 4 && draft ? `${totalItems} proposed items. Open any record to edit it, or remove what you do not need.` : t(SETUP_STEPS[step].help)}</p>
           </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {importKeys.map(item => {
-              const rows = countCsvRows(payload[item.key]);
-              const ready = rows > 0;
-              const missingDeps = item.dependsOn.filter(dep => !payload[IMPORT_KEYS.find(x => x.section === dep)?.key ?? 'companiesCsv']);
-              return (
-                <div key={item.key} className={`block rounded-xl border p-3 text-xs transition ${ready ? 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-500/20 dark:bg-emerald-500/10' : 'border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20'}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <span className="block font-semibold text-slate-800 dark:text-white">{item.label}</span>
-                      <span className="mt-0.5 block text-slate-500 dark:text-slate-400">{item.phase}</span>
-                    </div>
-                    <span className={`rounded-full px-2 py-0.5 font-medium ${ready ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>{rows} rows</span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {item.required.slice(0, 3).map(req => <span key={req} className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-500 ring-1 ring-slate-200 dark:bg-black/20 dark:text-slate-300 dark:ring-white/10">{req}</span>)}
-                  </div>
-                  {missingDeps.length > 0 && <div className="mt-2 flex items-center gap-1 text-amber-600 dark:text-amber-300"><GitBranch className="h-3 w-3" /> Depends on {missingDeps.join(', ')}</div>}
-                  <input type="file" accept=".csv,text/csv" onChange={e => setFile(item.key, e.target.files?.[0])} className="mt-3 block w-full text-xs text-slate-500" />
-                  {ready && (
-                    <p className="mt-2 flex flex-wrap items-center gap-2 font-medium text-emerald-600 dark:text-emerald-300">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> Loaded {fileNames[item.key] ?? 'file'} — {rows} row(s)
-                      <button type="button" className="text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200" onClick={() => clearFile(item.key)}>Clear</button>
-                    </p>
+          {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+          <fieldset disabled={loading || applying} className="min-w-0">
+            <div hidden={step !== 0}>
+              <SetupPolicyEditor profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
+              <div className={policyGuideOpen ? 'hidden' : 'setup-company-grid grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
+                  <input className="input w-full" list={targetCompany ? undefined : 'setup-legal-entities'} readOnly={!!targetCompany} required value={legalEntityName} onChange={e => {
+                    const name = e.target.value;
+                    setLegalEntityName(name);
+                    const existing = companies.find(company => company.legalNameEn.trim().toLowerCase() === name.trim().toLowerCase());
+                    if (existing) { setCountry(existing.countryCode || ''); setCurrency(existing.defaultCurrency || ''); }
+                    setDraft(null);
+                  }} placeholder="Choose or enter the registered name" />
+                  {!targetCompany && <datalist id="setup-legal-entities">{companies.map(company => <option key={company.id} value={company.legalNameEn} />)}</datalist>}
+                  <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">{targetCompany ? 'Locked to the company selected for this setup.' : 'Choose the legal entity this draft belongs to.'}</span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Industry <span aria-hidden="true" className="text-slate-500">*</span></span>
+                  <input className="input w-full" value={industry} onChange={e => { setIndustry(e.target.value); setDraft(null); }} placeholder="e.g. Construction, Retail, Healthcare" />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Country <span aria-hidden="true" className="text-slate-500">*</span></span>
+                  <select className="select w-full" value={country} disabled={!!targetCompany} onChange={e => { setCountry(e.target.value); setDraft(null); }}>
+                    <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a country…'}</option>
+                    {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+                  </select>
+                  {profileSource === 'workspace' && country && (
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Used to propose statutory defaults and public holidays.</span>
                   )}
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Currency <span aria-hidden="true" className="text-slate-500">*</span></span>
+                  <select className="select w-full" value={currency} disabled={!!targetCompany} onChange={e => { setCurrency(e.target.value); setDraft(null); }}>
+                    <option value="">{profileSource === 'loading' ? 'Reading your workspace…' : 'Select a currency…'}</option>
+                    {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <span className={`mt-1 block text-[11px] ${currency ? 'text-slate-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                    {currency
+                      ? 'Every salary band is drafted in this currency.'
+                      : profileSource === 'loading' ? 'Loading workspace defaults…' : 'Select the currency used for your salary bands.'}
+                  </span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Company size</span>
+                  <select className="select w-full" value={size} onChange={e => setSize(e.target.value)}>
+                    {SIZES.map(s => <option key={s} value={s}>{s} employees</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Suggested head office city (optional)</span>
+                  <input className="input w-full" placeholder="e.g. Riyadh" value={branchCity} onChange={e => { setBranchCity(e.target.value); setDraft(null); }} />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Working language</span>
+                  <select className="select w-full" value={defaultLanguage} onChange={e => { setDefaultLanguage(e.target.value); setDraft(null); }}>
+                    {LANGUAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Time zone</span>
+                  <select className="select w-full" value={timeZone} onChange={e => { setTimeZone(e.target.value); setDraft(null); }}>
+                    {TIMEZONES.map(tz => <option key={tz || 'auto'} value={tz}>{tz || 'Match the country'}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Used for dates and times across your workspace.</span>
+                </label>
+              </div>
+            </div>
+            <div hidden={step !== 1}>
+              <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">How do people work?</span>
+                  <select className="select w-full" value={workPattern} onChange={e => { setWorkPattern(e.target.value); setDraft(null); }}>
+                    {WORK_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Sets the shifts and the standard working day.</span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Weekend (days off)</span>
+                  <select className="select w-full" value={weekendPattern} onChange={e => { setWeekendPattern(e.target.value); setDraft(null); }}>
+                    {WEEKEND_PATTERNS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Every leave day and overtime hour is counted against this.</span>
+                </label>
+              </div>
+              <div className="mt-4"><SetupPolicyEditor area="work" value={configuration} onChange={setConfiguration} currency={currency} /></div>
+            </div>
+            <div hidden={step !== 2}>
+              <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr]">
+
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Workforce</span>
+                  <select className="select w-full" value={workforceMix} onChange={e => { setWorkforceMix(e.target.value); setDraft(null); }}>
+                    {WORKFORCE_MIX.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Helps tailor suggested allowances to your workforce.</span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Pay cycle</span>
+                  <select className="select w-full" value={payCycle} onChange={e => { setPayCycle(e.target.value); setDraft(null); }}>
+                    {PAY_CYCLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                  <span className="mt-1 block text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Salary amounts currently use a monthly basis. Custom pay calendars require payroll conversion support and cannot be activated here yet.')}</span>
+                </label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <p className="col-span-2 text-xs leading-5 text-slate-600 dark:text-slate-400">Probation and notice lengths are reference preferences. Set each employee’s actual terms on their record; the draft also uses probation to propose leave eligibility.</p>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Probation preference (months)</span>
+                    <input type="number" min={0} max={24} className="input w-full" value={probationMonths}
+                      onChange={e => { setProbationMonths(Math.max(0, Math.min(24, Number(e.target.value) || 0))); setDraft(null); }} />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Notice preference (days)</span>
+                    <input type="number" min={0} max={365} className="input w-full" value={noticePeriodDays}
+                      onChange={e => { setNoticePeriodDays(Math.max(0, Math.min(365, Number(e.target.value) || 0))); setDraft(null); }} />
+                  </label>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-2">
-            <MetricCard icon={<FileSpreadsheet className="h-4 w-4" />} label="Sections loaded" value={`${loadedCount}/${importKeys.length}`} />
-            <MetricCard icon={<Database className="h-4 w-4" />} label="Rows" value={String(batch?.receivedRows ?? totalRows)} />
-            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Readiness" value={readiness.label} tone={readiness.tone} />
-          </div>
-
-          {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
-
-          <div className="flex flex-wrap gap-2">
-            <div>
-              <button type="button" className="btn-secondary" onClick={runValidation} disabled={!hasAny || loading === 'dryrun'}
-                title={!hasAny ? 'Load the package or at least one section file to validate.' : undefined} aria-describedby="run-validation-reason">
-                <Eye className="h-4 w-4" /> {loading === 'dryrun' ? 'Validating…' : 'Run validation'}
-              </button>
-              {!hasAny && <p id="run-validation-reason" className="mt-1 text-[11px] text-rose-500">Load the package or at least one section file to validate.</p>}
+              </div>
+              <details className="mt-4 border-t border-slate-200 pt-4 dark:border-white/10">
+                <summary className="cursor-pointer text-sm font-medium text-slate-800 dark:text-slate-200">Planning preferences (optional)</summary>
+                <p className="mb-3 mt-2 text-xs leading-5 text-slate-600 dark:text-slate-400">These preferences are saved for reference. They do not activate approval workflows or enforce payroll and access rules.</p>
+                <div className="mb-4 grid gap-4 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Management structure preference</span>
+                  <select className="select w-full" value={operatingModel} onChange={e => setOperatingModel(e.target.value)}>
+                    {[['Functional', 'Department reporting'], ['Matrix', 'Matrix reporting']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Approval preference</span>
+                  <select className="select w-full" value={approvalModel} onChange={e => setApprovalModel(e.target.value)}>
+                    {APPROVAL_MODELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </label>
+                </div>
+                <div className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                  {[
+                    ['Prefer managers within their department and location', strictEntityScope, setStrictEntityScope],
+                    ['Plan to use cost centers for payroll', requireCostCenterForPayroll, setRequireCostCenterForPayroll],
+                    ['Plan to use grades for approval policies', requireGradeForApprovalPolicy, setRequireGradeForApprovalPolicy],
+                  ].map(([label, value, setter]) => (
+                    <label key={String(label)} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                      <input type="checkbox" checked={Boolean(value)} onChange={e => (setter as (v: boolean) => void)(e.target.checked)} className="h-4 w-4 accent-sapphire" />
+                      {String(label)}
+                    </label>
+                  ))}
+                </div>
+              </details>
+              <SetupPolicyEditor area="governance" value={configuration} onChange={setConfiguration} currency={currency} />
             </div>
-            <div>
-              <button type="button" className="btn-primary" onClick={commitImport} disabled={!canCommit || loading === 'commit'}
-                title={commitReason || undefined} aria-describedby="commit-reason">
-                <Rocket className="h-4 w-4" /> {loading === 'commit' ? 'Committing…' : 'Commit governed import'}
-              </button>
-              {commitReason && <p id="commit-reason" className={`mt-1 text-[11px] ${batch?.status === 'DryRunBlocked' ? 'text-rose-500' : 'text-slate-400'}`}>{commitReason}</p>}
-            </div>
-            {batch && (
-              <button type="button" className="btn-secondary" onClick={refreshStatus} disabled={loading === 'refresh'}>
-                <RefreshCw className="h-4 w-4" /> {loading === 'refresh' ? 'Refreshing…' : 'Refresh status'}
-              </button>
-            )}
-          </div>
-
-          {batch && (
-            <>
-              <p aria-live="polite" role="status" className={`rounded-lg px-3 py-2 text-xs font-medium ${
-                batch.status === 'DryRunBlocked' ? 'bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-200'
-                : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200'}`}>
-                {validationBanner}
-              </p>
-
-              <div ref={resultsRef} className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs dark:border-white/10 dark:bg-white/[0.04]">
-                {/* Batch audit header — the trust centerpiece */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3 dark:border-white/10">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-slate-900 dark:text-white">Batch {batch.externalBatchId ?? batch.id.slice(0, 8)}</p>
-                    <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                      checksum {batch.packageChecksum.slice(0, 8)} · created {formatUtc(batch.createdAtUtc)}{batch.completedAtUtc ? ` · completed ${formatUtc(batch.completedAtUtc)}` : ''}
-                    </p>
+            <div hidden={step !== 3}><SetupPolicyEditor area="rewards" value={configuration} onChange={setConfiguration} currency={currency} releaseA={releaseA} /></div>
+            <div hidden={step !== 4}>
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3 dark:border-white/10">
+                <div className="flex items-start gap-3">
+                  <Building2 className="mt-1 h-5 w-5 shrink-0 text-slate-500" aria-hidden="true" />
+                  <div><p className="font-semibold text-slate-900 dark:text-white">{legalEntityName || industry || 'Your company'}</p><p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{COUNTRIES.find(c => c.code === country)?.label} · {size} employees · {currency}</p></div>
+                </div>
+                <button type="button" className="text-sm font-medium text-sapphire hover:underline dark:text-blue-300" onClick={() => goToStep(0)}>Edit company details</button>
+              </div>
+              <details open={!draft} className="mb-4">
+                <summary className="mb-2 cursor-pointer text-sm font-medium text-slate-700 dark:text-slate-200">Draft choices · {selectedCount} sections included</summary>
+                <fieldset role="group" aria-label="Sections to include in the draft" className="min-w-0">
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Sections to include in the draft</span>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-xs text-slate-600 dark:text-slate-400">{selectedCount} of {sectionCount} selected</span>
+                      <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(true)}>Select available</button>
+                      <button type="button" className="text-[11px] text-sapphire hover:underline dark:text-cyanAccent" onClick={() => setAllSections(false)}>Clear all</button>
+                    </div>
                   </div>
-                  <StatusPill status={batch.status} />
+                  <p className="mb-2 text-xs text-slate-600 dark:text-slate-400">Uncheck anything you already have or prefer to configure yourself.</p>
+                  <div className="grid gap-x-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {([
+                      ['entity', 'Entity & cost centers'], ['org', 'Org structure'],
+                      ['leave', 'Leave types'], ['leavePolicies', 'Leave entitlement'],
+                      ['shifts', 'Shifts & working week'], ['attendance', 'Attendance & overtime'],
+                      ['payroll', 'Payroll & statutory'], ['holidays', 'Public holidays'],
+                      ['governance', 'Governance & IDs'], ['localization', 'Language & time zone'], ['benefits', 'Benefits'],
+                    ] as [SectionKey, string][]).map(([k, label]) => (
+                      <label key={k}
+                        title={!sectionAvailable(k) ? 'Managed in the group baseline' : undefined}
+                        className={`flex items-center gap-2 border-b border-slate-100 py-2 text-sm transition dark:border-white/10 ${sectionAvailable(k) ? 'cursor-pointer' : 'cursor-not-allowed opacity-55'} ${sections[k]
+                            ? 'text-slate-900 dark:text-white'
+                            : 'text-slate-600 dark:text-slate-300'
+                          }`}>
+                        <input type="checkbox" checked={sections[k]} disabled={!sectionAvailable(k)} onChange={() => toggle(k)} aria-label={`Include ${label} in the generated draft`} className="h-4 w-4 accent-sapphire" />
+                        <span>{label}{!sectionAvailable(k) && <span className="ms-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Group managed</span>}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <div className="mt-3"><label className="block sm:col-span-2">
+                  <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Anything specific? (optional)</span>
+                  <input className="input w-full" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. we run 24/7 operations with field crews" />
+                </label>
                 </div>
+              </details>
+            </div>
+          </fieldset>
+          {/* Preview */}
+          {step === 4 && draft && (
+            <fieldset disabled={applying || loading} className="mt-6 min-w-0 space-y-4">
+              {/* Draft-only banner */}
+              <div className="flex items-start gap-3 rounded-xl border border-sapphire/20 bg-sapphire/[0.04] p-4 dark:border-cyanAccent/20 dark:bg-cyanAccent/[0.04]">
+                <Eye className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  This draft is bound to <span className="font-semibold text-slate-900 dark:text-white">{legalEntityName}</span>. {accountType === 'Group' ? 'Only company-owned records are included; group-shared catalogs and defaults stay unchanged.' : 'Review every proposed company and workspace item before applying.'} Review all {totalItems} proposed items before applying.
+                </p>
+              </div>
 
-                {/* Impact tiles */}
-                <div className="mt-3 grid gap-2 sm:grid-cols-4">
-                  <Impact label="Create" value={batch.createdRows} />
-                  <Impact label="Update" value={batch.updatedRows} />
-                  <Impact label="Skip" value={batch.skippedRows} />
-                  <Impact label="Blocked" value={batch.errorRows} />
+              {!!draft.benefitPlans?.length && <section className="rounded-lg border border-slate-200 p-4 dark:border-white/10" aria-label={t('Benefits')}><h3 className="text-base font-semibold">{t('Benefits')}</h3><div className="mt-3 space-y-3">{draft.benefitPlans.map((plan, i) => <div key={i} className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 py-3 dark:border-white/10"><div><p className="text-sm font-semibold"><bdi>{plan.name}</bdi></p><p className="text-xs text-slate-500"><bdi>{plan.code}</bdi> · <bdi>{plan.currency}</bdi> · <bdi>{plan.effectiveFrom}</bdi>{plan.effectiveTo && <> – <bdi>{plan.effectiveTo}</bdi></>} · <bdi>{plan.gradeCodes.join(', ') || t('All grades')}</bdi></p></div><button type="button" className="btn-secondary" onClick={() => removeAt('benefitPlans', i)}>{t('Remove benefit')}</button></div>)}</div></section>}
+
+              {/* Provenance: how the draft was generated (surfaces engine + genNotes, incl. the deterministic-template note) */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Info className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">How this draft was generated</p>
+                  {engine && <span className="rounded-full bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent">{engine}</span>}
                 </div>
-
-                <CountStrip label="Package contents" counts={batch.reconciliation.sectionCounts} />
-                <CountStrip label="In your workspace already" counts={{ ...batch.reconciliation.identityCounts, ...batch.reconciliation.operationalCounts }} muted />
-
-                {batch.status === 'Committed' && batch.result && Object.keys(batch.result.applied ?? {}).length > 0 && (
-                  <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
-                    <CheckCircle2 className="h-4 w-4" /> Applied — {Object.entries(batch.result.applied).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                  </p>
-                )}
-
-                <FindingGroup title="Blocking findings" icon={<XCircle className="h-4 w-4" />} groups={blockingGroups} tone="danger" />
-                <FindingGroup title="Review findings" icon={<AlertTriangle className="h-4 w-4" />} groups={warningGroups} tone="warning" />
-                {batch.status === 'DryRunPassed' && warningCount === 0 && (
-                  <p className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" /> Package is clean and ready to commit.</p>
+                {genNotes.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {genNotes.map((n, i) => (
+                      <p key={i} className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{n}
+                      </p>
+                    ))}
+                  </div>
                 )}
               </div>
-            </>
+
+              <DraftSection title="Branches"
+                rows={draft.branches.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.nameEn} · ${x.city}${x.isHeadOffice ? ' · Head office' : ''}`,
+                  fields: [
+                    txt('Name', x.nameEn, v => patch('branches', i, { nameEn: v })),
+                    txt('City', x.city, v => patch('branches', i, { city: v })),
+                    boolf('Head office', x.isHeadOffice, v => patch('branches', i, { isHeadOffice: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('branches', i)} />
+
+              <DraftSection title="Departments"
+                rows={draft.departments.map((x, i) => ({
+                  code: x.code, desc: x.nameEn,
+                  fields: [txt('Name', x.nameEn, v => patch('departments', i, { nameEn: v }))],
+                }))}
+                onRemove={i => removeAt('departments', i)} />
+
+              <DraftSection title="Cost Centers"
+                rows={draft.costCenters.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.name}${x.departmentCode ? ` · ${x.departmentCode}` : ''}`,
+                  fields: [txt('Name', x.name, v => patch('costCenters', i, { name: v }))],
+                }))}
+                onRemove={i => removeAt('costCenters', i)} />
+
+              <DraftSection title="Designations"
+                rows={draft.designations.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.titleEn}${x.departmentCode ? ` · ${x.departmentCode}` : ''}${x.gradeCode ? ` · ${x.gradeCode}` : ''}${x.isManagerRole ? ' · Manager' : ''}`,
+                  fields: [
+                    txt('Title', x.titleEn, v => patch('designations', i, { titleEn: v })),
+                    selectf('Grade', x.gradeCode, draft.grades.map(g => g.code), v => patch('designations', i, { gradeCode: v })),
+                    boolf('Manager role', x.isManagerRole, v => patch('designations', i, { isManagerRole: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('designations', i)} />
+
+              <DraftSection title="Grades"
+                rows={draft.grades.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.name} (L${x.level}) · ${x.currency} ${x.minSalary}-${x.maxSalary}`,
+                  // The currency is shown but not editable: it is the workspace's, set once at the top,
+                  // and letting a single band drift to another currency is the bug this screen just fixed.
+                  fields: [
+                    txt('Name', x.name, v => patch('grades', i, { name: v })),
+                    numf(`Min (${x.currency})`, x.minSalary, v => patch('grades', i, { minSalary: v })),
+                    numf(`Mid (${x.currency})`, x.midSalary, v => patch('grades', i, { midSalary: v })),
+                    numf(`Max (${x.currency})`, x.maxSalary, v => patch('grades', i, { maxSalary: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('grades', i)} />
+
+              {releaseA
+                ? <p className="rounded-xl border border-slate-200 p-3 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                  {t('Grade allowances and benefits are set in Benefits by grade, so this draft has no grade pay lines.')}{' '}
+                  <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link>
+                </p>
+                : <DraftSection title="Grade Pay Components"
+                  rows={draft.gradePayComponents.map((x, i) => ({
+                    code: x.componentCode,
+                    desc: `${x.gradeCode} · ${x.componentName} · ${x.calculationType === 'PercentOfBasic' ? `${x.percentage}%` : x.amount}`,
+                    fields: [
+                      txt('Name', x.componentName, v => patch('gradePayComponents', i, { componentName: v })),
+                      ...(x.calculationType === 'PercentOfBasic'
+                        ? [numf('Percent of basic', x.percentage, v => patch('gradePayComponents', i, { percentage: v }), 0, 100)]
+                        : [numf('Amount', x.amount, v => patch('gradePayComponents', i, { amount: v }))]),
+                      boolf('Taxable', x.isTaxable, v => patch('gradePayComponents', i, { isTaxable: v })),
+                    ],
+                  }))}
+                  onRemove={i => removeAt('gradePayComponents', i)} />}
+
+              <DraftSection title="Leave Types"
+                rows={draft.leaveTypes.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.nameEn} · ${x.isPaid ? 'Paid' : 'Unpaid'} · max ${x.maxConsecutiveDays}d`,
+                  fields: [
+                    txt('Name', x.nameEn, v => patch('leaveTypes', i, { nameEn: v })),
+                    numf('Max consecutive days', x.maxConsecutiveDays, v => patch('leaveTypes', i, { maxConsecutiveDays: v }), 0, 365),
+                    boolf('Paid', x.isPaid, v => patch('leaveTypes', i, { isPaid: v })),
+                    boolf('Attachment required', x.requiresAttachment, v => patch('leaveTypes', i, { requiresAttachment: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('leaveTypes', i)} />
+
+              <DraftSection title="Leave Entitlement"
+                rows={draft.leavePolicies.map((x, i) => ({
+                  code: x.leaveTypeCode,
+                  desc: `${x.name} · ${[x.gradeCode, x.departmentCode, x.employmentType].filter(Boolean).join(' / ') || t('All employees in this company')} · ${x.proratePartialMonths && x.accrualMethod === 'Monthly' ? t('Partial months prorated') + ' · ' : ''}${x.annualEntitlementDays} day(s)/year · ${x.accrualMethod === 'Monthly' ? 'accrues monthly' : 'granted yearly'}` +
+                    ` · ${x.payrollImpact === 'Unpaid' ? 'unpaid' : 'full pay'}` +
+                    `${x.noticeRequiredDays > 0 ? ` · ${x.noticeRequiredDays}d notice` : ''}` +
+                    `${x.appliesOnProbation ? ' · available on probation' : ''}`,
+                  fields: [
+                    txt(t('Policy name'), x.name, v => patch('leavePolicies', i, { name: v })),
+                    txt(t('Grade code (optional)'), x.gradeCode ?? '', v => patch('leavePolicies', i, { gradeCode: v })),
+                    txt(t('Department code (optional)'), x.departmentCode ?? '', v => patch('leavePolicies', i, { departmentCode: v })),
+                    txt(t('Employment type (optional)'), x.employmentType ?? '', v => patch('leavePolicies', i, { employmentType: v })),
+                    ...(x.accrualMethod === 'Monthly' ? [boolf(t('Prorate partial months by calendar days employed'), x.proratePartialMonths ?? false, v => patch('leavePolicies', i, { proratePartialMonths: v }))] : []),
+                    numf('Days per year', x.annualEntitlementDays, v => patch('leavePolicies', i, { annualEntitlementDays: v }), 0, 365, 0.5),
+                    selectf('Accrual', x.accrualMethod, ['Yearly', 'Monthly'], v => patch('leavePolicies', i, { accrualMethod: v, proratePartialMonths: v === 'Monthly' && x.proratePartialMonths })),
+                    numf('Notice days', x.noticeRequiredDays, v => patch('leavePolicies', i, { noticeRequiredDays: v }), 0, 365),
+                    numf('Max per request', x.maximumDaysPerRequest, v => patch('leavePolicies', i, { maximumDaysPerRequest: v }), 0, 365),
+                    boolf('Encashable', x.encashmentAllowed, v => patch('leavePolicies', i, { encashmentAllowed: v })),
+                    boolf('On probation', x.appliesOnProbation, v => patch('leavePolicies', i, { appliesOnProbation: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('leavePolicies', i)} />
+
+              <DraftSection title="Shifts"
+                rows={draft.shifts.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.name} · ${x.start}–${x.end}`,
+                  fields: [
+                    txt('Name', x.name, v => patch('shifts', i, { name: v })),
+                    txt('Start (HH:mm)', x.start, v => patch('shifts', i, { start: v })),
+                    txt('End (HH:mm)', x.end, v => patch('shifts', i, { end: v })),
+                    numf('Break minutes', x.breakMinutes, v => patch('shifts', i, { breakMinutes: v }), 0, 240),
+                  ],
+                }))}
+                onRemove={i => removeAt('shifts', i)} />
+
+              {draft.workingWeek && (
+                <DraftSection title="Working Week"
+                  rows={[{
+                    code: 'WEEK',
+                    desc: `${draft.workingWeek.workWeek} · starts ${draft.workingWeek.weekStartDay}`,
+                    fields: [
+                      selectf('Working week', draft.workingWeek.workWeek, ['Sun-Thu', 'Mon-Fri', 'Mon-Sat', 'Sat-Thu'], v => patchOne('workingWeek', { workWeek: v })),
+                      selectf('Week starts', draft.workingWeek.weekStartDay, ['Sunday', 'Monday', 'Saturday'], v => patchOne('workingWeek', { weekStartDay: v })),
+                    ],
+                  }]}
+                  onRemove={() => setDraft(d => d ? { ...d, workingWeek: null } : d)} />
+              )}
+
+              <DraftSection title="Payroll Components"
+                rows={draft.payComponents.map((x, i) => ({
+                  code: x.code,
+                  desc: `${x.name} · ${x.componentType} · ${x.calculationType === 'Percentage' ? `${x.percentage}%` : x.amount}`,
+                  fields: [
+                    txt('Name', x.name, v => patch('payComponents', i, { name: v })),
+                    ...(x.calculationType === 'Percentage'
+                      ? [numf('Percentage', x.percentage, v => patch('payComponents', i, { percentage: v }), 0, 100)]
+                      : [numf('Amount', x.amount, v => patch('payComponents', i, { amount: v }))]),
+                    boolf('Taxable', x.isTaxable, v => patch('payComponents', i, { isTaxable: v })),
+                  ],
+                }))}
+                onRemove={i => removeAt('payComponents', i)} />
+
+              <DraftSection title="Statutory Rules"
+                rows={draft.statutoryRules.map((x, i) => ({
+                  code: x.ruleKey,
+                  desc: `${x.ruleValue} — ${x.description}`,
+                  // The VALUE is editable; the key is not. A renamed key is a rule nothing reads.
+                  fields: [txt('Value', x.ruleValue, v => patch('statutoryRules', i, { ruleValue: v }))],
+                }))}
+                onRemove={i => removeAt('statutoryRules', i)} />
+
+              {draft.employeeIdRule && (
+                <DraftSection title="Employee ID Rule"
+                  rows={[{
+                    code: 'ID',
+                    desc: `${draft.employeeIdRule.companyPrefix} · pad ${draft.employeeIdRule.paddingLength} · next ${draft.employeeIdRule.nextSequence}`,
+                    fields: [
+                      txt('Prefix', draft.employeeIdRule.companyPrefix, v => patchOne('employeeIdRule', { companyPrefix: v })),
+                      numf('Padding', draft.employeeIdRule.paddingLength, v => patchOne('employeeIdRule', { paddingLength: v }), 1, 12),
+                      numf('Next sequence', draft.employeeIdRule.nextSequence, v => patchOne('employeeIdRule', { nextSequence: v }), 1),
+                      boolf('Allow manual override', draft.employeeIdRule.allowManualOverride, v => patchOne('employeeIdRule', { allowManualOverride: v })),
+                    ],
+                  }]}
+                  onRemove={() => setDraft(d => d ? { ...d, employeeIdRule: null } : d)} />
+              )}
+
+              {draft.attendancePolicy && (
+                <DraftSection title="Attendance Policy"
+                  rows={[{
+                    code: draft.attendancePolicy.code,
+                    desc: `${draft.attendancePolicy.graceMinutes}min grace · late after ${draft.attendancePolicy.lateThresholdMinutes}min` +
+                      ` · ${Math.round(draft.attendancePolicy.standardWorkMinutes / 60 * 10) / 10}h day` +
+                      ` · ${draft.attendancePolicy.breakMinutes}min break` +
+                      ` · rounded to the ${draft.attendancePolicy.roundingRule === 'NearestMinute' ? 'minute' : 'quarter-hour'}`,
+                    fields: [
+                      numf('Grace minutes', draft.attendancePolicy.graceMinutes, v => patchOne('attendancePolicy', { graceMinutes: v }), 0, 120),
+                      numf('Late after (min)', draft.attendancePolicy.lateThresholdMinutes, v => patchOne('attendancePolicy', { lateThresholdMinutes: v }), 0, 480),
+                      numf('Standard day (min)', draft.attendancePolicy.standardWorkMinutes, v => patchOne('attendancePolicy', { standardWorkMinutes: v }), 60, 960),
+                      numf('Break (min)', draft.attendancePolicy.breakMinutes, v => patchOne('attendancePolicy', { breakMinutes: v }), 0, 240),
+                      // Only the two the overtime engine can evaluate; a third would be stored and ignored.
+                      selectf('Rounding', draft.attendancePolicy.roundingRule, ['NearestMinute', 'Nearest15'], v => patchOne('attendancePolicy', { roundingRule: v })),
+                    ],
+                  }]}
+                  onRemove={() => setDraft(d => d ? { ...d, attendancePolicy: null } : d)} />
+              )}
+
+              {draft.overtimePolicy && (
+                <DraftSection title="Overtime Policy"
+                  rows={[
+                    {
+                      code: draft.overtimePolicy.code,
+                      desc: `${draft.overtimePolicy.standardMonthlyHours}h/month basis · min ${draft.overtimePolicy.minimumMinutes}min` +
+                        ` · max ${Math.round(draft.overtimePolicy.maximumMinutesPerDay / 60)}h/day` +
+                        `${draft.overtimePolicy.allowCompOffConversion ? ' · time off in lieu allowed' : ''}`,
+                      fields: [
+                        numf('Monthly hours basis', draft.overtimePolicy.standardMonthlyHours, v => patchOne('overtimePolicy', { standardMonthlyHours: v }), 1, 400),
+                        numf('Minimum minutes', draft.overtimePolicy.minimumMinutes, v => patchOne('overtimePolicy', { minimumMinutes: v }), 0, 480),
+                        numf('Max minutes/day', draft.overtimePolicy.maximumMinutesPerDay, v => patchOne('overtimePolicy', { maximumMinutesPerDay: v }), 0, 960),
+                        boolf('Time off in lieu', draft.overtimePolicy.allowCompOffConversion, v => patchOne('overtimePolicy', { allowCompOffConversion: v })),
+                      ],
+                    },
+                    ...draft.overtimePolicy.multipliers.map((m, mi) => ({
+                      code: m.dayCategory,
+                      desc: `×${m.multiplier} of the hourly rate`,
+                      // Floored at 1: below that an overtime hour pays less than an ordinary one, and
+                      // the payroll run would floor it at the statutory rate anyway.
+                      fields: [numf('Multiplier', m.multiplier, v => setDraft(d => d?.overtimePolicy
+                        ? { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.map((x, n) => n === mi ? { ...x, multiplier: v } : x) } }
+                        : d), 1, 5, 0.25)],
+                    })),
+                  ]}
+                  onRemove={i => setDraft(d => {
+                    if (!d?.overtimePolicy) return d;
+                    if (i === 0) return { ...d, overtimePolicy: null };
+                    return { ...d, overtimePolicy: { ...d.overtimePolicy, multipliers: d.overtimePolicy.multipliers.filter((_, n) => n !== i - 1) } };
+                  })} />
+              )}
+
+              {draft.holidayCalendar && (
+                <DraftSection title={`Public Holidays ${draft.holidayCalendar.calendarYear}`}
+                  rows={draft.holidayCalendar.holidays.map((h, i) => ({
+                    code: h.date,
+                    desc: `${h.nameEn}${h.nameAr ? ` · ${h.nameAr}` : ''}${h.isOptional ? ' · optional' : ''}`,
+                    fields: [
+                      txt('Name', h.nameEn, v => setDraft(d => d?.holidayCalendar
+                        ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, nameEn: v } : x) } } : d)),
+                      txt('Date (YYYY-MM-DD)', h.date, v => setDraft(d => d?.holidayCalendar
+                        ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, date: v } : x) } } : d)),
+                      boolf('Optional', h.isOptional, v => setDraft(d => d?.holidayCalendar
+                        ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.map((x, n) => n === i ? { ...x, isOptional: v } : x) } } : d)),
+                    ],
+                  }))}
+                  onRemove={i => setDraft(d => d && d.holidayCalendar
+                    ? { ...d, holidayCalendar: { ...d.holidayCalendar, holidays: d.holidayCalendar.holidays.filter((_, n) => n !== i) } }
+                    : d)} />
+              )}
+
+              {draft.localization && (
+                <DraftSection title="Language & Time Zone"
+                  rows={[{
+                    code: 'LOCALE',
+                    desc: `${draft.localization.defaultLanguage === 'ar' ? 'Arabic' : 'English'} · ${draft.localization.defaultTimezone}` +
+                      ` · ${draft.localization.dateFormat}` +
+                      `${draft.localization.rtlEnabled ? ' · right-to-left supported' : ''}` +
+                      `${draft.localization.hijriDatesEnabled ? ' · Hijri dates shown' : ''}`,
+                    fields: [
+                      selectf('Language', draft.localization.defaultLanguage, ['en', 'ar'], v => patchOne('localization', { defaultLanguage: v })),
+                      selectf('Time zone', draft.localization.defaultTimezone, TIMEZONES.filter(Boolean), v => patchOne('localization', { defaultTimezone: v })),
+                      selectf('Date format', draft.localization.dateFormat, ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'], v => patchOne('localization', { dateFormat: v })),
+                      boolf('Right-to-left', draft.localization.rtlEnabled, v => patchOne('localization', { rtlEnabled: v })),
+                      boolf('Show Hijri dates', draft.localization.hijriDatesEnabled, v => patchOne('localization', { hijriDatesEnabled: v })),
+                    ],
+                  }]}
+                  onRemove={() => setDraft(d => d ? { ...d, localization: null } : d)} />
+              )}
+
+              {draft.hrConfig && (
+                <DraftSection title="Saved governance preferences"
+                  rows={[{
+                    code: 'GOV',
+                    desc: 'Planning preferences only. Operational approval workflows, payroll checks and access rules are configured separately.',
+                    fields: [
+                      boolf('Preview before import', draft.hrConfig.requireImportPreviewBeforeCommit, v => patchOne('hrConfig', { requireImportPreviewBeforeCommit: v })),
+                      boolf('Cost center for payroll', draft.hrConfig.requireCostCenterForPayroll, v => patchOne('hrConfig', { requireCostCenterForPayroll: v })),
+                      boolf('Grade for approval policy', draft.hrConfig.requireGradeForApprovalPolicy, v => patchOne('hrConfig', { requireGradeForApprovalPolicy: v })),
+                      boolf('Dept head approval', draft.hrConfig.useDeptHeadApproval, v => patchOne('hrConfig', { useDeptHeadApproval: v })),
+                      boolf('HR final approval', draft.hrConfig.useHrFinalApproval, v => patchOne('hrConfig', { useHrFinalApproval: v })),
+                    ],
+                  }]}
+                  onRemove={() => setDraft(d => d ? { ...d, hrConfig: null } : d)} />
+              )}
+            </fieldset>
           )}
+          <div className={`setup-step-footer ${step === 0 && policyGuideOpen ? 'hidden' : 'flex'} mt-4 flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 xl:pe-40 dark:border-white/10`}>
+            {step > 0 ? <button type="button" className="btn-secondary" onClick={() => goToStep(step - 1)} disabled={loading || applying}><ArrowLeft className="h-4 w-4 rtl:rotate-180" />Back</button> : <span className="text-xs text-slate-500 dark:text-slate-400">{t('Step 1 of 5')}</span>}
+            {step < 4 ? <button type="button" className="btn-primary" onClick={() => goToStep(step + 1)}>Continue<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button> : (
+              <div className="flex flex-wrap items-center gap-3">
+                <button type="button" className={draft ? 'btn-secondary' : 'btn-primary'} onClick={generate}
+                  disabled={loading || applying || selectedCount === 0 || !legalEntityName.trim() || !industry.trim() || !country || !currency}>
+                  <Wand2 className="h-4 w-4" />{loading ? 'Generating draft…' : draft ? 'Regenerate draft' : 'Generate draft'}
+                </button>
+                {draft && <button type="button" className="btn-primary" onClick={apply} disabled={applying || loading || totalItems === 0}>
+                  <CheckCircle2 className="h-4 w-4" />{applying ? 'Applying…' : `Apply ${totalItems} item(s) to ${targetCompany?.legalNameEn ?? 'workspace'}`}
+                </button>}
+              </div>
+            )}
+          </div>
+          {step === 4 && <p role="status" className="mt-3 text-xs text-slate-600 dark:text-slate-400">{selectedCount === 0 ? 'Select at least one section to generate a draft.' : draft && totalItems === 0 ? 'There are no items left to apply. Regenerate your draft to start again.' : 'Your workspace changes only when you choose Apply.'}</p>}
+
         </div>
       </div>
     </div>
   );
-}
-
-function isBatchDto(v: unknown): v is MigrationImportBatchDto {
-  return typeof v === 'object' && v !== null && 'id' in v && 'status' in v && 'reconciliation' in v;
-}
-
-function formatUtc(iso?: string): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
-}
-
-function StatusPill({ status }: { status: string }) {
-  const map: Record<string, { label: string; cls: string }> = {
-    DryRunPassed: { label: 'Ready to commit', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200' },
-    DryRunBlocked: { label: 'Blocked', cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-200' },
-    Committed: { label: 'Committed', cls: 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200' },
-    Failed: { label: 'Failed', cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-200' },
-  };
-  const s = map[status] ?? { label: status || 'Pending', cls: 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300' };
-  return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${s.cls}`}>{s.label}</span>;
-}
-
-function CountStrip({ label, counts, muted = false }: { label: string; counts: Record<string, number>; muted?: boolean }) {
-  const entries = Object.entries(counts ?? {});
-  if (entries.length === 0) return null;
-  return (
-    <div className="mt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {entries.map(([k, v]) => (
-          <span key={k} className={`rounded-full px-2 py-0.5 text-[11px] ${muted ? 'bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-black/20 dark:text-slate-300 dark:ring-white/10' : 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'}`}>{k}: {v}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function MetricCard({ icon, label, value, tone = 'neutral' }: { icon: React.ReactNode; label: string; value: string; tone?: 'neutral' | 'success' | 'danger' }) {
-  const color = tone === 'success' ? 'text-emerald-600 dark:text-emerald-300' : tone === 'danger' ? 'text-red-600 dark:text-red-300' : 'text-slate-700 dark:text-slate-200';
-  return <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-white/[0.03]"><div className={`mb-1 ${color}`}>{icon}</div><p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p><p className={`mt-0.5 text-sm font-bold ${color}`}>{value}</p></div>;
-}
-
-function Impact({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200 dark:bg-black/20 dark:ring-white/10"><p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p><p className="text-base font-bold text-slate-900 dark:text-white">{value}</p></div>;
-}
-
-function FindingGroup({ title, icon, groups, tone }: { title: string; icon: React.ReactNode; groups: Record<string, string[]>; tone: 'danger' | 'warning' }) {
-  const entries = Object.entries(groups);
-  if (entries.length === 0) return null;
-  const text = tone === 'danger' ? 'text-red-700 dark:text-red-200' : 'text-amber-700 dark:text-amber-200';
-  const bg = tone === 'danger' ? 'bg-red-50 dark:bg-red-500/10' : 'bg-amber-50 dark:bg-amber-500/10';
-  return (
-    <div className={`mt-3 rounded-lg p-3 ${bg}`}>
-      <p className={`flex items-center gap-2 font-semibold ${text}`}>{icon}{title}</p>
-      <div className="mt-2 max-h-56 space-y-2 overflow-auto pe-1">
-        {entries.slice(0, 8).map(([section, findings]) => (
-          <div key={section}>
-            <p className="font-semibold capitalize text-slate-800 dark:text-white">{section}</p>
-            {findings.slice(0, 5).map((finding, idx) => <p key={`${section}-${idx}`} className={text}>{finding}</p>)}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function downloadText(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function countCsvRows(content?: string): number {
-  if (!content) return 0;
-  return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(1).length;
-}
-
-function splitOrgPackage(content: string): OrgStructureImportRequest {
-  const out: OrgStructureImportRequest = {};
-  const sectionToKey = Object.fromEntries(IMPORT_KEYS.map(x => [x.section.toLowerCase(), x.key])) as Record<string, keyof OrgStructureImportRequest>;
-  let current: keyof OrgStructureImportRequest | null = null;
-  const buffers: Partial<Record<keyof OrgStructureImportRequest, string[]>> = {};
-  for (const line of content.replace(/\r\n/g, '\n').split('\n')) {
-    const match = line.trim().match(/^#\s*([A-Za-z]+)\s*$/);
-    if (match) {
-      current = sectionToKey[match[1].toLowerCase()] ?? null;
-      if (current && !buffers[current]) buffers[current] = [];
-      continue;
-    }
-    if (current) buffers[current]?.push(line);
-  }
-  for (const [key, lines] of Object.entries(buffers) as [keyof OrgStructureImportRequest, string[]][]) {
-    const csv = lines.join('\n').trim();
-    if (csv) out[key] = csv;
-  }
-  return out;
-}
-
-function groupFindings(result: OrgStructureImportResult | null, key: 'errors' | 'warnings'): Record<string, string[]> {
-  if (!result) return {};
-  return result.rows.reduce<Record<string, string[]>>((acc, row) => {
-    const findings = row[key] ?? [];
-    if (findings.length === 0) return acc;
-    const section = row.entityCode?.split(':')[0] || 'general';
-    acc[section] ??= [];
-    for (const finding of findings) acc[section].push(`Row ${row.rowNumber || '-'} ${row.entityCode ?? ''}: ${finding}`.trim());
-    return acc;
-  }, {});
 }
 
 /**
@@ -1252,12 +1075,12 @@ function groupFindings(result: OrgStructureImportResult | null, key: 'errors' | 
  * eight different screens.
  */
 type EditField =
-  | { kind: 'text'; label: string; value: string; onChange: (v: string) => void }
-  | { kind: 'number'; label: string; value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }
-  | { kind: 'bool'; label: string; value: boolean; onChange: (v: boolean) => void }
-  | { kind: 'select'; label: string; value: string; options: string[]; onChange: (v: string) => void };
+  | { kind: 'text'; label: string; value: string; onChange: (v: string) => void; }
+  | { kind: 'number'; label: string; value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; }
+  | { kind: 'bool'; label: string; value: boolean; onChange: (v: boolean) => void; }
+  | { kind: 'select'; label: string; value: string; options: string[]; onChange: (v: string) => void; };
 
-type DraftRow = { code: string; desc: string; fields?: EditField[] };
+type DraftRow = { code: string; desc: string; fields?: EditField[]; };
 
 const txt = (label: string, value: string, onChange: (v: string) => void): EditField =>
   ({ kind: 'text', label, value, onChange });
@@ -1268,7 +1091,7 @@ const boolf = (label: string, value: boolean, onChange: (v: boolean) => void): E
 const selectf = (label: string, value: string, options: string[], onChange: (v: string) => void): EditField =>
   ({ kind: 'select', label, value, options, onChange });
 
-function FieldInput({ field }: { field: EditField }) {
+function FieldInput({ field }: { field: EditField; }) {
   const base = 'w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-100';
   if (field.kind === 'bool') {
     return (
@@ -1281,7 +1104,7 @@ function FieldInput({ field }: { field: EditField }) {
   }
   return (
     <label className="block">
-      <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-slate-400">{field.label}</span>
+      <span className="mb-0.5 block text-xs font-medium text-slate-600 dark:text-slate-400">{field.label}</span>
       {field.kind === 'select' ? (
         <select className={base} value={field.value} onChange={e => field.onChange(e.target.value)}>
           {field.options.map(o => <option key={o} value={o}>{o}</option>)}
@@ -1297,7 +1120,7 @@ function FieldInput({ field }: { field: EditField }) {
   );
 }
 
-function DraftSection({ title, rows, onRemove }: { title: string; rows: DraftRow[]; onRemove: (idx: number) => void }) {
+function DraftSection({ title, rows, onRemove }: { title: string; rows: DraftRow[]; onRemove: (idx: number) => void; }) {
   // Which rows are open for editing. Collapsed by default: 65 rows of input boxes is not a review
   // screen, it is a form. The summary stays readable and the fields appear on request.
   const [open, setOpen] = useState<Record<number, boolean>>({});
@@ -1311,19 +1134,19 @@ function DraftSection({ title, rows, onRemove }: { title: string; rows: DraftRow
       <ul className="divide-y divide-slate-50 dark:divide-white/[0.04]">
         {rows.map((row, i) => (
           <li key={`${row.code}-${i}`} className="px-4 py-2 text-sm">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-white/10 dark:text-slate-300">{row.code}</span>
               <span className="text-slate-700 dark:text-slate-200">{row.desc}</span>
               <div className="ms-auto flex items-center gap-1">
                 {row.fields && row.fields.length > 0 && (
                   <button type="button" aria-label={`Edit ${row.code}`} aria-expanded={Boolean(open[i])}
                     onClick={() => setOpen(o => ({ ...o, [i]: !o[i] }))}
-                    className={`grid h-6 w-6 place-items-center rounded ${open[i] ? 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10'}`}>
+                    className={`grid h-9 w-9 shrink-0 place-items-center rounded ${open[i] ? 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10'}`}>
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
                 )}
                 <button type="button" aria-label={`Remove ${row.code}`} onClick={() => onRemove(i)}
-                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>

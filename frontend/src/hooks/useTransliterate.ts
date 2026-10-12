@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { LocaleCode } from '../i18n/translations';
-import { localizationApi } from '../api/localization';
+import { localizationApi, type TransliterateKind, type TransliterateResult } from '../api/localization';
 
 /**
  * P0-6 — PII must never leave to a third party.
@@ -81,21 +81,21 @@ export function sanitizeTranslation(raw: string): string {
 /**
  * On-demand transliteration. Returns `suggest(source, target?)` — an async function bound to
  * an explicit user action — and `isTranslating` for button loading state. `suggest` resolves
- * to a sanitized suggestion string, or '' when there is nothing to suggest / the request fails
- * (best-effort; the manual field is always available).
+ * to sanitized text and the server's personal-name coverage signal. Failures are distinct from
+ * unsupported names so the UI can offer either retry or manual entry.
  */
 export function useTransliterate() {
   const [isTranslating, setIsTranslating] = useState(false);
 
-  async function suggest(source: string, target: LocaleCode = 'ar'): Promise<string> {
+  async function suggest(source: string, target: LocaleCode = 'ar', kind?: TransliterateKind): Promise<TransliterateResult & { failed?: boolean }> {
     const trimmed = source.trim();
-    if (trimmed.length < 2 || target === 'en') return '';
+    if (trimmed.length < 2 || target === 'en') return { suggestion: '' };
     setIsTranslating(true);
     try {
-      const { suggestion } = await localizationApi.transliterate(trimmed, target);
-      return sanitizeTranslation(suggestion ?? '');
+      const result = await localizationApi.transliterate(trimmed, target, kind);
+      return { ...result, suggestion: sanitizeTranslation(result.suggestion ?? '') };
     } catch {
-      return '';
+      return { suggestion: '', failed: true };
     } finally {
       setIsTranslating(false);
     }

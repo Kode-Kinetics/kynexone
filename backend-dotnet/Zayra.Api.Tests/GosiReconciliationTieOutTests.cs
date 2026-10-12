@@ -216,6 +216,9 @@ public class GosiReconciliationTieOutTests
         // Remap the EE statutory driver to a NON-2101 company-specific account.
         await using (var db = _fx.CreateDb())
         {
+            // A tenant that has a chart must hold every account its Lock posts to (a code missing from the
+            // chart blocks Lock), so the standard chart is loaded first; the company mapping below wins.
+            await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(db, tenantId, CancellationToken.None);
             var acct = new GlAccount
             {
                 TenantId = tenantId, CompanyId = companyId, Code = "2201",

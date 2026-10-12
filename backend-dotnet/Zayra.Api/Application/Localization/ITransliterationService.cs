@@ -13,4 +13,10 @@ public interface ITransliterationService
 {
     /// <summary>Best-effort phonetic Arabic rendering of Latin-script text. Returns "" for empty input.</summary>
     string ToArabic(string text);
+
+    /// <summary>
+    /// Conventional, curated Arabic readings for supported personal names. Returns "" for the
+    /// entire name if any part is unsupported or ambiguous. Suggestions require the user's review.
+    /// </summary>
+    string ToArabicPersonName(string text);
 }

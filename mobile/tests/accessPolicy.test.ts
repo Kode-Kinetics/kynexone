@@ -93,3 +93,36 @@ test('read-only mode never exposes write surfaces', () => {
   assert.equal(policy.surfaces.has('kioskPunch'), false);
   assert.equal(policy.surfaces.has('approvals'), true);
 });
+
+// ---- Lane C: Letters, Loans, AI flag -------------------------------------------------------------
+
+test('letters follow ESS read; loans need a loans permission on top of the ESS link', () => {
+  const ess = deriveMobileAccess(user('ESSOnly', 'EMPLOYEE', ['ess.read']));
+  assert.equal(ess.surfaces.has('letters'), true);
+  assert.equal(ess.surfaces.has('loans'), false);
+
+  const borrower = deriveMobileAccess(user('FullPortal', 'EMPLOYEE', ['ess.read', 'ess.write', 'loans.self']));
+  assert.equal(borrower.surfaces.has('letters'), true);
+  assert.equal(borrower.surfaces.has('loans'), true);
+
+  // loans.self without an ESS link has no "my loans" to show.
+  const noEss = deriveMobileAccess(user('FullPortal', 'EMPLOYEE', ['loans.self']));
+  assert.equal(noEss.surfaces.has('loans'), false);
+  assert.equal(noEss.surfaces.has('letters'), false);
+
+  for (const mode of ['ReadOnlyAuditor', 'KioskOnly', 'NoLogin'] as const) {
+    const policy = deriveMobileAccess(user(mode, 'EMPLOYEE', ['ess.read', 'loans.self', 'attendance.kiosk']));
+    assert.equal(policy.surfaces.has('letters'), false, mode);
+    assert.equal(policy.surfaces.has('loans'), false, mode);
+  }
+});
+
+test('the AI assistant surface is withheld while the feature flag is off, and mirrors FEATURES', async () => {
+  const { FEATURES } = await import('../src/config/features.ts');
+  const { SURFACE_FLAGS } = await import('../src/auth/accessPolicy.ts');
+  assert.equal(SURFACE_FLAGS.aiAssistant, FEATURES.AI_ASSISTANT, 'accessPolicy.SURFACE_FLAGS drifted from config/features.ts');
+  const essUser = user('ESSOnly', 'EMPLOYEE', ['ess.read', 'ess.write']);
+  assert.equal(deriveMobileAccess(essUser).surfaces.has('aiAssistant'), FEATURES.AI_ASSISTANT);
+  assert.equal(deriveMobileAccess(essUser, { aiAssistant: true }).surfaces.has('aiAssistant'), true);
+  assert.equal(deriveMobileAccess(essUser, { aiAssistant: false }).surfaces.has('aiAssistant'), false);
+});

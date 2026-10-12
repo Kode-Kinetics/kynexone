@@ -10,7 +10,9 @@
 // production-mode bundle shows the ErrorBoundary fallback exactly as users see
 // it — in dev, React's red-box overlays it.
 //
-//   EXPO_PUBLIC_SCREEN_TOUR=employee|manager
+//   EXPO_PUBLIC_SCREEN_TOUR=employee|manager|quick|shots
+//   (shots is READ-ONLY: it signs in, visits each screen the session can reach,
+//   and logs "[TOUR] STEP <name>" per screen for screenshots — no writes, no crash step.)
 //   EXPO_PUBLIC_TOUR_TENANT=…  EXPO_PUBLIC_TOUR_EMAIL=…  EXPO_PUBLIC_TOUR_PASSWORD=…
 //
 // Each step logs "[TOUR] STEP <name>" when its screen is on display and
@@ -51,7 +53,7 @@ const DELIBERATE = 'Deliberate render failure injected by the dev screen tour';
 // The tour intentionally relies on the normal React error boundary. Avoid
 // private React Native deep imports so SDK upgrades remain warning-free.
 
-const DWELL_MS = 9000;
+const DWELL_MS = Number(process.env.EXPO_PUBLIC_TOUR_DWELL_MS) || 9000;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (...args: unknown[]) => console.log('[TOUR]', ...args);
 
@@ -247,6 +249,18 @@ async function quickTour() {
   });
 }
 
+/** Read-only visual pass: every reachable screen, nothing written. */
+async function shotsTour() {
+  const user = useAuthStore.getState().user;
+  const manager = isManagerUser(user);
+  const routes: AppRoute[] = manager
+    ? ['Home', 'Approvals', 'Team', 'AttendanceHistory', 'ApplyLeave', 'Payslips', 'Notifications', 'HRRequests', 'Letters', 'Loans', 'Documents', 'Profile', 'Settings']
+    : ['Home', 'AttendanceHistory', 'ApplyLeave', 'Overtime', 'Payslips', 'Notifications', 'HRRequests', 'Letters', 'Loans', 'Documents', 'Profile', 'Settings'];
+  for (const route of routes) await show(route, route, manager);
+  const slips = await payslipApi.getPayslips().catch(() => []);
+  if (slips[0]) await show('PayslipDetail', 'PayslipDetail', manager, { id: slips[0].id });
+}
+
 async function runTour(mode: string) {
   const store = useAuthStore.getState();
   if (!store.isAuthenticated) {
@@ -263,6 +277,7 @@ async function runTour(mode: string) {
   log('RESULT', 'tab-layout', manager ? 'ManagerTabs' : 'EmployeeTabs');
   if (mode === 'manager') await managerTour();
   else if (mode === 'quick') await quickTour();
+  else if (mode === 'shots') await shotsTour();
   else await employeeTour();
 }
 
@@ -282,6 +297,12 @@ export function ScreenTour() {
         log('RESULT', 'tour-aborted', 'FAIL', e?.message);
       }
       if (cancelled) return;
+      if (TOUR_MODE === 'shots') {
+        // Sign out so the next pass can run as another persona.
+        await useAuthStore.getState().logout();
+        log('DONE');
+        return;
+      }
       log('STEP', 'ErrorBoundary-crash');
       // Recover after the fallback has been on screen for a dwell.
       setTimeout(() => {

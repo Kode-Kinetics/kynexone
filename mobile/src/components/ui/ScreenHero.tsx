@@ -1,29 +1,53 @@
-import React, { useEffect } from 'react';
-import { I18nManager, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import React, { useContext, useEffect } from 'react';
+import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { NavigationContext } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import Animated, {
   Easing,
   interpolate,
   useAnimatedStyle,
   useSharedValue,
-  withDelay,
   withTiming,
 } from 'react-native-reanimated';
-import { GlassSurface } from './GlassSurface';
 import { MotionPressable } from './MotionPressable';
+import { DirectionalIcon } from './DirectionalIcon';
 import { useTheme } from '@/theme/ThemeProvider';
 
-interface Props {
+export interface ScreenHeroProps {
   eyebrow?: string;
   title: string;
   subtitle?: string;
+  /** Trailing controls (e.g. GlassIconButton). */
   actions?: React.ReactNode;
   children?: React.ReactNode;
+  /**
+   * Back handler. When omitted, a back control appears automatically if this screen was pushed
+   * onto a stack (not on a tab's root screen). Pass `hideBack` to suppress it.
+   */
   onBack?: () => void;
   backLabel?: string;
+  hideBack?: boolean;
 }
 
+/** Whether the screen sits above another screen in its own stack (tab switches don't count). */
+function usePushedOnStack(): (() => void) | null {
+  const navigation = useContext(NavigationContext);
+  if (!navigation) return null;
+  try {
+    const state = navigation.getState();
+    if (state?.type === 'stack' && state.index > 0) return () => navigation.goBack();
+  } catch {
+    // Not inside a navigator.
+  }
+  return null;
+}
+
+/**
+ * Screen header on the content layer: eyebrow, title, subtitle, trailing actions. Not a card and
+ * not glass — floating controls inside it may be glass without stacking glass on glass.
+ * Enters with a short fade (≤180ms); instant under Reduce Motion.
+ */
 export function ScreenHero({
   eyebrow,
   title,
@@ -31,85 +55,87 @@ export function ScreenHero({
   actions,
   children,
   onBack,
-  backLabel = 'Back',
-}: Props) {
+  backLabel,
+  hideBack = false,
+}: ScreenHeroProps) {
   const { theme, reduceMotion } = useTheme();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { width, fontScale } = useWindowDimensions();
-  const stackHeader = width < 390 || fontScale > 1.15;
+  const stackHeader = width < 360 || fontScale > 1.3;
+  const autoBack = usePushedOnStack();
+  const back = hideBack ? null : onBack ?? autoBack;
   const entrance = useSharedValue(reduceMotion ? 1 : 0);
+  const enterOffset = theme.motion.enterOffset;
 
   useEffect(() => {
     entrance.value = reduceMotion
       ? 1
-      : withDelay(40, withTiming(1, { duration: 520, easing: Easing.out(Easing.cubic) }));
+      : withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
   }, [entrance, reduceMotion]);
 
   const entranceMotion = useAnimatedStyle(() => ({
     opacity: entrance.value,
-    transform: [
-      { perspective: 900 },
-      { translateY: interpolate(entrance.value, [0, 1], [-12, 0]) },
-      { rotateX: `${interpolate(entrance.value, [0, 1], [-2.5, 0])}deg` },
-      { scale: interpolate(entrance.value, [0, 1], [0.985, 1]) },
-    ],
+    transform: [{ translateY: interpolate(entrance.value, [0, 1], [enterOffset, 0]) }],
   }));
 
   return (
-    <Animated.View style={[styles.wrapper, { paddingTop: insets.top + 10 }, entranceMotion]}>
-      {onBack ? (
+    <Animated.View style={[styles.wrapper, { paddingTop: insets.top + (back ? 2 : 12) }, entranceMotion]}>
+      {back ? (
         <MotionPressable
           accessibilityRole="button"
-          accessibilityLabel={backLabel}
-          onPress={onBack}
-          haptic="selection"
+          accessibilityLabel={backLabel ?? t('kit.back')}
+          onPress={back}
           contentStyle={styles.backButton}
           style={styles.backShell}
+          hitSlop={8}
         >
-          <Ionicons name={I18nManager.isRTL ? 'chevron-forward' : 'chevron-back'} size={20} color={theme.colors.primary} />
-          <Text style={[theme.typography.caption, styles.backLabel, { color: theme.colors.textSecondary }]}>
-            {backLabel}
+          <DirectionalIcon name="chevronBack" size={22} color={theme.colors.accent} />
+          <Text
+            maxFontSizeMultiplier={1.4}
+            style={[theme.typography.callout, { color: theme.colors.accent }]}
+          >
+            {backLabel ?? t('kit.back')}
           </Text>
         </MotionPressable>
       ) : null}
-      <GlassSurface
-        radius={theme.radius.xxl}
-        tintColor={theme.isDark ? 'rgba(47,107,255,0.16)' : 'rgba(255,255,255,0.42)'}
-        contentStyle={styles.content}
-      >
-        <View style={[styles.row, stackHeader && styles.rowStacked]}>
-          <View style={styles.copy}>
-            {eyebrow ? (
-              <Text style={[styles.eyebrow, { color: theme.colors.cyan }]}>{eyebrow}</Text>
-            ) : null}
-            <Text style={[theme.typography.h1, { color: theme.colors.text }]}>{title}</Text>
-            {subtitle ? (
-              <Text style={[theme.typography.caption, styles.subtitle, { color: theme.colors.textSecondary }]}>
-                {subtitle}
-              </Text>
-            ) : null}
-          </View>
-          {actions ? (
-            <View style={[styles.actions, stackHeader && styles.actionsStacked]}>{actions}</View>
+      <View style={[styles.row, stackHeader && styles.rowStacked]}>
+        <View style={styles.copy}>
+          {eyebrow ? (
+            <Text
+              maxFontSizeMultiplier={1.4}
+              style={[theme.typography.eyebrow, styles.eyebrow, { color: theme.colors.accent }]}
+            >
+              {eyebrow}
+            </Text>
+          ) : null}
+          <Text accessibilityRole="header" style={[theme.typography.title1, { color: theme.colors.text }]}>
+            {title}
+          </Text>
+          {subtitle ? (
+            <Text style={[theme.typography.subheadline, styles.subtitle, { color: theme.colors.textSecondary }]}>
+              {subtitle}
+            </Text>
           ) : null}
         </View>
-        {children}
-      </GlassSurface>
+        {actions ? (
+          <View style={[styles.actions, stackHeader && styles.actionsStacked]}>{actions}</View>
+        ) : null}
+      </View>
+      {children}
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrapper: { paddingHorizontal: 16, paddingBottom: 4 },
-  backShell: { alignSelf: 'flex-start', marginBottom: 8 },
-  backButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 3, paddingRight: 10 },
-  backLabel: { fontWeight: '700' },
-  content: { paddingHorizontal: 18, paddingVertical: 16 },
-  row: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  rowStacked: { flexDirection: 'column' },
+  wrapper: { paddingHorizontal: 16, paddingBottom: 12 },
+  backShell: { alignSelf: 'flex-start', marginStart: -6, marginBottom: 2 },
+  backButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 2, paddingEnd: 10 },
+  row: { flexDirection: 'row', alignItems: 'flex-end', gap: 12 },
+  rowStacked: { flexDirection: 'column', alignItems: 'stretch' },
   copy: { flex: 1, minWidth: 0 },
-  eyebrow: { fontSize: 11, lineHeight: 15, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
-  subtitle: { marginTop: 5 },
+  eyebrow: { marginBottom: 4 },
+  subtitle: { marginTop: 4 },
   actions: { flexDirection: 'row', gap: 8 },
   actionsStacked: { alignSelf: 'flex-end' },
 });

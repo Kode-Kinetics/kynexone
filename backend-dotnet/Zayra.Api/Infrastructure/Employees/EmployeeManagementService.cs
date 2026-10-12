@@ -10,8 +10,10 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Benefits;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -103,7 +105,10 @@ public class EmployeeManagementService : IEmployeeManagementService
             includeSensitive ? await _db.EmployeeComplianceRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted).ToListAsync(cancellationToken) : [],
             await GetDocumentsAsync(tenantId, id, cancellationToken),
             await GetHistoryAsync(tenantId, id, cancellationToken),
-            await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
+            await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken)) with
+        {
+            SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
+        };
     }
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -185,6 +190,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
                 await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+                // Grade defaults are part of the hire transaction, before any individual HR exceptions.
+                await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
+                    _db, employee, context.UserId, cancellationToken);
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
@@ -199,9 +207,28 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             // ONE transaction for the whole create: the generated code under the ID-rule lock (held until the code is
             // committed), the employee, and its work-email setter marker (the establishment guard joins it).
+            // SaveChanges accepts tracked state before COMMIT. A rolled-back attempt must therefore be rebuilt,
+            // including its generated employee key/code, rather than reusing cached benefits/history as persisted.
+            // The server-generated PublicId is stable across attempts and verifies an ambiguous successful COMMIT.
+            var preparedEmployee = _db.Entry(employee).CurrentValues.Clone();
+            var publicId = employee.PublicId;
+            var attempt = 0;
             var strategy = _db.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
+                if (attempt++ > 0)
+                {
+                    _db.ChangeTracker.Clear();
+                    var committedEmployee = await _db.Employees.AsTracking()
+                        .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PublicId == publicId, cancellationToken);
+                    if (committedEmployee is not null)
+                    {
+                        // The employee and every dependent row committed in the same transaction. Do not replay it.
+                        employee = committedEmployee;
+                        return;
+                    }
+                    employee = (Employee)preparedEmployee.ToObject();
+                }
                 await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
                 await PersistAsync();
                 await tx.CommitAsync(cancellationToken);
@@ -243,8 +270,24 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
-        var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
+        var publicId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted)
+            .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
+        if (!publicId.HasValue) return null;
+        var updateAuditId = Guid.NewGuid();
+        return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, publicId.Value, UpdateOnceAsync, cancellationToken);
+
+        async Task<EmployeeDetailDto?> UpdateOnceAsync()
+        {
+        // Stable audit marker makes a lost COMMIT acknowledgement an idempotent retry.
+        if (await _db.AuditLogs.AsNoTracking().AnyAsync(x => x.Id == updateAuditId && x.TenantId == tenantId
+            && x.Action == "employee.updated" && x.EntityId == id.ToString(), cancellationToken))
+            return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
+        // Same lifecycle lock order as activation: tenant anchor, then the employee. Re-read after locks.
+        await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag).FirstOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+        var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorPositionId = employee.PositionId;
         // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
         var priorWorkEmail = employee.WorkEmail;
@@ -266,6 +309,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
         await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
@@ -294,11 +338,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.updated", "Employee", id.ToString(), context, null, cancellationToken);
+        var updateAudit = AuthAuditEntry.Create(updateAuditId, DateTime.UtcNow, "employee.updated", "Employee", id.ToString(), context with { TenantId = tenantId });
+        updateAudit.CompanyId = employee.CompanyId;
+        _db.AuditLogs.Add(updateAudit);
+        await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
         return updated is null ? null : updated with { LoginUsernameDiffers = workEmailAudit.LoginUsernameDiffers };
+        }
     }
 
     public async Task<EmployeeDetailDto?> ChangeStatusAsync(Guid tenantId, int id, EmployeeStatusChangeRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -1252,6 +1300,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(request.DocumentType) && request.DocumentType != doc.DocumentType
+            && (request.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType || doc.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType))
+            throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
         if (request.DocumentCategory is not null) doc.DocumentCategory = request.DocumentCategory.Trim();
@@ -1317,6 +1369,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return false;
+        await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
 
         doc.IsDeleted = true;
         doc.DeletedAtUtc = DateTime.UtcNow;
@@ -1747,132 +1800,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
-    {
-        // A GRADE IS NO LONGER THE GATE. It used to be: an employee without a grade returned here
-        // before the breakdown was ever read, so an explicit salaryBreakdown on the create/update
-        // request was accepted with 200 and silently dropped — employee.Salary stayed 0, no
-        // EmployeeSalaryStructure row was written, and the employee joined payroll on nothing. A
-        // 14-employee run then reported a gross total of the one person who happened to have a
-        // grade. The repo rule is refuse rather than guess; silent partial success is neither, so
-        // the operator's numbers are now honoured whether or not a grade resolves.
-        if (employee.TenantId is null) return;
-        var grade = employee.GradeId is null
-            ? null
-            : await _db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-
-        var effectiveDate = SalaryEffectiveDate(employee, request);
-        // Release A: one fact in one place. The grade's cash allowances are the matrix (Benefits by grade); the frozen
-        // legacy pay scale is never read for a release_a tenant. The request was already prefilled from the matrix
-        // (PrefillSalaryFromMatrixAsync) and is used as it stands. Tenants without the flag are unchanged.
-        var releaseA = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, employee.TenantId.Value, cancellationToken);
-        var components = grade is null || releaseA
-            ? new List<GradePayScaleComponent>()
-            : await _db.GradePayScaleComponents
-                .AsNoTracking()
-                .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
-                .OrderBy(x => x.SortOrder)
-                .ToListAsync(cancellationToken);
-
-        var salary = releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components);
-        // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
-        // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
-        if (GrossSalary(salary) <= 0) return;
-
-        await _db.EmployeeSalaryStructures
-            .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
-            .ExecuteUpdateAsync(x => x.SetProperty(p => p.IsActive, false), cancellationToken);
-
-        var structureCode = Clean(request?.SalaryStructureCode);
-        if (string.IsNullOrWhiteSpace(structureCode))
-            structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
-        // The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import uses,
-        // so company B's new hire is never attached to company A's structure lines.
-        var structure = await _db.SalaryStructures
-            .Where(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted
-                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
-            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
-            .FirstOrDefaultAsync(cancellationToken);
-        if (structure is null)
-        {
-            // Currency, most specific first: what the operator typed, then the grade's, then the
-            // employing company's default. Never a hard-coded literal — the entity default is "AED".
-            var structureCurrency = Clean(request?.Currency) is { Length: > 0 } requestCurrency
-                ? requestCurrency.ToUpperInvariant()
-                : grade?.Currency is { Length: > 0 } gradeCurrency
-                    ? gradeCurrency
-                    : await ResolveCompanyCurrencyAsync(employee, cancellationToken);
-            structure = new SalaryStructure
-            {
-                TenantId = employee.TenantId.Value,
-                CompanyId = employee.CompanyId,
-                Code = structureCode,
-                Name = grade is null ? "Direct salary structure" : $"{grade.Name} salary structure",
-                Currency = structureCurrency,
-                EffectiveDate = effectiveDate,
-                CreatedBy = context.UserId
-            };
-            _db.SalaryStructures.Add(structure);
-
-            if (releaseA && grade is not null)
-                _db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(
-                    await EntitlementMatrixService.CashAllowancesAsync(_db, employee.TenantId.Value, grade.Id, employee.CompanyId, effectiveDate, cancellationToken),
-                    employee.TenantId.Value, structure.Id));
-            foreach (var component in components)
-            {
-                _db.SalaryComponents.Add(new SalaryComponent
-                {
-                    TenantId = employee.TenantId.Value,
-                    SalaryStructureId = structure.Id,
-                    Code = component.ComponentCode,
-                    Name = component.ComponentName,
-                    ComponentType = component.ComponentType,
-                    CalculationType = component.CalculationType,
-                    Amount = component.Amount,
-                    Percentage = component.Percentage,
-                    IsTaxable = component.IsTaxable
-                });
-            }
-        }
-
-        var assignment = new EmployeeSalaryStructure
-        {
-            TenantId = employee.TenantId.Value,
-            EmployeeId = employee.Id,
-            SalaryStructureId = structure.Id,
-            BasicSalary = salary.BasicSalary ?? 0m,
-            HousingAllowance = salary.HousingAllowance ?? 0m,
-            TransportAllowance = salary.TransportAllowance ?? 0m,
-            FoodAllowance = salary.FoodAllowance ?? 0m,
-            MobileAllowance = salary.MobileAllowance ?? 0m,
-            OtherAllowance = salary.OtherAllowance ?? 0m,
-            FixedDeduction = salary.FixedDeduction ?? 0m,
-            EffectiveDate = effectiveDate,
-            Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
-            CreatedBy = context.UserId
-        };
-        _db.EmployeeSalaryStructures.Add(assignment);
-        employee.Salary = GrossSalary(salary);
-        employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
-    }
-
-    /// <summary>Code of the structure that carries a salary entered directly on the employee, with no
-    /// grade pay scale behind it. One per tenant, mirroring the GRADE-{code} convention above.</summary>
-    private const string DirectSalaryStructureCode = "DIRECT";
-
-    /// <summary>The employing company's default currency — the last fallback when neither the request
-    /// nor a grade names one.</summary>
-    private async Task<string> ResolveCompanyCurrencyAsync(Employee employee, CancellationToken cancellationToken)
-    {
-        if (employee.CompanyId is not Guid companyId) return "AED";
-        var currency = await _db.Companies.AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.Id == companyId)
-            .Select(x => x.DefaultCurrency)
-            .FirstOrDefaultAsync(cancellationToken);
-        return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
-    }
-
-    private static readonly EmployeeSalaryBreakdownRequest EmptyBreakdown = new(null, null, null, null, null, null, null, null, null, null);
+    private Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
+        => EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, request, context, cancellationToken);
 
     private static DateOnly SalaryEffectiveDate(Employee employee, EmployeeSalaryBreakdownRequest? request) =>
         request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
@@ -1926,26 +1855,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         return filled;
     }
 
-    private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
-    {
-        if (request is not null && GrossSalary(request) > 0) return request;
 
-        decimal basic = 0, housing = 0, transport = 0, food = 0, mobile = 0, other = 0, fixedDeduction = 0;
-        foreach (var component in components)
-        {
-            var code = component.ComponentCode.ToUpperInvariant();
-            var amount = component.Amount;
-            if (code.Contains("BASIC")) basic += amount;
-            else if (code.Contains("HOUS")) housing += amount;
-            else if (code.Contains("TRANS")) transport += amount;
-            else if (code.Contains("FOOD")) food += amount;
-            else if (code.Contains("MOBILE")) mobile += amount;
-            else if (component.ComponentType.Equals("Deduction", StringComparison.OrdinalIgnoreCase)) fixedDeduction += amount;
-            else other += amount;
-        }
-
-        return new EmployeeSalaryBreakdownRequest(basic, housing, transport, food, mobile, other, fixedDeduction, request?.SalaryStructureCode, request?.EffectiveDate, request?.Currency);
-    }
 
     private static decimal GrossSalary(EmployeeSalaryBreakdownRequest? salary)
         => (salary?.BasicSalary ?? 0m)

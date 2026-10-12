@@ -1,0 +1,236 @@
+{
+  "base": "http://127.0.0.1:5218",
+  "startedAtUtc": "2026-10-09T16:58:25.448396+00:00",
+  "checks": [
+    {
+      "check": "BenefitAdditionalGrant has an independent HR Manager route",
+      "passed": true
+    },
+    {
+      "check": "BenefitClaim has an independent HR Manager route",
+      "passed": true
+    },
+    {
+      "check": "synthetic employee meets activation readiness",
+      "passed": true,
+      "missingKeys": []
+    },
+    {
+      "check": "synthetic employee has no pay-blocking readiness items",
+      "passed": true,
+      "missingKeys": []
+    },
+    {
+      "check": "SalaryAllowance pending additional request has no entitlement",
+      "passed": true
+    },
+    {
+      "check": "SalaryAllowance approval creates exactly one snapshotted enrollment",
+      "passed": true
+    },
+    {
+      "check": "PayrollDeduction pending additional request has no entitlement",
+      "passed": true
+    },
+    {
+      "check": "PayrollDeduction approval creates exactly one snapshotted enrollment",
+      "passed": true
+    },
+    {
+      "check": "Reimbursement pending additional request has no entitlement",
+      "passed": true
+    },
+    {
+      "check": "Reimbursement approval creates exactly one snapshotted enrollment",
+      "passed": true
+    },
+    {
+      "check": "receipt-required claim refuses missing proof",
+      "passed": true
+    },
+    {
+      "check": "claim requester cannot approve own request",
+      "passed": true
+    },
+    {
+      "check": "other-company actor cannot read claim",
+      "passed": true
+    },
+    {
+      "check": "pending plus approved claims reserve cap before payroll",
+      "passed": true
+    },
+    {
+      "check": "claim reservation and remaining cap are transparent",
+      "passed": true,
+      "balance": {
+        "canClaim": true,
+        "maximumAmount": 2000.0,
+        "reservedAmount": 250,
+        "approvedAmount": 500,
+        "remainingAmount": 1250.0,
+        "periodFrom": "2026-01-01",
+        "periodTo": "2026-12-31"
+      }
+    },
+    {
+      "check": "approved claim is awaiting payroll, not marked paid",
+      "passed": true,
+      "settlementStatus": "AwaitingPayroll"
+    },
+    {
+      "check": "existing agreed allowance remains 310 after catalogue edits",
+      "passed": true
+    },
+    {
+      "check": "run ae402997-cf64-4849-b27d-ceb82a21c4c1 pays exactly the selected synthetic employee",
+      "passed": true
+    },
+    {
+      "check": "run ae402997-cf64-4849-b27d-ceb82a21c4c1 has no payroll line/total mismatch",
+      "passed": true
+    },
+    {
+      "check": "recurring run adds frozen allowance and approved claim once",
+      "passed": true,
+      "gross": 10810.0,
+      "expected": 10810
+    },
+    {
+      "check": "recurring benefit deduction posts exactly once",
+      "passed": true
+    },
+    {
+      "check": "processed claim points at run and is not called paid",
+      "passed": true
+    },
+    {
+      "check": "pending claim remains unpaid after processing",
+      "passed": true
+    },
+    {
+      "check": "processed payroll replay is refused",
+      "passed": true
+    },
+    {
+      "check": "void removes processed claim settlement state",
+      "passed": true,
+      "settlementStatus": "AwaitingPayroll"
+    },
+    {
+      "check": "run 930bda04-3192-414f-8882-866b075b7fa9 pays exactly the selected synthetic employee",
+      "passed": true
+    },
+    {
+      "check": "run 930bda04-3192-414f-8882-866b075b7fa9 has no payroll line/total mismatch",
+      "passed": true
+    },
+    {
+      "check": "replacement reproduces original financial totals without duplicate benefit",
+      "passed": true,
+      "original": {
+        "grossSalary": 10810.0,
+        "deductions": 2156.0,
+        "netSalary": 8654.0
+      },
+      "replacement": {
+        "grossSalary": 10810.0,
+        "deductions": 2156.0,
+        "netSalary": 8654.0
+      }
+    },
+    {
+      "check": "same approved claim rebinds to replacement",
+      "passed": true
+    },
+    {
+      "check": "voided original cannot be resurrected",
+      "passed": true
+    },
+    {
+      "check": "run 13571e11-bd03-462c-b272-7cdb4fd615e9 pays exactly the selected synthetic employee",
+      "passed": true
+    },
+    {
+      "check": "run 13571e11-bd03-462c-b272-7cdb4fd615e9 has no payroll line/total mismatch",
+      "passed": true
+    },
+    {
+      "check": "supplemental pays only the new approved claim",
+      "passed": true,
+      "gross": 200.0,
+      "basic": 0.0
+    },
+    {
+      "check": "component-engine supplemental benefit tax is exactly 20",
+      "passed": true,
+      "net": 180.0
+    },
+    {
+      "check": "supplemental does not repeat recurring deduction",
+      "passed": true
+    },
+    {
+      "check": "prior approved claim remains assigned only to replacement",
+      "passed": true
+    },
+    {
+      "check": "run b032b818-1997-48d2-8efa-e9f334631433 pays exactly the selected synthetic employee",
+      "passed": true
+    },
+    {
+      "check": "run b032b818-1997-48d2-8efa-e9f334631433 has no payroll line/total mismatch",
+      "passed": true
+    },
+    {
+      "check": "legacy supplemental pays only new claim and correct benefit tax",
+      "passed": true,
+      "gross": 100.0,
+      "net": 90.0
+    },
+    {
+      "check": "artificial QA tax policy archived after verification",
+      "passed": true
+    },
+    {
+      "check": "original component-engine behavior restored",
+      "passed": true
+    }
+  ],
+  "ids": {
+    "BenefitAdditionalGrantWorkflow": "55cd66d3-4314-4c79-b05d-a38971428e65",
+    "BenefitClaimWorkflow": "65bce9f1-5492-4714-8813-ee733d1676b4",
+    "syntheticTaxPolicy": "7c9adf2a-e51f-43de-9933-dbfc333dc6bb",
+    "grade": "3b240a95-b383-473c-b554-7e388c3ad6f6",
+    "employee": 15,
+    "SalaryAllowance": {
+      "plan": "2cb362b2-a133-42d2-922f-34e9bd0e7cec",
+      "enrollment": "daa0be53-6ed9-40b4-b406-27eb7b7c6eca",
+      "approval": "daa0be53-6ed9-40b4-b406-27eb7b7c6eca",
+      "component": "eab2cce2-7c23-4a16-9ea3-2f2d5d8c895b"
+    },
+    "PayrollDeduction": {
+      "plan": "88c279cc-537e-4b55-b3ee-24e56337c983",
+      "enrollment": "ea6b8803-53da-4eeb-9c1f-457332bae137",
+      "approval": "ea6b8803-53da-4eeb-9c1f-457332bae137",
+      "component": "5ef6efb4-85f6-496d-bb66-dbaabd8c253e"
+    },
+    "Reimbursement": {
+      "plan": "11c90fab-e7b9-4ddc-b7fe-5f46a00c4645",
+      "enrollment": "c4dd7a8a-f1e8-47df-a097-38830950b652",
+      "approval": "c4dd7a8a-f1e8-47df-a097-38830950b652",
+      "component": "903961d8-051f-4b62-b3c4-b8262a429b39"
+    },
+    "approvedClaim": "9fb422c8-fae6-451d-8298-25f45c6c078c",
+    "pendingClaim": "35212df5-756e-4c22-8dab-6fb88578176a",
+    "originalRun": "ae402997-cf64-4849-b27d-ceb82a21c4c1",
+    "replacementRun": "930bda04-3192-414f-8882-866b075b7fa9",
+    "supplementalClaim": "96a3e639-68e1-4772-816b-e7a7d91a3659",
+    "supplementalRun": "13571e11-bd03-462c-b272-7cdb4fd615e9",
+    "legacySupplementalRun": "b032b818-1997-48d2-8efa-e9f334631433"
+  },
+  "status": "passed",
+  "tag": "6BA240144",
+  "period": "2026-11",
+  "finishedAtUtc": "2026-10-09T16:58:27.307360+00:00"
+}

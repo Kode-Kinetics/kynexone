@@ -29,6 +29,9 @@ import {
   CheckSquare2,
   HeartPulse,
   FileSpreadsheet,
+  TrendingUp,
+  GraduationCap,
+  Sprout,
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
@@ -69,10 +72,19 @@ export const navigationGroups: NavGroup[] = [
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
+      // CMP (compensation opt-in flag): merit cycles, manager worksheets, pay benchmarks and pay equity.
+      { label: 'Merit planning', icon: TrendingUp, path: '/compensation', requiredPermissions: ['compensation.read', 'compensation.plan', 'compensation.manage', 'compensation.approve', 'compensation.benchmarks.manage', 'compensation.equity.read'], requiredFeatureKey: 'compensation' },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
       { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
+      // Engagement surveys (engagement opt-in flag). Respondents answer in Self-Service → Surveys.
+      { label: 'Engagement', icon: MessageSquareText, path: '/engagement', requiredPermissions: ['engagement.read', 'engagement.manage', 'engagement.actions.manage'], requiredFeatureKey: 'engagement' },
+      // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
+      // SUC (succession opt-in flag): critical positions, talent review, slates and development plans. Every succession key
+      // but the employee's own opens it; the page shows each audience its own tabs (a manager: nominations and plans only).
+      { label: 'Succession', icon: Sprout, path: '/performance/succession', requiredPermissions: ['succession.read', 'succession.positions.manage', 'succession.pools.manage', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read'], requiredFeatureKey: 'succession' },
+      { label: 'Learning', icon: GraduationCap, path: '/learning', requiredPermissions: ['learning.read', 'learning.manage', 'learning.assign', 'learning.report', 'learning.records.correct'], requiredFeatureKey: 'learning' },
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
     ],
   },
@@ -96,7 +108,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
-      { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write'] },
+      { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write', 'payroll.rates.read', 'payroll.rates.statutory_override'] },
       // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
       // which until now had no caller at all and was driven from Postman.
       { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },
@@ -135,9 +147,13 @@ export const navigationHints: Record<string, string> = {
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
   '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
+  '/compensation': 'Merit cycles, manager worksheets within budget and guidelines, pay benchmarks and pay equity.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',
+  '/engagement': 'Engagement surveys, results that protect small groups, and follow-up actions.',
+  '/performance/succession': 'Critical positions and their successors, gaps first: who is ready, who is being developed, and what is missing.',
+  '/learning': 'Courses, learning paths, mandatory training and certificates — who has done what, and what is due.',
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
   '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',
   '/reports': 'Standard and custom reports, with scheduled delivery.',

@@ -47,6 +47,7 @@ public static class EmployeeChangeApplier
         // Approval-gated with the IBAN (EmployeesController.SensitiveFields); see EmployeeBankProfileSync.
         "bankRoutingCode",
         "accountNumber",
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod",
     };
 
     /// <summary>True when the change set touches a key stored on the payroll profile.</summary>
@@ -141,6 +142,12 @@ public static class EmployeeChangeApplier
                 case "socialInsuranceReference": break;
                 case "bankRoutingCode": break;
                 case "accountNumber": break;
+                case "molId": break;
+                case "salaryCurrency": break;
+                case "payrollGroup": break;
+                case "salaryStructureReference": break;
+                case "paymentMethod": break;
+                case "salaryBreakdown": break;
                 // NEVER add a silent fall-through here. An unrecognised key is reported, not dropped.
                 default: unknown.Add(field); break;
             }
@@ -169,6 +176,7 @@ public static class EmployeeChangeApplier
     {
         var unknown = Apply(employee, changes);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
+        await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct);
         await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);
         return unknown;
@@ -224,6 +232,14 @@ public static class EmployeeChangeApplier
                     profile.AccountNumber = value.ValueKind == JsonValueKind.Null
                         ? string.Empty
                         : (value.GetString() ?? profile.AccountNumber).Trim();
+                    break;
+                case "molId": profile.MolId = value.GetString()?.Trim() ?? string.Empty; break;
+                case "salaryCurrency": profile.SalaryCurrency = value.GetString()?.Trim() ?? string.Empty; break;
+                case "payrollGroup": profile.PayrollGroup = value.GetString()?.Trim() ?? string.Empty; break;
+                case "salaryStructureReference": profile.SalaryStructureReference = value.GetString()?.Trim() ?? string.Empty; break;
+                case "paymentMethod":
+                    profile.PaymentMethod = value.GetString()?.Trim() ?? string.Empty;
+                    employee.WpsBankDetails = profile.PaymentMethod;
                     break;
             }
         }

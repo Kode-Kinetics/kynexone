@@ -224,6 +224,37 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         return await SealPayrollAuditChainAndSaveAsync(cancellationToken);
     }
 
+    // Share the audit guard's already-detected entry walk. Calling Entries<T>() for each
+    // witness type would re-scan every tracked row on every unrelated save.
+    private static void EnforceBenefitApprovalWitness(EntityEntry entry)
+    {
+        if (entry.State is not (EntityState.Modified or EntityState.Deleted)) return;
+        if (entry.Entity is BenefitEnrollment && entry.State == EntityState.Modified
+            && entry.Property(nameof(BenefitEnrollment.PaymentPolicySnapshotJson)).IsModified)
+            throw new InvalidOperationException("Agreed benefit payment policy is immutable. Create a dated successor for an authorized change.");
+        if (entry.Entity is PayrollAdjustment)
+        {
+            var source = entry.OriginalValues.GetValue<string>(nameof(PayrollAdjustment.SourceType));
+            if (source is not ("BenefitRecurring" or "BenefitClaim")) return;
+            if (entry.State == EntityState.Deleted || new[] { nameof(PayrollAdjustment.TenantId), nameof(PayrollAdjustment.EmployeeId),
+                    nameof(PayrollAdjustment.SourceType), nameof(PayrollAdjustment.SourceId), nameof(PayrollAdjustment.SourceSnapshotJson),
+                    nameof(PayrollAdjustment.Amount), nameof(PayrollAdjustment.AdjustmentType), nameof(PayrollAdjustment.Reason) }
+                .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("Benefit payment authority is immutable; preserve its source and payroll history.");
+        }
+        if (entry.Entity is ApprovalRequest)
+        {
+            if (!string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)),
+                Infrastructure.Benefits.AdditionalBenefitGrants.EntityName, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(entry.OriginalValues.GetValue<string>(nameof(ApprovalRequest.EntityName)), "BenefitClaim", StringComparison.OrdinalIgnoreCase)) return;
+            if (entry.State == EntityState.Deleted || new[] { nameof(ApprovalRequest.Payload), nameof(ApprovalRequest.PayloadSha256),
+                nameof(ApprovalRequest.EntityName), nameof(ApprovalRequest.EntityId), nameof(ApprovalRequest.RequestedForEmployeeId),
+                nameof(ApprovalRequest.RequestedByUserId), nameof(ApprovalRequest.CompanyId), nameof(ApprovalRequest.WorkflowId) }
+                .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("Submitted benefit request terms and routing are immutable. Withdraw and submit a new request.");
+        }
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
@@ -458,22 +489,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
     private void EnforceAuditLogAppendOnly()
     {
-        var auditMutation = ChangeTracker.Entries<AuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (auditMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
-
-        // POD-A3: the payroll audit trail gets the SAME immutability as the central AuditLog. Its
-        // per-tenant hash chain is the evidentiary control; this ChangeTracker guard is the first,
-        // in-process line of defence (a matching BEFORE UPDATE/DELETE Postgres trigger — added by
-        // the AddPayrollAuditHashChain migration — is the second, and it also stops set-based SQL
-        // that never touches the ChangeTracker). The one legitimate mutation — the boot backfill
-        // sealing legacy rows — runs via ExecuteUpdate (no ChangeTracker entries), so it is not
-        // caught here, and the trigger permits it only while entry_hash is still empty.
-        var payrollMutation = ChangeTracker.Entries<PayrollAuditLog>()
-            .FirstOrDefault(e => e.State is EntityState.Modified or EntityState.Deleted);
-        if (payrollMutation is not null)
-            throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+        // One DetectChanges pass covers audit rows and financial witnesses, even for large
+        // saves unrelated to benefits. PostgreSQL triggers remain the set-based SQL defence.
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            if (entry.State is not (EntityState.Modified or EntityState.Deleted)) continue;
+            if (entry.Entity is AuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
+            if (entry.Entity is PayrollAuditLog)
+                throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+            EnforceBenefitApprovalWitness(entry);
+        }
     }
 
     /// <summary>
@@ -1222,11 +1248,34 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // ── POD-D4 (month-end hand-off) — additive only; no existing table is altered ───────────────
     public DbSet<GlJournalExport> GlJournalExports => Set<GlJournalExport>();
     public DbSet<GlJournalExportLine> GlJournalExportLines => Set<GlJournalExportLine>();
+    // ERP machine access (wave 3): tenant API keys the client's ERP uses to pull and confirm journal exports.
+    public DbSet<ErpApiKey> ErpApiKeys => Set<ErpApiKey>();
+    // ── CMP — merit planning and pay benchmarking (Models/CompensationMerit.cs, Models/CompensationBenchmarks.cs).
+    //    Awards reach pay of record only through EmployeeChangeRequest → EffectiveChangeJobHandler. ────────────
+    public DbSet<CompCycle> CompCycles => Set<CompCycle>();
+    public DbSet<CompCycleBudget> CompCycleBudgets => Set<CompCycleBudget>();
+    public DbSet<CompGuideline> CompGuidelines => Set<CompGuideline>();
+    public DbSet<CompFxRate> CompFxRates => Set<CompFxRate>();
+    public DbSet<CompWorksheet> CompWorksheets => Set<CompWorksheet>();
+    public DbSet<CompWorksheetLine> CompWorksheetLines => Set<CompWorksheetLine>();
+    public DbSet<PayBenchmarkSet> PayBenchmarkSets => Set<PayBenchmarkSet>();
+    public DbSet<PayBenchmarkRow> PayBenchmarkRows => Set<PayBenchmarkRow>();
+    // ENG — engagement surveys (six tables; responses and answers carry no identity — Models/EngagementSurveys.cs).
+    public DbSet<EngagementSurveyTemplate> EngagementSurveyTemplates => Set<EngagementSurveyTemplate>();
+    public DbSet<EngagementSurvey> EngagementSurveys => Set<EngagementSurvey>();
+    public DbSet<EngagementSurveyInvitation> EngagementSurveyInvitations => Set<EngagementSurveyInvitation>();
+    public DbSet<EngagementSurveyResponse> EngagementSurveyResponses => Set<EngagementSurveyResponse>();
+    public DbSet<EngagementSurveyAnswer> EngagementSurveyAnswers => Set<EngagementSurveyAnswer>();
+    public DbSet<EngagementAction> EngagementActions => Set<EngagementAction>();
     public DbSet<BankPaymentConfirmation> BankPaymentConfirmations => Set<BankPaymentConfirmation>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
     public DbSet<GlDriver> GlDrivers => Set<GlDriver>();
     public DbSet<GlPeriodClose> GlPeriodCloses => Set<GlPeriodClose>();
+    // POD-C2 — per-employee EOSB obligation witness behind the monthly provision movement.
+    public DbSet<EosbProvisionSnapshot> EosbProvisionSnapshots => Set<EosbProvisionSnapshot>();
+    // Maker-checker finance journals: EOSB actuarial true-up, legacy 2104/2105 reclassification.
+    public DbSet<GlAdjustmentRequest> GlAdjustmentRequests => Set<GlAdjustmentRequest>();
     public DbSet<PayComponent> PayComponents => Set<PayComponent>();
     public DbSet<CompanyRatePolicy> CompanyRatePolicies => Set<CompanyRatePolicy>();
     public DbSet<CompanyStatutoryOverride> CompanyStatutoryOverrides => Set<CompanyStatutoryOverride>();
@@ -1249,6 +1298,25 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<TenantHrConfig> TenantHrConfigs => Set<TenantHrConfig>();
     // ── W2-D: per-category notification preferences (S4) ───────────────────────
     public DbSet<EmployeeNotificationCategoryPreference> EmployeeNotificationCategoryPreferences => Set<EmployeeNotificationCategoryPreference>();
+    // ── LRN — Learning management (capability closure LRN-01..15; mapped in Models/LearningModelConfiguration.cs) ──
+    public DbSet<LearningCourse> LearningCourses => Set<LearningCourse>();
+    public DbSet<LearningPath> LearningPaths => Set<LearningPath>();
+    public DbSet<LearningPathItem> LearningPathItems => Set<LearningPathItem>();
+    public DbSet<LearningAssignmentRule> LearningAssignmentRules => Set<LearningAssignmentRule>();
+    public DbSet<LearningAssignment> LearningAssignments => Set<LearningAssignment>();
+    public DbSet<LearningEnrollment> LearningEnrollments => Set<LearningEnrollment>();
+    public DbSet<LearningAttempt> LearningAttempts => Set<LearningAttempt>();
+    public DbSet<LearningCredential> LearningCredentials => Set<LearningCredential>();
+    public DbSet<LearningLaunchSession> LearningLaunchSessions => Set<LearningLaunchSession>();
+    public DbSet<LearningXapiStatement> LearningXapiStatements => Set<LearningXapiStatement>();
+    // ── SUC — Succession and career development (capability closure SUC-01..09; mapped in Models/SuccessionModelConfiguration.cs) ──
+    public DbSet<SuccessionCriticalPosition> SuccessionCriticalPositions => Set<SuccessionCriticalPosition>();
+    public DbSet<TalentPool> TalentPools => Set<TalentPool>();
+    public DbSet<SuccessionNomination> SuccessionNominations => Set<SuccessionNomination>();
+    public DbSet<TalentAssessment> TalentAssessments => Set<TalentAssessment>();
+    public DbSet<SuccessionSlateVersion> SuccessionSlateVersions => Set<SuccessionSlateVersion>();
+    public DbSet<DevelopmentPlan> DevelopmentPlans => Set<DevelopmentPlan>();
+    public DbSet<DevelopmentPlanAction> DevelopmentPlanActions => Set<DevelopmentPlanAction>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -1742,13 +1810,18 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // migration backfills existing tenants without a 42703 (migration-discipline rule).
             entity.Property(x => x.EmailDomain).HasMaxLength(255);
             entity.Property(x => x.WorkEmailPattern).HasMaxLength(20).HasDefaultValue(WorkEmailPatterns.FirstLast);
+            // ERP company code stamped on journal export lines (nullable: falls back to CR number).
+            entity.Property(x => x.ErpCompanyCode).HasMaxLength(30);
         });
 
         modelBuilder.Entity<Branch>(entity =>
         {
             entity.ToTable("branches");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Branch codes are business identifiers within a legal entity. Group tenants
+            // commonly have an HQ in every company, so tenant-wide uniqueness prevents a
+            // valid second company from being configured.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });
@@ -1821,6 +1894,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Non-unique helper index; the real UNIQUE (tenant, company, code) NULLS NOT DISTINCT
             // is created via raw SQL in RekeyGlUniquesForCompanyScope (Npgsql 8 can't express it).
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code });
+            // The client's ERP account / segment string, sent by journal exports instead of Code when set.
+            entity.Property(x => x.ExternalCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<GlAccountMapping>(entity =>
@@ -1855,6 +1930,54 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // NULLS NOT DISTINCT is created via raw SQL in AddGlPeriodClose (Npgsql 8 can't express it) so
             // one scope cannot hold two rows for the same period.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+        });
+
+        modelBuilder.Entity<EosbProvisionSnapshot>(entity =>
+        {
+            entity.ToTable("eosb_provision_snapshots");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            entity.Property(x => x.Obligation).HasPrecision(18, 2);
+            entity.Property(x => x.CarriedBefore).HasPrecision(18, 2);
+            entity.Property(x => x.Movement).HasPrecision(18, 2);
+            entity.Property(x => x.WageBase).HasPrecision(18, 2);
+            entity.Property(x => x.ServiceYears).HasPrecision(9, 4);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.Rule).HasMaxLength(80).IsRequired();
+            // One measurement per employee per month — also what makes a retried Lock unable to provide twice.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Period })
+                  .IsUnique().HasDatabaseName("ux_eosb_provision_snapshots_tenant_employee_period");
+            // Serves the void (delete the run's rows) and the panel's per-company drill-down.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+            // Cascade: a snapshot is meaningless without its run, and a tenant purge removes runs first.
+            entity.HasOne<PayrollRun>().WithMany().HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GlAdjustmentRequest>(entity =>
+        {
+            entity.ToTable("gl_adjustment_requests", t =>
+            {
+                t.HasCheckConstraint("ck_gl_adjustment_requests__kind",
+                    "kind IN ('EosbTrueUp','LegacyAbsenceReclass')");
+                t.HasCheckConstraint("ck_gl_adjustment_requests__status",
+                    "status IN ('Pending','Approved','Rejected')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Kind).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            entity.Property(x => x.Amount).HasPrecision(18, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.SourceAccount).HasMaxLength(250);
+            entity.Property(x => x.TargetAccount).HasMaxLength(250);
+            entity.Property(x => x.Reason).HasMaxLength(1000).IsRequired();
+            entity.Property(x => x.ReportReference).HasMaxLength(200);
+            entity.Property(x => x.RequestedByName).HasMaxLength(200);
+            entity.Property(x => x.DecidedByName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            // Serves the panel's list (company, kind, newest first).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Kind, x.Status });
         });
 
         modelBuilder.Entity<PayComponent>(entity =>
@@ -1962,6 +2085,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Priority).HasMaxLength(40);
             entity.Property(x => x.DecisionVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EntityName, x.EntityId, x.Status });
+            entity.HasIndex(x => new { x.TenantId, x.EntityName, x.RequestedForEmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverUserId });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CurrentApproverEmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.Status, x.DueAtUtc });
@@ -2161,6 +2285,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("leave_policies");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.AnnualEntitlementDays).HasPrecision(6,2);
+            entity.Property(x => x.ProratePartialMonths).HasDefaultValue(false);
             entity.Property(x => x.CarryForwardMax).HasPrecision(6,2);
             entity.Property(x => x.EncashmentMaxDays).HasPrecision(6,2);
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);
@@ -2290,13 +2415,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
         modelBuilder.Entity<PayrollEarning>(entity => { entity.ToTable("payroll_earnings"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
         modelBuilder.Entity<PayrollDeduction>(entity => { entity.ToTable("payroll_deductions"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.GlDriverKey).HasMaxLength(80); entity.Property(x => x.IsEmployerContribution).HasDefaultValue(false); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); });
-        modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
-        modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
-        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
+        modelBuilder.Entity<BenefitPlan>(entity => { entity.ToTable("benefit_plans"); entity.HasKey(x => x.Id); entity.Property(x => x.PaymentPolicyJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.PolicyVersion).IsConcurrencyToken().HasDefaultValue(0); entity.Property(x => x.Classification).HasMaxLength(32).HasDefaultValue(BenefitPlanClassifications.Discretionary); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEligibilityRule>(entity => { entity.ToTable("benefit_eligibility_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.GradeMatchMode).HasMaxLength(32).HasDefaultValue(BenefitGradeMatchModes.Exact); entity.Property(x => x.TierName).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaxBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(BenefitLimitPeriods.PerEnrollment); entity.Property(x => x.CustomCriteriaNote).HasMaxLength(1000).HasDefaultValue(""); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.CompanyId, x.GradeId, x.IsActive }); });
+        modelBuilder.Entity<BenefitEnrollment>(entity => { entity.ToTable("benefit_enrollments"); entity.HasKey(x => x.Id); entity.Property(x => x.EntitlementTier).HasMaxLength(120).HasDefaultValue(""); entity.Property(x => x.MaximumBenefitAmount).HasPrecision(14,2); entity.Property(x => x.RequestedBenefitAmount).HasPrecision(14,2); entity.Property(x => x.LimitPeriod).HasMaxLength(32).HasDefaultValue(""); entity.Property(x => x.EligibilitySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.PaymentPolicySnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.Property(x => x.AssignmentSource).HasMaxLength(32).HasDefaultValue("Manual"); entity.Property(x => x.HasException).HasDefaultValue(false); entity.Property(x => x.ExceptionReason).HasMaxLength(1000); entity.Property(x => x.GrantReason).HasMaxLength(1000); entity.HasIndex(x => new { x.TenantId, x.ApprovalRequestId }).IsUnique().HasFilter("approval_request_id IS NOT NULL"); entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken(); entity.HasIndex(x => new { x.TenantId, x.BenefitPlanId, x.EmployeeId, x.Status }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitContribution>(entity => { entity.ToTable("benefit_contributions"); entity.HasKey(x => x.Id); entity.Property(x => x.EmployeeAmount).HasPrecision(14,2); entity.Property(x => x.EmployerAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.IsActive }); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveFrom }); });
         modelBuilder.Entity<BenefitPayrollDeductionLink>(entity => { entity.ToTable("benefit_payroll_deduction_links"); entity.HasKey(x => x.Id); entity.Property(x => x.LinkedAmount).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.BenefitEnrollmentId, x.PayrollRunId }); entity.HasIndex(x => new { x.TenantId, x.PayrollDeductionId }).IsUnique(); });
         modelBuilder.Entity<PayrollAllowance>(entity => { entity.ToTable("payroll_allowances"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); });
-        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.SourceType).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); entity.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique().HasFilter("\"source_id\" IS NOT NULL"); });
+        modelBuilder.Entity<PayrollAdjustment>(entity => { entity.ToTable("payroll_adjustments"); entity.Property(x => x.SourceSnapshotJson).HasColumnType("jsonb").HasDefaultValue("{}"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.SourceType).HasMaxLength(80); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }); entity.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique().HasFilter("\"source_id\" IS NOT NULL"); });
         modelBuilder.Entity<PayrollApproval>(entity => { entity.ToTable("payroll_approvals"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }); });
         modelBuilder.Entity<PayrollValidationResult>(entity =>
         {
@@ -4367,6 +4492,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ErpDocumentNumber).HasMaxLength(120);
             entity.Property(x => x.RejectionReason).HasMaxLength(1000);
             entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.SupersedeReason).HasMaxLength(300);
             entity.Property(x => x.FilterJson).HasColumnType("json");
             entity.Property(x => x.TotalDebits).HasColumnType("decimal(18,4)");
             entity.Property(x => x.TotalCredits).HasColumnType("decimal(18,4)");
@@ -4374,6 +4500,444 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.Kind).HasMaxLength(16);
+            entity.Property(x => x.FormatOptionsJson).HasColumnType("json");
+            entity.Property(x => x.JournalConfirmationsJson).HasColumnType("json");
+            // Double-post probe: "which exports hold ERP-confirmed journals?" without parsing JSON.
+            entity.HasIndex(x => new { x.TenantId, x.ConfirmedJournalCount });
+            // The real guard against two live exports of one scope is a raw-SQL partial UNIQUE index
+            // (ux_gl_journal_exports_live_scope, NULLS NOT DISTINCT) created in
+            // AddErpCodesAndLiveExportIndex — Npgsql 8 cannot express NULLS NOT DISTINCT in the model.
+        });
+
+        // ERP machine access — one row per issued key. Plaintext is never stored (KeyHash = SHA-256).
+        modelBuilder.Entity<ErpApiKey>(entity =>
+        {
+            entity.ToTable("erp_api_keys", t =>
+            {
+                t.HasCheckConstraint("ck_erp_api_keys__scopes_present", "scopes <> ''");
+                t.HasCheckConstraint("ck_erp_api_keys__expiry_after_creation", "expires_at_utc > created_at_utc");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Prefix).HasMaxLength(24).IsRequired();
+            entity.Property(x => x.KeyHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Scopes).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.IpAllowList).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.CreatedByName).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.LastUsedIp).HasMaxLength(64);
+            entity.Property(x => x.RevokedByName).HasMaxLength(200);
+            // Serves the authentication lookup: WHERE key_hash = $1 (one row per key, platform-wide).
+            entity.HasIndex(x => x.KeyHash).IsUnique();
+            // Serves the management list: WHERE tenant_id = $1 ORDER BY created_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
+        });
+
+        // ── CMP — merit planning. Named CHECKs pin every status and money rule the service also enforces; each
+        //    index names the query it serves; every FK states its ON DELETE. Concurrency: int Version tokens. ──
+        modelBuilder.Entity<CompCycle>(entity =>
+        {
+            entity.ToTable("comp_cycles", t =>
+            {
+                t.HasCheckConstraint("ck_comp_cycles__status", "status IN ('Draft','Planning','Review','Approved','Applied','Cancelled')");
+                // ck_comp_cycles__effective_first_of_month is PostgreSQL-only (EXTRACT) — raw SQL in AddMeritPlanning.
+                t.HasCheckConstraint("ck_comp_cycles__period_order", "performance_period_end >= performance_period_start");
+                t.HasCheckConstraint("ck_comp_cycles__currency", "length(currency) = 3 AND upper(currency) = currency");
+                t.HasCheckConstraint("ck_comp_cycles__pay_component_basic", "pay_component = 'Basic'");
+                t.HasCheckConstraint("ck_comp_cycles__proration_rule", "proration_rule IN ('None','EligibleDays')");
+                t.HasCheckConstraint("ck_comp_cycles__min_days", "minimum_eligible_days >= 0");
+                t.HasCheckConstraint("ck_comp_cycles__company_required", "company_id IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(160).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.PayComponent).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.EligibleStatuses).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.EligibilityFiltersJson).HasColumnType("jsonb").HasDefaultValue("{}");
+            entity.Property(x => x.ProrationRule).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.CancelReason).HasMaxLength(1000);
+            entity.Property(x => x.RetroAcknowledgedPeriods).HasMaxLength(2000);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
+            // Serves the cycle list: WHERE tenant_id = $1 AND company_id = ANY($2) ORDER BY effective_date DESC.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.EffectiveDate });
+        });
+
+        modelBuilder.Entity<CompCycleBudget>(entity =>
+        {
+            entity.ToTable("comp_cycle_budgets", t =>
+            {
+                t.HasCheckConstraint("ck_comp_cycle_budgets__pool_type", "pool_type IN ('PercentOfEligibleBasic','FixedAmount')");
+                t.HasCheckConstraint("ck_comp_cycle_budgets__pool_value",
+                    "(pool_type = 'PercentOfEligibleBasic' AND pool_percent IS NOT NULL AND pool_percent >= 0 AND pool_percent <= 100 AND fixed_amount IS NULL) "
+                    + "OR (pool_type = 'FixedAmount' AND fixed_amount IS NOT NULL AND fixed_amount >= 0 AND pool_percent IS NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.PoolType).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.PoolPercent).HasPrecision(7, 4);
+            entity.Property(x => x.FixedAmount).HasPrecision(14, 2);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<CompCycle>().WithMany().HasForeignKey(x => x.CycleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Department>().WithMany().HasForeignKey(x => x.DepartmentId).OnDelete(DeleteBehavior.Restrict);
+            // One pool per department per cycle; also serves "the cycle's pools".
+            entity.HasIndex(x => new { x.CycleId, x.DepartmentId }).IsUnique();
+            entity.HasIndex(x => x.DepartmentId); // FK probe on department delete (restrict)
+        });
+
+        modelBuilder.Entity<CompGuideline>(entity =>
+        {
+            entity.ToTable("comp_guidelines", t =>
+            {
+                t.HasCheckConstraint("ck_comp_guidelines__percent_order", "min_percent <= target_percent AND target_percent <= max_percent");
+                t.HasCheckConstraint("ck_comp_guidelines__percent_range", "min_percent >= 0 AND max_percent <= 100");
+                t.HasCheckConstraint("ck_comp_guidelines__band", "compa_ratio_min >= 0 AND (compa_ratio_max IS NULL OR compa_ratio_max > compa_ratio_min)");
+                t.HasCheckConstraint("ck_comp_guidelines__rating_present", "rating <> ''");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Rating).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.CompaRatioMin).HasPrecision(9, 4);
+            entity.Property(x => x.CompaRatioMax).HasPrecision(9, 4);
+            entity.Property(x => x.MinPercent).HasPrecision(7, 4);
+            entity.Property(x => x.TargetPercent).HasPrecision(7, 4);
+            entity.Property(x => x.MaxPercent).HasPrecision(7, 4);
+            entity.HasOne<CompCycle>().WithMany().HasForeignKey(x => x.CycleId).OnDelete(DeleteBehavior.Cascade);
+            // One cell per (rating, band start); serves the matrix read "WHERE cycle_id = $1".
+            entity.HasIndex(x => new { x.CycleId, x.Rating, x.CompaRatioMin }).IsUnique();
+        });
+
+        modelBuilder.Entity<CompFxRate>(entity =>
+        {
+            entity.ToTable("comp_fx_rates", t =>
+            {
+                t.HasCheckConstraint("ck_comp_fx_rates__rate_positive", "rate > 0");
+                t.HasCheckConstraint("ck_comp_fx_rates__currency", "length(from_currency) = 3 AND upper(from_currency) = from_currency");
+                t.HasCheckConstraint("ck_comp_fx_rates__source_present", "source <> ''");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.FromCurrency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.Rate).HasPrecision(18, 8);
+            entity.Property(x => x.Source).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.EnteredByName).HasMaxLength(200).IsRequired();
+            entity.HasOne<CompCycle>().WithMany().HasForeignKey(x => x.CycleId).OnDelete(DeleteBehavior.Cascade);
+            // One rate per currency per cycle; serves "the cycle's FX table".
+            entity.HasIndex(x => new { x.CycleId, x.FromCurrency }).IsUnique();
+        });
+
+        modelBuilder.Entity<CompWorksheet>(entity =>
+        {
+            entity.ToTable("comp_worksheets", t =>
+            {
+                t.HasCheckConstraint("ck_comp_worksheets__status", "status IN ('Draft','Submitted','Returned','Approved','Cancelled')");
+                t.HasCheckConstraint("ck_comp_worksheets__revision", "revision >= 1");
+                t.HasCheckConstraint("ck_comp_worksheets__submitted_is_primary", "status IN ('Draft','Cancelled') OR is_primary");
+                t.HasCheckConstraint("ck_comp_worksheets__submitted_has_approval", "status NOT IN ('Submitted','Approved') OR approval_request_id IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.ScenarioName).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.OverspendJustification).HasMaxLength(2000);
+            entity.Property(x => x.RevisionEditorIds).HasMaxLength(4000).IsRequired().HasDefaultValue("");
+            entity.Property(x => x.DecisionComments).HasMaxLength(1000);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<CompCycle>().WithMany().HasForeignKey(x => x.CycleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.ManagerEmployeeId).OnDelete(DeleteBehavior.Restrict);
+            // Scenario names are unique per manager per cycle; serves "the manager's scenarios".
+            entity.HasIndex(x => new { x.CycleId, x.ManagerEmployeeId, x.ScenarioName }).IsUnique();
+            // Exactly one primary scenario per manager per cycle.
+            entity.HasIndex(x => new { x.CycleId, x.ManagerEmployeeId }).IsUnique().HasFilter("is_primary")
+                .HasDatabaseName("ux_comp_worksheets__one_primary");
+            // The approval hook's lookup: WHERE approval_request_id = $1.
+            entity.HasIndex(x => x.ApprovalRequestId).HasFilter("approval_request_id IS NOT NULL");
+            entity.HasIndex(x => x.ManagerEmployeeId); // FK probe on employee delete (restrict)
+        });
+
+        modelBuilder.Entity<CompWorksheetLine>(entity =>
+        {
+            entity.ToTable("comp_worksheet_lines", t =>
+            {
+                t.HasCheckConstraint("ck_comp_worksheet_lines__money_non_negative",
+                    "current_basic >= 0 AND current_gross >= 0 AND proposed_increase >= 0 AND prorated_increase >= 0 AND prorated_increase_pay >= 0 AND new_basic >= 0 AND new_gross >= 0");
+                t.HasCheckConstraint("ck_comp_worksheet_lines__proration_factor", "proration_factor >= 0 AND proration_factor <= 1");
+                t.HasCheckConstraint("ck_comp_worksheet_lines__fx_rate_positive", "fx_rate IS NULL OR fx_rate > 0");
+                t.HasCheckConstraint("ck_comp_worksheet_lines__out_of_guideline_justified",
+                    "NOT out_of_guideline OR change_request_id IS NULL OR (justification IS NOT NULL AND justification <> '')");
+                t.HasCheckConstraint("ck_comp_worksheet_lines__pay_currency", "length(pay_currency) = 3 AND upper(pay_currency) = pay_currency");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.PayCurrency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.FxRate).HasPrecision(18, 8);
+            entity.Property(x => x.CurrentBasic).HasPrecision(14, 2);
+            entity.Property(x => x.CurrentGross).HasPrecision(14, 2);
+            entity.Property(x => x.CurrentBasicCycle).HasPrecision(14, 2);
+            entity.Property(x => x.CurrentGrossCycle).HasPrecision(14, 2);
+            entity.Property(x => x.CompaRatio).HasPrecision(9, 4);
+            entity.Property(x => x.RangePosition).HasPrecision(9, 4);
+            entity.Property(x => x.Rating).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.ProrationFactor).HasPrecision(7, 4);
+            entity.Property(x => x.GuidelineMinPercent).HasPrecision(7, 4);
+            entity.Property(x => x.GuidelineTargetPercent).HasPrecision(7, 4);
+            entity.Property(x => x.GuidelineMaxPercent).HasPrecision(7, 4);
+            entity.Property(x => x.ProposedIncrease).HasPrecision(14, 2);
+            entity.Property(x => x.ProposedPercent).HasPrecision(9, 4);
+            entity.Property(x => x.ProratedIncrease).HasPrecision(14, 2);
+            entity.Property(x => x.ProratedIncreasePay).HasPrecision(14, 2);
+            entity.Property(x => x.NewBasic).HasPrecision(14, 2);
+            entity.Property(x => x.NewGross).HasPrecision(14, 2);
+            entity.Property(x => x.NewCompaRatio).HasPrecision(9, 4);
+            entity.Property(x => x.Justification).HasMaxLength(2000);
+            entity.Property(x => x.Flags).HasMaxLength(400).IsRequired();
+            entity.Property(x => x.ApplyBlockedReason).HasMaxLength(1000);
+            entity.HasOne<CompWorksheet>().WithMany().HasForeignKey(x => x.WorksheetId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<CompCycle>().WithMany().HasForeignKey(x => x.CycleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeChangeRequest>().WithMany().HasForeignKey(x => x.ChangeRequestId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<EmployeeChangeRequest>().WithMany().HasForeignKey(x => x.ReversalChangeRequestId).OnDelete(DeleteBehavior.Restrict);
+            // One line per employee per worksheet; serves "the worksheet's lines".
+            entity.HasIndex(x => new { x.WorksheetId, x.EmployeeId }).IsUnique();
+            // THE once-only guarantee of apply: one applied award per employee per cycle, whatever runs twice.
+            entity.HasIndex(x => new { x.TenantId, x.CycleId, x.EmployeeId }).IsUnique().HasFilter("change_request_id IS NOT NULL")
+                .HasDatabaseName("ux_comp_worksheet_lines__one_award");
+            // Serves cycle roll-ups and equity: WHERE cycle_id = $1.
+            entity.HasIndex(x => new { x.CycleId, x.DepartmentId });
+            entity.HasIndex(x => x.EmployeeId); // FK probe + "this employee's awards"
+            entity.HasIndex(x => x.ChangeRequestId).HasFilter("change_request_id IS NOT NULL");
+            entity.HasIndex(x => x.ReversalChangeRequestId).HasFilter("reversal_change_request_id IS NOT NULL");
+        });
+
+        modelBuilder.Entity<PayBenchmarkSet>(entity =>
+        {
+            entity.ToTable("pay_benchmark_sets", t =>
+            {
+                t.HasCheckConstraint("ck_pay_benchmark_sets__provenance",
+                    "provider <> '' AND licence_statement <> '' AND length(geography) = 2 AND upper(geography) = geography AND length(currency) = 3 AND upper(currency) = currency");
+                t.HasCheckConstraint("ck_pay_benchmark_sets__pay_basis", "pay_basis IN ('MonthlyBasic','MonthlyGross')");
+                t.HasCheckConstraint("ck_pay_benchmark_sets__row_count", "row_count > 0");
+                t.HasCheckConstraint("ck_pay_benchmark_sets__file_hash", "length(source_file_sha256) = 64 AND lower(source_file_sha256) = source_file_sha256");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Provider).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.LicenceStatement).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.Geography).HasMaxLength(2).IsRequired();
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(x => x.PayBasis).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SourceFileName).HasMaxLength(260).IsRequired();
+            entity.Property(x => x.SourceFileSha256).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.ImportedByName).HasMaxLength(200).IsRequired();
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
+            // Serves the set list and the worksheet's "latest active set for this company".
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.IsActive, x.SurveyDate });
+            // A file is imported once per company (re-import is refused, not duplicated).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.SourceFileSha256 }).IsUnique();
+        });
+
+        modelBuilder.Entity<PayBenchmarkRow>(entity =>
+        {
+            entity.ToTable("pay_benchmark_rows", t =>
+            {
+                t.HasCheckConstraint("ck_pay_benchmark_rows__percentiles_monotonic", "p25 > 0 AND p25 <= p50 AND p50 <= p75 AND p75 <= p90");
+                t.HasCheckConstraint("ck_pay_benchmark_rows__sample_size", "sample_size > 0");
+                t.HasCheckConstraint("ck_pay_benchmark_rows__keys_present", "job_family <> '' AND level <> ''");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.JobFamily).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Level).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.P25).HasPrecision(14, 2);
+            entity.Property(x => x.P50).HasPrecision(14, 2);
+            entity.Property(x => x.P75).HasPrecision(14, 2);
+            entity.Property(x => x.P90).HasPrecision(14, 2);
+            entity.HasOne<PayBenchmarkSet>().WithMany().HasForeignKey(x => x.SetId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => x.GradeId).OnDelete(DeleteBehavior.SetNull);
+            // One row per family × level per set; serves "the set's rows".
+            entity.HasIndex(x => new { x.SetId, x.JobFamily, x.Level }).IsUnique();
+            // Serve the worksheet lookup "row mapped to this designation / grade".
+            entity.HasIndex(x => new { x.TenantId, x.DesignationId }).HasFilter("designation_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.GradeId }).HasFilter("grade_id IS NOT NULL");
+        });
+
+        // CMP pre-flight: the salary-row duplicate guard. EF cannot express "fail with a message when existing
+        // data violates it", so the migration runs raw SQL (MeritPlanningSql) — mirrored in the test fixture.
+
+        // ── ENG — engagement surveys ─────────────────────────────────────────────────────────────────────────────
+        // CREATE-only plus two defaulted columns on tenant_hr_configs. Privacy model: REGISTER.md §3.2, ENG_DESIGN.md.
+        modelBuilder.Entity<EngagementSurveyTemplate>(entity =>
+        {
+            entity.ToTable("survey_templates", t =>
+            {
+                t.HasCheckConstraint("ck_survey_templates__status", "status IN ('Draft','Published','Retired')");
+                t.HasCheckConstraint("ck_survey_templates__version_positive", "version_number >= 1");
+                t.HasCheckConstraint("ck_survey_templates__published_stamp", "status = 'Draft' OR published_at_utc IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.NameEn).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.NameAr).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.DescriptionEn).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.DescriptionAr).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.ContentJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // One row per (family, version): a second "version 2" of the same template is refused.
+            entity.HasIndex(x => new { x.TenantId, x.FamilyId, x.VersionNumber }).IsUnique();
+            // Serves the template library: WHERE tenant_id = $1 ORDER BY updated_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.UpdatedAtUtc });
+        });
+
+        modelBuilder.Entity<EngagementSurvey>(entity =>
+        {
+            entity.ToTable("surveys", t =>
+            {
+                t.HasCheckConstraint("ck_surveys__mode", "mode IN ('Identified','Confidential','Anonymous')");
+                t.HasCheckConstraint("ck_surveys__status", "status IN ('Draft','Scheduled','Open','Closed','Cancelled')");
+                t.HasCheckConstraint("ck_surveys__recurrence", "recurrence IN ('None','Monthly','Quarterly','SemiAnnual','Annual')");
+                // The floor of the suppression rule (REGISTER §3.2): k may be raised, never below 3.
+                t.HasCheckConstraint("ck_surveys__min_cohort_floor", "min_cohort_size >= 3");
+                // The k frozen at close never sits below the survey's own k.
+                t.HasCheckConstraint("ck_surveys__frozen_k_not_lower", "frozen_min_cohort_size IS NULL OR frozen_min_cohort_size >= min_cohort_size");
+                t.HasCheckConstraint("ck_surveys__closes_after_opens", "closes_at_utc > opens_at_utc");
+                t.HasCheckConstraint("ck_surveys__cycle_positive", "cycle_number >= 1");
+                t.HasCheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
+                t.HasCheckConstraint("ck_surveys__comment_dimension",
+                    "comment_dimension IN ('none','company','department','designation','grade','tenure')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TitleEn).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.TitleAr).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Recurrence).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.AudienceJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.ReminderOffsetsDays).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.CommentDimension).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // A published template version may not disappear from under a survey that asked it.
+            entity.HasOne<EngagementSurveyTemplate>().WithMany().HasForeignKey(x => x.TemplateId).OnDelete(DeleteBehavior.Restrict);
+            // Recurrence creates each next cycle exactly once: a second (series, cycle) is refused.
+            entity.HasIndex(x => new { x.TenantId, x.SeriesId, x.CycleNumber }).IsUnique();
+            // Serves the worker's due scans (WHERE status = 'Scheduled'/'Open' AND opens/closes_at_utc <= now).
+            entity.HasIndex(x => new { x.Status, x.OpensAtUtc });
+            entity.HasIndex(x => new { x.Status, x.ClosesAtUtc });
+            // Serves the survey list: WHERE tenant_id = $1 ORDER BY opens_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.OpensAtUtc });
+        });
+
+        modelBuilder.Entity<EngagementSurveyInvitation>(entity =>
+        {
+            entity.ToTable("survey_invitations", t =>
+            {
+                t.HasCheckConstraint("ck_survey_invitations__status", "status IN ('Invited','Opened','Submitted','Cancelled')");
+                t.HasCheckConstraint("ck_survey_invitations__mode", "mode IN ('Identified','Confidential','Anonymous')");
+                // The ONLY column that can point from the ledger to a response, and only when the survey said so.
+                t.HasCheckConstraint("ck_survey_invitations__identified_link_only_when_identified",
+                    "mode = 'Identified' OR identified_response_id IS NULL");
+                // Identified and Confidential ledgers record the submission date; an Anonymous one records only the flag.
+                t.HasCheckConstraint("ck_survey_invitations__submitted_has_date",
+                    "status <> 'Submitted' OR submitted_on IS NOT NULL OR mode = 'Anonymous'");
+                // Anonymous ledger: invited / submitted only — no opened state, no open, draft or submission date, no
+                // stored session, and a version that moves exactly once (0 → 1 at submit), so nothing marks who opened.
+                t.HasCheckConstraint("ck_survey_invitations__anonymous_ledger_minimal",
+                    "mode <> 'Anonymous' OR (status <> 'Opened' AND first_opened_on IS NULL AND submitted_on IS NULL "
+                    + "AND draft_saved_on IS NULL AND session_token_hash IS NULL "
+                    + "AND version = CASE WHEN status = 'Submitted' THEN 1 ELSE 0 END)");
+                // A submitted invitation keeps no draft and no live session: both are discarded in the submit transaction.
+                t.HasCheckConstraint("ck_survey_invitations__submitted_no_draft",
+                    "status <> 'Submitted' OR (draft_cipher IS NULL AND session_token_hash IS NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SessionTokenHash).HasMaxLength(64);
+            entity.Property(x => x.DraftCipher).HasMaxLength(64000);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // An invitation means nothing without its employee; the retention erasure of an employee takes it along.
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Cascade);
+            // Dedupe: one invitation per survey × employee, enforced by the database (launch is re-runnable).
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId, x.EmployeeId }).IsUnique();
+            // Serves "my open surveys": WHERE tenant_id = $1 AND employee_id = $2.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            // Serves participation counts and the reminder scan: WHERE survey_id = $1 AND status = …
+            entity.HasIndex(x => new { x.SurveyId, x.Status });
+        });
+
+        modelBuilder.Entity<EngagementSurveyResponse>(entity =>
+        {
+            entity.ToTable("survey_responses", t =>
+            {
+                t.HasCheckConstraint("ck_survey_responses__tenure_band",
+                    "tenure_band IN ('lt1y','1to3y','3to5y','5yplus','unknown')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.GradeBand).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.TenureBand).HasMaxLength(12).IsRequired();
+            // No FK to employees or invitations, by design (no join path to the respondent). Survey only.
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // Serves every results query: WHERE survey_id = $1 (then cohort filters in memory, bounded by the survey).
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId });
+        });
+
+        modelBuilder.Entity<EngagementSurveyAnswer>(entity =>
+        {
+            entity.ToTable("survey_answers", t =>
+            {
+                t.HasCheckConstraint("ck_survey_answers__numeric_range", "numeric_value IS NULL OR numeric_value BETWEEN 0 AND 10");
+                t.HasCheckConstraint("ck_survey_answers__has_value",
+                    "numeric_value IS NOT NULL OR choice_keys IS NOT NULL OR text_value IS NOT NULL OR text_purged");
+                t.HasCheckConstraint("ck_survey_answers__purged_has_no_text", "NOT text_purged OR text_value IS NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.QuestionKey).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.ChoiceKeys).HasMaxLength(400);
+            entity.Property(x => x.TextValue).HasMaxLength(4000);
+            entity.HasOne<EngagementSurveyResponse>().WithMany().HasForeignKey(x => x.ResponseId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // One answer per question per response.
+            entity.HasIndex(x => new { x.ResponseId, x.QuestionKey }).IsUnique();
+            // Serves per-survey aggregation and the free-text retention purge: WHERE survey_id = $1 [AND text_value IS NOT NULL].
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId, x.QuestionKey });
+        });
+
+        modelBuilder.Entity<EngagementAction>(entity =>
+        {
+            entity.ToTable("survey_actions", t =>
+            {
+                t.HasCheckConstraint("ck_survey_actions__status", "status IN ('Open','InProgress','Done','Cancelled')");
+                t.HasCheckConstraint("ck_survey_actions__source_kind", "source_kind IN ('Overall','Driver','Item','Cohort')");
+                t.HasCheckConstraint("ck_survey_actions__done_stamp", "status <> 'Done' OR completed_at_utc IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.SurveyTitle).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.SourceKind).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SourceRef).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Title).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Description).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.ProgressJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // An action outlives its survey: deleting a closed survey keeps the actions and their title snapshot.
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.SetNull);
+            // The owner is a person; an action must be reassigned before its owner's record can be erased.
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.OwnerEmployeeId).OnDelete(DeleteBehavior.Restrict);
+            // Serves "my actions" and the overdue scan: WHERE owner_employee_id = $1 / status IN (…) AND due_on < today.
+            entity.HasIndex(x => new { x.TenantId, x.OwnerEmployeeId, x.Status });
+            entity.HasIndex(x => new { x.Status, x.DueOn });
+            // Serves the actions list of one survey.
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId });
+        });
+
+        // Tenant engagement defaults live on the tenant's HR configuration row (no new table): k and the free-text
+        // retention period. Defaults are the register's (k = 5, floor 3) and two years of comments.
+        modelBuilder.Entity<TenantHrConfig>(entity =>
+        {
+            entity.ToTable("tenant_hr_configs", t =>
+            {
+                t.HasCheckConstraint("ck_tenant_hr_configs__engagement_min_cohort_floor", "engagement_min_cohort_size >= 3");
+                t.HasCheckConstraint("ck_tenant_hr_configs__engagement_text_retention",
+                    "engagement_free_text_retention_months BETWEEN 1 AND 120");
+            });
+            entity.Property(x => x.EngagementMinCohortSize).HasDefaultValue(5);
+            entity.Property(x => x.EngagementFreeTextRetentionMonths).HasDefaultValue(24);
         });
 
         modelBuilder.Entity<GlJournalExportLine>(entity =>
@@ -4396,6 +4960,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // "which export(s) covered this ledger row?" — drives the ERP confirmation stamp and the
             // reconciliation view's exported-vs-posted coverage.
             entity.HasIndex(x => new { x.TenantId, x.FinanceGlEntryId });
+            entity.Property(x => x.CompanyCode).HasMaxLength(64);
+            entity.Property(x => x.ExternalAccountCode).HasMaxLength(60);
         });
 
         modelBuilder.Entity<BankPaymentConfirmation>(entity =>
@@ -4462,6 +5028,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.Status });
+            entity.Property(x => x.PublicationStatus).HasMaxLength(24).HasDefaultValue("Draft");
+            entity.Property(x => x.ContentSha256).HasMaxLength(64).HasDefaultValue(string.Empty);
+            entity.Property(x => x.UpdatedAtUtc).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PublicationStatus });
             entity.HasMany(x => x.Chunks).WithOne(x => x.Document).HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Cascade);
         });
 
@@ -4501,6 +5071,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
+        // LRN — learning management (same append-only convention).
+        LearningModelConfiguration.Configure(modelBuilder);
+        // SUC — succession and career development (same append-only convention).
+        SuccessionModelConfiguration.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

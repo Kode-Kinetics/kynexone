@@ -44,7 +44,10 @@ npm install
 npm run dev
 
 ## Database
-Run database/schema.sql in MySQL.
+The enterprise API uses PostgreSQL with EF Core migrations. The legacy MySQL instruction is superseded. Follow [deployment and rollback](docs/DEPLOY_ROLLBACK_RUNBOOK.md) and [release parity](docs/RELEASE_CANDIDATE_AND_PARITY.md); migrations and the expected migration manifest must agree before a backend release serves traffic.
+
+## Product and implementation documentation
+Use the [product handbook](docs/product-handbook/README.md) for product availability, administrator and user procedures, architecture, security/privacy, integration contracts, release operations and client implementation. The [full completion contract](docs/product-handbook/full-capability-closure-contract.md) covers all 36 comparative feature families. Implemented, bounded tested, enabled and production accepted are separate states.
 
 ## Modules
 - Command Center (Dashboard)

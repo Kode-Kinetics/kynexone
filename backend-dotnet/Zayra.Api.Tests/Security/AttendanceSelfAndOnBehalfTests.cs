@@ -288,9 +288,15 @@ public class AttendanceSelfAndOnBehalfTests
         new(employeeId, employeeCode, null, "API push", DateTime.UtcNow.AddMinutes(-5), "In",
             null, null, null, null, null, null, null, "RFID", null);
 
-    private static RegularizationRequestDto Correction(int employeeId) =>
-        new(employeeId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)), "Missed punch",
-            DateTime.UtcNow.AddDays(-1).AddHours(-8), DateTime.UtcNow.AddDays(-1), "Forgot to punch");
+    private static RegularizationRequestDto Correction(int employeeId)
+    {
+        // Both punches belong to one completed tenant-local day, even when CI runs near UTC midnight.
+        var tz = TenantTimeZone.FromId(null);
+        var workDate = TenantTimeZone.LocalDate(tz, DateTime.UtcNow).AddDays(-1);
+        var dayStart = TenantTimeZone.LocalDayStartUtc(tz, workDate);
+        return new(employeeId, workDate, "Missed punch",
+            dayStart.AddHours(9), dayStart.AddHours(17), "Forgot to punch");
+    }
 
     private sealed class World
     {

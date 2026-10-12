@@ -8,146 +8,132 @@ import {
   ViewStyle,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { LinearGradient } from 'expo-linear-gradient';
 import {
   GlassView,
   isGlassEffectAPIAvailable,
   isLiquidGlassAvailable,
 } from 'expo-glass-effect';
 import { useTheme } from '@/theme/ThemeProvider';
+import { Surface } from './Surface';
 
 export interface GlassSurfaceProps extends ViewProps {
   children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   contentStyle?: StyleProp<ViewStyle>;
   radius?: number;
-  intensity?: number;
+  /** Real glass. Only for chrome: tab bar, floating/back buttons, sheet toolbars, sticky footers. */
+  glass?: boolean;
+  /** Real, touch-reactive glass (implies `glass`). For floating controls. */
   interactive?: boolean;
+  intensity?: number;
   variant?: 'regular' | 'clear';
   tintColor?: string;
+  /** Glass: soft shadow on the solid fallback only. Content: ignored (cards are flat). */
   elevated?: boolean;
+  /** Content mode: render as an inset (level 0) surface. */
   recessed?: boolean;
+  /** Content mode: surface level (see Surface). */
+  level?: 0 | 1 | 2;
 }
 
+let nativeGlassCache: boolean | null = null;
 function canUseNativeLiquidGlass() {
-  if (Platform.OS !== 'ios') return false;
+  if (nativeGlassCache !== null) return nativeGlassCache;
+  if (Platform.OS !== 'ios') return (nativeGlassCache = false);
   try {
-    return isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
+    nativeGlassCache = isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
   } catch {
-    return false;
+    nativeGlassCache = false;
   }
+  return nativeGlassCache;
 }
+
+/**
+ * Compatibility wrapper. Without `glass` / `interactive` it renders a solid content Surface — the
+ * 100+ existing call sites (cards, list rows) stop painting glass in the content layer.
+ *
+ * With `glass`: iOS 26+ native Liquid Glass (transparent parent, the radius handed to the glass
+ * itself, no fake highlights); older iOS: system chrome blur; Android and Reduce Transparency:
+ * a solid chrome fill.
+ */
 export function GlassSurface({
   children,
   style,
   contentStyle,
   radius,
-  intensity = 42,
+  glass = false,
   interactive = false,
+  intensity = 60,
   variant = 'regular',
   tintColor,
-  elevated = true,
+  elevated,
   recessed = false,
+  level,
   ...viewProps
 }: GlassSurfaceProps) {
   const { theme } = useTheme();
   const nativeGlass = useMemo(() => canUseNativeLiquidGlass(), []);
-  const resolvedRadius = radius ?? theme.radius.xl;
+  const resolvedRadius = radius ?? theme.radius.lg;
 
+  if (!glass && !interactive) {
+    return (
+      <Surface
+        level={level ?? (recessed ? 0 : 1)}
+        radius={resolvedRadius}
+        tintColor={tintColor}
+        style={style}
+        contentStyle={contentStyle}
+        {...viewProps}
+      >
+        {children}
+      </Surface>
+    );
+  }
+
+  const solid = theme.reduceTransparency || Platform.OS !== 'ios';
+
+  if (!solid && nativeGlass) {
+    return (
+      <GlassView
+        style={[style, { borderRadius: resolvedRadius }]}
+        glassEffectStyle={variant}
+        colorScheme={theme.mode}
+        tintColor={tintColor}
+        isInteractive={interactive}
+        {...viewProps}
+      >
+        <View style={[styles.content, contentStyle]}>{children}</View>
+      </GlassView>
+    );
+  }
+
+  // The shadow sits on an outer view and the clipping (overflow: hidden) on an inner one: iOS clips a
+  // view's own shadow when that view clips its content, so the raised fallback would otherwise lose it.
+  // The inner views use flexGrow (not flex: 1) so they fill a fixed-size caller yet keep their natural
+  // height inside an auto-height parent — flex: 1's zero basis collapsed the selfie capture panel.
   return (
-    <View
-      style={[
-        elevated ? theme.shadows.soft : undefined,
-        style,
-      ]}
-      {...viewProps}
-    >
+    <View style={[solid && elevated ? theme.shadows.raised : undefined, { borderRadius: resolvedRadius }, style]} {...viewProps}>
       <View
         style={[
           styles.clip,
           {
             borderRadius: resolvedRadius,
-            borderColor: theme.colors.glassBorder,
-            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.hairline,
+            backgroundColor: solid ? theme.colors.chromeSolid : 'transparent',
           },
         ]}
       >
-        {!theme.reduceTransparency && nativeGlass ? (
-          <GlassView
-            pointerEvents="none"
-            style={StyleSheet.absoluteFill}
-            glassEffectStyle={variant}
-            colorScheme={theme.mode}
-            tintColor={tintColor ?? theme.colors.glassTint}
-            isInteractive={interactive}
-          />
-        ) : !theme.reduceTransparency ? (
+        {!solid ? (
           <BlurView
             pointerEvents="none"
             style={StyleSheet.absoluteFill}
             intensity={intensity}
-            tint={theme.isDark ? 'dark' : 'light'}
+            tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
           />
         ) : null}
-
-        <LinearGradient
-          pointerEvents="none"
-          colors={
-            theme.isDark
-              ? ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.02)', 'transparent']
-              : ['rgba(255,255,255,0.78)', 'rgba(255,255,255,0.20)', 'transparent']
-          }
-          locations={[0, 0.42, 1]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={StyleSheet.absoluteFill}
-        />
-
-        {elevated || interactive ? (
-          <LinearGradient
-            pointerEvents="none"
-            colors={
-              theme.isDark
-                ? ['rgba(255,255,255,0.26)', 'rgba(255,255,255,0.04)', 'transparent']
-                : ['rgba(255,255,255,0.96)', 'rgba(255,255,255,0.20)', 'transparent']
-            }
-            locations={[0, 0.32, 1]}
-            start={{ x: 0.08, y: 0 }}
-            end={{ x: 0.92, y: 0 }}
-            style={styles.specularRim}
-          />
+        {tintColor && !solid ? (
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
         ) : null}
-
-        {elevated || interactive ? (
-          <LinearGradient
-            pointerEvents="none"
-            colors={
-              theme.isDark
-                ? ['transparent', 'rgba(0,0,0,0.04)', 'rgba(0,2,12,0.24)']
-                : ['transparent', 'rgba(112,142,184,0.035)', 'rgba(63,91,132,0.13)']
-            }
-            locations={[0, 0.58, 1]}
-            start={{ x: 0.05, y: 0.05 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.neumorphicDepth}
-          />
-        ) : null}
-
-        {recessed ? (
-          <LinearGradient
-            pointerEvents="none"
-            colors={
-              theme.isDark
-                ? ['rgba(0,0,0,0.26)', 'transparent', 'rgba(255,255,255,0.05)']
-                : ['rgba(75,103,145,0.13)', 'transparent', 'rgba(255,255,255,0.58)']
-            }
-            locations={[0, 0.42, 1]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-        ) : null}
-
         <View style={[styles.content, contentStyle]}>{children}</View>
       </View>
     </View>
@@ -156,25 +142,13 @@ export function GlassSurface({
 
 const styles = StyleSheet.create({
   clip: {
-    flex: 1,
+    flexGrow: 1,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
   },
-  specularRim: {
-    position: 'absolute',
-    top: 0,
-    right: 12,
-    left: 12,
-    height: StyleSheet.hairlineWidth,
-  },
-  neumorphicDepth: {
-    position: 'absolute',
-    right: 0,
-    bottom: 0,
-    left: 0,
-    height: '58%',
-  },
-  content: {
-    flex: 1,
-  },
+  // flexGrow, not flex: 1. `flex: 1` sets flexBasis 0, which collapses the content to nothing inside an
+  // auto-height parent (the selfie capture panel lost its controls). flexGrow keeps the content's natural
+  // height there, yet still fills a fixed-height surface so callers that centre content (GlassIconButton's
+  // 44×44 circle, LiquidTabBar's row) stay vertically centred.
+  content: { flexGrow: 1 },
 });

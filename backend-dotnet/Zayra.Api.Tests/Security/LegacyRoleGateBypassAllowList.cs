@@ -857,8 +857,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Payroll.DownloadSlipPdf", "HR Manager,Payroll Manager,Payroll Officer", "GRANT payroll.export: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Payroll.ExportEmployeeSalaries", "HR Manager,Payroll Manager,Payroll Officer", "GRANT payroll.export: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Payroll.ExportStructures", "HR Manager,Payroll Manager,Payroll Officer", "GRANT payroll.export: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
-        ("DELETE PolicyDocument.Delete", "HR Manager", "GRANT ai.query: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
-        ("POST PolicyDocument.Upload", "HR Manager,HR Officer", "GRANT ai.query: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST Probation.Create", "HR Officer", "GRANT performance.cycle_manage: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Recommendations.ImplementationQueue", "Payroll Manager", "GRANT performance.approve: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST RecruitmentAi.InterviewQuestions", "HR Manager,HR Officer", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),

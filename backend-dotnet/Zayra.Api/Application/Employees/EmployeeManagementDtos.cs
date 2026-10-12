@@ -9,7 +9,8 @@ public record EmployeeCreateRequest(
     [Required, MaxLength(180)] string EnglishName,
     [MaxLength(180)] string? ArabicName,
     [MaxLength(120)] string? PreferredName,
-    [Required, MaxLength(40)] string Gender,
+    // Creation stores an incomplete Draft; configured readiness still requires gender before activation.
+    [MaxLength(40)] string? Gender,
     DateOnly? DateOfBirth,
     [MaxLength(80)] string? Nationality,
     [MaxLength(60)] string? MaritalStatus,
@@ -211,6 +212,10 @@ public record EmployeeDetailDto
     public DateOnly? VisaExpiryDate { get; init; }
     public DateOnly? ResidencyIssueDate { get; init; }
     public DateOnly? WorkPermitIssueDate { get; init; }
+    public DateOnly? IqamaExpiryDate { get; init; }
+    public DateOnly? EmiratesIdExpiryDate { get; init; }
+    public DateOnly? QidExpiryDate { get; init; }
+    public DateOnly? CivilIdExpiryDate { get; init; }
     // ── Compliance — numbers (PassportNumber, IqamaNumber SENSITIVE) ──────────────
     public string PassportNumber { get; init; } = string.Empty;
     public string VisaNumber { get; init; } = string.Empty;
@@ -252,6 +257,9 @@ public record EmployeeDetailDto
     public DateTime? ActivatedAtUtc { get; init; }
     // ── Subordinate collections (projected to DTOs — no raw EF entities) ─────────
     public EmployeePayrollProfileDto? PayrollProfile { get; init; }
+    /// <summary>Most recent active salary assignment, exposed only with employees.sensitive.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public EmployeeSalaryBreakdownRequest? SalaryBreakdown { get; init; }
     public IReadOnlyCollection<EmployeeComplianceRecord> ComplianceRecords { get; init; } = [];
     public IReadOnlyCollection<EmployeeDocumentDto> Documents { get; init; } = [];
     public IReadOnlyCollection<EmployeeHistoryDto> History { get; init; } = [];
@@ -342,6 +350,10 @@ public record EmployeeDetailDto
             VisaExpiryDate                = includeSensitive ? e.VisaExpiryDate : null,
             ResidencyIssueDate            = includeSensitive ? e.ResidencyIssueDate : null,
             WorkPermitIssueDate           = includeSensitive ? e.WorkPermitIssueDate : null,
+            IqamaExpiryDate                = includeSensitive ? e.IqamaExpiryDate : null,
+            EmiratesIdExpiryDate           = includeSensitive ? e.EmiratesIdExpiryDate : null,
+            QidExpiryDate                  = includeSensitive ? e.QidExpiryDate : null,
+            CivilIdExpiryDate              = includeSensitive ? e.CivilIdExpiryDate : null,
             VisaNumber                    = includeSensitive ? e.VisaNumber : string.Empty,
             VisaFileNumber                = includeSensitive ? e.VisaFileNumber : string.Empty,
             MuqeemNumber                  = includeSensitive ? e.MuqeemNumber : string.Empty,
