@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261012042728_AddMeritPlanning")]
+    [Migration("20261012123423_AddMeritPlanning")]
     partial class AddMeritPlanning
     {
         /// <inheritdoc />
@@ -591,6 +591,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
+                    b.Property<int>("EngagementFreeTextRetentionMonths")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(24)
+                        .HasColumnName("engagement_free_text_retention_months");
+
+                    b.Property<int>("EngagementMinCohortSize")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(5)
+                        .HasColumnName("engagement_min_cohort_size");
+
                     b.Property<string>("EstablishmentEnforcementMode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -633,7 +645,12 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId")
                         .IsUnique();
 
-                    b.ToTable("tenant_hr_configs", (string)null);
+                    b.ToTable("tenant_hr_configs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_tenant_hr_configs__engagement_min_cohort_floor", "engagement_min_cohort_size >= 3");
+
+                            t.HasCheckConstraint("ck_tenant_hr_configs__engagement_text_retention", "engagement_free_text_retention_months BETWEEN 1 AND 120");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Domain.Entities.User", b =>
@@ -13689,6 +13706,629 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "EmployeeId", "IsPrimary");
 
                     b.ToTable("employee_user_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementAction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateOnly>("DueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("due_on");
+
+                    b.Property<DateOnly?>("OverdueRemindedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("overdue_reminded_on");
+
+                    b.Property<int>("OwnerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("owner_employee_id");
+
+                    b.Property<string>("ProgressJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("progress_json");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("source_kind");
+
+                    b.Property<string>("SourceRef")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("source_ref");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_id");
+
+                    b.Property<string>("SurveyTitle")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("survey_title");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerEmployeeId");
+
+                    b.HasIndex("SurveyId");
+
+                    b.HasIndex("Status", "DueOn");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "SurveyId");
+
+                    b.HasIndex("TenantId", "OwnerEmployeeId", "Status");
+
+                    b.ToTable("survey_actions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_survey_actions__done_stamp", "status <> 'Done' OR completed_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_survey_actions__source_kind", "source_kind IN ('Overall','Driver','Item','Cohort')");
+
+                            t.HasCheckConstraint("ck_survey_actions__status", "status IN ('Open','InProgress','Done','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurvey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AudienceJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("audience_json");
+
+                    b.Property<DateTime?>("ClosedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closed_at_utc");
+
+                    b.Property<DateTime>("ClosesAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("closes_at_utc");
+
+                    b.Property<string>("CommentDimension")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("comment_dimension");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<int>("CycleNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("cycle_number");
+
+                    b.Property<int?>("FrozenMinCohortSize")
+                        .HasColumnType("integer")
+                        .HasColumnName("frozen_min_cohort_size");
+
+                    b.Property<int>("InvitationCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("invitation_count");
+
+                    b.Property<DateTime?>("InvitesSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("invites_sent_at_utc");
+
+                    b.Property<DateTime?>("LaunchedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("launched_at_utc");
+
+                    b.Property<Guid?>("LaunchedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("launched_by");
+
+                    b.Property<int>("MinCohortSize")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_cohort_size");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("mode");
+
+                    b.Property<DateTime?>("NextCycleCreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_cycle_created_at_utc");
+
+                    b.Property<DateTime>("OpensAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("opens_at_utc");
+
+                    b.Property<string>("Recurrence")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("recurrence");
+
+                    b.Property<string>("ReminderOffsetsDays")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("reminder_offsets_days");
+
+                    b.Property<Guid>("SeriesId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("series_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TemplateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("template_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TitleAr")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title_ar");
+
+                    b.Property<string>("TitleEn")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title_en");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TemplateId");
+
+                    b.HasIndex("Status", "ClosesAtUtc");
+
+                    b.HasIndex("Status", "OpensAtUtc");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "OpensAtUtc");
+
+                    b.HasIndex("TenantId", "SeriesId", "CycleNumber")
+                        .IsUnique();
+
+                    b.ToTable("surveys", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_surveys__closes_after_opens", "closes_at_utc > opens_at_utc");
+
+                            t.HasCheckConstraint("ck_surveys__comment_dimension", "comment_dimension IN ('none','company','department','designation','grade','tenure')");
+
+                            t.HasCheckConstraint("ck_surveys__cycle_positive", "cycle_number >= 1");
+
+                            t.HasCheckConstraint("ck_surveys__frozen_k_not_lower", "frozen_min_cohort_size IS NULL OR frozen_min_cohort_size >= min_cohort_size");
+
+                            t.HasCheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_surveys__min_cohort_floor", "min_cohort_size >= 3");
+
+                            t.HasCheckConstraint("ck_surveys__mode", "mode IN ('Identified','Confidential','Anonymous')");
+
+                            t.HasCheckConstraint("ck_surveys__recurrence", "recurrence IN ('None','Monthly','Quarterly','SemiAnnual','Annual')");
+
+                            t.HasCheckConstraint("ck_surveys__status", "status IN ('Draft','Scheduled','Open','Closed','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyAnswer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ChoiceKeys")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("choice_keys");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<int?>("NumericValue")
+                        .HasColumnType("integer")
+                        .HasColumnName("numeric_value");
+
+                    b.Property<string>("QuestionKey")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("question_key");
+
+                    b.Property<Guid>("ResponseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("response_id");
+
+                    b.Property<Guid>("SurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<bool>("TextPurged")
+                        .HasColumnType("boolean")
+                        .HasColumnName("text_purged");
+
+                    b.Property<string>("TextValue")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("text_value");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SurveyId");
+
+                    b.HasIndex("ResponseId", "QuestionKey")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "SurveyId", "QuestionKey");
+
+                    b.ToTable("survey_answers", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_survey_answers__has_value", "numeric_value IS NOT NULL OR choice_keys IS NOT NULL OR text_value IS NOT NULL OR text_purged");
+
+                            t.HasCheckConstraint("ck_survey_answers__numeric_range", "numeric_value IS NULL OR numeric_value BETWEEN 0 AND 10");
+
+                            t.HasCheckConstraint("ck_survey_answers__purged_has_no_text", "NOT text_purged OR text_value IS NULL");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyInvitation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("DraftCipher")
+                        .HasMaxLength(64000)
+                        .HasColumnType("character varying(64000)")
+                        .HasColumnName("draft_cipher");
+
+                    b.Property<DateOnly?>("DraftSavedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("draft_saved_on");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateOnly?>("FirstOpenedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("first_opened_on");
+
+                    b.Property<Guid?>("IdentifiedResponseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("identified_response_id");
+
+                    b.Property<DateTime>("InvitedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("invited_at_utc");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("mode");
+
+                    b.Property<int>("RemindersSent")
+                        .HasColumnType("integer")
+                        .HasColumnName("reminders_sent");
+
+                    b.Property<string>("SessionTokenHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("session_token_hash");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateOnly?>("SubmittedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("submitted_on");
+
+                    b.Property<Guid>("SurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("SurveyId", "Status");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId");
+
+                    b.HasIndex("TenantId", "SurveyId", "EmployeeId")
+                        .IsUnique();
+
+                    b.ToTable("survey_invitations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_survey_invitations__anonymous_ledger_minimal", "mode <> 'Anonymous' OR (status <> 'Opened' AND first_opened_on IS NULL AND submitted_on IS NULL AND draft_saved_on IS NULL AND session_token_hash IS NULL AND version = CASE WHEN status = 'Submitted' THEN 1 ELSE 0 END)");
+
+                            t.HasCheckConstraint("ck_survey_invitations__identified_link_only_when_identified", "mode = 'Identified' OR identified_response_id IS NULL");
+
+                            t.HasCheckConstraint("ck_survey_invitations__mode", "mode IN ('Identified','Confidential','Anonymous')");
+
+                            t.HasCheckConstraint("ck_survey_invitations__status", "status IN ('Invited','Opened','Submitted','Cancelled')");
+
+                            t.HasCheckConstraint("ck_survey_invitations__submitted_has_date", "status <> 'Submitted' OR submitted_on IS NOT NULL OR mode = 'Anonymous'");
+
+                            t.HasCheckConstraint("ck_survey_invitations__submitted_no_draft", "status <> 'Submitted' OR (draft_cipher IS NULL AND session_token_hash IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyResponse", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int?>("CohortManagerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("cohort_manager_employee_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
+
+                    b.Property<Guid?>("DesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("designation_id");
+
+                    b.Property<string>("GradeBand")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("grade_band");
+
+                    b.Property<Guid>("SurveyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survey_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TenureBand")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasColumnName("tenure_band");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SurveyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "SurveyId");
+
+                    b.ToTable("survey_responses", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_survey_responses__tenure_band", "tenure_band IN ('lt1y','1to3y','3to5y','5yplus','unknown')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("content_json");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("DescriptionAr")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description_ar");
+
+                    b.Property<string>("DescriptionEn")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description_en");
+
+                    b.Property<Guid>("FamilyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("family_id");
+
+                    b.Property<string>("NameAr")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<string>("NameEn")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_en");
+
+                    b.Property<DateTime?>("PublishedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("version_number");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "UpdatedAtUtc");
+
+                    b.HasIndex("TenantId", "FamilyId", "VersionNumber")
+                        .IsUnique();
+
+                    b.ToTable("survey_templates", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_survey_templates__published_stamp", "status = 'Draft' OR published_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_survey_templates__status", "status IN ('Draft','Published','Retired')");
+
+                            t.HasCheckConstraint("ck_survey_templates__version_positive", "version_number >= 1");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EnterpriseIdentityProvisioningEvent", b =>
@@ -30907,6 +31547,68 @@ namespace Zayra.Api.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementAction", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EngagementSurvey", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurvey", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EngagementSurveyTemplate", null)
+                        .WithMany()
+                        .HasForeignKey("TemplateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyAnswer", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EngagementSurveyResponse", null)
+                        .WithMany()
+                        .HasForeignKey("ResponseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EngagementSurvey", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyInvitation", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EngagementSurvey", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EngagementSurveyResponse", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EngagementSurvey", null)
+                        .WithMany()
+                        .HasForeignKey("SurveyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EosbProvisionSnapshot", b =>

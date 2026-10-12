@@ -4119,32 +4119,42 @@
         {
           "id": "F25.01",
           "acceptance": "Provide survey templates/questions/scales, audiences, scheduling/recurrence, invitations, reminders, submission rules and follow-up actions.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Survey templates (Likert-5, eNPS 0-10, single/multi choice, free text; EN/AR), audiences, scheduling/recurrence, invitations, drafts, reminders and follow-up actions. Three modes: Identified (live, linked), Confidential and Anonymous (results only after close). Suppression engine: one family per survey with scope as a dimension, k default 5 (floor 3) frozen at close, four-quadrant rule, atom closure, invitee-based nesting. See ENG_DESIGN.md §3 for the threat model.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no survey engine existed; the unused identified table employee_sentiment_pulses was not reused (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Company, Department, Designation, Grade, IDataScopeService, INotificationService, ReportScheduleWorker/ReportAudience, retention rules",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddEngagementSurveys (6 tables + 2 tenant_hr_configs columns)"
+              ],
+              "design": "docs/acceptance/capability-closure/ENG_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "6eb3d0c8 (feat/engagement-surveys; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md (headed Chrome real-backend journey 10/10)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Engagement/* incl. EngagementReview{,2,3}RegressionTests"
+              ],
+              "persistence": [
+                "Golden reconciliation (independently recomputed) and LinearSpanAudit property tests over 400 randomised populations and the union of k..k+3"
+              ],
+              "negative": [
+                "Independent privacy reviews R3 in four rounds: two P0 rounds, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4152,42 +4162,56 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Owner (approval of the documented anonymity residuals: DB operator, timing, cross-cycle differencing, non-linear inference, author-identifying free text)",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'engagement', default OFF. The product never claims absolute anonymity.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/ENG_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F25.02",
           "acceptance": "Define identified/confidential/anonymous models, response denominators, scoring/eNPS, retention and free-text access without overstating anonymity.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Survey templates (Likert-5, eNPS 0-10, single/multi choice, free text; EN/AR), audiences, scheduling/recurrence, invitations, drafts, reminders and follow-up actions. Three modes: Identified (live, linked), Confidential and Anonymous (results only after close). Suppression engine: one family per survey with scope as a dimension, k default 5 (floor 3) frozen at close, four-quadrant rule, atom closure, invitee-based nesting. See ENG_DESIGN.md §3 for the threat model.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no survey engine existed; the unused identified table employee_sentiment_pulses was not reused (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Company, Department, Designation, Grade, IDataScopeService, INotificationService, ReportScheduleWorker/ReportAudience, retention rules",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddEngagementSurveys (6 tables + 2 tenant_hr_configs columns)"
+              ],
+              "design": "docs/acceptance/capability-closure/ENG_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "6eb3d0c8 (feat/engagement-surveys; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md (headed Chrome real-backend journey 10/10)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Engagement/* incl. EngagementReview{,2,3}RegressionTests"
+              ],
+              "persistence": [
+                "Golden reconciliation (independently recomputed) and LinearSpanAudit property tests over 400 randomised populations and the union of k..k+3"
+              ],
+              "negative": [
+                "Independent privacy reviews R3 in four rounds: two P0 rounds, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4195,42 +4219,56 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Owner (approval of the documented anonymity residuals: DB operator, timing, cross-cycle differencing, non-linear inference, author-identifying free text)",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'engagement', default OFF. The product never claims absolute anonymity.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/ENG_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F25.03",
           "acceptance": "Independently reconcile multi-department results/trends; enforce minimum cohorts and suppression across intersecting/complementary filters, dashboards, exports and scheduled delivery.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Survey templates (Likert-5, eNPS 0-10, single/multi choice, free text; EN/AR), audiences, scheduling/recurrence, invitations, drafts, reminders and follow-up actions. Three modes: Identified (live, linked), Confidential and Anonymous (results only after close). Suppression engine: one family per survey with scope as a dimension, k default 5 (floor 3) frozen at close, four-quadrant rule, atom closure, invitee-based nesting. See ENG_DESIGN.md §3 for the threat model.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no survey engine existed; the unused identified table employee_sentiment_pulses was not reused (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Company, Department, Designation, Grade, IDataScopeService, INotificationService, ReportScheduleWorker/ReportAudience, retention rules",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddEngagementSurveys (6 tables + 2 tenant_hr_configs columns)"
+              ],
+              "design": "docs/acceptance/capability-closure/ENG_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "6eb3d0c8 (feat/engagement-surveys; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md (headed Chrome real-backend journey 10/10)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Engagement/* incl. EngagementReview{,2,3}RegressionTests"
+              ],
+              "persistence": [
+                "Golden reconciliation (independently recomputed) and LinearSpanAudit property tests over 400 randomised populations and the union of k..k+3"
+              ],
+              "negative": [
+                "Independent privacy reviews R3 in four rounds: two P0 rounds, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4238,42 +4276,56 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Owner (approval of the documented anonymity residuals: DB operator, timing, cross-cycle differencing, non-linear inference, author-identifying free text)",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'engagement', default OFF. The product never claims absolute anonymity.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/ENG_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F25.04",
           "acceptance": "Complete an owned action and verify logs/privileged access match the published privacy model.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Survey templates (Likert-5, eNPS 0-10, single/multi choice, free text; EN/AR), audiences, scheduling/recurrence, invitations, drafts, reminders and follow-up actions. Three modes: Identified (live, linked), Confidential and Anonymous (results only after close). Suppression engine: one family per survey with scope as a dimension, k default 5 (floor 3) frozen at close, four-quadrant rule, atom closure, invitee-based nesting. See ENG_DESIGN.md §3 for the threat model.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme no survey engine existed; the unused identified table employee_sentiment_pulses was not reused (discovery at 76985c55).",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "Employee, Company, Department, Designation, Grade, IDataScopeService, INotificationService, ReportScheduleWorker/ReportAudience, retention rules",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddEngagementSurveys (6 tables + 2 tenant_hr_configs columns)"
+              ],
+              "design": "docs/acceptance/capability-closure/ENG_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "6eb3d0c8 (feat/engagement-surveys; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md (headed Chrome real-backend journey 10/10)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Engagement/* incl. EngagementReview{,2,3}RegressionTests"
+              ],
+              "persistence": [
+                "Golden reconciliation (independently recomputed) and LinearSpanAudit property tests over 400 randomised populations and the union of k..k+3"
+              ],
+              "negative": [
+                "Independent privacy reviews R3 in four rounds: two P0 rounds, then ACCEPT WITH FOLLOW-UPS (REGISTER §5)"
+              ]
             },
             "externalStatus": {
               "provider": null,
@@ -4281,11 +4333,15 @@
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Owner (approval of the documented anonymity residuals: DB operator, timing, cross-cycle differencing, non-linear inference, author-identifying free text)",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'engagement', default OFF. The product never claims absolute anonymity.",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/ENG_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/eng/EVIDENCE.md"
+            ]
           }
         }
       ]

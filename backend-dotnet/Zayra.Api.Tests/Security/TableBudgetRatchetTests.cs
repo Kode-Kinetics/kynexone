@@ -101,6 +101,13 @@ public class TableBudgetRatchetTests
         // cycle × employee), PayBenchmarkSets (customer-owned survey import with provenance and licence) and
         // PayBenchmarkRows (percentiles + designation/grade mapping). HR owns all eight; Finance reads budgets. Kept as
         // long as the salary rows the awards produced. No existing table holds any of these facts.
+        // ENG — engagement surveys (AddEngagementSurveys, ENG cap 7, six used; the orphan employee_sentiment_pulses is
+        // left in place — no DROP in this release). SurveyTemplates: versioned questionnaires, published versions frozen.
+        // Surveys: one cycle (mode, audience, dates, k, recurrence). SurveyInvitations: the participation ledger (who was
+        // invited, submitted flag/date, encrypted draft) — never an answer. SurveyResponses + SurveyAnswers: the
+        // anonymous side, no identity column, date-truncated, cohort snapshot (EngagementPrivacyRatchetTests).
+        // SurveyActions: follow-up actions with owner, due date and progress. HR owns all six; responses/answers are
+        // deleted with their survey, comment text purged after the tenant's retention (EngagementFreeTextRetentionRule).
         // LRN — learning management (capability closure LRN-01..15; owner L&D/HR; LRN_DESIGN.md has the per-table
         // template). Ten tables, the module's whole cap: LearningCourses (immutable course versions + question bank),
         // LearningPaths + LearningPathItems (curricula, order, prerequisites, eligibility), LearningAssignmentRules
@@ -116,7 +123,7 @@ public class TableBudgetRatchetTests
         // (potential + performance snapshot, generated 9-box cell, immutable once calibrated), SuccessionSlateVersions
         // (immutable hashed snapshots, approval-routed), DevelopmentPlans and DevelopmentPlanActions (linked to
         // learning_assignments / EmployeeGoal). Retention: 3 years after employment ends, then anonymised (SuccessionRetentionJob).
-        DeclaredDbSets().Should().HaveCount(360,
+        DeclaredDbSets().Should().HaveCount(366,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

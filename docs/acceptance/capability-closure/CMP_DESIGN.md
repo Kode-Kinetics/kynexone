@@ -218,7 +218,7 @@ Carrying those on every line would duplicate them per employee. **Approved.**
   - The full suite (6,914 tests) passed with the constraint in the fixture.
 
 ### Migration
-- `20261012042728_AddMeritPlanning` (regenerated after main's AddLearning and AddSuccession; `comp_worksheet_lines` gained `proposed_as_percent` and
+- `20261012123423_AddMeritPlanning` (regenerated after main's AddLearning, AddSuccession and AddEngagementSurveys; `comp_worksheet_lines` gained `proposed_as_percent` and
   `assigned_by_user_id`, `comp_worksheets` `revision_editor_ids`, `comp_cycles` `retro_acknowledged_periods`;
   `has-pending-model-changes` reports none).
 - **Expand-only:** 8 new tables, one added constraint, one added CHECK.
@@ -484,7 +484,7 @@ Write routes may also return 422 `{ error, message, blockers }`, 409 conflict, 4
 ## 8. Rollback
 
 - **Code:** revert the branch.
-- **Schema:** `dotnet ef database update 20261011210200_AddSuccession --context ZayraDbContext`. This drops the eight
+- **Schema:** `dotnet ef database update 20261012043002_AddEngagementSurveys --context ZayraDbContext`. This drops the eight
   tables and the salary-row constraint.
 - **Effect on salaries:** awards already applied are ordinary salary rows and remain — they were approved decisions.
   Pending awards are ordinary approved change requests. Cancel them (cycle cancel) **before** rolling back, or they will

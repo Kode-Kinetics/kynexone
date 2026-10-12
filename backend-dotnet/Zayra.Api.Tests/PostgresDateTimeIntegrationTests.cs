@@ -88,6 +88,13 @@ public sealed class PostgresFixture : IAsyncLifetime
             command.CommandText = ddl;
             await command.ExecuteNonQueryAsync();
         }
+        // ENG (AddEngagementSurveys): published-template immutability and append-only responses — the migration's own text.
+        foreach (var ddl in Zayra.Api.Migrations.AddEngagementSurveys.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
         // SUC (AddSuccession): the deferred one-approved-slate exclusion and the two immutability triggers EF cannot model.
         foreach (var ddl in Zayra.Api.Migrations.AddSuccession.PostgresOnlyDdl)
         {

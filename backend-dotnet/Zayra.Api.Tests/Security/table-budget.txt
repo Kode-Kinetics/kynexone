@@ -104,6 +104,12 @@ DocTypes
 DocumentChunks
 EOSBCalculations
 ESSDashboardPreferences
+EngagementActions
+EngagementSurveyAnswers
+EngagementSurveyInvitations
+EngagementSurveyResponses
+EngagementSurveyTemplates
+EngagementSurveys
 EmployeeAIQueryLogs
 EmployeeActionItems
 EmployeeAnnouncements

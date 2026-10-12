@@ -57,6 +57,7 @@ public class AuthSeeder : IAuthSeeder
     public static readonly IReadOnlyList<string> SuccessionManagerKeys =
         ["succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self"];
 
+
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
         await EnsurePermissions(cancellationToken);
@@ -192,6 +193,8 @@ public class AuthSeeder : IAuthSeeder
             // CMP: the whole merit programme, including pay equity — named key by key, never by prefix
             // (CompensationRoleGrantTests: no prefix bundle may reach a compensation key).
             x.Key is "compensation.read" or "compensation.plan" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
+            // Engagement surveys, by name (no prefix): everything, including identified surveys' per-person answers.
+            x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.identified.read" or "engagement.actions.manage" ||
             // LRN: the whole learning module, explicitly (no prefix grant, so a future learning.* key is a decision).
             x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct" ||
             // SUC: every succession key, by explicit list (no prefix grant; SuccessionPermissionKeys, pinned by tests).
@@ -221,6 +224,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
             x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
+            // Engagement surveys, by name: runs surveys and reads comments; NOT identified per-person answers.
+            x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.actions.manage" ||
             // LRN: runs the catalogue, assignments and reports, and resets locked attempts / corrects records (audited).
             x.Key is "learning.read" or "learning.manage" or "learning.assign" or "learning.report" or "learning.records.correct" ||
             // SUC: runs the talent review and slates; calibration (moving someone's potential) is the HR Director's.
@@ -305,6 +310,8 @@ public class AuthSeeder : IAuthSeeder
             "performance.read", "performance.write",
             // CMP: a line manager plans merit for their own direct reports only (their own line sits on their manager's sheet).
             "compensation.plan",
+            // Engagement: the team's results (suppressed, cut to their reporting line) and the team's actions.
+            "engagement.read", "engagement.actions.manage",
             // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
             "learning.report",
             // SUC: nominate own reports and keep their development plans (data-scoped); never slates or the 9-box.
@@ -452,6 +459,12 @@ public class AuthSeeder : IAuthSeeder
             ("performance.write", "Performance", "Create and update performance reviews"),
             ("performance.approve", "Performance", "Approve performance ratings and recommendations"),
             ("performance.cycle_manage", "Performance", "Manage performance cycles and templates"),
+            // Engagement surveys (opt-in feature). Explicit keys, granted by name below — never through a prefix.
+            ("engagement.read", "Engagement", "View engagement survey results (suppressed for small groups, cut to your scope)"),
+            ("engagement.manage", "Engagement", "Create survey templates and surveys, launch and close them, set the minimum group size"),
+            ("engagement.comments.read", "Engagement", "Read survey comments (only for groups at or above the minimum size, never with names)"),
+            ("engagement.identified.read", "Engagement", "Read per-person answers of IDENTIFIED surveys"),
+            ("engagement.actions.manage", "Engagement", "Create and manage follow-up actions from survey results"),
             // Compliance
             ("compliance.read", "Compliance", "Read compliance and contract records"),
             ("compliance.write", "Compliance", "Manage compliance documents"),

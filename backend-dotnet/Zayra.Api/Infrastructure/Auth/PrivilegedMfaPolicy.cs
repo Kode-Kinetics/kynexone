@@ -78,6 +78,8 @@ public static class PrivilegedMfaPolicy
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
+        // Engagement: suppressed aggregate results cut to the caller's scope (no person, no comment).
+        "engagement.read",
         // LRN: the course catalogue, and training status of the people in one's data scope (a manager's own team).
         "learning.read", "learning.report",
         // SUC: the critical-position list (no candidate names), one's own development plan, and a line manager's
@@ -88,6 +90,8 @@ public static class PrivilegedMfaPolicy
         "performance.write",
         // CMP: a line manager plans merit for their own direct reports only (reporting-line scoped, approval-routed).
         "compensation.plan",
+        // Follow-up actions from survey results, given to people in the caller's own scope.
+        "engagement.actions.manage",
     };
 
     /// <summary>
@@ -128,6 +132,9 @@ public static class PrivilegedMfaPolicy
         // CMP: every key but plan shows or decides company-wide pay (read included, like payroll.read); equity reads
         // pay by gender/nationality cohort.
         "compensation.read", "compensation.manage", "compensation.approve", "compensation.benchmarks.manage", "compensation.equity.read",
+        // Engagement: running surveys and setting the minimum group size, reading free-text comments, and per-person
+        // answers of identified surveys.
+        "engagement.manage", "engagement.comments.read", "engagement.identified.read",
         // LRN: authoring and publishing courses, assigning mandatory training, and correcting the training record
         // (reset attempts, revoke or supersede certificates) change compliance evidence.
         "learning.manage", "learning.assign", "learning.records.correct",

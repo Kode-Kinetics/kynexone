@@ -1260,6 +1260,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<CompWorksheetLine> CompWorksheetLines => Set<CompWorksheetLine>();
     public DbSet<PayBenchmarkSet> PayBenchmarkSets => Set<PayBenchmarkSet>();
     public DbSet<PayBenchmarkRow> PayBenchmarkRows => Set<PayBenchmarkRow>();
+    // ENG — engagement surveys (six tables; responses and answers carry no identity — Models/EngagementSurveys.cs).
+    public DbSet<EngagementSurveyTemplate> EngagementSurveyTemplates => Set<EngagementSurveyTemplate>();
+    public DbSet<EngagementSurvey> EngagementSurveys => Set<EngagementSurvey>();
+    public DbSet<EngagementSurveyInvitation> EngagementSurveyInvitations => Set<EngagementSurveyInvitation>();
+    public DbSet<EngagementSurveyResponse> EngagementSurveyResponses => Set<EngagementSurveyResponse>();
+    public DbSet<EngagementSurveyAnswer> EngagementSurveyAnswers => Set<EngagementSurveyAnswer>();
+    public DbSet<EngagementAction> EngagementActions => Set<EngagementAction>();
     public DbSet<BankPaymentConfirmation> BankPaymentConfirmations => Set<BankPaymentConfirmation>();
     public DbSet<GlAccount> GlAccounts => Set<GlAccount>();
     public DbSet<GlAccountMapping> GlAccountMappings => Set<GlAccountMapping>();
@@ -4752,6 +4759,186 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // CMP pre-flight: the salary-row duplicate guard. EF cannot express "fail with a message when existing
         // data violates it", so the migration runs raw SQL (MeritPlanningSql) — mirrored in the test fixture.
+
+        // ── ENG — engagement surveys ─────────────────────────────────────────────────────────────────────────────
+        // CREATE-only plus two defaulted columns on tenant_hr_configs. Privacy model: REGISTER.md §3.2, ENG_DESIGN.md.
+        modelBuilder.Entity<EngagementSurveyTemplate>(entity =>
+        {
+            entity.ToTable("survey_templates", t =>
+            {
+                t.HasCheckConstraint("ck_survey_templates__status", "status IN ('Draft','Published','Retired')");
+                t.HasCheckConstraint("ck_survey_templates__version_positive", "version_number >= 1");
+                t.HasCheckConstraint("ck_survey_templates__published_stamp", "status = 'Draft' OR published_at_utc IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.NameEn).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.NameAr).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.DescriptionEn).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.DescriptionAr).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.ContentJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // One row per (family, version): a second "version 2" of the same template is refused.
+            entity.HasIndex(x => new { x.TenantId, x.FamilyId, x.VersionNumber }).IsUnique();
+            // Serves the template library: WHERE tenant_id = $1 ORDER BY updated_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.UpdatedAtUtc });
+        });
+
+        modelBuilder.Entity<EngagementSurvey>(entity =>
+        {
+            entity.ToTable("surveys", t =>
+            {
+                t.HasCheckConstraint("ck_surveys__mode", "mode IN ('Identified','Confidential','Anonymous')");
+                t.HasCheckConstraint("ck_surveys__status", "status IN ('Draft','Scheduled','Open','Closed','Cancelled')");
+                t.HasCheckConstraint("ck_surveys__recurrence", "recurrence IN ('None','Monthly','Quarterly','SemiAnnual','Annual')");
+                // The floor of the suppression rule (REGISTER §3.2): k may be raised, never below 3.
+                t.HasCheckConstraint("ck_surveys__min_cohort_floor", "min_cohort_size >= 3");
+                // The k frozen at close never sits below the survey's own k.
+                t.HasCheckConstraint("ck_surveys__frozen_k_not_lower", "frozen_min_cohort_size IS NULL OR frozen_min_cohort_size >= min_cohort_size");
+                t.HasCheckConstraint("ck_surveys__closes_after_opens", "closes_at_utc > opens_at_utc");
+                t.HasCheckConstraint("ck_surveys__cycle_positive", "cycle_number >= 1");
+                t.HasCheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
+                t.HasCheckConstraint("ck_surveys__comment_dimension",
+                    "comment_dimension IN ('none','company','department','designation','grade','tenure')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TitleEn).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.TitleAr).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Recurrence).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.AudienceJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.ReminderOffsetsDays).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.CommentDimension).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // A published template version may not disappear from under a survey that asked it.
+            entity.HasOne<EngagementSurveyTemplate>().WithMany().HasForeignKey(x => x.TemplateId).OnDelete(DeleteBehavior.Restrict);
+            // Recurrence creates each next cycle exactly once: a second (series, cycle) is refused.
+            entity.HasIndex(x => new { x.TenantId, x.SeriesId, x.CycleNumber }).IsUnique();
+            // Serves the worker's due scans (WHERE status = 'Scheduled'/'Open' AND opens/closes_at_utc <= now).
+            entity.HasIndex(x => new { x.Status, x.OpensAtUtc });
+            entity.HasIndex(x => new { x.Status, x.ClosesAtUtc });
+            // Serves the survey list: WHERE tenant_id = $1 ORDER BY opens_at_utc DESC.
+            entity.HasIndex(x => new { x.TenantId, x.OpensAtUtc });
+        });
+
+        modelBuilder.Entity<EngagementSurveyInvitation>(entity =>
+        {
+            entity.ToTable("survey_invitations", t =>
+            {
+                t.HasCheckConstraint("ck_survey_invitations__status", "status IN ('Invited','Opened','Submitted','Cancelled')");
+                t.HasCheckConstraint("ck_survey_invitations__mode", "mode IN ('Identified','Confidential','Anonymous')");
+                // The ONLY column that can point from the ledger to a response, and only when the survey said so.
+                t.HasCheckConstraint("ck_survey_invitations__identified_link_only_when_identified",
+                    "mode = 'Identified' OR identified_response_id IS NULL");
+                // Identified and Confidential ledgers record the submission date; an Anonymous one records only the flag.
+                t.HasCheckConstraint("ck_survey_invitations__submitted_has_date",
+                    "status <> 'Submitted' OR submitted_on IS NOT NULL OR mode = 'Anonymous'");
+                // Anonymous ledger: invited / submitted only — no opened state, no open, draft or submission date, no
+                // stored session, and a version that moves exactly once (0 → 1 at submit), so nothing marks who opened.
+                t.HasCheckConstraint("ck_survey_invitations__anonymous_ledger_minimal",
+                    "mode <> 'Anonymous' OR (status <> 'Opened' AND first_opened_on IS NULL AND submitted_on IS NULL "
+                    + "AND draft_saved_on IS NULL AND session_token_hash IS NULL "
+                    + "AND version = CASE WHEN status = 'Submitted' THEN 1 ELSE 0 END)");
+                // A submitted invitation keeps no draft and no live session: both are discarded in the submit transaction.
+                t.HasCheckConstraint("ck_survey_invitations__submitted_no_draft",
+                    "status <> 'Submitted' OR (draft_cipher IS NULL AND session_token_hash IS NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Mode).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SessionTokenHash).HasMaxLength(64);
+            entity.Property(x => x.DraftCipher).HasMaxLength(64000);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // An invitation means nothing without its employee; the retention erasure of an employee takes it along.
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId).OnDelete(DeleteBehavior.Cascade);
+            // Dedupe: one invitation per survey × employee, enforced by the database (launch is re-runnable).
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId, x.EmployeeId }).IsUnique();
+            // Serves "my open surveys": WHERE tenant_id = $1 AND employee_id = $2.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            // Serves participation counts and the reminder scan: WHERE survey_id = $1 AND status = …
+            entity.HasIndex(x => new { x.SurveyId, x.Status });
+        });
+
+        modelBuilder.Entity<EngagementSurveyResponse>(entity =>
+        {
+            entity.ToTable("survey_responses", t =>
+            {
+                t.HasCheckConstraint("ck_survey_responses__tenure_band",
+                    "tenure_band IN ('lt1y','1to3y','3to5y','5yplus','unknown')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.GradeBand).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.TenureBand).HasMaxLength(12).IsRequired();
+            // No FK to employees or invitations, by design (no join path to the respondent). Survey only.
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // Serves every results query: WHERE survey_id = $1 (then cohort filters in memory, bounded by the survey).
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId });
+        });
+
+        modelBuilder.Entity<EngagementSurveyAnswer>(entity =>
+        {
+            entity.ToTable("survey_answers", t =>
+            {
+                t.HasCheckConstraint("ck_survey_answers__numeric_range", "numeric_value IS NULL OR numeric_value BETWEEN 0 AND 10");
+                t.HasCheckConstraint("ck_survey_answers__has_value",
+                    "numeric_value IS NOT NULL OR choice_keys IS NOT NULL OR text_value IS NOT NULL OR text_purged");
+                t.HasCheckConstraint("ck_survey_answers__purged_has_no_text", "NOT text_purged OR text_value IS NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.QuestionKey).HasMaxLength(40).IsRequired();
+            entity.Property(x => x.ChoiceKeys).HasMaxLength(400);
+            entity.Property(x => x.TextValue).HasMaxLength(4000);
+            entity.HasOne<EngagementSurveyResponse>().WithMany().HasForeignKey(x => x.ResponseId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.Cascade);
+            // One answer per question per response.
+            entity.HasIndex(x => new { x.ResponseId, x.QuestionKey }).IsUnique();
+            // Serves per-survey aggregation and the free-text retention purge: WHERE survey_id = $1 [AND text_value IS NOT NULL].
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId, x.QuestionKey });
+        });
+
+        modelBuilder.Entity<EngagementAction>(entity =>
+        {
+            entity.ToTable("survey_actions", t =>
+            {
+                t.HasCheckConstraint("ck_survey_actions__status", "status IN ('Open','InProgress','Done','Cancelled')");
+                t.HasCheckConstraint("ck_survey_actions__source_kind", "source_kind IN ('Overall','Driver','Item','Cohort')");
+                t.HasCheckConstraint("ck_survey_actions__done_stamp", "status <> 'Done' OR completed_at_utc IS NOT NULL");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.SurveyTitle).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.SourceKind).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.SourceRef).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Title).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Description).HasMaxLength(2000).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.ProgressJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // An action outlives its survey: deleting a closed survey keeps the actions and their title snapshot.
+            entity.HasOne<EngagementSurvey>().WithMany().HasForeignKey(x => x.SurveyId).OnDelete(DeleteBehavior.SetNull);
+            // The owner is a person; an action must be reassigned before its owner's record can be erased.
+            entity.HasOne<Employee>().WithMany().HasForeignKey(x => x.OwnerEmployeeId).OnDelete(DeleteBehavior.Restrict);
+            // Serves "my actions" and the overdue scan: WHERE owner_employee_id = $1 / status IN (…) AND due_on < today.
+            entity.HasIndex(x => new { x.TenantId, x.OwnerEmployeeId, x.Status });
+            entity.HasIndex(x => new { x.Status, x.DueOn });
+            // Serves the actions list of one survey.
+            entity.HasIndex(x => new { x.TenantId, x.SurveyId });
+        });
+
+        // Tenant engagement defaults live on the tenant's HR configuration row (no new table): k and the free-text
+        // retention period. Defaults are the register's (k = 5, floor 3) and two years of comments.
+        modelBuilder.Entity<TenantHrConfig>(entity =>
+        {
+            entity.ToTable("tenant_hr_configs", t =>
+            {
+                t.HasCheckConstraint("ck_tenant_hr_configs__engagement_min_cohort_floor", "engagement_min_cohort_size >= 3");
+                t.HasCheckConstraint("ck_tenant_hr_configs__engagement_text_retention",
+                    "engagement_free_text_retention_months BETWEEN 1 AND 120");
+            });
+            entity.Property(x => x.EngagementMinCohortSize).HasDefaultValue(5);
+            entity.Property(x => x.EngagementFreeTextRetentionMonths).HasDefaultValue(24);
+        });
 
         modelBuilder.Entity<GlJournalExportLine>(entity =>
         {

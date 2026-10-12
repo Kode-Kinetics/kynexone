@@ -24,12 +24,16 @@ public static class ReportSchedulePolicy
         "leave.balance", "leave.usage", "leave.pending", "overtime.requests", "overtime.approved",
         "payroll.register", "payroll.summary", "payroll.slips", "recruitment.pipeline", "recruitment.time-to-hire",
         "compliance.visa-expiry", "compliance.passport-expiry", "compliance.contract-expiry", "compliance.document-compliance",
-        "finance.loan-balance", "finance.advance-report", "finance.bonus-payout", "qiwa.readiness"
+        "finance.loan-balance", "finance.advance-report", "finance.bonus-payout", "qiwa.readiness",
+        // ENG-10: the suppressed engagement results of one survey (Filters.SurveyId). Comments are never scheduled.
+        "engagement.results"
     };
 
     public static bool TryValidate(CreateScheduleRequest request, out string error)
     {
         if (!ReportKeys.Contains(request.ReportKey)) { error = "Unknown or unsupported report key."; return false; }
+        if (string.Equals(request.ReportKey, "engagement.results", StringComparison.OrdinalIgnoreCase) && request.Filters?.SurveyId is null)
+        { error = "Choose the survey whose results to deliver."; return false; }
         if (string.IsNullOrWhiteSpace(request.ReportName)) { error = "Report name is required."; return false; }
         if (!new[] { "Daily", "Weekly", "Monthly", "Quarterly" }.Contains(request.Frequency, StringComparer.OrdinalIgnoreCase))
         { error = "Frequency must be Daily, Weekly, Monthly, or Quarterly."; return false; }

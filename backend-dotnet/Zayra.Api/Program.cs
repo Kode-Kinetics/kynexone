@@ -605,6 +605,10 @@ Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearnin
 // rule, in one extension. Gated per tenant by the succession opt-in flag (OptInFeatures).
 Zayra.Api.Infrastructure.Succession.SuccessionServiceCollectionExtensions.AddSuccession(builder.Services, builder.Configuration);
 
+// ENG — engagement surveys (services, the survey worker and the comment retention rule). Gated per tenant by the
+// opt-in `engagement` flag (OptInFeatures): off unless the platform enables it.
+Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEngagement(builder.Services);
+
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
 // user-facing request for a minute and a half before anything degraded. Callers that can fall
 // back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.

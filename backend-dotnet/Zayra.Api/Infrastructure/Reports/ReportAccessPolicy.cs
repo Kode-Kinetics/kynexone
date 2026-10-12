@@ -73,6 +73,9 @@ public static class DataDomains
 
     public static readonly DataDomain Saudization = new("Saudization standing", ["compliance.read", "qiwa.read"], [], false,
         "GET /api/saudi-compliance/nitaqat");
+
+    public static readonly DataDomain Engagement = new("engagement survey results", ["engagement.read"], [], false,
+        "GET /api/engagement/surveys/{id}/results — suppressed by CohortSuppression in every path, scheduled delivery included");
 }
 
 /// <summary>
@@ -143,6 +146,10 @@ public static class ReportAccessPolicy
 
             ["qiwa.readiness"] = new(DataDomains.Qiwa),
             ["compliance.saudization"] = new(DataDomains.Saudization, EmployeeKeyed: false),
+
+            // Aggregate survey results, suppressed by the same engine as the dashboard. A team-scoped caller's
+            // employee set becomes the team cut (respondents' line manager at submission).
+            ["engagement.results"] = new(DataDomains.Engagement),
         };
 
     /// <summary>Every report key the policy knows. The catalog, the executor and the scheduler must agree with it.</summary>
