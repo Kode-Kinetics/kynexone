@@ -437,6 +437,18 @@ Write routes may also return 422 `{ error, message, blockers }`, 409 conflict, 4
   writer (23P01 on the salary-row constraint) returns 422 `salary_row_conflict` with row-level messages and nothing
   saved. There is one write path (no in-memory-provider branch); its validation tests run on PostgreSQL
   (`PayrollSalaryImportPostgresTests`).
+  A retry by the execution strategy (e.g. after a 40P01 deadlock between two racing imports) compares each key's rows
+  with what the first attempt saw; if another writer committed in between, the import is refused as
+  `salary_row_conflict` instead of updating that writer's row.
+- **One line per employee.** An employee can sit on two live primary worksheets (they moved manager after the first
+  was approved and HR opened one for the new manager). Budgets, the review/approve checks and apply all use the same
+  line: an award already scheduled, else the worksheet of the manager who covers the employee now, else the approved
+  one, else the most recently changed. A superseded line is never scheduled.
+- **Worksheet owner in another company.** A manager whose login cannot open the cycle's company still sees their
+  worksheet in My worksheets (read through a tenant-pinned `ScopedBypass` limited to `ManagerEmployeeId` = the caller),
+  marked as not openable. Opening or saving it is refused with `company_access_required` and the way forward; the
+  company boundary is not crossed for reads or writes of the team's pay. HR sees an `owner_company_access` notice on
+  the cycle and can grant the company, complete the worksheet, or assign the team.
 
 ## 7. Operator runbook
 

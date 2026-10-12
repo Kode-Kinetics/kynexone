@@ -66,7 +66,8 @@ function MyWorksheetsTab() {
     try {
       const d = await compensationApi.myWorksheets();
       setData(d);
-      setOpen((o) => o ?? d.worksheets.find((w) => w.isPrimary && (w.status === 'Draft' || w.status === 'Returned'))?.id ?? d.worksheets.find((w) => w.isPrimary)?.id ?? null);
+      const openable = d.worksheets.filter((w) => w.companyAccess !== false);
+      setOpen((o) => o ?? openable.find((w) => w.isPrimary && (w.status === 'Draft' || w.status === 'Returned'))?.id ?? openable.find((w) => w.isPrimary)?.id ?? null);
     } catch (err) { setError(serverMessage(err, t)); }
   }, [t]);
   useEffect(() => { void load(); }, [load]);
@@ -80,7 +81,7 @@ function MyWorksheetsTab() {
             const cycle = data?.cycles.find((c) => c.id === w.cycleId);
             return (
               <li key={w.id}>
-                <button type="button" onClick={() => setOpen(w.id)} aria-current={open === w.id}
+                <button type="button" onClick={() => setOpen(w.id)} aria-current={open === w.id} disabled={w.companyAccess === false}
                   className={`surface w-full p-3 text-start ${open === w.id ? 'ring-2 ring-sapphire/40' : ''}`}>
                   <span className="flex items-center justify-between gap-2">
                     <span className="font-medium text-slate-900 dark:text-white">{t('{count, plural, one {# person} other {# people}}', { count: w.lineCount })}</span>
@@ -90,6 +91,11 @@ function MyWorksheetsTab() {
                     {cycle ? `${cycle.name} · ${cycleStatusLabel(t, cycle.status)}` : ''}
                   </span>
                   <span className="mt-1 block text-sm tabular-nums">{t('Proposed {amount}', { amount: f.money(w.proposedTotal, cycle?.currency ?? null) })}</span>
+                  {w.companyAccess === false && (
+                    <span className="mt-1 block text-xs text-amber-800 dark:text-amber-300">
+                      {t('This team is in {company}, which your login cannot open. Ask HR to give you access to it, or to complete the worksheet for you.', { company: cycle?.companyName ?? '' })}
+                    </span>
+                  )}
                 </button>
               </li>
             );

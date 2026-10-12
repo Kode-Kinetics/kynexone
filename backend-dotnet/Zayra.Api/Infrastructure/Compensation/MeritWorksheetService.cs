@@ -6,6 +6,8 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Data;
+
 namespace Zayra.Api.Infrastructure.Compensation;
 
 // Worksheets and scenarios: the manager's half of MeritPlanningService.
@@ -16,25 +18,32 @@ public sealed partial class MeritPlanningService
     public async Task<CompMyWorksheetsDto> MyWorksheetsAsync(CompCaller caller, CancellationToken ct)
     {
         if (caller.EmployeeId is not int me) return new CompMyWorksheetsDto([], []);
-        var sheets = await db.CompWorksheets.AsNoTracking().Where(w => w.TenantId == caller.TenantId && w.ManagerEmployeeId == me)
-            .OrderByDescending(w => w.CreatedAtUtc).ToListAsync(ct);
+        // The caller's OWN worksheets, read tenant-wide: a manager employed in one company may own the worksheet for a team
+        // in another, and the company filter would otherwise hide it and leave them with an empty list. Pinned to the
+        // tenant and to ManagerEmployeeId == the caller; nothing else is read past the filter.
+        var sheets = await ScopedBypass.TenantWide(db.CompWorksheets, caller.TenantId, OwnWorksheetsBypass).AsNoTracking()
+            .Where(w => w.ManagerEmployeeId == me).OrderByDescending(w => w.CreatedAtUtc).ToListAsync(ct);
         var cycleIds = sheets.Select(s => s.CycleId).Distinct().ToList();
-        var cycles = await db.CompCycles.AsNoTracking().Where(c => cycleIds.Contains(c.Id)).ToListAsync(ct);
+        var cycles = await ScopedBypass.TenantWide(db.CompCycles, caller.TenantId, OwnWorksheetsBypass).AsNoTracking()
+            .Where(c => cycleIds.Contains(c.Id)).ToListAsync(ct);
         var sheetIds = sheets.Select(s => s.Id).ToList();
-        var totals = await db.CompWorksheetLines.AsNoTracking().Where(l => sheetIds.Contains(l.WorksheetId))
+        // Which of them this login can open: the rest are listed with CompanyAccess = false and a way forward.
+        var openable = (await db.CompWorksheets.AsNoTracking().Where(w => sheetIds.Contains(w.Id)).Select(w => w.Id).ToListAsync(ct)).ToHashSet();
+        var totals = await ScopedBypass.TenantWide(db.CompWorksheetLines, caller.TenantId, OwnWorksheetsBypass).AsNoTracking().Where(l => sheetIds.Contains(l.WorksheetId))
             .GroupBy(l => l.WorksheetId).Select(g => new { g.Key, Count = g.Count(), Total = g.Sum(l => l.ProratedIncrease) }).ToListAsync(ct);
         var name = await db.Employees.AsNoTracking().Where(e => e.Id == me).Select(e => e.FullName).FirstOrDefaultAsync(ct) ?? "";
-        return new CompMyWorksheetsDto(await SummariesAsync(cycles, ct), sheets.Select(s =>
+        return new CompMyWorksheetsDto(await SummariesAsync(cycles, ct, tenantWideFor: caller.TenantId), sheets.Select(s =>
         {
             var t = totals.FirstOrDefault(x => x.Key == s.Id);
             return new CompWorksheetSummaryDto(s.Id, s.ManagerEmployeeId, name, s.ScenarioName, s.IsPrimary, s.Status, s.Revision, t?.Count ?? 0, t?.Total ?? 0m,
-                false, s.ApprovalRequestId, s.DecisionComments, s.Version, s.CycleId);
+                false, s.ApprovalRequestId, s.DecisionComments, s.Version, s.CycleId, CompanyAccess: openable.Contains(s.Id));
         }).ToList());
     }
 
     public async Task<CompWorksheetDto> GetWorksheetAsync(CompCaller caller, Guid worksheetId, CancellationToken ct)
     {
         var sheet = await db.CompWorksheets.AsNoTracking().FirstOrDefaultAsync(w => w.TenantId == caller.TenantId && w.Id == worksheetId, ct);
+        if (sheet is null) await ThrowIfOwnWorksheetOutsideCompanyAccessAsync(caller, worksheetId, ct);
         if (sheet is null || !CanView(caller, sheet)) throw new CompNotFoundException("Worksheet not found.");
         var cycle = await FindCycleAsync(caller, sheet.CycleId, track: false, ct);
         return await ProjectWorksheetAsync(caller, cycle, sheet, ct);
@@ -178,7 +187,7 @@ public sealed partial class MeritPlanningService
                 }
                 catch (InvalidOperationException ex) { blockers.Add(new("salary_rule", $"{b.Employee.FullName}: {ex.Message}")); }
             }
-            var otherSheets = await db.CompWorksheets.AsNoTracking().Where(w => w.CycleId == c.Id && w.IsPrimary && w.Id != sheet.Id && w.Status != CompWorksheetStatuses.Cancelled).Select(w => new { w.Id, w.Status }).ToListAsync(ct);
+            var otherSheets = await db.CompWorksheets.AsNoTracking().Where(w => w.CycleId == c.Id && w.IsPrimary && w.Id != sheet.Id && w.Status != CompWorksheetStatuses.Cancelled).ToListAsync(ct);
             var otherIds = otherSheets.Select(o => o.Id).ToList();
             var otherLines = await db.CompWorksheetLines.AsNoTracking().Where(l => otherIds.Contains(l.WorksheetId)).ToListAsync(ct);
             var lockedIds = otherSheets.Where(o => o.Status is CompWorksheetStatuses.Submitted or CompWorksheetStatuses.Approved).Select(o => o.Id).ToHashSet();
@@ -187,7 +196,8 @@ public sealed partial class MeritPlanningService
             if (caller.EmployeeId is int me && live.Any(l => l.EmployeeId == me))
                 throw new CompForbiddenException("self_award", "Segregation of duties: this worksheet includes your own pay, so you cannot submit it.");
 
-            var budgets = BudgetSummary(ctx, otherLines.Concat(live).ToList());
+            var budgetSheets = otherSheets.Append(sheet).ToDictionary(w => w.Id);
+            var budgets = BudgetSummary(ctx, CurrentLines(otherLines.Concat(live), budgetSheets, ctx));
             var touched = awarded.Select(l => l.DepartmentId ?? Guid.Empty).ToHashSet();
             var over = budgets.Where(b => b.Overspent && touched.Contains(b.DepartmentId)).ToList();
             overspend = over.Count > 0;
@@ -239,10 +249,31 @@ public sealed partial class MeritPlanningService
     private bool CanEdit(CompCaller caller, CompWorksheet sheet) =>
         caller.CanManage || (caller.Can(CompPermissions.Plan) && caller.EmployeeId == sheet.ManagerEmployeeId);
 
+    private const string OwnWorksheetsBypass =
+        "merit planning: a manager's own worksheets (ManagerEmployeeId = the caller), whichever company the team belongs to";
+
+    /// <summary>
+    /// The caller's own worksheet exists but sits in a company their login cannot open. Editing it would read and write
+    /// that company's pay records, which the company boundary forbids, so it is refused with the way forward rather than
+    /// answered as "not found". Someone else's worksheet stays a 404.
+    /// </summary>
+    private async Task ThrowIfOwnWorksheetOutsideCompanyAccessAsync(CompCaller caller, Guid worksheetId, CancellationToken ct)
+    {
+        if (caller.EmployeeId is not int me) return;
+        var own = await ScopedBypass.TenantWide(db.CompWorksheets, caller.TenantId, OwnWorksheetsBypass).AsNoTracking()
+            .Where(w => w.Id == worksheetId && w.ManagerEmployeeId == me).Select(w => new { w.CompanyId }).FirstOrDefaultAsync(ct);
+        if (own is null) return;
+        var company = await ScopedBypass.TenantWide(db.Companies, caller.TenantId, OwnWorksheetsBypass).AsNoTracking()
+            .Where(c => c.Id == own.CompanyId).Select(c => c.LegalNameEn).FirstOrDefaultAsync(ct) ?? "another company";
+        throw new CompForbiddenException("company_access_required",
+            $"This worksheet is for your team in {company}, which your login cannot open. Ask HR to give you access to {company} (User Management), or to complete the worksheet for you.");
+    }
+
     private async Task<(CompWorksheet Sheet, CompCycle Cycle, MeritBasisLoader.CycleContext Ctx, List<CompWorksheetLine> Lines)> LoadEditableAsync(
         CompCaller caller, Guid worksheetId, int version, CancellationToken ct)
     {
         var sheet = await db.CompWorksheets.FirstOrDefaultAsync(w => w.TenantId == caller.TenantId && w.Id == worksheetId, ct);
+        if (sheet is null) await ThrowIfOwnWorksheetOutsideCompanyAccessAsync(caller, worksheetId, ct);
         if (sheet is null || !CanView(caller, sheet)) throw new CompNotFoundException("Worksheet not found.");
         if (!CanEdit(caller, sheet)) throw new CompForbiddenException("read_only", "You can view this worksheet but not change it.");
         var cycle = await db.CompCycles.AsNoTracking().FirstAsync(c => c.Id == sheet.CycleId, ct);
@@ -327,11 +358,13 @@ public sealed partial class MeritPlanningService
             .Select(b => new CompExcludedDto(b.Employee.Id, b.Employee.EmployeeCode, b.Employee.FullName, b.IneligibleReason ?? "Not eligible.")).ToList();
 
         // Budget impact: every other live primary worksheet as saved, plus this one as shown.
-        var others = await db.CompWorksheets.AsNoTracking().Where(w => w.CycleId == cycle.Id && w.IsPrimary && w.Id != sheet.Id && w.Status != CompWorksheetStatuses.Cancelled).Select(w => w.Id).ToListAsync(ct);
+        var otherSheetRows = await db.CompWorksheets.AsNoTracking().Where(w => w.CycleId == cycle.Id && w.IsPrimary && w.Id != sheet.Id && w.Status != CompWorksheetStatuses.Cancelled).ToListAsync(ct);
+        var others = otherSheetRows.Select(w => w.Id).ToList();
         var otherLines = await db.CompWorksheetLines.AsNoTracking().Where(l => others.Contains(l.WorksheetId)).ToListAsync(ct);
         var mineForBudget = sheet.IsPrimary && sheet.Status != CompWorksheetStatuses.Cancelled ? shown.Select(s => s.Line) : [];
         var touched = shown.Select(s => s.Line.DepartmentId ?? Guid.Empty).ToHashSet();
-        var impact = BudgetSummary(ctx, otherLines.Concat(mineForBudget).ToList()).Where(b => touched.Contains(b.DepartmentId)).ToList();
+        var impactSheets = otherSheetRows.Append(sheet).ToDictionary(w => w.Id);
+        var impact = BudgetSummary(ctx, CurrentLines(otherLines.Concat(mineForBudget), impactSheets, ctx)).Where(b => touched.Contains(b.DepartmentId)).ToList();
         var overspend = impact.Any(b => b.Overspent) && shown.Any(s => s.Line.ProratedIncrease > 0);
 
         var blockers = new List<CompBlockerDto>();

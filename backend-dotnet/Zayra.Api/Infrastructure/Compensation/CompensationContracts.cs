@@ -63,7 +63,8 @@ public sealed record CompFxDto(Guid Id, string FromCurrency, decimal Rate, strin
 
 public sealed record CompWorksheetSummaryDto(
     Guid Id, int ManagerEmployeeId, string ManagerName, string ScenarioName, bool IsPrimary, string Status, int Revision,
-    int LineCount, decimal ProposedTotal, bool Overspend, Guid? ApprovalRequestId, string? DecisionComments, int Version, Guid CycleId);
+    int LineCount, decimal ProposedTotal, bool Overspend, Guid? ApprovalRequestId, string? DecisionComments, int Version, Guid CycleId,
+    bool CompanyAccess = true);
 
 public sealed record CompExcludedDto(int EmployeeId, string EmployeeCode, string Name, string Reason, int? OwnerEmployeeId = null, string? OwnerName = null, bool OwnerCanBeOpened = false);
 

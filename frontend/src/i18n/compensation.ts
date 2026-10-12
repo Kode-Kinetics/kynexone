@@ -335,6 +335,8 @@ const ar: Record<string, string> = {
   'I acknowledge this reversal recovers pay from payroll months that are already approved or locked. It is recorded in the audit log.':
     'أُقر بأن هذا العكس يسترد أجرًا من أشهر رواتب معتمدة أو مقفلة بالفعل. يُسجَّل ذلك في سجل التدقيق.',
   'Ask someone with the compensation approver permission to send this reversal.': 'اطلب من شخص لديه صلاحية اعتماد التعويضات إرسال هذا العكس.',
+  'This team is in {company}, which your login cannot open. Ask HR to give you access to it, or to complete the worksheet for you.':
+    'هذا الفريق في {company}، ولا يمكن لحسابك فتحها. اطلب من الموارد البشرية منحك صلاحية الوصول إليها، أو إكمال ورقة العمل نيابةً عنك.',
   'Schedule with a retro cost?': 'الجدولة مع تكلفة بأثر رجعي؟',
   'I acknowledge the retro cost — schedule': 'أُقر بالتكلفة بأثر رجعي — جدوِل',
   'Withdraw award of {name}': 'سحب زيادة {name}',

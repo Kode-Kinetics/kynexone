@@ -11351,10 +11351,22 @@ public partial class PayrollController : ControllerBase
         // half-applied. The deactivations used to autocommit row by row before SaveChanges.
         var strategy = _db.Database.CreateExecutionStrategy();
         var insertedKeys = new HashSet<(int EmployeeId, DateOnly EffectiveDate)>();
+        // The retrying strategy re-runs the whole write after a transient failure — including a 40P01 deadlock, which is
+        // how the deferred exclusion can resolve two imports racing on one key. What each key held on the FIRST attempt is
+        // remembered: if a retry finds different rows (another writer committed in between), the import is refused as a
+        // conflict instead of quietly updating — overwriting — the other writer's row.
+        var attempt = 0;
+        var firstSeen = new Dictionary<(int EmployeeId, DateOnly EffectiveDate), string>();
         async Task WriteAsync()
         {
                 foreach (var row in planned)
                 {
+                    var key = (row.EmployeeId, row.EffectiveDate);
+                    var seen = string.Join(",", (await _db.EmployeeSalaryStructures.AsNoTracking()
+                            .Where(s => s.TenantId == tenantId && s.EmployeeId == row.EmployeeId && s.EffectiveDate == row.EffectiveDate)
+                            .Select(s => s.Id).ToListAsync(cancellationToken)).Order());
+                    if (attempt == 1) firstSeen[key] = seen;
+                    else if (!firstSeen.TryGetValue(key, out var before) || before != seen) throw new SalaryImportRaceException(key);
                     var existing = await _db.EmployeeSalaryStructures
                         .Where(s => s.TenantId == tenantId && s.EmployeeId == row.EmployeeId && s.EffectiveDate == row.EffectiveDate)
                         .OrderByDescending(s => s.IsActive).ThenByDescending(s => s.CreatedAtUtc)
@@ -11384,12 +11396,21 @@ public partial class PayrollController : ControllerBase
         {
             await strategy.ExecuteAsync(async () =>
             {
+                attempt++;
                 created = 0; updated = 0; insertedKeys.Clear();
                 _db.ChangeTracker.Clear();
                 await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
                 await WriteAsync();
                 await tx.CommitAsync(cancellationToken);
             });
+        }
+        catch (SalaryImportRaceException race)
+        {
+            // A retry met rows another writer committed after the first attempt: refused, nothing from this file applied.
+            _db.ChangeTracker.Clear();
+            var conflictErrors = planned.Where(r => (r.EmployeeId, r.EffectiveDate) == race.Key).Select(r =>
+                $"Row {r.RowNum}: employee {r.EmployeeCode} already has another salary row dated {r.EffectiveDate:yyyy-MM-dd} (written at the same time by someone else).").ToList();
+            return UnprocessableEntity(new { error = "salary_row_conflict", message = "The import was not applied: another salary change for one of these employees and dates was saved at the same time. Nothing from this file was applied; review the employee's salary and re-import.", errors = conflictErrors.Concat(errors).Take(20) });
         }
         catch (Exception ex) when (SalaryRowConflict(ex) is { } conflict)
         {
@@ -11410,6 +11431,12 @@ public partial class PayrollController : ControllerBase
             return UnprocessableEntity(new { error = "salary_row_conflict", message = "The import was not applied: two active salary rows would exist for one employee on one date. Nothing from this file was applied; re-import it.", errors = conflictErrors.Concat(errors).Take(20) });
         }
         return Ok(new { received = rows.Count, created, updated, skipped, errors = errors.Take(20) });
+    }
+
+    /// <summary>A retried import found that another writer changed a key's salary rows after the first attempt.</summary>
+    private sealed class SalaryImportRaceException((int EmployeeId, DateOnly EffectiveDate) key) : Exception("salary row race")
+    {
+        public (int EmployeeId, DateOnly EffectiveDate) Key { get; } = key;
     }
 
     private sealed record PlannedSalaryRow(int RowNum, int EmployeeId, string EmployeeCode, Guid StructureId, decimal Basic, decimal Housing, decimal Transport,

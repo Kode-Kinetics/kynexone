@@ -42,6 +42,8 @@ export interface FxRate { id?: string; fromCurrency: string; rate: number; sourc
 export interface WorksheetSummary {
   id: string; managerEmployeeId: number; managerName: string; scenarioName: string; isPrimary: boolean; status: WorksheetStatus; revision: number;
   lineCount: number; proposedTotal: number; overspend: boolean; approvalRequestId: string | null; decisionComments: string | null; version: number; cycleId: string;
+  /** False when the worksheet's team is in a company this login cannot open (my-worksheets only). */
+  companyAccess?: boolean;
 }
 
 export interface PersonNote { employeeId: number; employeeCode: string; name: string; reason: string; ownerEmployeeId?: number | null; ownerName?: string | null; ownerCanBeOpened?: boolean }

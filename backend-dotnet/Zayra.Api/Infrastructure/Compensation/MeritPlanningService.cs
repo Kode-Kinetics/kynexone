@@ -87,12 +87,17 @@ public sealed partial class MeritPlanningService(
         return await SummariesAsync(cycles, ct);
     }
 
-    private async Task<IReadOnlyList<CompCycleSummaryDto>> SummariesAsync(IReadOnlyList<CompCycle> cycles, CancellationToken ct)
+    /// <param name="tenantWideFor">Set only for a manager's own worksheet list (cycles they own a worksheet in): the company
+    /// names and counts of those cycles are read past the company filter, pinned to the tenant.</param>
+    private async Task<IReadOnlyList<CompCycleSummaryDto>> SummariesAsync(IReadOnlyList<CompCycle> cycles, CancellationToken ct, Guid? tenantWideFor = null)
     {
         var ids = cycles.Select(c => c.Id).ToList();
         var companyIds = cycles.Select(c => c.CompanyId).Distinct().ToList();
-        var companies = await db.Companies.AsNoTracking().Where(c => companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, ct);
-        var sheets = await db.CompWorksheets.AsNoTracking().Where(w => ids.Contains(w.CycleId) && w.IsPrimary)
+        const string why = "merit planning: names and counts of the cycles a manager owns a worksheet in";
+        var companySet = tenantWideFor is Guid t1 ? Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.Companies, t1, why) : db.Companies;
+        var sheetSet = tenantWideFor is Guid t2 ? Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.CompWorksheets, t2, why) : db.CompWorksheets;
+        var companies = await companySet.AsNoTracking().Where(c => companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, ct);
+        var sheets = await sheetSet.AsNoTracking().Where(w => ids.Contains(w.CycleId) && w.IsPrimary)
             .Select(w => new { w.CycleId, w.Status }).ToListAsync(ct);
         return cycles.Select(c => new CompCycleSummaryDto(c.Id, c.CompanyId, c.CompanyId is Guid id ? companies.GetValueOrDefault(id) ?? "" : "",
             c.Name, c.Status, c.EffectiveDate, c.Currency, c.PerformancePeriodStart, c.PerformancePeriodEnd,
@@ -401,8 +406,9 @@ public sealed partial class MeritPlanningService(
         var blockers = new List<CompBlockerDto>();
         var sheets = await db.CompWorksheets.AsNoTracking().Where(w => w.CycleId == c.Id && w.IsPrimary && w.Status != CompWorksheetStatuses.Cancelled).ToListAsync(ct);
         var ids = sheets.Select(w => w.Id).ToList();
-        var lines = await db.CompWorksheetLines.AsNoTracking().Where(l => ids.Contains(l.WorksheetId)).ToListAsync(ct);
-        var ctx = await _basis.LoadAsync(c, ct, lines.Where(l => l.ChangeRequestId != null).Select(l => l.ChangeRequestId!.Value).ToList());
+        var allLines = await db.CompWorksheetLines.AsNoTracking().Where(l => ids.Contains(l.WorksheetId)).ToListAsync(ct);
+        var ctx = await _basis.LoadAsync(c, ct, allLines.Where(l => l.ChangeRequestId != null).Select(l => l.ChangeRequestId!.Value).ToList());
+        var lines = CurrentLines(allLines, sheets.ToDictionary(x => x.Id), ctx);
         foreach (var l in lines.Where(l => l.ProratedIncreasePay > 0))
         {
             var rate = ctx.RateFor(l.PayCurrency);
@@ -475,9 +481,14 @@ public sealed partial class MeritPlanningService(
             var c = await LockCycleAsync(caller, cycleId, ct);
             if (c.Status is not (CompCycleStatuses.Approved or CompCycleStatuses.Applied))
                 throw new CompRuleException("cycle_not_approved", $"Awards are applied once the cycle is approved; this cycle is {c.Status}.");
-            var approvedSheets = await db.CompWorksheets.AsNoTracking()
-                .Where(w => w.CycleId == c.Id && w.IsPrimary && w.Status == CompWorksheetStatuses.Approved).Select(w => w.Id).ToListAsync(ct);
-            var lines = await db.CompWorksheetLines.Where(l => l.CycleId == c.Id && approvedSheets.Contains(l.WorksheetId)).ToListAsync(ct);
+            var liveSheets = await db.CompWorksheets.AsNoTracking()
+                .Where(w => w.CycleId == c.Id && w.IsPrimary && w.Status != CompWorksheetStatuses.Cancelled).ToDictionaryAsync(w => w.Id, ct);
+            var approvedSheets = liveSheets.Values.Where(w => w.Status == CompWorksheetStatuses.Approved).Select(w => w.Id).ToHashSet();
+            var candidateLines = await db.CompWorksheetLines.Where(l => l.CycleId == c.Id && liveSheets.Keys.Contains(l.WorksheetId)).ToListAsync(ct);
+            var ownChanges = candidateLines.Where(l => l.ChangeRequestId != null).Select(l => l.ChangeRequestId!.Value).ToList();
+            var ctx = await _basis.LoadAsync(c, ct, ownChanges);
+            // One line per employee: a superseded line (the employee moved to another worksheet owner) is never scheduled.
+            var lines = CurrentLines(candidateLines, liveSheets, ctx).Where(l => approvedSheets.Contains(l.WorksheetId)).ToList();
             // A payroll month run between approval and apply was paid at the old rate: scheduling now owes arrears the
             // approver never saw. It needs an explicit acknowledgement by someone with the approver permission.
             var toSchedule = lines.Where(l => l.ChangeRequestId == null && l.ProratedIncreasePay > 0).ToList();
@@ -497,9 +508,7 @@ public sealed partial class MeritPlanningService(
                     retroAcknowledged = (unacknowledged, cost);
                 }
             }
-            var ownChanges = lines.Where(l => l.ChangeRequestId != null).Select(l => l.ChangeRequestId!.Value).ToList();
-            var awardedEmployees = lines.Where(l => l.ChangeRequestId != null).Select(l => l.EmployeeId).ToHashSet();
-            var ctx = await _basis.LoadAsync(c, ct, ownChanges);
+            var awardedEmployees = candidateLines.Where(l => l.ChangeRequestId != null).Select(l => l.EmployeeId).ToHashSet();
             var now = DateTime.UtcNow;
             foreach (var line in lines.Where(l => l.ChangeRequestId == null && l.ProratedIncreasePay > 0).OrderBy(l => l.EmployeeId))
             {
@@ -810,7 +819,8 @@ public sealed partial class MeritPlanningService(
         var sheetIds = sheets.Select(s => s.Id).ToList();
         var lines = await db.CompWorksheetLines.AsNoTracking().Where(l => sheetIds.Contains(l.WorksheetId)).ToListAsync(ct);
         var primaryIds = sheets.Where(s => s.IsPrimary && s.Status != CompWorksheetStatuses.Cancelled).Select(s => s.Id).ToHashSet();
-        var primaryLines = lines.Where(l => primaryIds.Contains(l.WorksheetId)).ToList();
+        var primaryLines = CurrentLines(lines.Where(l => primaryIds.Contains(l.WorksheetId)), sheets.ToDictionary(x => x.Id), ctx);
+        var current = primaryLines.Select(l => l.Id).ToHashSet();
         var budgets = BudgetSummary(ctx, primaryLines);
         var managerNames = await NamesAsync(cycle.TenantId, sheets.Select(s => s.ManagerEmployeeId), ct);
         var overspentDepts = budgets.Where(b => b.Overspent).Select(b => b.DepartmentId).ToHashSet();
@@ -854,7 +864,7 @@ public sealed partial class MeritPlanningService(
         if (cycle.Status is CompCycleStatuses.Approved or CompCycleStatuses.Applied or CompCycleStatuses.Cancelled)
         {
             var approvedIds = sheets.Where(s => s.IsPrimary).Select(s => s.Id).ToHashSet();
-            var awardLines = lines.Where(l => approvedIds.Contains(l.WorksheetId) && l.ProratedIncreasePay > 0).ToList();
+            var awardLines = lines.Where(l => approvedIds.Contains(l.WorksheetId) && l.ProratedIncreasePay > 0 && (current.Contains(l.Id) || l.ChangeRequestId != null)).ToList();
             var changeIds = awardLines.SelectMany(l => new[] { l.ChangeRequestId, l.ReversalChangeRequestId }).Where(x => x != null).Select(x => x!.Value).ToList();
             var statuses = await db.EmployeeChangeRequests.AsNoTracking().Where(x => changeIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Status, ct);
             var names = await NamesAsync(cycle.TenantId, awardLines.Select(l => l.EmployeeId), ct);
@@ -869,7 +879,9 @@ public sealed partial class MeritPlanningService(
                 applyLines.Count(l => l.ChangeRequestId is null), applyLines);
         }
 
-        var blockers = cycle.Status == CompCycleStatuses.Draft ? PlanningBlockers(ctx) : [];
+        var blockers = cycle.Status == CompCycleStatuses.Draft ? PlanningBlockers(ctx)
+            : cycle.Status == CompCycleStatuses.Planning ? await OwnersWithoutCompanyAccessAsync(cycle, sheets.Where(x => x.IsPrimary && CompWorksheetStatuses.IsEditable(x.Status)).Select(x => x.ManagerEmployeeId).Distinct().ToList(), ct)
+            : [];
         var retro = cycle.Status is CompCycleStatuses.Cancelled ? null : await RetroAsync(cycle, totals.Proposed, ct);
         return new CompCycleDto(cycle.Id, cycle.CompanyId, ctx.Company.LegalNameEn, cycle.Name, cycle.Status, cycle.PerformancePeriodStart, cycle.PerformancePeriodEnd,
             cycle.EffectiveDate, cycle.Currency, cycle.PayComponent, cycle.HireDateCutoff,
@@ -879,6 +891,30 @@ public sealed partial class MeritPlanningService(
             ctx.Fx.Select(f => new CompFxDto(f.Id, f.FromCurrency, f.Rate, f.Source, f.RateDate, f.EnteredByName, f.EnteredAtUtc)).ToList(),
             payCurrencies, worksheets, uncovered, ineligible, blockers, totals, AllowedActions(cycle), apply, cycle.ApprovedAtUtc, cycle.AppliedAtUtc, cycle.CancelReason,
             retro);
+    }
+
+    /// <summary>
+    /// Worksheet owners whose login is limited to other companies cannot open this cycle's worksheet (the company boundary
+    /// is not crossed for them). HR sees who and what to do. A login with no company grants recorded is not flagged.
+    /// </summary>
+    private async Task<List<CompBlockerDto>> OwnersWithoutCompanyAccessAsync(CompCycle cycle, IReadOnlyCollection<int> ownerIds, CancellationToken ct)
+    {
+        if (ownerIds.Count == 0 || cycle.CompanyId is not Guid companyId) return [];
+        const string why = "merit planning: whether a worksheet owner's login can open the cycle's company";
+        var owners = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(db.Employees, cycle.TenantId, why).AsNoTracking()
+            .Where(e => ownerIds.Contains(e.Id) && e.UserAccountId != null).Select(e => new { e.Id, e.FullName, UserId = e.UserAccountId!.Value }).ToListAsync(ct);
+        if (owners.Count == 0) return [];
+        var userIds = owners.Select(o => o.UserId).ToList();
+        var groupUsers = (await db.Users.AsNoTracking().Where(u => u.TenantId == cycle.TenantId && userIds.Contains(u.Id) && u.IsGroupScope).Select(u => u.Id).ToListAsync(ct)).ToHashSet();
+        var grants = await db.UserEntityAccesses.AsNoTracking().Where(g => g.TenantId == cycle.TenantId && userIds.Contains(g.UserId) && g.IsActive)
+            .Select(g => new { g.UserId, g.CompanyId, g.GrantMode }).ToListAsync(ct);
+        var companyName = await db.Companies.AsNoTracking().Where(c => c.Id == companyId).Select(c => c.LegalNameEn).FirstOrDefaultAsync(ct) ?? "this company";
+        return owners.Where(o => !groupUsers.Contains(o.UserId)
+                                 && grants.Any(g => g.UserId == o.UserId)
+                                 && !grants.Any(g => g.UserId == o.UserId && (g.GrantMode != EntityGrantModes.SelectedCompanies || g.CompanyId == companyId)))
+            .Select(o => new CompBlockerDto("owner_company_access",
+                $"{o.FullName} owns a worksheet here but their login cannot open {companyName}. Give them access to {companyName} in User Management, complete the worksheet for them, or assign the team to another worksheet owner."))
+            .ToList();
     }
 
     private static readonly string[] PaidRunStatuses = ["Processed", "PendingFinanceReview", "Approved", "Locked", "Paid"];
@@ -935,6 +971,27 @@ public sealed partial class MeritPlanningService(
     /// record. From Review onward it is the basis each line was approved on (its snapshot), so the pool an approver saw
     /// does not move when the awards themselves — or anything else — later change pay of record.</para>
     /// </summary>
+    /// <summary>
+    /// ONE line per employee per cycle, chosen deterministically from the live primary worksheets. An employee can sit on
+    /// two of them — e.g. they moved manager after the first worksheet was approved and HR opened one for the new manager.
+    /// Budgets, review checks and apply must all count the same line: an award already scheduled, else the worksheet of the
+    /// manager who covers the employee now, else the approved one, else the most recently changed.
+    /// </summary>
+    internal static List<CompWorksheetLine> CurrentLines(IEnumerable<CompWorksheetLine> lines, IReadOnlyDictionary<Guid, CompWorksheet> sheets,
+        MeritBasisLoader.CycleContext ctx)
+    {
+        bool Live(CompWorksheetLine l) => sheets.TryGetValue(l.WorksheetId, out var w) && w.IsPrimary && w.Status != CompWorksheetStatuses.Cancelled;
+        bool Covering(CompWorksheetLine l) => ctx.Employees.TryGetValue(l.EmployeeId, out var b) && ctx.CoveringOwner(b) == sheets[l.WorksheetId].ManagerEmployeeId;
+        return lines.Where(Live).GroupBy(l => l.EmployeeId)
+            .Select(g => g.OrderByDescending(l => l.ChangeRequestId != null)
+                .ThenByDescending(Covering)
+                .ThenByDescending(l => sheets[l.WorksheetId].Status == CompWorksheetStatuses.Approved)
+                .ThenByDescending(l => sheets[l.WorksheetId].UpdatedAtUtc ?? sheets[l.WorksheetId].CreatedAtUtc)
+                .ThenBy(l => l.WorksheetId)
+                .First())
+            .ToList();
+    }
+
     internal static List<CompBudgetDto> BudgetSummary(MeritBasisLoader.CycleContext ctx, IReadOnlyList<CompWorksheetLine> lines)
     {
         var frozen = ctx.Cycle.Status is not (CompCycleStatuses.Draft or CompCycleStatuses.Planning);
