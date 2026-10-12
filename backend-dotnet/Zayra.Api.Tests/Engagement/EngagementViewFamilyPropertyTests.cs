@@ -309,8 +309,10 @@ public sealed class EngagementViewFamilyPropertyTests
         CohortViewFamily.Build(new CohortPopulation(records), Dims, 5);
         var aggregate = watch.Elapsed;
         CohortViewFamily.Build(new CohortPopulation(records), ["company", "team", "department"], 5, setMode: true);
-        aggregate.Should().BeLessThan(TimeSpan.FromSeconds(5), "one metric's family for a 3,000-person survey");
-        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "results and comments for a 3,000-person survey must not time out");
+        // ≈ 0.3–0.6 s on an idle machine. The bounds are wall clock inside a full parallel test run, where this test
+        // has measured 8–11 s; they are set to catch an algorithmic regression (a quadratic R6 took ~30 s), not jitter.
+        aggregate.Should().BeLessThan(TimeSpan.FromSeconds(20), "one metric's family for a 3,000-person survey");
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "results and comments for a 3,000-person survey must not time out");
     }
 
     // ── k changes after close (review 3) ─────────────────────────────────────────────────────────────────────────
