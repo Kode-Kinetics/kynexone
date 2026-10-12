@@ -11279,6 +11279,8 @@ public partial class PayrollController : ControllerBase
             .Where(s => s.TenantId == tenantId && !s.IsDeleted)
             .ToListAsync(cancellationToken);
 
+        var planned = new List<PlannedSalaryRow>();
+        var plannedRows = new Dictionary<(int, DateOnly), int>();
         foreach (var row in rows)
         {
             rowNum++;
@@ -11336,48 +11338,122 @@ public partial class PayrollController : ControllerBase
                 { errors.Add($"Row {rowNum}: Salary package exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}."); skipped++; continue; }
             }
 
-            var existing = await _db.EmployeeSalaryStructures.FirstOrDefaultAsync(s =>
-                s.TenantId == tenantId
-                && s.EmployeeId == employee.Id
-                && s.EffectiveDate == effectiveDate, cancellationToken);
-            var isNew = existing is null;
-            existing ??= new EmployeeSalaryStructure
-            {
-                TenantId = tenantId,
-                EmployeeId = employee.Id,
-                EffectiveDate = effectiveDate,
-                CreatedBy = GetUserId(),
-            };
-
-            existing.SalaryStructureId = structure.Id;
-            existing.BasicSalary = basic;
-            existing.HousingAllowance = housing;
-            existing.TransportAllowance = transport;
-            existing.FoodAllowance = food;
-            existing.MobileAllowance = mobile;
-            existing.OtherAllowance = other;
-            existing.FixedDeduction = deduction;
-            existing.Currency = currency;
-            existing.IsActive = true;
-
-            await _db.EmployeeSalaryStructures
-                .Where(s => s.TenantId == tenantId && s.EmployeeId == employee.Id && s.IsActive && s.EffectiveDate == effectiveDate && s.Id != existing.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false), cancellationToken);
-
-            if (isNew)
-            {
-                _db.EmployeeSalaryStructures.Add(existing);
-                created++;
-            }
-            else
-            {
-                updated++;
-            }
+            // One row per employee and effective date: a second row for the same pair is refused here, in memory, instead
+            // of reaching the database as two active rows (refused at commit by ex_employee_salary_structures__one_active_per_date).
+            if (plannedRows.TryGetValue((employee.Id, effectiveDate), out var firstRow))
+            { errors.Add($"Row {rowNum}: duplicates row {firstRow} (same employee and effective date {effectiveDate:yyyy-MM-dd}); this row was not applied."); skipped++; continue; }
+            plannedRows[(employee.Id, effectiveDate)] = rowNum;
+            planned.Add(new PlannedSalaryRow(rowNum, employee.Id, employee.EmployeeCode, structure.Id, basic, housing, transport, food, mobile, other, deduction, effectiveDate, currency));
         }
 
-        await PayrollAudit("payroll.employee_salary.imported", "EmployeeSalary", "bulk", new { received = rows.Count, created, updated, skipped, errors = errors.Count }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+        // Atomic: every deactivation and insert of the file is one transaction under the retrying execution strategy, so a
+        // failure (including a concurrent writer's active row for the same date, SQLSTATE 23P01 at commit) leaves NOTHING
+        // half-applied. The deactivations used to autocommit row by row before SaveChanges.
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var insertedKeys = new HashSet<(int EmployeeId, DateOnly EffectiveDate)>();
+        // The retrying strategy re-runs the whole write after a transient failure — including a 40P01 deadlock, which is
+        // how the deferred exclusion can resolve two imports racing on one key. What each key held on the FIRST attempt is
+        // remembered: if a retry finds different rows (another writer committed in between), the import is refused as a
+        // conflict instead of quietly updating — overwriting — the other writer's row.
+        var attempt = 0;
+        var firstSeen = new Dictionary<(int EmployeeId, DateOnly EffectiveDate), string>();
+        async Task WriteAsync()
+        {
+                foreach (var row in planned)
+                {
+                    var key = (row.EmployeeId, row.EffectiveDate);
+                    var seen = string.Join(",", (await _db.EmployeeSalaryStructures.AsNoTracking()
+                            .Where(s => s.TenantId == tenantId && s.EmployeeId == row.EmployeeId && s.EffectiveDate == row.EffectiveDate)
+                            .Select(s => s.Id).ToListAsync(cancellationToken)).Order());
+                    if (attempt == 1) firstSeen[key] = seen;
+                    else if (!firstSeen.TryGetValue(key, out var before) || before != seen) throw new SalaryImportRaceException(key);
+                    var existing = await _db.EmployeeSalaryStructures
+                        .Where(s => s.TenantId == tenantId && s.EmployeeId == row.EmployeeId && s.EffectiveDate == row.EffectiveDate)
+                        .OrderByDescending(s => s.IsActive).ThenByDescending(s => s.CreatedAtUtc)
+                        .FirstOrDefaultAsync(cancellationToken);
+                    var isNew = existing is null;
+                    existing ??= new EmployeeSalaryStructure { TenantId = tenantId, EmployeeId = row.EmployeeId, EffectiveDate = row.EffectiveDate, CreatedBy = GetUserId() };
+                    existing.SalaryStructureId = row.StructureId;
+                    existing.BasicSalary = row.Basic;
+                    existing.HousingAllowance = row.Housing;
+                    existing.TransportAllowance = row.Transport;
+                    existing.FoodAllowance = row.Food;
+                    existing.MobileAllowance = row.Mobile;
+                    existing.OtherAllowance = row.Other;
+                    existing.FixedDeduction = row.Deduction;
+                    existing.Currency = row.Currency;
+                    existing.IsActive = true;
+                    var keepId = existing.Id;
+                    await _db.EmployeeSalaryStructures
+                        .Where(s => s.TenantId == tenantId && s.EmployeeId == row.EmployeeId && s.IsActive && s.EffectiveDate == row.EffectiveDate && s.Id != keepId)
+                        .ExecuteUpdateAsync(s => s.SetProperty(p => p.IsActive, false), cancellationToken);
+                    if (isNew) { _db.EmployeeSalaryStructures.Add(existing); created++; insertedKeys.Add((row.EmployeeId, row.EffectiveDate)); } else updated++;
+                }
+                await PayrollAudit("payroll.employee_salary.imported", "EmployeeSalary", "bulk", new { received = rows.Count, created, updated, skipped, errors = errors.Count }, cancellationToken);
+                await _db.SaveChangesAsync(cancellationToken);
+        }
+        try
+        {
+            await strategy.ExecuteAsync(async () =>
+            {
+                attempt++;
+                created = 0; updated = 0; insertedKeys.Clear();
+                _db.ChangeTracker.Clear();
+                await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+                await WriteAsync();
+                await tx.CommitAsync(cancellationToken);
+            });
+        }
+        catch (SalaryImportRaceException race)
+        {
+            // A retry met rows another writer committed after the first attempt: refused, nothing from this file applied.
+            _db.ChangeTracker.Clear();
+            var conflictErrors = planned.Where(r => (r.EmployeeId, r.EffectiveDate) == race.Key).Select(r =>
+                $"Row {r.RowNum}: employee {r.EmployeeCode} already has another salary row dated {r.EffectiveDate:yyyy-MM-dd} (written at the same time by someone else).").ToList();
+            return UnprocessableEntity(new { error = "salary_row_conflict", message = "The import was not applied: another salary change for one of these employees and dates was saved at the same time. Nothing from this file was applied; review the employee's salary and re-import.", errors = conflictErrors.Concat(errors).Take(20) });
+        }
+        catch (Exception ex) when (SalaryRowConflict(ex) is { } conflict)
+        {
+            // Map the conflict back to the file's rows; nothing from this file was applied (the transaction rolled back).
+            // Postgres redacts the key detail unless error detail is enabled, so when it is missing the conflicting rows are
+            // found by looking for the active rows another writer now holds on the keys this import tried to insert.
+            _db.ChangeTracker.Clear();
+            var keys = conflict.EmployeeId != 0 ? [(conflict.EmployeeId, conflict.EffectiveDate)] : insertedKeys.ToList();
+            var employeeIds = keys.Select(k => k.Item1).Distinct().ToList();
+            var held = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                    .Where(s => s.TenantId == tenantId && s.IsActive && employeeIds.Contains(s.EmployeeId))
+                    .Select(s => new { s.EmployeeId, s.EffectiveDate }).ToListAsync(cancellationToken))
+                .Select(s => (s.EmployeeId, s.EffectiveDate)).ToHashSet();
+            var hit = planned.Where(r => keys.Contains((r.EmployeeId, r.EffectiveDate)) && held.Contains((r.EmployeeId, r.EffectiveDate))).ToList();
+            var conflictErrors = hit.Select(r =>
+                $"Row {r.RowNum}: employee {r.EmployeeCode} already has another ACTIVE salary row dated {r.EffectiveDate:yyyy-MM-dd} (written at the same time by someone else).").ToList();
+            if (conflictErrors.Count == 0) conflictErrors.Add("Another active salary row was written for one of these employees and dates at the same time.");
+            return UnprocessableEntity(new { error = "salary_row_conflict", message = "The import was not applied: two active salary rows would exist for one employee on one date. Nothing from this file was applied; re-import it.", errors = conflictErrors.Concat(errors).Take(20) });
+        }
         return Ok(new { received = rows.Count, created, updated, skipped, errors = errors.Take(20) });
+    }
+
+    /// <summary>A retried import found that another writer changed a key's salary rows after the first attempt.</summary>
+    private sealed class SalaryImportRaceException((int EmployeeId, DateOnly EffectiveDate) key) : Exception("salary row race")
+    {
+        public (int EmployeeId, DateOnly EffectiveDate) Key { get; } = key;
+    }
+
+    private sealed record PlannedSalaryRow(int RowNum, int EmployeeId, string EmployeeCode, Guid StructureId, decimal Basic, decimal Housing, decimal Transport,
+        decimal Food, decimal Mobile, decimal Other, decimal Deduction, DateOnly EffectiveDate, string Currency);
+
+    /// <summary>The (employee, date) of a 23P01 on the one-active-salary-row-per-date guard, or null for anything else.
+    /// Postgres reports it as "Key (tenant_id, employee_id, effective_date)=(…, 12, 2026-01-01) conflicts with existing key (…)".</summary>
+    internal static (int EmployeeId, DateOnly EffectiveDate)? SalaryRowConflict(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is not Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.ExclusionViolation } pg
+                || pg.ConstraintName != MeritPlanningSql.SalaryRowExclusionName) continue;
+            var m = System.Text.RegularExpressions.Regex.Match(pg.Detail ?? string.Empty, @"=\([^,]+,\s*(\d+),\s*(\d{4}-\d{2}-\d{2})\)");
+            return m.Success && int.TryParse(m.Groups[1].Value, out var id) && DateOnly.TryParse(m.Groups[2].Value, out var d) ? (id, d) : (0, default);
+        }
+        return null;
     }
 
     // ── Admin payslip PDF download ─────────────────────────────────────────────

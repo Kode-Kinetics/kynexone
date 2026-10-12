@@ -4584,6 +4584,8 @@ public class EmployeesController : ControllerBase
             approval.Status = "Cancelled";
             approval.CompletedAtUtc = effectiveAt;
         }
+        // CMP: a merit worksheet whose approval was just closed goes back to Returned instead of staying Submitted.
+        await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.OnApprovalsClosedAsync(_db, tenantId, pendingApprovals, cancelReason, actorUserId: null, ct);
 
         var cancelledApprovalIds = pendingApprovals.Select(x => x.Id).ToHashSet();
         var assignedApprovals = await _db.ApprovalRequests

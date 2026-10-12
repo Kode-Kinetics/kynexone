@@ -4605,173 +4605,229 @@
         {
           "id": "F27.01",
           "acceptance": "Create eligible merit cycles, budgeted manager worksheets/scenarios, guidelines/proration, exceptions and separate Finance/HR approval, locking and revision.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Merit cycles with eligibility, proration, department budgets, a performance × compa-ratio guideline matrix, manager worksheets and scenarios, exception justifications, strict-SoD worksheet approval (HR then Finance), locking, revisions and withdrawal. Per-cycle FX table (source, date, entered by), with missing rates blocking. Compa-ratio and range position; pay-equity cohorts with k=5 suppression. Customer-owned benchmark import (CSV/XLSX) with provenance, licence, geography, job family, level, sample, currency and percentiles; stale, missing and out-of-scope states. Approved awards take effect on the 1st of a month and reach payroll once, through EmployeeChangeRequest → EffectiveChangeJobHandler (eligibility gate) → EmployeeSalaryBreakdownWriter. No market data ships in the product.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme there were no merit cycles, budgets, pay equity, benchmarks or FX. Increment recommendations never reached payroll and skipped SoD.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "EmployeeSalaryStructure (pay of record), EmployeeChangeRequest + EffectiveChangeJobHandler, Grade min/mid/max, Company.DefaultCurrency, approval engine (strict SoD), payroll calculation and ArrearsEngine",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddMeritPlanning (8 tables; deferrable salary-row EXCLUDE with pre-flight)"
+              ],
+              "design": "docs/acceptance/capability-closure/CMP_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "321693b7 (feat/merit-planning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md (headed Chrome journey: setup → worksheet → return → approve → apply → payroll pays the new basic once)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Compensation/*"
+              ],
+              "persistence": [
+                "Golden budget/award/proration/FX/compa tests whose expected values were re-derived independently by the reviewer; payroll once-only across three months"
+              ],
+              "negative": [
+                "Independent reviews R4: FIX REQUIRED, then ACCEPT WITH FOLLOW-UPS ×2 (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
-              "license": null,
+              "provider": "Benchmarks: customer-owned imports only. No commercial feed is integrated or advertised",
+              "license": "Benchmark licence/usage-rights statement captured per import",
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner. Owner decisions: percent-of-basic recompute; per-award approval route",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'compensation', default OFF. Run the pre-deploy duplicate salary-row query first (CMP_DESIGN runbook).",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/CMP_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F27.02",
           "acceptance": "Independently reconcile monetary awards, currencies/FX dates/pay periods/FTE basis, compa-ratio/range position and declared equity/cohort controls.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Merit cycles with eligibility, proration, department budgets, a performance × compa-ratio guideline matrix, manager worksheets and scenarios, exception justifications, strict-SoD worksheet approval (HR then Finance), locking, revisions and withdrawal. Per-cycle FX table (source, date, entered by), with missing rates blocking. Compa-ratio and range position; pay-equity cohorts with k=5 suppression. Customer-owned benchmark import (CSV/XLSX) with provenance, licence, geography, job family, level, sample, currency and percentiles; stale, missing and out-of-scope states. Approved awards take effect on the 1st of a month and reach payroll once, through EmployeeChangeRequest → EffectiveChangeJobHandler (eligibility gate) → EmployeeSalaryBreakdownWriter. No market data ships in the product.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme there were no merit cycles, budgets, pay equity, benchmarks or FX. Increment recommendations never reached payroll and skipped SoD.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "EmployeeSalaryStructure (pay of record), EmployeeChangeRequest + EffectiveChangeJobHandler, Grade min/mid/max, Company.DefaultCurrency, approval engine (strict SoD), payroll calculation and ArrearsEngine",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddMeritPlanning (8 tables; deferrable salary-row EXCLUDE with pre-flight)"
+              ],
+              "design": "docs/acceptance/capability-closure/CMP_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "321693b7 (feat/merit-planning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md (headed Chrome journey: setup → worksheet → return → approve → apply → payroll pays the new basic once)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Compensation/*"
+              ],
+              "persistence": [
+                "Golden budget/award/proration/FX/compa tests whose expected values were re-derived independently by the reviewer; payroll once-only across three months"
+              ],
+              "negative": [
+                "Independent reviews R4: FIX REQUIRED, then ACCEPT WITH FOLLOW-UPS ×2 (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
-              "license": null,
+              "provider": "Benchmarks: customer-owned imports only. No commercial feed is integrated or advertised",
+              "license": "Benchmark licence/usage-rights statement captured per import",
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner. Owner decisions: percent-of-basic recompute; per-award approval route",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'compensation', default OFF. Run the pre-deploy duplicate salary-row query first (CMP_DESIGN runbook).",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/CMP_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F27.03",
           "acceptance": "Provide licensed/customer-authorized benchmark import/feed with geography/job/level, provenance, sample/age/currency metadata and stale/missing/out-of-scope handling.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Merit cycles with eligibility, proration, department budgets, a performance × compa-ratio guideline matrix, manager worksheets and scenarios, exception justifications, strict-SoD worksheet approval (HR then Finance), locking, revisions and withdrawal. Per-cycle FX table (source, date, entered by), with missing rates blocking. Compa-ratio and range position; pay-equity cohorts with k=5 suppression. Customer-owned benchmark import (CSV/XLSX) with provenance, licence, geography, job family, level, sample, currency and percentiles; stale, missing and out-of-scope states. Approved awards take effect on the 1st of a month and reach payroll once, through EmployeeChangeRequest → EffectiveChangeJobHandler (eligibility gate) → EmployeeSalaryBreakdownWriter. No market data ships in the product.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme there were no merit cycles, budgets, pay equity, benchmarks or FX. Increment recommendations never reached payroll and skipped SoD.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "EmployeeSalaryStructure (pay of record), EmployeeChangeRequest + EffectiveChangeJobHandler, Grade min/mid/max, Company.DefaultCurrency, approval engine (strict SoD), payroll calculation and ArrearsEngine",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddMeritPlanning (8 tables; deferrable salary-row EXCLUDE with pre-flight)"
+              ],
+              "design": "docs/acceptance/capability-closure/CMP_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "321693b7 (feat/merit-planning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md (headed Chrome journey: setup → worksheet → return → approve → apply → payroll pays the new basic once)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Compensation/*"
+              ],
+              "persistence": [
+                "Golden budget/award/proration/FX/compa tests whose expected values were re-derived independently by the reviewer; payroll once-only across three months"
+              ],
+              "negative": [
+                "Independent reviews R4: FIX REQUIRED, then ACCEPT WITH FOLLOW-UPS ×2 (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
-              "license": null,
+              "provider": "Benchmarks: customer-owned imports only. No commercial feed is integrated or advertised",
+              "license": "Benchmark licence/usage-rights statement captured per import",
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner. Owner decisions: percent-of-basic recompute; per-award approval route",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'compensation', default OFF. Run the pre-deploy duplicate salary-row query first (CMP_DESIGN runbook).",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/CMP_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md"
+            ]
           }
         },
         {
           "id": "F27.04",
           "acceptance": "Approved effective-dated changes update existing salary/payroll authority once; rejected/scenario/overlapping changes do not reach payroll and cancellation/reversal is tested.",
-          "verification": "NOT_EXECUTED_IN_THIS_REVIEW",
+          "verification": "LOCAL_ACCEPTANCE_EXECUTED",
           "closure": {
-            "supportedScope": null,
+            "supportedScope": "Merit cycles with eligibility, proration, department budgets, a performance × compa-ratio guideline matrix, manager worksheets and scenarios, exception justifications, strict-SoD worksheet approval (HR then Finance), locking, revisions and withdrawal. Per-cycle FX table (source, date, entered by), with missing rates blocking. Compa-ratio and range position; pay-equity cohorts with k=5 suppression. Customer-owned benchmark import (CSV/XLSX) with provenance, licence, geography, job family, level, sample, currency and percentiles; stale, missing and out-of-scope states. Approved awards take effect on the 1st of a month and reach payroll once, through EmployeeChangeRequest → EffectiveChangeJobHandler (eligibility gate) → EmployeeSalaryBreakdownWriter. No market data ships in the product.",
             "existingEvidence": [],
-            "confirmedGap": null,
+            "confirmedGap": "Before this programme there were no merit cycles, budgets, pay equity, benchmarks or FX. Increment recommendations never reached payroll and skipped SoD.",
             "criticality": "CRITICAL",
             "priority": null,
-            "owner": null,
-            "dependencyAuthority": null,
+            "owner": "Integration Owner (capability-closure programme)",
+            "dependencyAuthority": "EmployeeSalaryStructure (pay of record), EmployeeChangeRequest + EffectiveChangeJobHandler, Grade min/mid/max, Company.DefaultCurrency, approval engine (strict SoD), payroll calculation and ArrearsEngine",
             "implementation": {
               "commits": [],
               "pullRequests": [],
-              "migrations": [],
-              "design": null
+              "migrations": [
+                "AddMeritPlanning (8 tables; deferrable salary-row EXCLUDE with pre-flight)"
+              ],
+              "design": "docs/acceptance/capability-closure/CMP_DESIGN.md"
             },
             "environment": {
-              "name": null,
-              "sourceSha": null,
+              "name": "local disposable stack (Postgres 16, real API, next dev, headed Chrome)",
+              "sourceSha": "321693b7 (feat/merit-planning; published as a squashed PR commit)",
               "webBuild": null,
               "apiBuild": null
             },
             "evidence": {
-              "browser": [],
-              "api": [],
-              "persistence": [],
-              "negative": []
+              "browser": [
+                "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md (headed Chrome journey: setup → worksheet → return → approve → apply → payroll pays the new basic once)"
+              ],
+              "api": [
+                "Zayra.Api.Tests/Compensation/*"
+              ],
+              "persistence": [
+                "Golden budget/award/proration/FX/compa tests whose expected values were re-derived independently by the reviewer; payroll once-only across three months"
+              ],
+              "negative": [
+                "Independent reviews R4: FIX REQUIRED, then ACCEPT WITH FOLLOW-UPS ×2 (REGISTER §5)"
+              ]
             },
             "externalStatus": {
-              "provider": null,
-              "license": null,
+              "provider": "Benchmarks: customer-owned imports only. No commercial feed is integrated or advertised",
+              "license": "Benchmark licence/usage-rights statement captured per import",
               "device": null,
               "statutory": null
             },
-            "gate": "NOT_STARTED",
-            "residualOwner": null,
+            "gate": "CONDITIONAL_ACCEPTANCE",
+            "residualOwner": "Integration Owner. Owner decisions: percent-of-basic recompute; per-award approval route",
             "dueDate": null,
-            "publishedClaim": null,
-            "documentationRefs": []
+            "publishedClaim": "Local acceptance only. Not deployed: opt-in feature 'compensation', default OFF. Run the pre-deploy duplicate salary-row query first (CMP_DESIGN runbook).",
+            "documentationRefs": [
+              "docs/acceptance/capability-closure/REGISTER.md",
+              "docs/acceptance/capability-closure/CMP_DESIGN.md",
+              "docs/acceptance/capability-closure/evidence/cmp/EVIDENCE.md"
+            ]
           }
         }
       ]

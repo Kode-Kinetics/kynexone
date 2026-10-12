@@ -80,6 +80,14 @@ public sealed class PostgresFixture : IAsyncLifetime
             command.CommandText = ddl;
             await command.ExecuteNonQueryAsync();
         }
+        // CMP (AddMeritPlanning): the pre-flight and the deferred one-active-salary-row-per-date guard, the migration's
+        // own constants. Plain commands for the same reason as above ($$ / % must reach the server verbatim).
+        foreach (var ddl in new[] { Zayra.Api.Migrations.AddMeritPlanning.PreflightDuplicateSalaryRows, Zayra.Api.Migrations.AddMeritPlanning.AddSalaryRowExclusion, Zayra.Api.Migrations.AddMeritPlanning.AddEffectiveFirstOfMonthCheck })
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
         // ENG (AddEngagementSurveys): published-template immutability and append-only responses — the migration's own text.
         foreach (var ddl in Zayra.Api.Migrations.AddEngagementSurveys.PostgresOnlyDdl)
         {

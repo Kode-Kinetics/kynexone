@@ -138,6 +138,11 @@ public static class FeatureKeys
     /// </summary>
     public const string PunchGeofence = "attendance_geofence";
     /// <summary>
+    /// CMP — merit planning, pay benchmarking and pay equity. OPT-IN: an absent row means OFF; switched on per tenant by the
+    /// platform team (PUT /api/platform/tenants/{id}/features/compensation). See OptInFeatures.
+    /// </summary>
+    public const string Compensation = "compensation";
+    /// <summary>
     /// Engagement surveys (ENG): templates, anonymous/confidential/identified surveys, suppressed results, actions.
     /// OPT-IN: an absent row means OFF. Switched on per tenant by the platform team. See OptInFeatures.
     /// </summary>

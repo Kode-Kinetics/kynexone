@@ -8,6 +8,7 @@ import { setupExperience } from './setupExperience';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
+import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
 import { glEosb } from './glEosb';
@@ -1395,6 +1396,7 @@ const en: Dict = {
   ...glSetup.en,
   ...glErp.en,
   ...glApiKeys.en,
+  ...compensation.en,
   // Engagement surveys — see ./engagement.
   ...engagement.en,
   ...glEosb.en,
@@ -2777,6 +2779,7 @@ const ar: Dict = {
   ...glSetup.ar,
   ...glErp.ar,
   ...glApiKeys.ar,
+  ...compensation.ar,
   ...engagement.ar,
   ...glEosb.ar,
   ...setupPolicyConfiguration.ar,

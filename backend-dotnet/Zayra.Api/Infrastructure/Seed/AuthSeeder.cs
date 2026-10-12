@@ -190,6 +190,9 @@ public class AuthSeeder : IAuthSeeder
             "roles.manage" or "users.manage" or "manager.read" or "manager.approve" or
             "qiwa.read" or "qiwa.sync" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // CMP: the whole merit programme, including pay equity — named key by key, never by prefix
+            // (CompensationRoleGrantTests: no prefix bundle may reach a compensation key).
+            x.Key is "compensation.read" or "compensation.plan" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
             // Engagement surveys, by name (no prefix): everything, including identified surveys' per-person answers.
             x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.identified.read" or "engagement.actions.manage" ||
             // LRN: the whole learning module, explicitly (no prefix grant, so a future learning.* key is a decision).
@@ -219,6 +222,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
+            x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
             // Engagement surveys, by name: runs surveys and reads comments; NOT identified per-person answers.
             x.Key is "engagement.read" or "engagement.manage" or "engagement.comments.read" or "engagement.actions.manage" ||
             // LRN: runs the catalogue, assignments and reports, and resets locked attempts / corrects records (audited).
@@ -266,7 +271,9 @@ public class AuthSeeder : IAuthSeeder
         // Level 7 — standalone loan operator. Assigning the role remains an administrator decision.
         await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
             "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
-            "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read"
+            "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read",
+            // CMP: Finance sees merit budgets and totals and may decide a worksheet step routed to it.
+            "compensation.read", "compensation.approve"
         }), 7, true, cancellationToken);
 
         // Level 8 — Finance Approver: finance approvals
@@ -278,7 +285,9 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Finance Approver", "Finance approver for loans, advances and payroll", Ps(new[] {
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
-            "finance.gl.read", "payroll.rates.read", "finance.erp.confirm"
+            "finance.gl.read", "payroll.rates.read", "finance.erp.confirm",
+            // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
+            "compensation.read", "compensation.approve"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
@@ -299,6 +308,8 @@ public class AuthSeeder : IAuthSeeder
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
             "performance.read", "performance.write",
+            // CMP: a line manager plans merit for their own direct reports only (their own line sits on their manager's sheet).
+            "compensation.plan",
             // Engagement: the team's results (suppressed, cut to their reporting line) and the team's actions.
             "engagement.read", "engagement.actions.manage",
             // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
@@ -516,6 +527,13 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
             ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),
             ("payroll.rates.statutory_override", "Payroll", "Create bounded per-company statutory rate overrides (reason + effective-dated + audited)"),
+            // CMP — merit planning and pay benchmarking (opt-in feature 'compensation').
+            ("compensation.read", "Compensation", "Read merit cycles, budgets, utilisation and worksheets"),
+            ("compensation.plan", "Compensation", "Build and submit merit worksheets for your own direct reports"),
+            ("compensation.manage", "Compensation", "Run merit cycles: eligibility, budgets, guidelines, FX, review, apply, cancel and reversal"),
+            ("compensation.approve", "Compensation", "Decide merit worksheets and approve merit cycles (never your own pay)"),
+            ("compensation.benchmarks.manage", "Compensation", "Import customer-owned pay benchmarks and map them to designations and grades"),
+            ("compensation.equity.read", "Compensation", "View pay-equity analysis (small cohorts suppressed)"),
             // LRN — learning management (opt-in feature "learning"). Employees learn through ESS (ess.read/ess.write).
             ("learning.read", "Learning", "View the course catalogue, learning paths and assignment rules"),
             ("learning.manage", "Learning", "Author and publish courses, learning paths and assignment rules"),

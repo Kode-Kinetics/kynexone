@@ -93,6 +93,14 @@ public class TableBudgetRatchetTests
         // EosbProvisionSnapshots + GlAdjustmentRequests (POD-C2, owner-approved): the per-employee EOSB obligation
         // witness behind the monthly provision, and one maker-checker table for the EOSB true-up and the legacy
         // 2104/2105 reclass. Finance owns both; kept as long as the GL lines they explain.
+        // CMP merit planning (AddMeritPlanning, +8; cap 7 + one written exception — CMP_DESIGN.md): CompCycles (a planning
+        // round: period, effective date, currency, eligibility, lifecycle), CompCycleBudgets (per-department pool in
+        // cycle currency), CompGuidelines (rating × compa-ratio band → min/target/max %), CompFxRates (the product's first
+        // FX table: rate, source, date, entered by), CompWorksheets (the approval subject: manager × scenario, status,
+        // revision — the exception), CompWorksheetLines (the award and what the approver saw; one applied award per
+        // cycle × employee), PayBenchmarkSets (customer-owned survey import with provenance and licence) and
+        // PayBenchmarkRows (percentiles + designation/grade mapping). HR owns all eight; Finance reads budgets. Kept as
+        // long as the salary rows the awards produced. No existing table holds any of these facts.
         // ENG — engagement surveys (AddEngagementSurveys, ENG cap 7, six used; the orphan employee_sentiment_pulses is
         // left in place — no DROP in this release). SurveyTemplates: versioned questionnaires, published versions frozen.
         // Surveys: one cycle (mode, audience, dates, k, recurrence). SurveyInvitations: the participation ledger (who was
@@ -115,7 +123,7 @@ public class TableBudgetRatchetTests
         // (potential + performance snapshot, generated 9-box cell, immutable once calibrated), SuccessionSlateVersions
         // (immutable hashed snapshots, approval-routed), DevelopmentPlans and DevelopmentPlanActions (linked to
         // learning_assignments / EmployeeGoal). Retention: 3 years after employment ends, then anonymised (SuccessionRetentionJob).
-        DeclaredDbSets().Should().HaveCount(358,
+        DeclaredDbSets().Should().HaveCount(366,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

@@ -378,8 +378,10 @@ public static class ModuleCatalog
             LabelEn = "Payroll",
             LabelAr = "الرواتب",
             Description = "Salary structures, payroll runs, payslips and bank/WPS payment files.",
-            RoutePrefixes = ["/api/payroll"],
-            NavPaths = ["/payroll", "/payroll/variance"],
+            // CMP merit planning writes salary only through the governed change path, so it belongs to Payroll; the
+            // compensation opt-in flag (OptInFeatures) gates it on top of this.
+            RoutePrefixes = ["/api/payroll", "/api/compensation/merit"],
+            NavPaths = ["/payroll", "/payroll/variance", "/compensation"],
             NotificationCategories = [NotificationCategories.Payslip],
         },
         new ModuleDefinition
@@ -523,6 +525,9 @@ public static class ModuleCatalog
                 "Selfie attendance collects a face image, so it is an opt-in feature only the platform team can switch "
                 + "on, and only once the owner's DPIA sign-off and KSA data-residency confirmation are recorded on the "
                 + "flag. Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.Compensation] =
+                "Merit planning and pay benchmarking is an opt-in feature switched on per tenant by the platform team while it is "
+                + "rolled out. It is off unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",
             [FeatureKeys.Engagement] =
                 "Engagement surveys are an opt-in feature the platform team switches on per tenant while they are being "
                 + "rolled out. They are off unless enabled, and Tenant Admin cannot switch them. Their routes sit under the "

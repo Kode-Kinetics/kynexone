@@ -46,6 +46,8 @@ public static class ApprovalEntities
             // TimesheetService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync.
             [TimesheetConstants.ApprovalEntityName] = "submitting a timesheet",
             [Zayra.Api.Application.Jawazat.JawazatConstants.ApprovalEntityName] = "creating an employer-assisted Jawazat request",
+            // MeritPlanningService.SubmitWorksheetAsync → IApprovalWorkflowService.CreateRequestAsync.
+            [Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.EntityName] = "submitting a merit planning worksheet",
             // SuccessionSlateService.SubmitAsync → IApprovalWorkflowService.CreateRequestAsync (ids and a hash only; no subject).
             [Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.EntityName] = "submitting a succession slate version",
         };

@@ -69,8 +69,14 @@ CandidateAssessments
 CandidateDocuments
 Candidates
 ClientRateDefinitions
+CompCycleBudgets
+CompCycles
+CompFxRates
+CompGuidelines
 CompOffCredits
 CompOffUsages
+CompWorksheetLines
+CompWorksheets
 Companies
 CompanyComplianceProfiles
 CompanyCutovers
@@ -253,6 +259,8 @@ OvertimeTypes
 PIPCheckIns
 PassportRecords
 PasswordResetTokens
+PayBenchmarkRows
+PayBenchmarkSets
 PayComponents
 PayrollAIValidationResults
 PayrollAdjustments

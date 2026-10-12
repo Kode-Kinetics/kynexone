@@ -39,6 +39,10 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
     private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
+    // The modules that raised an approved change re-check it before it is written (e.g. a merit award for someone who
+    // went on notice). Run here when a decision applies a change immediately, as the effective-date job does.
+    private readonly IReadOnlyList<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate> _effectiveChangeGates;
+
     public ApprovalWorkflowService(ZayraDbContext db, IAuditService audit)
         : this(db, audit, new HrmHierarchyService(db, audit))
     {
@@ -53,9 +57,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IApprovalRouter? router = null,
         IDataProtectionProvider? dataProtection = null,
         IDataScopeService? dataScopes = null,
-        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null)
+        IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null,
+        IEnumerable<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate>? effectiveChangeGates = null)
     {
         _db = db;
+        _effectiveChangeGates = effectiveChangeGates?.ToList() ?? [];
         _audit = audit;
         _changeBaselineProtector = dataProtection is null ? null : EmployeeChangeBaseline.CreateProtector(dataProtection);
         // Optional with concrete fallback so direct constructions keep compiling AND enforcing.
@@ -535,6 +541,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
+        // CMP: merit worksheet SoD beyond the subject bar (no employee on the worksheet decides it) + reject needs a reason.
+        await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ValidateDecisionAsync(_db, approval, requestedDecision, context, Clean(request.Comments), cancellationToken);
         // SUC: nobody on a succession slate, or reporting to someone on it, decides it. No-op for other entities.
         await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
@@ -610,6 +618,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: a returned merit worksheet goes back to its manager for revision. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             // SUC: a rejected slate version is ReturnedForRevision with the approver's reason. No-op for anything else.
             await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
@@ -631,6 +641,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // CMP: the final approval locks the merit worksheet. No-op for anything else.
+            await Zayra.Api.Infrastructure.Compensation.CompensationApprovalSync.ApplyAsync(_db, approval, normalizedDecision, context, Clean(request.Comments), cancellationToken);
             // SUC: the approved slate version supersedes the previous one in this same SaveChanges. No-op for anything else.
             await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
@@ -1061,6 +1073,16 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
         if (employee is null) throw new InvalidOperationException("Employee for this change request was not found.");
+        // The date has passed, so this decision writes the change now — the effective-date job will not see it. The
+        // originating module gets the same last word here as it gets in the job (a re-review approved late must not pay
+        // a merit award to someone who has since resigned). Refused ⇒ Cancelled with the reason; nothing is written.
+        if (await Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.CheckAsync(
+                _effectiveChangeGates, _db, approval.TenantId, change, employee, today, cancellationToken) is { } refusal)
+        {
+            Zayra.Api.Infrastructure.Employees.EffectiveChangeGateRunner.StageRefusal(_db, approval.TenantId, change, employee,
+                refusal with { NotifyUserId = refusal.NotifyUserId ?? change.RequestedByUserId }, approverId, "approval_decision");
+            return;
+        }
         var changes = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
         // A change the effective-date job sent back for review: the reviewer approved what the re-review showed,
         // so a value that moved since is refused, not overwritten (throws => nothing saved, request stays Pending;

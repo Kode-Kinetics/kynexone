@@ -596,6 +596,8 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
+// CMP — merit planning, pay benchmarks, pay equity (opt-in feature 'compensation').
+Zayra.Api.Infrastructure.Compensation.CompensationServiceCollectionExtensions.AddCompensation(builder.Services);
 // LRN — learning management: every registration (services, sweep worker, the cmi5 CORS provider) in one extension.
 // Gated per tenant by the learning opt-in flag (OptInFeatures).
 Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearning(builder.Services, builder.Configuration);

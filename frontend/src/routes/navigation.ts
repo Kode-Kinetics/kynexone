@@ -29,6 +29,7 @@ import {
   CheckSquare2,
   HeartPulse,
   FileSpreadsheet,
+  TrendingUp,
   GraduationCap,
   Sprout,
 } from 'lucide-react';
@@ -71,6 +72,8 @@ export const navigationGroups: NavGroup[] = [
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
+      // CMP (compensation opt-in flag): merit cycles, manager worksheets, pay benchmarks and pay equity.
+      { label: 'Merit planning', icon: TrendingUp, path: '/compensation', requiredPermissions: ['compensation.read', 'compensation.plan', 'compensation.manage', 'compensation.approve', 'compensation.benchmarks.manage', 'compensation.equity.read'], requiredFeatureKey: 'compensation' },
       { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write'], requiredFeatureKey: 'recruitment' },
       { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
       // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
@@ -144,6 +147,7 @@ export const navigationHints: Record<string, string> = {
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
   '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
+  '/compensation': 'Merit cycles, manager worksheets within budget and guidelines, pay benchmarks and pay equity.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',
   '/offboarding': 'Resignations and exits: clearance, final settlement and end of service.',
   '/performance': 'Goals, review cycles and ratings.',

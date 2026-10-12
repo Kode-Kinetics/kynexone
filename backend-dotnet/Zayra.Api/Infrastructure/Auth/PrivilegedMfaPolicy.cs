@@ -88,6 +88,8 @@ public static class PrivilegedMfaPolicy
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
         "performance.write",
+        // CMP: a line manager plans merit for their own direct reports only (reporting-line scoped, approval-routed).
+        "compensation.plan",
         // Follow-up actions from survey results, given to people in the caller's own scope.
         "engagement.actions.manage",
     };
@@ -127,6 +129,9 @@ public static class PrivilegedMfaPolicy
         // Release A: packages and renewal cases show each employee's pay terms (like payroll.read), and the manage keys
         // change contract terms — all four are privileged, the read keys included.
         "entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage",
+        // CMP: every key but plan shows or decides company-wide pay (read included, like payroll.read); equity reads
+        // pay by gender/nationality cohort.
+        "compensation.read", "compensation.manage", "compensation.approve", "compensation.benchmarks.manage", "compensation.equity.read",
         // Engagement: running surveys and setting the minimum group size, reading free-text comments, and per-person
         // answers of identified surveys.
         "engagement.manage", "engagement.comments.read", "engagement.identified.read",
