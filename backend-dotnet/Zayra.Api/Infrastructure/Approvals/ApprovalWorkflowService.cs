@@ -535,6 +535,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http));
         await JawazatApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken,
             JawazatApprovalSync.IsJawazat(approval) ? await ResolveJawazatScopeAsync(tenantId, context, cancellationToken) : null);
+        // SUC: nobody on a succession slate, or reporting to someone on it, decides it. No-op for other entities.
+        await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken);
         if (string.Equals(approval.EntityName, nameof(LeaveRequest), StringComparison.OrdinalIgnoreCase))
         {
             // LeaveRequest/LeaveApproval/balance is the aggregate of record. ApprovalRequest is
@@ -608,6 +610,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: a rejected renewal offer returns the case to OfferInPreparation (T7). No-op for anything else.
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // SUC: a rejected slate version is ReturnedForRevision with the approver's reason. No-op for anything else.
+            await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
         else if (step.IsFinalStep)
         {
@@ -627,6 +631,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await Zayra.Api.Infrastructure.Recruitment.RequisitionApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
             // Release A: the final approval moves the renewal case on (T8 / T9; a batch enqueues per-case moves).
             await Zayra.Api.Infrastructure.Contracts.ContractRenewalApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), cancellationToken);
+            // SUC: the approved slate version supersedes the previous one in this same SaveChanges. No-op for anything else.
+            await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ApplyAsync(_db, approval, normalizedDecision, Clean(request.Comments), context, cancellationToken);
         }
         else
         {
@@ -659,6 +665,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
+        // SUC: after the commit, the slate's own audit row and the decision notice to its submitter. No-op for anything else.
+        await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.AfterCommitAsync(_db, _audit, _http?.HttpContext?.RequestServices, approval,
+            normalizedDecision, context, cancellationToken);
         return JawazatApprovalSync.IsJawazat(approval)
             ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
             : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
@@ -948,6 +957,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (BenefitClaims.IsClaim(approval))
         {
             try { await BenefitClaims.ValidateDecisionAsync(_db, approval, context, cancellationToken, AdditionalBenefitGrants.ResolveScope(context, _http)); }
+            catch (InvalidOperationException) { return false; }
+        }
+        // SUC: the slate SoD outranks approvals.override, like the bars above.
+        if (Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.IsSlate(approval))
+        {
+            try { await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.ValidateDecisionAsync(_db, approval, context, cancellationToken); }
             catch (InvalidOperationException) { return false; }
         }
         var permissions = context.Permissions ?? Array.Empty<string>();

@@ -17,8 +17,11 @@ public static class RetentionRuleKeys
     /// <summary>An engagement survey closed longer ago than the tenant's comment retention: its free text is removed.</summary>
     public const string EngagementFreeTextExpired = "engagement.free-text-expired";
 
+    /// <summary>SUC: succession records of a person who left more than 3 years ago (anonymised, never deleted).</summary>
+    public const string SuccessionPostEmployment = "succession.post-employment-3y";
+
     public static readonly IReadOnlyList<string> All =
-        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired];
+        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment];
 }
 
 /// <summary>

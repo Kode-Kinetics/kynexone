@@ -596,6 +596,12 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
 // surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
+// LRN — learning management: every registration (services, sweep worker, the cmi5 CORS provider) in one extension.
+// Gated per tenant by the learning opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearning(builder.Services, builder.Configuration);
+// SUC — succession and career development: services, the eligibility sweep, the LRN completion listener and the retention
+// rule, in one extension. Gated per tenant by the succession opt-in flag (OptInFeatures).
+Zayra.Api.Infrastructure.Succession.SuccessionServiceCollectionExtensions.AddSuccession(builder.Services, builder.Configuration);
 
 // ENG — engagement surveys (services, the survey worker and the comment retention rule). Gated per tenant by the
 // opt-in `engagement` flag (OptInFeatures): off unless the platform enables it.

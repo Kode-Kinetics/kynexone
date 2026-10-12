@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261011124500_AddEngagementSurveys")]
+    [Migration("20261012043002_AddEngagementSurveys")]
     partial class AddEngagementSurveys
     {
         /// <inheritdoc />
@@ -8157,6 +8157,264 @@ namespace Zayra.Api.Migrations
                     b.ToTable("designations", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlan", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at_utc");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancel_reason");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at_utc");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("LastReviewNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("last_review_note");
+
+                    b.Property<DateTime?>("LastReviewedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_reviewed_at_utc");
+
+                    b.Property<DateOnly>("NextReviewOn")
+                        .HasColumnType("date")
+                        .HasColumnName("next_review_on");
+
+                    b.Property<Guid?>("NominationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("nomination_id");
+
+                    b.Property<int?>("OwnerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("owner_employee_id");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("purpose");
+
+                    b.Property<DateOnly?>("ReviewReminderSentFor")
+                        .HasColumnType("date")
+                        .HasColumnName("review_reminder_sent_for");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("NominationId");
+
+                    b.HasIndex("OwnerEmployeeId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_development_plans_one_current_per_employee")
+                        .HasFilter("status IN ('Active','OnHold')");
+
+                    b.HasIndex("TenantId", "Status", "NextReviewOn");
+
+                    b.ToTable("development_plans", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_development_plans__cancel_reason", "status <> 'Cancelled' OR (cancelled_at_utc IS NOT NULL AND cancel_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_development_plans__completed_stamped", "status <> 'Completed' OR completed_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_development_plans__purpose", "length(trim(purpose)) > 0");
+
+                            t.HasCheckConstraint("ck_development_plans__status", "status IN ('Draft','Active','OnHold','Completed','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlanAction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActionType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("action_type");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<string>("CompletionMethod")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("completion_method");
+
+                    b.Property<DateTime?>("CompletionProposedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completion_proposed_at_utc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateOnly?>("DueOn")
+                        .HasColumnType("date")
+                        .HasColumnName("due_on");
+
+                    b.Property<Guid?>("EmployeeGoalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("employee_goal_id");
+
+                    b.Property<Guid?>("LearningAssignmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("learning_assignment_id");
+
+                    b.Property<int?>("MentorEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("mentor_employee_id");
+
+                    b.Property<DateTime?>("OverdueNoticeSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("overdue_notice_sent_at_utc");
+
+                    b.Property<int?>("OwnerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("owner_employee_id");
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("plan_id");
+
+                    b.Property<string>("ProgressNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("progress_note");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeGoalId");
+
+                    b.HasIndex("LearningAssignmentId");
+
+                    b.HasIndex("MentorEmployeeId");
+
+                    b.HasIndex("OwnerEmployeeId");
+
+                    b.HasIndex("PlanId", "SortOrder");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "Status", "DueOn");
+
+                    b.ToTable("development_plan_actions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_development_plan_actions__completed_stamped", "(status = 'Completed') = (completed_at_utc IS NOT NULL AND completion_method IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__link_matches_type", "((action_type = 'Learning') = (learning_assignment_id IS NOT NULL)) AND ((action_type = 'Goal') = (employee_goal_id IS NOT NULL)) AND (action_type <> 'Mentoring' OR mentor_employee_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__linked_method_fits", "(completion_method IS NULL OR completion_method <> 'LinkedLearningCompleted' OR action_type = 'Learning') AND (completion_method IS NULL OR completion_method <> 'LinkedGoalCompleted' OR action_type = 'Goal')");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__method", "completion_method IS NULL OR completion_method IN ('Manual','LinkedLearningCompleted','LinkedGoalCompleted')");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__proposal_manual_only", "completion_proposed_at_utc IS NULL OR action_type NOT IN ('Learning','Goal')");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__status", "status IN ('NotStarted','InProgress','Completed','Cancelled')");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__title", "length(trim(title)) > 0");
+
+                            t.HasCheckConstraint("ck_development_plan_actions__type", "action_type IN ('Learning','Goal','Experience','Mentoring','Other')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.DocType", b =>
                 {
                     b.Property<Guid>("Id")
@@ -12973,9 +13231,9 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_surveys__cycle_positive", "cycle_number >= 1");
 
-                            t.HasCheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
-
                             t.HasCheckConstraint("ck_surveys__frozen_k_not_lower", "frozen_min_cohort_size IS NULL OR frozen_min_cohort_size >= min_cohort_size");
+
+                            t.HasCheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
 
                             t.HasCheckConstraint("ck_surveys__min_cohort_floor", "min_cohort_size >= 3");
 
@@ -16218,6 +16476,1239 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "Status");
 
                     b.ToTable("job_openings", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("AssignedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("assigned_at_utc");
+
+                    b.Property<Guid?>("AssignedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assigned_by_user_id");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancel_reason");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at_utc");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<int>("Cycle")
+                        .HasColumnType("integer")
+                        .HasColumnName("cycle");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
+
+                    b.Property<Guid?>("DesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("designation_id");
+
+                    b.Property<DateOnly?>("DueDate")
+                        .HasColumnType("date")
+                        .HasColumnName("due_date");
+
+                    b.Property<DateTime?>("DueReminderSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("due_reminder_sent_at_utc");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<Guid?>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
+
+                    b.Property<bool>("IsMandatory")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_mandatory");
+
+                    b.Property<DateTime?>("NoRecipientAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("no_recipient_at_utc");
+
+                    b.Property<DateTime?>("OverdueNoticeSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("overdue_notice_sent_at_utc");
+
+                    b.Property<Guid>("PathId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("path_id");
+
+                    b.Property<Guid?>("RenewalOfCredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewal_of_credential_id");
+
+                    b.Property<Guid?>("RuleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("source");
+
+                    b.Property<DateTime?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("PathId");
+
+                    b.HasIndex("RenewalOfCredentialId");
+
+                    b.HasIndex("RuleId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "PathId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_learning_assignments_one_active_per_employee_path")
+                        .HasFilter("status IN ('Assigned','InProgress')");
+
+                    b.HasIndex("TenantId", "EmployeeId", "Status");
+
+                    b.HasIndex("TenantId", "PathId", "Status");
+
+                    b.HasIndex("TenantId", "Status", "DueDate");
+
+                    b.ToTable("learning_assignments", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_assignments__cancel_reason", "status <> 'Cancelled' OR (cancelled_at_utc IS NOT NULL AND cancel_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_learning_assignments__completed_stamped", "status <> 'Completed' OR completed_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_learning_assignments__cycle", "cycle >= 1");
+
+                            t.HasCheckConstraint("ck_learning_assignments__renewal_source", "(renewal_of_credential_id IS NULL) = (source <> 'Renewal')");
+
+                            t.HasCheckConstraint("ck_learning_assignments__rule_source", "rule_id IS NULL OR source = 'Rule'");
+
+                            t.HasCheckConstraint("ck_learning_assignments__source", "source IN ('Employee','Department','Designation','Grade','Rule','Renewal')");
+
+                            t.HasCheckConstraint("ck_learning_assignments__status", "status IN ('Assigned','InProgress','Completed','Cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningAssignmentRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<int>("DueInDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("due_in_days");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsMandatory")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_mandatory");
+
+                    b.Property<DateTime?>("LastAppliedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_applied_at_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("PathId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("path_id");
+
+                    b.Property<Guid>("TargetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_id");
+
+                    b.Property<string>("TargetKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("target_kind");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PathId");
+
+                    b.HasIndex("TenantId", "IsActive");
+
+                    b.HasIndex("TenantId", "PathId", "TargetKind", "TargetId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_learning_assignment_rules_one_active_per_target")
+                        .HasFilter("is_active");
+
+                    b.ToTable("learning_assignment_rules", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_assignment_rules__due_in_days", "due_in_days >= 0 AND due_in_days <= 3650");
+
+                            t.HasCheckConstraint("ck_learning_assignment_rules__target_kind", "target_kind IN ('Company','Department','Designation','Grade')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AnswersJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("answers_json");
+
+                    b.Property<int>("AttemptNo")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_no");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<Guid>("EnrollmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("enrollment_id");
+
+                    b.Property<decimal>("PassMarkPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("pass_mark_percent");
+
+                    b.Property<string>("QuestionOrderJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("question_order_json");
+
+                    b.Property<decimal?>("ScorePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("score_percent");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at_utc");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnrollmentId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_learning_attempts_one_open_per_enrollment")
+                        .HasFilter("status = 'InProgress'");
+
+                    b.HasIndex("EnrollmentId", "AttemptNo")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.ToTable("learning_attempts", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_attempts__attempt_no", "attempt_no >= 1");
+
+                            t.HasCheckConstraint("ck_learning_attempts__score", "score_percent IS NULL OR (score_percent >= 0 AND score_percent <= 100)");
+
+                            t.HasCheckConstraint("ck_learning_attempts__scored_when_submitted", "(status = 'InProgress') = (submitted_at_utc IS NULL) AND (status = 'InProgress' OR score_percent IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_learning_attempts__status", "status IN ('InProgress','Passed','Failed')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningCourse", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AssessmentJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("assessment_json");
+
+                    b.Property<string>("Cmi5ActivityId")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cmi5_activity_id");
+
+                    b.Property<string>("Cmi5AuOrigin")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("cmi5_au_origin");
+
+                    b.Property<string>("Cmi5AuUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("cmi5_au_url");
+
+                    b.Property<string>("Cmi5MoveOn")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("cmi5_move_on");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("code");
+
+                    b.Property<string>("CompletionRule")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("completion_rule");
+
+                    b.Property<string>("ContentKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("content_kind");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("DescriptionAr")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description_ar");
+
+                    b.Property<int?>("EstimatedMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("estimated_minutes");
+
+                    b.Property<bool>("IssuesCertificate")
+                        .HasColumnType("boolean")
+                        .HasColumnName("issues_certificate");
+
+                    b.Property<string>("LessonHtml")
+                        .HasColumnType("text")
+                        .HasColumnName("lesson_html");
+
+                    b.Property<string>("LinkUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("link_url");
+
+                    b.Property<int?>("MaxAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_attempts");
+
+                    b.Property<decimal?>("PassMarkPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("pass_mark_percent");
+
+                    b.Property<DateTime?>("PublishedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at_utc");
+
+                    b.Property<Guid?>("PublishedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("published_by_user_id");
+
+                    b.Property<bool>("RequiresHrVerification")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requires_hr_verification");
+
+                    b.Property<DateTime?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at_utc");
+
+                    b.Property<bool>("ShuffleQuestions")
+                        .HasColumnType("boolean")
+                        .HasColumnName("shuffle_questions");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("TitleAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title_ar");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int?>("ValidityMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("validity_months");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("version_number");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code", "VersionNumber")
+                        .IsUnique();
+
+                    b.HasIndex(new[] { "TenantId", "Code" }, "ux_learning_courses_one_draft_per_code")
+                        .IsUnique()
+                        .HasFilter("status = 'Draft'");
+
+                    b.HasIndex(new[] { "TenantId", "Code" }, "ux_learning_courses_one_published_per_code")
+                        .IsUnique()
+                        .HasFilter("status = 'Published'");
+
+                    b.ToTable("learning_courses", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_courses__assessment_pass_mark_positive", "status = 'Draft' OR completion_rule <> 'Assessment' OR pass_mark_percent > 0");
+
+                            t.HasCheckConstraint("ck_learning_courses__completion_rule", "completion_rule IN ('Assessment','Cmi5MoveOn','Acknowledgement')");
+
+                            t.HasCheckConstraint("ck_learning_courses__completion_rule_fits_content", "status = 'Draft' OR (completion_rule = 'Assessment' AND content_kind IN ('Lesson','Link') AND assessment_json IS NOT NULL     AND pass_mark_percent IS NOT NULL AND max_attempts IS NOT NULL) OR (completion_rule = 'Cmi5MoveOn' AND content_kind = 'Cmi5' AND cmi5_move_on IS NOT NULL AND assessment_json IS NULL) OR (completion_rule = 'Acknowledgement' AND content_kind IN ('Lesson','Link') AND assessment_json IS NULL)");
+
+                            t.HasCheckConstraint("ck_learning_courses__content_kind", "content_kind IN ('Lesson','Link','Cmi5')");
+
+                            t.HasCheckConstraint("ck_learning_courses__content_present", "status = 'Draft' OR (content_kind = 'Lesson' AND lesson_html IS NOT NULL) OR (content_kind = 'Link' AND link_url IS NOT NULL) OR (content_kind = 'Cmi5' AND cmi5_au_url IS NOT NULL AND cmi5_activity_id IS NOT NULL AND cmi5_au_origin IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_learning_courses__hr_verification_cmi5_only", "NOT requires_hr_verification OR content_kind = 'Cmi5'");
+
+                            t.HasCheckConstraint("ck_learning_courses__max_attempts", "max_attempts IS NULL OR (max_attempts >= 1 AND max_attempts <= 20)");
+
+                            t.HasCheckConstraint("ck_learning_courses__move_on", "cmi5_move_on IS NULL OR cmi5_move_on IN ('Passed','Completed','CompletedAndPassed','CompletedOrPassed','NotApplicable')");
+
+                            t.HasCheckConstraint("ck_learning_courses__pass_mark", "pass_mark_percent IS NULL OR (pass_mark_percent >= 0 AND pass_mark_percent <= 100)");
+
+                            t.HasCheckConstraint("ck_learning_courses__published_stamped", "status = 'Draft' OR published_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_learning_courses__status", "status IN ('Draft','Published','Retired')");
+
+                            t.HasCheckConstraint("ck_learning_courses__validity_months", "validity_months IS NULL OR (validity_months >= 1 AND validity_months <= 120)");
+
+                            t.HasCheckConstraint("ck_learning_courses__version_number", "version_number >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CertificateNumber")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("certificate_number");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateOnly>("CompletedOn")
+                        .HasColumnType("date")
+                        .HasColumnName("completed_on");
+
+                    b.Property<string>("CompletionSource")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("completion_source");
+
+                    b.Property<string>("CourseCode")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("course_code");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("course_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<Guid>("EnrollmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("enrollment_id");
+
+                    b.Property<DateTime?>("ExpiredNoticeSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expired_notice_sent_at_utc");
+
+                    b.Property<DateOnly?>("ExpiresOn")
+                        .HasColumnType("date")
+                        .HasColumnName("expires_on");
+
+                    b.Property<DateTime?>("ExpiringNoticeSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expiring_notice_sent_at_utc");
+
+                    b.Property<DateTime>("IssuedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("issued_at_utc");
+
+                    b.Property<DateTime?>("NoRecipientAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("no_recipient_at_utc");
+
+                    b.Property<Guid>("PathId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("path_id");
+
+                    b.Property<Guid?>("RenewalAssignmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("renewal_assignment_id");
+
+                    b.Property<string>("RevokeReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("revoke_reason");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid?>("RevokedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoked_by_user_id");
+
+                    b.Property<decimal?>("ScorePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("score_percent");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("SupersedeReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("supersede_reason");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at_utc");
+
+                    b.Property<Guid?>("SupersedesCredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supersedes_credential_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("VerificationCode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("verification_code");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("EnrollmentId");
+
+                    b.HasIndex("PathId");
+
+                    b.HasIndex("RenewalAssignmentId");
+
+                    b.HasIndex("SupersedesCredentialId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_learning_credentials_superseded_once")
+                        .HasFilter("supersedes_credential_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "CertificateNumber")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId");
+
+                    b.HasIndex("TenantId", "Status", "ExpiresOn");
+
+                    b.ToTable("learning_credentials", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_credentials__completion_source", "completion_source IN ('Assessment','Cmi5','Acknowledgement')");
+
+                            t.HasCheckConstraint("ck_learning_credentials__expiry_after_completion", "expires_on IS NULL OR expires_on > completed_on");
+
+                            t.HasCheckConstraint("ck_learning_credentials__not_own_predecessor", "supersedes_credential_id IS NULL OR supersedes_credential_id <> id");
+
+                            t.HasCheckConstraint("ck_learning_credentials__revoked_stamped", "status <> 'Revoked' OR (revoked_at_utc IS NOT NULL AND revoke_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_learning_credentials__status", "status IN ('Active','Expired','Revoked','Superseded')");
+
+                            t.HasCheckConstraint("ck_learning_credentials__superseded_stamped", "status <> 'Superseded' OR superseded_at_utc IS NOT NULL");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningEnrollment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AssignmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assignment_id");
+
+                    b.Property<int>("AttemptAllowance")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_allowance");
+
+                    b.Property<int>("AttemptsUsed")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts_used");
+
+                    b.Property<Guid?>("Cmi5Registration")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cmi5_registration");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<string>("CompletionEvidenceRef")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("completion_evidence_ref");
+
+                    b.Property<string>("CompletionSource")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("completion_source");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("course_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateTime?>("FirstLaunchedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_launched_at_utc");
+
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_required");
+
+                    b.Property<DateTime?>("LastActivityAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_activity_at_utc");
+
+                    b.Property<DateTime?>("LockedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_at_utc");
+
+                    b.Property<Guid>("PathItemId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("path_item_id");
+
+                    b.Property<decimal?>("ProgressPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("progress_percent");
+
+                    b.Property<int>("ResetCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("reset_count");
+
+                    b.Property<decimal?>("ScorePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("score_percent");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer")
+                        .HasColumnName("sequence");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<DateTime?>("VerifiedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at_utc");
+
+                    b.Property<Guid?>("VerifiedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("verified_by_user_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("PathItemId");
+
+                    b.HasIndex("AssignmentId", "PathItemId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "Status");
+
+                    b.ToTable("learning_enrollments", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_enrollments__attempts", "attempts_used >= 0 AND attempt_allowance >= 0 AND attempts_used <= attempt_allowance");
+
+                            t.HasCheckConstraint("ck_learning_enrollments__completion_evidence", "(status IN ('Completed','PendingVerification')) = (completion_source IS NOT NULL AND completion_evidence_ref IS NOT NULL AND completed_at_utc IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_learning_enrollments__completion_source", "completion_source IS NULL OR completion_source IN ('Assessment','Cmi5','Acknowledgement')");
+
+                            t.HasCheckConstraint("ck_learning_enrollments__progress", "progress_percent IS NULL OR (progress_percent >= 0 AND progress_percent <= 100)");
+
+                            t.HasCheckConstraint("ck_learning_enrollments__status", "status IN ('NotStarted','InProgress','Completed','Locked','Cancelled','PendingVerification')");
+
+                            t.HasCheckConstraint("ck_learning_enrollments__verification_after_evidence", "verified_at_utc IS NULL OR status = 'Completed'");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningLaunchSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActivityId")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("activity_id");
+
+                    b.Property<string>("ActorAccountName")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("actor_account_name");
+
+                    b.Property<string>("ActorHomePage")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("actor_home_page");
+
+                    b.Property<string>("AuOrigin")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("au_origin");
+
+                    b.Property<DateTime?>("AuthExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("auth_expires_at_utc");
+
+                    b.Property<string>("AuthTokenHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("auth_token_hash");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<DateTime?>("EndedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ended_at_utc");
+
+                    b.Property<Guid>("EnrollmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("enrollment_id");
+
+                    b.Property<DateTime>("FetchExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("fetch_expires_at_utc");
+
+                    b.Property<string>("FetchTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("fetch_token_hash");
+
+                    b.Property<DateTime?>("FetchUsedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("fetch_used_at_utc");
+
+                    b.Property<DateTime?>("InitializedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("initialized_at_utc");
+
+                    b.Property<DateTime?>("LastStatementAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_statement_at_utc");
+
+                    b.Property<DateTime>("LaunchedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("launched_at_utc");
+
+                    b.Property<string>("MoveOn")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("move_on");
+
+                    b.Property<Guid>("Registration")
+                        .HasColumnType("uuid")
+                        .HasColumnName("registration");
+
+                    b.Property<string>("ReturnUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("return_url");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnrollmentId");
+
+                    b.HasIndex("FetchTokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("AuOrigin", "Status");
+
+                    b.HasIndex("Status", "AuthExpiresAtUtc");
+
+                    b.HasIndex("TenantId", "EnrollmentId", "LaunchedAtUtc");
+
+                    b.ToTable("learning_launch_sessions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_launch_sessions__auth_expiry", "(auth_token_hash IS NULL) = (auth_expires_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_learning_launch_sessions__fetch_then_auth", "(auth_token_hash IS NULL) = (fetch_used_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_learning_launch_sessions__move_on", "move_on IN ('Passed','Completed','CompletedAndPassed','CompletedOrPassed','NotApplicable')");
+
+                            t.HasCheckConstraint("ck_learning_launch_sessions__status", "status IN ('Launched','Fetched','Initialized','Terminated','Abandoned')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningPath", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at_utc");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateOnly?>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<DateOnly?>("EffectiveTo")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_to");
+
+                    b.Property<string>("EligibilityJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("eligibility_json");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<int>("RenewalWindowDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("renewal_window_days");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Code")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Status");
+
+                    b.ToTable("learning_paths", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_paths__effective_window", "effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from");
+
+                            t.HasCheckConstraint("ck_learning_paths__renewal_window", "renewal_window_days >= 0 AND renewal_window_days <= 365");
+
+                            t.HasCheckConstraint("ck_learning_paths__status", "status IN ('Draft','Active','Archived')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningPathItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("course_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_required");
+
+                    b.Property<Guid>("PathId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("path_id");
+
+                    b.Property<Guid?>("PrerequisiteItemId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("prerequisite_item_id");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer")
+                        .HasColumnName("sequence");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("PrerequisiteItemId");
+
+                    b.HasIndex("PathId", "CourseId")
+                        .IsUnique();
+
+                    b.HasIndex("PathId", "Sequence")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CourseId");
+
+                    b.ToTable("learning_path_items", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_path_items__not_own_prerequisite", "prerequisite_item_id IS NULL OR prerequisite_item_id <> id");
+
+                            t.HasCheckConstraint("ck_learning_path_items__sequence", "sequence >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningXapiStatement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("EnrollmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("enrollment_id");
+
+                    b.Property<bool>("IssuedByLms")
+                        .HasColumnType("boolean")
+                        .HasColumnName("issued_by_lms");
+
+                    b.Property<decimal?>("ProgressPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("progress_percent");
+
+                    b.Property<Guid>("Registration")
+                        .HasColumnType("uuid")
+                        .HasColumnName("registration");
+
+                    b.Property<bool?>("ResultCompletion")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_completion");
+
+                    b.Property<bool?>("ResultSuccess")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_success");
+
+                    b.Property<decimal?>("ScoreScaled")
+                        .HasPrecision(6, 4)
+                        .HasColumnType("numeric(6,4)")
+                        .HasColumnName("score_scaled");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("StatementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("statement_id");
+
+                    b.Property<string>("StatementJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("statement_json");
+
+                    b.Property<DateTime>("StoredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("stored_at_utc");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Verb")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("verb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnrollmentId");
+
+                    b.HasIndex("SessionId");
+
+                    b.HasIndex("TenantId", "Registration");
+
+                    b.HasIndex("TenantId", "StatementId")
+                        .IsUnique();
+
+                    b.ToTable("learning_xapi_statements", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_learning_xapi_statements__progress", "progress_percent IS NULL OR (progress_percent >= 0 AND progress_percent <= 100)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LeaveAIInsight", b =>
@@ -26405,6 +27896,452 @@ namespace Zayra.Api.Migrations
                     b.ToTable("statutory_rules", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionCriticalPosition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int?>("AccountableEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("accountable_employee_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<string>("ImpactOfVacancy")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("impact_of_vacancy");
+
+                    b.Property<Guid>("PositionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("position_id");
+
+                    b.Property<string>("Rationale")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("rationale");
+
+                    b.Property<DateTime?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at_utc");
+
+                    b.Property<string>("RetiredReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("retired_reason");
+
+                    b.Property<string>("RiskOfLoss")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("risk_of_loss");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AccountableEmployeeId");
+
+                    b.HasIndex("PositionId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "PositionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_succession_critical_positions_one_active")
+                        .HasFilter("status = 'Active'");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status");
+
+                    b.ToTable("succession_critical_positions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_succession_critical_positions__impact", "impact_of_vacancy IN ('Low','Medium','High','Critical')");
+
+                            t.HasCheckConstraint("ck_succession_critical_positions__rationale", "length(trim(rationale)) > 0");
+
+                            t.HasCheckConstraint("ck_succession_critical_positions__retired_stamped", "status <> 'Retired' OR (retired_at_utc IS NOT NULL AND retired_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_succession_critical_positions__risk", "risk_of_loss IN ('Low','Medium','High')");
+
+                            t.HasCheckConstraint("ck_succession_critical_positions__status", "status IN ('Active','Retired')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionNomination", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AnonymisedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("anonymised_at_utc");
+
+                    b.Property<Guid?>("CandidateCompanyIdAt")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_company_id_at");
+
+                    b.Property<int?>("CandidateManagerIdAt")
+                        .HasColumnType("integer")
+                        .HasColumnName("candidate_manager_id_at");
+
+                    b.Property<Guid?>("CandidatePositionIdAt")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_position_id_at");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CompetencyEvidenceJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("competency_evidence_json");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CriticalPositionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("critical_position_id");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("evidence");
+
+                    b.Property<string>("ExitNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("exit_note");
+
+                    b.Property<string>("ExitReason")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("exit_reason");
+
+                    b.Property<DateTime?>("ExitedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("exited_at_utc");
+
+                    b.Property<Guid?>("ExitedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("exited_by_user_id");
+
+                    b.Property<bool>("NeedsReview")
+                        .HasColumnType("boolean")
+                        .HasColumnName("needs_review");
+
+                    b.Property<DateTime>("NominatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("nominated_at_utc");
+
+                    b.Property<int?>("NominatedByEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("nominated_by_employee_id");
+
+                    b.Property<Guid?>("NominatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("nominated_by_user_id");
+
+                    b.Property<string>("Readiness")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("readiness");
+
+                    b.Property<DateTime?>("ReadinessChangedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("readiness_changed_at_utc");
+
+                    b.Property<Guid?>("ReadinessChangedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("readiness_changed_by_user_id");
+
+                    b.Property<string>("ReadinessPrevious")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("readiness_previous");
+
+                    b.Property<string>("ReadinessReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("readiness_reason");
+
+                    b.Property<string>("ReviewReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("review_reason");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("TalentPoolId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("talent_pool_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("CriticalPositionId", "Status");
+
+                    b.HasIndex("TalentPoolId", "Status");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CriticalPositionId", "EmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_succession_nominations_one_live_per_position")
+                        .HasFilter("critical_position_id IS NOT NULL AND status NOT IN ('Declined','Withdrawn')");
+
+                    b.HasIndex("TenantId", "TalentPoolId", "EmployeeId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_succession_nominations_one_live_per_pool")
+                        .HasFilter("talent_pool_id IS NOT NULL AND status NOT IN ('Declined','Withdrawn')");
+
+                    b.ToTable("succession_nominations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_succession_nominations__closed_has_reason", "status NOT IN ('Declined','Withdrawn') OR (exit_reason IS NOT NULL AND exit_note IS NOT NULL AND length(trim(exit_note)) > 0 AND exited_at_utc IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_succession_nominations__evidence", "length(trim(evidence)) > 0");
+
+                            t.HasCheckConstraint("ck_succession_nominations__exit_reason", "exit_reason IS NULL OR exit_reason IN ('Declined','Withdrawn','Terminated','Ineligible','PositionRetired','Appointed','RecordMerged')");
+
+                            t.HasCheckConstraint("ck_succession_nominations__on_slate_position_only", "status <> 'OnSlate' OR critical_position_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_succession_nominations__one_target", "(critical_position_id IS NULL) <> (talent_pool_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_succession_nominations__readiness", "readiness IS NULL OR readiness IN ('ReadyNow','OneToTwoYears','ThreePlusYears')");
+
+                            t.HasCheckConstraint("ck_succession_nominations__readiness_change_reason", "readiness_changed_at_utc IS NULL OR (readiness_reason IS NOT NULL AND length(trim(readiness_reason)) > 0)");
+
+                            t.HasCheckConstraint("ck_succession_nominations__readiness_previous", "readiness_previous IS NULL OR readiness_previous IN ('ReadyNow','OneToTwoYears','ThreePlusYears')");
+
+                            t.HasCheckConstraint("ck_succession_nominations__readiness_required", "critical_position_id IS NULL OR status NOT IN ('Calibrated','OnSlate') OR readiness IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_succession_nominations__status", "status IN ('Proposed','InReview','Calibrated','OnSlate','Declined','Withdrawn')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionSlateVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AnonymisedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("anonymised_at_utc");
+
+                    b.Property<string>("AnonymisedSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("anonymised_sha256");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<DateTime?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at_utc");
+
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancel_reason");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at_utc");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<Guid>("CriticalPositionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("critical_position_id");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<DateOnly?>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<string>("ReturnReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("return_reason");
+
+                    b.Property<DateTime?>("ReturnedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("returned_at_utc");
+
+                    b.Property<Guid?>("RevisedFromId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revised_from_id");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("snapshot_json");
+
+                    b.Property<string>("SnapshotSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("snapshot_sha256");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at_utc");
+
+                    b.Property<Guid?>("SubmittedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("submitted_by_user_id");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at_utc");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.Property<int>("VersionNo")
+                        .HasColumnType("integer")
+                        .HasColumnName("version_no");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("CriticalPositionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_succession_slate_versions_one_open")
+                        .HasFilter("status IN ('Draft','Submitted')");
+
+                    b.HasIndex("RevisedFromId");
+
+                    b.HasIndex("CriticalPositionId", "VersionNo")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.ToTable("succession_slate_versions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_succession_slate_versions__anonymised_hash", "(anonymised_sha256 IS NULL) = (anonymised_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__approved_stamped", "status NOT IN ('Approved','Superseded') OR (approved_at_utc IS NOT NULL AND effective_from IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__cancel_reason", "status <> 'Cancelled' OR (cancelled_at_utc IS NOT NULL AND cancel_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__not_own_predecessor", "revised_from_id IS NULL OR revised_from_id <> id");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__returned_reason", "status <> 'ReturnedForRevision' OR (returned_at_utc IS NOT NULL AND return_reason IS NOT NULL AND length(trim(return_reason)) > 0)");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__status", "status IN ('Draft','Submitted','ReturnedForRevision','Approved','Superseded','Cancelled')");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__submitted_stamped", "status = 'Draft' OR (submitted_at_utc IS NOT NULL AND approval_request_id IS NOT NULL) OR status = 'Cancelled'");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__superseded_stamped", "status <> 'Superseded' OR superseded_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_succession_slate_versions__version_no", "version_no >= 1");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.SystemSetting", b =>
                 {
                     b.Property<Guid>("Id")
@@ -26463,6 +28400,260 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("system_settings", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.TalentAssessment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AnonymisedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("anonymised_at_utc");
+
+                    b.Property<Guid?>("AppraisalReviewId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appraisal_review_id");
+
+                    b.Property<int?>("AssessorEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("assessor_employee_id");
+
+                    b.Property<Guid?>("AssessorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("assessor_user_id");
+
+                    b.Property<string>("BandRuleVersion")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("band_rule_version");
+
+                    b.Property<DateTime?>("CalibratedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("calibrated_at_utc");
+
+                    b.Property<int?>("CalibratedByEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("calibrated_by_employee_id");
+
+                    b.Property<Guid?>("CalibratedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("calibrated_by_user_id");
+
+                    b.Property<int?>("CalibratedPotential")
+                        .HasColumnType("integer")
+                        .HasColumnName("calibrated_potential");
+
+                    b.Property<string>("CalibrationReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("calibration_reason");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("NineBoxCell")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("nine_box_cell")
+                        .HasComputedColumnSql("CASE WHEN performance_band IN ('Low','Moderate','High') THEN (CASE COALESCE(calibrated_potential, proposed_potential) WHEN 3 THEN 'P3' WHEN 2 THEN 'P2' ELSE 'P1' END) || '-' || performance_band ELSE NULL END", true);
+
+                    b.Property<string>("PerformanceBand")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("performance_band");
+
+                    b.Property<decimal?>("PerformanceScore")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("performance_score");
+
+                    b.Property<string>("PotentialEvidence")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("potential_evidence");
+
+                    b.Property<int>("ProposedPotential")
+                        .HasColumnType("integer")
+                        .HasColumnName("proposed_potential");
+
+                    b.Property<string>("ReviewPeriod")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("review_period");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at_utc");
+
+                    b.Property<Guid?>("SupersedesId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("supersedes_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppraisalReviewId");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("SupersedesId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "ReviewPeriod")
+                        .IsUnique()
+                        .HasDatabaseName("ux_talent_assessments_one_current_per_period")
+                        .HasFilter("status <> 'Superseded'");
+
+                    b.HasIndex("TenantId", "ReviewPeriod", "Status");
+
+                    b.ToTable("talent_assessments", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_talent_assessments__band", "performance_band IN ('Low','Moderate','High','Unrated')");
+
+                            t.HasCheckConstraint("ck_talent_assessments__calibrated_potential", "calibrated_potential IS NULL OR calibrated_potential BETWEEN 1 AND 3");
+
+                            t.HasCheckConstraint("ck_talent_assessments__calibrated_stamped", "status <> 'Calibrated' OR (calibrated_potential IS NOT NULL AND calibrated_at_utc IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_talent_assessments__calibration_reason", "calibrated_potential IS NULL OR calibrated_potential = proposed_potential OR (calibration_reason IS NOT NULL AND length(trim(calibration_reason)) >= 20)");
+
+                            t.HasCheckConstraint("ck_talent_assessments__evidence", "length(trim(potential_evidence)) > 0");
+
+                            t.HasCheckConstraint("ck_talent_assessments__not_own_predecessor", "supersedes_id IS NULL OR supersedes_id <> id");
+
+                            t.HasCheckConstraint("ck_talent_assessments__proposed_potential", "proposed_potential BETWEEN 1 AND 3");
+
+                            t.HasCheckConstraint("ck_talent_assessments__score", "performance_score IS NULL OR (performance_score >= 0 AND performance_score <= 100)");
+
+                            t.HasCheckConstraint("ck_talent_assessments__status", "status IN ('Draft','Submitted','Calibrated','Superseded')");
+
+                            t.HasCheckConstraint("ck_talent_assessments__superseded_stamped", "status <> 'Superseded' OR superseded_at_utc IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_talent_assessments__unrated_has_no_score", "(performance_band = 'Unrated') = (performance_score IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.TalentPool", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("code");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<string>("NameEn")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_en");
+
+                    b.Property<int?>("OwnerEmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("owner_employee_id");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("purpose");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerEmployeeId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("talent_pools", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_talent_pools__code", "length(trim(code)) > 0");
+
+                            t.HasCheckConstraint("ck_talent_pools__status", "status IN ('Active','Archived')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.TenantAiUsage", b =>
@@ -28156,6 +30347,54 @@ namespace Zayra.Api.Migrations
                         .HasConstraintName("FK_contract_renewal_cases_employee_contracts_tenant_id_employ~1");
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlan", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.SuccessionNomination", null)
+                        .WithMany()
+                        .HasForeignKey("NominationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlanAction", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeGoal", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeGoalId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.LearningAssignment", null)
+                        .WithMany()
+                        .HasForeignKey("LearningAssignmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("MentorEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.DevelopmentPlan", null)
+                        .WithMany()
+                        .HasForeignKey("PlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.EmployeeContract", b =>
                 {
                     b.HasOne("Zayra.Api.Models.EmployeeContract", null)
@@ -28352,6 +30591,157 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.LearningAssignment", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningPath", null)
+                        .WithMany()
+                        .HasForeignKey("PathId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningCredential", null)
+                        .WithMany()
+                        .HasForeignKey("RenewalOfCredentialId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.LearningAssignmentRule", null)
+                        .WithMany()
+                        .HasForeignKey("RuleId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningAssignmentRule", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningPath", null)
+                        .WithMany()
+                        .HasForeignKey("PathId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningAttempt", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningEnrollment", null)
+                        .WithMany()
+                        .HasForeignKey("EnrollmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningCredential", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningCourse", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningEnrollment", null)
+                        .WithMany()
+                        .HasForeignKey("EnrollmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningPath", null)
+                        .WithMany()
+                        .HasForeignKey("PathId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningAssignment", null)
+                        .WithMany()
+                        .HasForeignKey("RenewalAssignmentId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Models.LearningCredential", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesCredentialId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningEnrollment", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningAssignment", null)
+                        .WithMany()
+                        .HasForeignKey("AssignmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningCourse", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningPathItem", null)
+                        .WithMany()
+                        .HasForeignKey("PathItemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningLaunchSession", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningEnrollment", null)
+                        .WithMany()
+                        .HasForeignKey("EnrollmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningPathItem", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningCourse", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningPath", null)
+                        .WithMany()
+                        .HasForeignKey("PathId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningPathItem", null)
+                        .WithMany()
+                        .HasForeignKey("PrerequisiteItemId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LearningXapiStatement", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.LearningEnrollment", null)
+                        .WithMany()
+                        .HasForeignKey("EnrollmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.LearningLaunchSession", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.LoanChangeRequest", b =>
                 {
                     b.HasOne("Zayra.Api.Models.EmployeeLoan", null)
@@ -28419,6 +30809,85 @@ namespace Zayra.Api.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "ReversalGlEntryId")
                         .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionCriticalPosition", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("AccountableEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Position", null)
+                        .WithMany()
+                        .HasForeignKey("PositionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionNomination", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.SuccessionCriticalPosition", null)
+                        .WithMany()
+                        .HasForeignKey("CriticalPositionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.TalentPool", null)
+                        .WithMany()
+                        .HasForeignKey("TalentPoolId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SuccessionSlateVersion", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.SuccessionCriticalPosition", null)
+                        .WithMany()
+                        .HasForeignKey("CriticalPositionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.SuccessionSlateVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RevisedFromId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.TalentAssessment", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.AppraisalReview", null)
+                        .WithMany()
+                        .HasForeignKey("AppraisalReviewId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.TalentAssessment", null)
+                        .WithMany()
+                        .HasForeignKey("SupersedesId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.TalentPool", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerEmployeeId")
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 

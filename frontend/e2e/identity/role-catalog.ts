@@ -131,7 +131,22 @@ function parsePermissionKeys(source: string): string[] {
 /** Evaluate `x.Key.StartsWith("a") || (x.Key.StartsWith("p") && !x.Key.StartsWith("q")) || ... || x.Key is "b" or "c"`
  *  — and nothing else. The `(p && !q)` group is "prefix p, except prefix q" (e.g. HR Director's employees.* without
  *  employees.access.*). */
-function evaluatePredicate(role: string, predicate: string, catalog: string[]): { keys: string[]; unknown: string[] } {
+/**
+ * Named key lists AuthSeeder declares as `static readonly IReadOnlyList<string> Name = [ "a", "b" ];` or
+ * `Name = Other.Where(k => k != "x").ToArray();` (SUC grants its 12 keys this way, never by prefix). A list of any other
+ * shape is left out, so a predicate naming it fails as unrecognised instead of being guessed.
+ */
+function parseNamedLists(source: string): Map<string, string[]> {
+  const lists = new Map<string, string[]>();
+  for (const m of source.matchAll(/IReadOnlyList<string>\s+(\w+)\s*=\s*\[([^\]]*)\]\s*;/g)) lists.set(m[1], literals(m[2]));
+  for (const m of source.matchAll(/IReadOnlyList<string>\s+(\w+)\s*=\s*(\w+)\.Where\(\s*k\s*=>\s*k\s*!=\s*"([^"]+)"\s*\)\s*\.ToArray\(\)\s*;/g)) {
+    const base = lists.get(m[2]);
+    if (base) lists.set(m[1], base.filter((k) => k !== m[3]));
+  }
+  return lists;
+}
+
+function evaluatePredicate(role: string, predicate: string, catalog: string[], named: Map<string, string[]> = new Map()): { keys: string[]; unknown: string[] } {
   const exceptRe = /\(\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*&&\s*!\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*\)/g;
   const excepts = [...predicate.matchAll(exceptRe)].map((m) => ({ prefix: m[1], without: m[2] }));
   predicate = predicate.replace(exceptRe, '');
@@ -139,6 +154,13 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[]): 
   // Every `x.Key is "a" or "b"` clause, not just the first: a role may grant two explicit lists (HR Director names
   // its legacy keys in one and the learning keys in another). Reading only the first silently dropped the rest.
   const exact = [...predicate.matchAll(/x\.Key\s+is\s+((?:"[^"]+"\s*(?:or\s*)?)+)/g)].flatMap((m) => literals(m[1]));
+  // `SuccessionPermissionKeys.Contains(x.Key)`: an explicit list declared elsewhere in AuthSeeder.
+  const namedRe = /(\w+)\.Contains\(\s*x\.Key\s*\)/g;
+  for (const m of predicate.matchAll(namedRe)) {
+    const list = named.get(m[1]);
+    if (list) exact.push(...list);
+  }
+  predicate = predicate.replace(namedRe, (whole, name: string) => (named.has(name) ? '' : whole));
 
   // Everything the parser did not account for must be operators and whitespace. Anything left over is
   // a shape this file does not understand, and guessing would produce a wrong matrix.
@@ -159,7 +181,7 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[]): 
   };
 }
 
-function resolveBundle(role: string, expression: string, catalog: string[]): { keys: string[]; unknown: string[] } {
+function resolveBundle(role: string, expression: string, catalog: string[], named: Map<string, string[]> = new Map()): { keys: string[]; unknown: string[] } {
   const expr = expression.replace(/\s+/g, ' ').trim();
   if (expr === 'permissions') return { keys: [...catalog], unknown: [] };
 
@@ -183,7 +205,7 @@ function resolveBundle(role: string, expression: string, catalog: string[]): { k
   }
 
   const where = /^permissions\.Where\(\s*x\s*=>([\s\S]*)\)\s*\.ToList\(\)$/.exec(expr);
-  if (where) return evaluatePredicate(role, where[1], catalog);
+  if (where) return evaluatePredicate(role, where[1], catalog, named);
 
   throw new Error(
     `[role-catalog] Role '${role}': unrecognised bundle expression '${expr.slice(0, 120)}'. `
@@ -195,6 +217,7 @@ function resolveBundle(role: string, expression: string, catalog: string[]): { k
 export function parseAuthSeeder(sourceText: string): RoleCatalog {
   const source = stripLineComments(sourceText);
   const permissions = parsePermissionKeys(source);
+  const named = parseNamedLists(source);
   const body = methodBody(source, /Task<Role>\s+EnsureTenantRolesAsync\s*\(/, 'EnsureTenantRolesAsync');
 
   const roles: RoleDefinition[] = [];
@@ -213,7 +236,7 @@ export function parseAuthSeeder(sourceText: string): RoleCatalog {
     if (!Number.isInteger(authorityLevel)) {
       throw new Error(`[role-catalog] Role '${name}': authority level '${args[4]}' is not a literal integer.`);
     }
-    const { keys, unknown } = resolveBundle(name, args[3], permissions);
+    const { keys, unknown } = resolveBundle(name, args[3], permissions, named);
     roles.push({ name, authorityLevel, permissions: [...keys].sort(), unknownKeys: unknown });
   }
   if (roles.length === 0) throw new Error('[role-catalog] EnsureTenantRolesAsync installs no roles the parser recognises.');

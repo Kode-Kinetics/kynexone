@@ -27,7 +27,7 @@ export function EssWorkspaceNav() {
   const countryCodes = (user?.companies ?? []).map((c) => c.countryCode);
   const sections = ESS_SECTIONS
     // As the sidebar does: a page whose module is switched off is not offered (ModuleGate would refuse it).
-    .map((s) => ({ section: s, pages: visibleEssPages(s, isFeatureEnabled, countryCodes).filter((p) => verdictForPath(p.path).allowed) }))
+    .map((s) => ({ section: s, pages: visibleEssPages(s, isFeatureEnabled, countryCodes).filter((p) => verdictForPath(p.path).allowed && (!p.requiredPermission || hasPermission(p.requiredPermission))) }))
     .filter((s) => s.pages.length > 0);
   const current = activeEssSection(pathname);
   const currentPage = activeEssPage(pathname);

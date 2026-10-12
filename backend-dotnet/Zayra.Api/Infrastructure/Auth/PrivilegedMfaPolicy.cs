@@ -80,6 +80,11 @@ public static class PrivilegedMfaPolicy
         "finance.gl.read", "ai.query", "ai.insights_view",
         // Engagement: suppressed aggregate results cut to the caller's scope (no person, no comment).
         "engagement.read",
+        // LRN: the course catalogue, and training status of the people in one's data scope (a manager's own team).
+        "learning.read", "learning.report",
+        // SUC: the critical-position list (no candidate names), one's own development plan, and a line manager's
+        // nominations and development plans for their own reporting line (data-scoped).
+        "succession.read", "succession.self", "succession.nominate", "succession.devplans.read", "succession.devplans.manage",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
         "performance.write",
@@ -125,6 +130,13 @@ public static class PrivilegedMfaPolicy
         // Engagement: running surveys and setting the minimum group size, reading free-text comments, and per-person
         // answers of identified surveys.
         "engagement.manage", "engagement.comments.read", "engagement.identified.read",
+        // LRN: authoring and publishing courses, assigning mandatory training, and correcting the training record
+        // (reset attempts, revoke or supersede certificates) change compliance evidence.
+        "learning.manage", "learning.assign", "learning.records.correct",
+        // SUC: candidate-level talent data (slates, assessments, 9-box placements, bench reports) is HR-confidential, and
+        // the manage keys designate positions, run calibration and put people on a succession slate.
+        "succession.positions.manage", "succession.pools.manage", "succession.assess", "succession.calibrate",
+        "succession.slates.read", "succession.slates.manage", "succession.reports.read",
     };
 
     public static bool IsPrivilegedPermission(string key) => !NonPrivilegedPermissions.Contains(key);

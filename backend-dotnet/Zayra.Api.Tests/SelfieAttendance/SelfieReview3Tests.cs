@@ -216,7 +216,7 @@ public sealed class SelfieReview3Tests
     [Fact]
     public void Item10_BothAdminGrants_WithholdExactlyTheListedKeys()
     {
-        Assert.Equal(["attendance.evidence.view"], AuthSeeder.AdminWithheldPermissions);
+        Assert.Equal(["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self"], AuthSeeder.AdminWithheldPermissions);
         var source = File.ReadAllText(Path.Combine(ApiRoot(), "Infrastructure", "Seed", "AuthSeeder.cs"));
         var notIn = System.Text.RegularExpressions.Regex.Match(source, @"p\.permission_key NOT IN \(([^)]*)\)");
         Assert.True(notIn.Success, "the Admin backfill no longer withholds anything");

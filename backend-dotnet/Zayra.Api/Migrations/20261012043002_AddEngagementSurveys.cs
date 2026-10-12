@@ -142,8 +142,8 @@ namespace Zayra.Api.Migrations
                     table.CheckConstraint("ck_surveys__closes_after_opens", "closes_at_utc > opens_at_utc");
                     table.CheckConstraint("ck_surveys__comment_dimension", "comment_dimension IN ('none','company','department','designation','grade','tenure')");
                     table.CheckConstraint("ck_surveys__cycle_positive", "cycle_number >= 1");
-                    table.CheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
                     table.CheckConstraint("ck_surveys__frozen_k_not_lower", "frozen_min_cohort_size IS NULL OR frozen_min_cohort_size >= min_cohort_size");
+                    table.CheckConstraint("ck_surveys__launched_stamp", "status IN ('Draft','Cancelled') OR launched_at_utc IS NOT NULL");
                     table.CheckConstraint("ck_surveys__min_cohort_floor", "min_cohort_size >= 3");
                     table.CheckConstraint("ck_surveys__mode", "mode IN ('Identified','Confidential','Anonymous')");
                     table.CheckConstraint("ck_surveys__recurrence", "recurrence IN ('None','Monthly','Quarterly','SemiAnnual','Annual')");
