@@ -829,7 +829,9 @@ jobs:
   browser-pilot:
     name: Browser Pilot (seeded tenant, core modules)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The production-shaped stack takes about ten minutes to build and provision before the
+    # 748-test Chromium suite starts. Keep enough headroom for the full gate and cleanup.
+    timeout-minutes: 45
     needs: [backend-tests, frontend-build]
     # THE E2E TARGET CONTRACT (frontend/e2e/identity/env.ts), declared ONCE for every step; see the
     # same block in chrome-security-gate. BUILD_COMMIT also reaches `docker compose --build`, which

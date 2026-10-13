@@ -8,6 +8,8 @@ const company = {
 };
 const grade = { id: 'grade-wizard', code: 'G5', name: 'Professional', band: 'P', level: 5, minSalary: 5000, midSalary: 10000, maxSalary: 15000, currency: 'SAR', isActive: true };
 const manager = { id: 17, employeeCode: 'TEST-017', fullName: 'Morgan Reviewer', englishName: 'Morgan Reviewer', status: 'Active', companyId: company.id };
+const otherManager = { id: 18, employeeCode: 'TEST-018', fullName: 'Taylor Lead', englishName: 'Taylor Lead', status: 'Active', companyId: company.id };
+const individualContributor = { id: 19, employeeCode: 'TEST-019', fullName: 'Casey Employee', englishName: 'Casey Employee', status: 'Active', companyId: company.id };
 const duplicate = { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: 'Draft', matchType: 'probable', signals: ['Name and date of birth match'], canView: true };
 const headings = ['Start with the person', 'Place them in the organization', 'Set up payroll', 'Build the salary package', 'Add identity documents', 'Review employee details'];
 const stepNames = ['Person', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
@@ -17,6 +19,7 @@ interface MockOptions {
   multipleCompanies?: boolean;
   missingCountry?: boolean;
   failFirstCreate?: boolean;
+  workEmailConflict?: boolean;
   duplicate?: boolean;
   transliteration?: {
     status?: number;
@@ -29,6 +32,7 @@ async function boot(page: Page, options: MockOptions = {}) {
   const creates: EmployeeCreateRequest[] = [];
   const probes: unknown[] = [];
   const transliterations: unknown[] = [];
+  const workEmailDerivations: unknown[] = [];
   const updates: Array<{ effectiveDate: string; changes: Record<string, unknown> }> = [];
   const errors: string[] = [];
   const testCompany = { ...company, countryCode: options.missingCountry ? '' : company.countryCode };
@@ -38,6 +42,7 @@ async function boot(page: Page, options: MockOptions = {}) {
   page.on('console', message => {
     if (message.type() !== 'error') return;
     if ((options.failFirstCreate || options.transliteration?.status === 503) && /Failed to load resource.*503/.test(message.text())) return;
+    if (options.workEmailConflict && /Failed to load resource.*409/.test(message.text())) return;
     errors.push(message.text());
   });
   await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'wizard-browser-fixture'));
@@ -58,12 +63,18 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/companies') return reply(paged(companies));
     if (path === '/api/branches') return reply(paged([{ id: 'branch-wizard', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
-    if (path === '/api/departments') return reply(paged([{ id: 'department-wizard', branchId: 'branch-wizard', code: 'OPS', nameEn: 'Operations', managerEmployeeId: manager.id, isActive: true }]));
+    if (path === '/api/departments') return reply(paged([
+      { id: 'department-wizard', branchId: 'branch-wizard', costCenterId: 'cost-wizard', code: 'OPS', nameEn: 'Operations', managerEmployeeId: manager.id, isActive: true },
+      { id: 'department-finance', branchId: 'branch-wizard', costCenterId: 'cost-finance', code: 'FIN', nameEn: 'Finance', managerEmployeeId: otherManager.id, isActive: true },
+    ]));
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
     if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (path.endsWith('/pay-scale')) return reply([]);
-    if (path === '/api/organization/cost-centers') return reply(paged([{ id: 'cost-wizard', companyId: company.id, code: 'OPS', nameEn: 'Operations cost center', isActive: true }]));
+    if (path === '/api/organization/cost-centers') return reply(paged([
+      { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
+      { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
+    ]));
     if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
     if (path === '/api/localization/transliterate') {
       transliterations.push(body);
@@ -71,6 +82,7 @@ async function boot(page: Page, options: MockOptions = {}) {
       return reply(options.transliteration?.result ?? { suggestion: 'محمد عمر', requiresManualEntry: false }, options.transliteration?.status);
     }
     if (path === '/api/employees/derive-work-email') {
+      workEmailDerivations.push(body);
       const localPart = body.localPart ?? body.englishName.trim().toLowerCase().split(/\s+/).join('.');
       return reply({ domain: company.emailDomain, pattern: company.workEmailPattern, localPart, workEmail: `${localPart}@${company.emailDomain}`, unique: true, suggestion: localPart, status: 'derived' });
     }
@@ -81,10 +93,15 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/employees' && request.method() === 'POST') {
       creates.push(body);
       if (options.failFirstCreate && creates.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
+      if (options.workEmailConflict) return reply({
+        error: 'work_email_conflict',
+        attempted: body.workEmail,
+        suggestion: 'alex.it-issued2@example.test',
+      }, 409);
       saved = { ...body, id: 901, employeeCode: body.employeeCode || 'TEST-901', fullName: body.englishName, status: 'Draft', accessState: body.workEmail ? 'not_started' : 'waiting_for_work_email', profileCompletenessScore: 25, readinessState: 'NeedsAttention', activationBlockersCount: 1, salaryBreakdown: body.salaryBreakdown?.basicSalary ? body.salaryBreakdown : null, documents: [], history: [], complianceRecords: body.complianceRecords ?? [] };
       return reply(saved, 201);
     }
-    if (path === '/api/employees') return reply(paged(url.searchParams.get('status') === 'Active' ? [manager] : saved ? [saved] : []));
+    if (path === '/api/employees') return reply(paged(url.searchParams.get('status') === 'Active' ? [manager, otherManager, individualContributor] : saved ? [saved] : []));
     if (path === '/api/employees/901' && request.method() === 'PUT') {
       updates.push(body);
       saved = { ...saved, ...body.changes };
@@ -114,7 +131,7 @@ async function boot(page: Page, options: MockOptions = {}) {
   if (!options.quick) {
     await expandOptional(dialog, 'Additional personal details');
   }
-  return { dialog, creates, probes, transliterations, updates, errors };
+  return { dialog, creates, probes, transliterations, workEmailDerivations, updates, errors };
 }
 
 async function expandOptional(dialog: Locator, label: string) {
@@ -189,6 +206,89 @@ test('quick creation starts with three steps and saves only after review', async
   expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', companyId: company.id });
   expect(creates[0].gender ?? '').toBe('');
   expect(creates[0]).not.toHaveProperty('workEmail');
+  expect(errors).toEqual([]);
+});
+
+test('department selection assigns its cost center and offers only its configured manager', async ({ page }, info) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  const department = dialog.getByRole('combobox', { name: 'Department', exact: true });
+  const managerSelect = dialog.getByRole('combobox', { name: 'Line manager', exact: true });
+  await department.selectOption('department-wizard');
+  await expect(managerSelect).toHaveValue(String(manager.id));
+  await expect(managerSelect.locator('option')).toHaveText(['Select', `${manager.fullName} (${manager.employeeCode})`]);
+  await expandOptional(dialog, 'More employment details');
+  await expect(dialog.getByRole('combobox', { name: 'Cost center', exact: true })).toHaveValue('cost-wizard');
+  await department.selectOption('department-finance');
+  await expect(managerSelect).toHaveValue(String(otherManager.id));
+  await expect(managerSelect.locator('option')).toHaveText(['Select', `${otherManager.fullName} (${otherManager.employeeCode})`]);
+  await expect(dialog.getByRole('combobox', { name: 'Cost center', exact: true })).toHaveValue('cost-finance');
+  await evidence(page, info, 'department-manager-cost-center');
+  expect(errors).toEqual([]);
+});
+
+test('HR types the complete IT-issued work email without a fixed domain control', async ({ page }, info) => {
+  const { dialog, creates, workEmailDerivations, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  const workEmail = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await expect(workEmail).toHaveAttribute('type', 'email');
+  await expect(dialog.getByText('@example.test', { exact: true })).toHaveCount(0);
+  await workEmail.fill('alex.it-issued@example.test');
+  await evidence(page, info, 'manual-work-email');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].workEmail).toBe('alex.it-issued@example.test');
+  expect(workEmailDerivations).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('enabling full setup after reviewing continues to Payroll instead of skipping back to Review', async ({ page }, info) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
+  await expect(dialog.getByRole('button', { name: 'Return to review', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[2], exact: true })).toBeVisible();
+  await evidence(page, info, 'continued-to-payroll');
+  expect(errors).toEqual([]);
+});
+
+test('returning from Payroll cannot skip the remaining full-setup steps', async ({ page }) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
+  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Return to review', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Next: Salary', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('a conflicting IT-issued work email identifies the address and how HR can resolve it', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, workEmailConflict: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Work email alex.it-issued@example.test is already used. Enter a different address issued by IT. Suggested available address: alex.it-issued2@example.test.',
+  );
+  await expect(dialog.getByRole('heading', { name: headings[5], exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued@example.test');
+  expect(creates).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 
@@ -271,9 +371,9 @@ test('an invalid entered work email cannot be persisted by Save draft and exit',
   await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex+alias');
   await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
-  await expect(dialog.getByTestId('work-email-problem')).toContainText(/work email/i);
+  await expect(dialog.getByRole('alert')).toContainText(/work email/i);
   expect(creates).toHaveLength(0);
-  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
   await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(creates).toHaveLength(1);
@@ -360,11 +460,11 @@ test('retains entered values across Back and review edits and submits the existi
   await dialog.getByLabel('Preferred name', { exact: true }).fill('Alex');
   await dialog.getByLabel('Personal email', { exact: true }).fill('alex.personal@example.test');
   await next(dialog, 1);
-  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
   await dialog.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(dialog.getByLabel('Preferred name', { exact: true })).toHaveValue('Alex');
   await next(dialog, 1);
-  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued');
+  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued@example.test');
   await dialog.getByRole('combobox', { name: 'Branch', exact: true }).selectOption('branch-wizard');
   await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
   await expect(dialog.getByRole('combobox', { name: 'Line manager', exact: true })).toHaveValue('17');
@@ -398,13 +498,12 @@ test('retains entered values across Back and review edits and submits the existi
   expect(creates[0]).toMatchObject({
     englishName: 'Alex Morgan', preferredName: 'Alex M', manualEmployeeCode: false,
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
-    branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id,
+    branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
     payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
     salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
   });
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
-  expect(creates[0]).not.toHaveProperty('costCenterId');
   expect(creates[0]).not.toHaveProperty('acknowledgeDuplicate');
   expect(errors).toEqual([]);
 });
@@ -413,7 +512,7 @@ test('preserves the reviewed draft after a server failure and retries once', asy
   const { dialog, creates, errors } = await boot(page, { failFirstCreate: true });
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
   await next(dialog, 1);
-  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
   await toReview(dialog, 2);
   await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
   await expect(dialog.getByText(/Temporary save failure/)).toBeVisible();
