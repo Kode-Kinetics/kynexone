@@ -3,7 +3,7 @@ import { expect, test, type Locator, type Page, type Route } from '@playwright/t
 
 /**
  * Employee sign-in access, HR side: the Self-service card on the profile, the list's column, chips
- * and bulk print, Add Employee's suggested work email and "has been added" panel, "Add work emails",
+ * and bulk print, Add Employee's HR-entered work email and "has been added" panel, "Add work emails",
  * and the bilingual sign-in slip print view.
  *
  * Mocked API (contract section 4 + Amendments 1–3); the server's rules are the backend builder's tests.
@@ -408,16 +408,16 @@ test('the Self-service chips filter the list on the server', async ({ page }) =>
   expect(listQueries.some((q) => new URLSearchParams(q).get('access') === 'not_started')).toBe(true);
 });
 
-test('Add Employee: the suggested work email is not saved unless accepted', async ({ page }) => {
+test('Add Employee: a blank work email remains optional and is not saved', async ({ page }) => {
   const { writes } = await openPeople(page);
   await page.getByRole('button', { name: 'Add Employee' }).first().click();
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
   await advanceEmployeeToEmployment(dialog);
-  const local = dialog.getByTestId('work-email-local-part');
-  await expect(local).toHaveAttribute('placeholder', 'mona.kamal');
-  await expect(local).toHaveValue('');
-  await expect(dialog.getByTestId('work-email-help')).toHaveText('This is also how they sign in to KynexOne.');
+  const workEmail = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await expect(workEmail).toHaveAttribute('placeholder', 'Enter your work email.');
+  await expect(workEmail).toHaveValue('');
+  await expect(dialog.getByText('@evostel.com', { exact: true })).toHaveCount(0);
   await advanceEmployeeToReview(dialog);
   await dialog.getByRole('button', { name: 'Create Employee' }).click();
 
@@ -432,17 +432,15 @@ test('Add Employee: the suggested work email is not saved unless accepted', asyn
   await expect(page.getByTestId('employee-access-card')).toBeVisible();
 });
 
-test('Add Employee: accept the suggestion, then Print sign-in slip', async ({ page }, testInfo) => {
+test('Add Employee: enter the IT-issued work email, then Print sign-in slip', async ({ page }) => {
   const { writes } = await openPeople(page);
   await page.getByRole('button', { name: 'Add Employee' }).first().click();
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
   await advanceEmployeeToEmployment(dialog);
-  const local = dialog.getByTestId('work-email-local-part');
-  await expect(local).toHaveAttribute('placeholder', 'mona.kamal');
-  if (testInfo.project.name === 'phone') await dialog.getByRole('button', { name: 'Use', exact: true }).click();
-  else { await local.focus(); await page.keyboard.press('Tab'); }
-  await expect(local).toHaveValue('mona.kamal');
+  const workEmail = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await workEmail.fill('mona.kamal@evostel.com');
+  await expect(workEmail).toHaveValue('mona.kamal@evostel.com');
   await advanceEmployeeToReview(dialog);
   await dialog.getByRole('button', { name: 'Create Employee' }).click();
   await expect(dialog.getByTestId('employee-added')).toContainText('Mona Kamal has been added.');
@@ -452,23 +450,24 @@ test('Add Employee: accept the suggestion, then Print sign-in slip', async ({ pa
   await expectNoCodeStored(page, ['60606161']);
 });
 
-test("Add Employee: a '+' or a non-English character is refused as HR types, before any save", async ({ page }) => {
+test("Add Employee: a '+' or a non-English character is refused before any save", async ({ page }) => {
   const { writes } = await openPeople(page);
   await page.getByRole('button', { name: 'Add Employee' }).first().click();
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
   await advanceEmployeeToEmployment(dialog);
-  const local = dialog.getByTestId('work-email-local-part');
-  await local.fill('mona+hr');
-  await expect(dialog.getByTestId('work-email-problem')).toHaveText("Work email can't contain '+'.");
-  await local.fill('monä');
-  await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
+  const workEmail = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await workEmail.fill('mona+hr@evostel.com');
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Place them in the organization', exact: true })).toBeVisible();
-  await expect(dialog.getByText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.')).toHaveCount(2);
+  await expect(dialog.getByRole('alert')).toHaveText("Work email can't contain '+'.");
+  await workEmail.fill('monä@evostel.com');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Work email can only use English letters, numbers, dots, dashes and underscores before the @.');
   expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
-  await local.fill('mona.kamal');
-  await expect(dialog.getByTestId('work-email-problem')).toHaveCount(0);
+  await workEmail.fill('mona.kamal@evostel.com');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
 });
 
 test("Add Employee: the server's work-email refusal is shown in plain words", async ({ page }) => {
@@ -477,7 +476,7 @@ test("Add Employee: the server's work-email refusal is shown in plain words", as
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
   await advanceEmployeeToEmployment(dialog);
-  await dialog.getByTestId('work-email-local-part').fill('mona.kamal');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('mona.kamal@evostel.com');
   await advanceEmployeeToReview(dialog);
   await dialog.getByRole('button', { name: 'Create Employee' }).click();
   await expect(dialog.getByText("Work email can't contain '+'.")).toBeVisible();
@@ -544,7 +543,7 @@ test('Add Employee with email delivery offers Email sign-in code first', async (
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Mona Kamal');
   await advanceEmployeeToEmployment(dialog);
-  await dialog.getByTestId('work-email-local-part').fill('mona.kamal');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('mona.kamal@evostel.com');
   await advanceEmployeeToReview(dialog);
   await dialog.getByRole('button', { name: 'Create Employee' }).click();
   await expect(dialog.getByTestId('employee-added')).toContainText('Mona Kamal has been added.');
@@ -615,17 +614,17 @@ test('a different domain is refused, never quietly changed to the company one', 
   const dialog = page.getByRole('dialog');
   await dialog.locator('label', { hasText: 'English full name' }).locator('input').fill('Noah Gmail');
   await advanceEmployeeToEmployment(dialog);
-  const local = dialog.getByTestId('work-email-local-part');
-  await local.fill('noah@gmail.com');
-  await expect(local).toHaveValue('noah@gmail.com');
-  await expect(dialog.getByTestId('work-email-problem')).toHaveText('Work email must end in @evostel.com.');
+  const workEmail = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await workEmail.fill('noah@gmail.com');
+  await expect(workEmail).toHaveValue('noah@gmail.com');
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Place them in the organization', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('alert')).toHaveText('Work email must end in @evostel.com.');
   expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
-  // Typing the company's own domain is just the full address.
-  await local.fill('noah@evostel.com');
-  await expect(local).toHaveValue('noah');
-  await expect(dialog.getByTestId('work-email-problem')).toHaveCount(0);
+  await workEmail.fill('noah@evostel.com');
+  await expect(workEmail).toHaveValue('noah@evostel.com');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
 });
 
 test('without the reset permission, a bulk skip never points at Reset sign-in', async ({ page }) => {
