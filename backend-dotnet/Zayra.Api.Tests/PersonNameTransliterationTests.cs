@@ -15,6 +15,7 @@ public class PersonNameTransliterationTests
 
     [Theory]
     [InlineData("Muhammad Umar", "محمد عمر")]
+    [InlineData("Muhammad Umer", "محمد عمر")]
     [InlineData("Mohammed Omar", "محمد عمر")]
     [InlineData("Mohammad Umar", "محمد عمر")]
     [InlineData("  MUHAMMAD\t\nUMAR  ", "محمد عمر")]

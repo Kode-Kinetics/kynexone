@@ -359,6 +359,9 @@ export function EmployeesPage() {
   const createStepPosition = createStepOrder.indexOf(formStep);
   const previousCreateStep = createStepOrder[Math.max(0, createStepPosition - 1)];
   const followingCreateStep = createStepOrder[createStepPosition + 1] ?? 5;
+  const returnDirectlyToReview = formStep !== 5
+    && visitedCreateSteps.includes(5)
+    && (followingCreateStep === 5 || visitedCreateSteps.includes(followingCreateStep));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -889,6 +892,12 @@ export function EmployeesPage() {
     () => managerCandidates.find((item) => item.id === form.reportingManagerEmployeeId),
     [managerCandidates, form.reportingManagerEmployeeId],
   );
+  const departmentManagerCandidates = useMemo(
+    () => selectedDepartment?.managerEmployeeId
+      ? managerCandidates.filter((item) => item.id === selectedDepartment.managerEmployeeId)
+      : [],
+    [managerCandidates, selectedDepartment],
+  );
   const selectedGrade = useMemo(
     () => grades.find((item) => item.id === form.gradeId),
     [grades, form.gradeId],
@@ -1038,6 +1047,7 @@ export function EmployeesPage() {
         ...current,
         departmentId: value,
         reportingManagerEmployeeId: department?.managerEmployeeId,
+        costCenterId: department?.costCenterId,
       };
     });
 
@@ -2614,7 +2624,7 @@ export function EmployeesPage() {
             <button type="button" onClick={() => void saveEmployee(false, true)} disabled={createBusy || formCompanyMissingCountry} className="justify-self-end px-1 py-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-60 dark:text-slate-300 sm:me-auto sm:ms-2">{saving && pendingCreateExit ? t('Saving...') : t('Save draft and exit')}</button>
             <div className="col-span-2 flex items-center justify-end gap-2">
               {formStep > 0 && <button type="button" onClick={() => changeCreateStep(previousCreateStep)} disabled={createBusy} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
-              {formStep !== 5 && visitedCreateSteps.includes(5) ? (
+              {returnDirectlyToReview ? (
                 <button type="button" onClick={() => changeCreateStep(5)} disabled={createBusy} className="btn-primary">{t('Return to review')}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></button>
               ) : formStep < 5 ? (
                 <button type="button" onClick={() => void nextCreateStep()} disabled={createBusy} className="btn-primary disabled:opacity-60">
@@ -2659,7 +2669,7 @@ export function EmployeesPage() {
         ) : (
         <form ref={createFormRef} noValidate aria-busy={createBusy} inert={saving || undefined} className="space-y-4" onSubmit={(event) => {
           event.preventDefault();
-          if (formStep < 5 && visitedCreateSteps.includes(5)) changeCreateStep(5);
+          if (returnDirectlyToReview) changeCreateStep(5);
           else if (formStep < 5) void nextCreateStep();
           else void saveEmployee();
         }}>
@@ -2813,7 +2823,7 @@ export function EmployeesPage() {
                 className="select mt-1.5 w-full"
               >
                 <option value="">Select</option>
-                {managerCandidates.map((manager) => (
+                {departmentManagerCandidates.map((manager) => (
                   <option key={manager.id} value={manager.id}>{manager.fullName} ({manager.employeeCode})</option>
                 ))}
               </select>
@@ -2834,16 +2844,13 @@ export function EmployeesPage() {
               </div>
             )}
             <Input label="Joining date" value={form.joiningDate ?? ''} onChange={(v) => setField('joiningDate', v)} type="date" info="First working day. Used for probation tracking, leave accrual and end-of-service (EOSB) calculations." infoKey="employees.joining_date" />
-            <WorkEmailField
+            <Input
               label={t('Work email')}
               value={form.workEmail ?? ''}
               onChange={(v) => setField('workEmail', v)}
-              englishName={form.englishName}
-              arabicName={form.arabicName}
-              companyId={form.companyId}
-              domain={selectedFormCompany?.emailDomain ?? ''}
-              pattern={selectedFormCompany?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
-              suggest
+              type="email"
+              placeholder="name@company.com"
+              ltr
             />
             <EmployeeAdditionalDetails title="More employment details">
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />

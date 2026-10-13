@@ -107,7 +107,7 @@ public sealed class TransliterationService : ITransliterationService
         // Explicit conventional readings, not legal-name verification. Ambiguous shorthand such
         // as Md, M, Amina, Sana, Hana, Said, Salim, Rashid and Hassan is deliberately not expanded.
         Add("محمد", "muhammad", "mohammed", "mohammad", "muhammed", "mohamed", "muhamed");
-        Add("عمر", "umar", "omar");
+        Add("عمر", "umar", "umer", "omar");
         Add("علي", "ali");
         Add("أحمد", "ahmad", "ahmed");
         Add("محمود", "mahmoud", "mahmud");
