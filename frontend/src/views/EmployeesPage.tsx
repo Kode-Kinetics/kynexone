@@ -359,9 +359,10 @@ export function EmployeesPage() {
   const createStepPosition = createStepOrder.indexOf(formStep);
   const previousCreateStep = createStepOrder[Math.max(0, createStepPosition - 1)];
   const followingCreateStep = createStepOrder[createStepPosition + 1] ?? 5;
+  const remainingCreateStepsBeforeReview = createStepOrder.slice(createStepPosition + 1, -1);
   const returnDirectlyToReview = formStep !== 5
     && visitedCreateSteps.includes(5)
-    && (followingCreateStep === 5 || visitedCreateSteps.includes(followingCreateStep));
+    && remainingCreateStepsBeforeReview.every(step => visitedCreateSteps.includes(step));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<EmployeeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1321,10 +1322,12 @@ export function EmployeesPage() {
         setSaving(false);
         return;
       }
-      const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.status;
-      const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
+      const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number; attempted?: string; suggestion?: string } } })?.response?.status;
+      const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number; attempted?: string; suggestion?: string } } })?.response?.data;
       if (status === 402) {
         setFormError('Your subscription is inactive or expired. Please contact support.');
+      } else if (status === 409 && data?.error === 'work_email_conflict' && data.attempted && data.suggestion) {
+        setFormError(`Work email ${data.attempted} is already used. Enter a different address issued by IT. Suggested available address: ${data.suggestion}.`);
       } else if (workEmailProblemKey(workEmailErrorCode(e))) {
         setFormError(t(workEmailProblemKey(workEmailErrorCode(e))!));
       } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {

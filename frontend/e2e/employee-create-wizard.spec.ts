@@ -19,6 +19,7 @@ interface MockOptions {
   multipleCompanies?: boolean;
   missingCountry?: boolean;
   failFirstCreate?: boolean;
+  workEmailConflict?: boolean;
   duplicate?: boolean;
   transliteration?: {
     status?: number;
@@ -41,6 +42,7 @@ async function boot(page: Page, options: MockOptions = {}) {
   page.on('console', message => {
     if (message.type() !== 'error') return;
     if ((options.failFirstCreate || options.transliteration?.status === 503) && /Failed to load resource.*503/.test(message.text())) return;
+    if (options.workEmailConflict && /Failed to load resource.*409/.test(message.text())) return;
     errors.push(message.text());
   });
   await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'wizard-browser-fixture'));
@@ -91,6 +93,11 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/employees' && request.method() === 'POST') {
       creates.push(body);
       if (options.failFirstCreate && creates.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
+      if (options.workEmailConflict) return reply({
+        error: 'work_email_conflict',
+        attempted: body.workEmail,
+        suggestion: 'alex.it-issued2@example.test',
+      }, 409);
       saved = { ...body, id: 901, employeeCode: body.employeeCode || 'TEST-901', fullName: body.englishName, status: 'Draft', accessState: body.workEmail ? 'not_started' : 'waiting_for_work_email', profileCompletenessScore: 25, readinessState: 'NeedsAttention', activationBlockersCount: 1, salaryBreakdown: body.salaryBreakdown?.basicSalary ? body.salaryBreakdown : null, documents: [], history: [], complianceRecords: body.complianceRecords ?? [] };
       return reply(saved, 201);
     }
@@ -249,6 +256,39 @@ test('enabling full setup after reviewing continues to Payroll instead of skippi
   await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: headings[2], exact: true })).toBeVisible();
   await evidence(page, info, 'continued-to-payroll');
+  expect(errors).toEqual([]);
+});
+
+test('returning from Payroll cannot skip the remaining full-setup steps', async ({ page }) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
+  await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).check();
+  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Return to review', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Next: Salary', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('a conflicting IT-issued work email identifies the address and how HR can resolve it', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, workEmailConflict: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Work email alex.it-issued@example.test is already used. Enter a different address issued by IT. Suggested available address: alex.it-issued2@example.test.',
+  );
+  await expect(dialog.getByRole('heading', { name: headings[5], exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued@example.test');
+  expect(creates).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 
