@@ -2849,7 +2849,7 @@ export function EmployeesPage() {
               value={form.workEmail ?? ''}
               onChange={(v) => setField('workEmail', v)}
               type="email"
-              placeholder="name@company.com"
+              placeholder={t('Enter your work email.')}
               ltr
             />
             <EmployeeAdditionalDetails title="More employment details">
