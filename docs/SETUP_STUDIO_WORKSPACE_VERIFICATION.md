@@ -1,6 +1,6 @@
 # Setup Studio Package 1 verification
 
-Status: implementation and automated verification complete, 2026-10-14. Bounded authenticated local QA passed on the final build; independent scoped re-review is pending. This document does not authorize production deployment.
+Status: Package 1 locally verified and independently code-reviewed, 2026-10-14. Bounded authenticated local QA passed on the final build. Owner acceptance and release integration remain separate; this document does not authorize production deployment.
 
 ## Delivered scope
 
@@ -50,4 +50,10 @@ Current local candidate: `http://127.0.0.1:5197`, API `http://127.0.0.1:5127`, f
 - Starter drafts are browser-local, not durable collaborative drafts. Unuploaded files cannot survive a full page reload. Existing Task 4 guards protect supported transitions and storage failures.
 - GL conservatively may prompt after a successful save because incumbent GL subeditors do not expose save-state callbacks. This is an explicit accepted boundary, not seamless save/reset behavior.
 - On browsers without Navigation API support, history entries lacking the application's position tag cannot be safely reversed; the fallback does not invent a delta. Tagged same-document history and native full-page beforeunload protections remain tested.
-- Automated fixture checks do not certify server security, live tenant persistence, deployment or complete module translation. The bounded native Leave persistence proof above is distinct. Independent scoped re-review must finish before owner handoff is described as accepted.
+- Automated fixture checks do not certify server security, live tenant persistence, deployment or complete module translation. The bounded native Leave persistence proof above is distinct.
+
+## Final independent gate and handoff
+
+The independent final reviewer verified all three navigation findings as addressed, with no new Critical/Important breakage. Approval covers `6e401b73` plus the protected integration, not that commit alone. Final totals are **214 browser passes / 3 intentional skips**, **310 units**, **20 focused checks**, **18 timing repeats**, and **6 profile repeats**. Root independently reran typecheck (exit0), checked source hashes against the build, and verified frontend/API HTTP200 and unchanged tracked backend diff hash. Native QA is the bounded Leave scenario above.
+
+Essential pre-dirty integration remains uncommitted by design; preserve this worktree and `.superpowers/sdd/2026-10-14-setup-studio-workspace` baselines until it is safely captured. Do not merge or deploy the commit range as if it reconstructs the tested candidate. No push, merge, deployment, feature enablement or policy publication was performed. Existing DEP0169 and standalone startup warnings remain; earlier color-environment warnings were avoided in final commands with `env -u NO_COLOR`.
