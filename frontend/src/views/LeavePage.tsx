@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
@@ -128,26 +129,28 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
 function Modal({ title, onClose, children, wide }: {
   title: string; onClose: () => void; children: React.ReactNode; wide?: boolean;
 }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className={`relative w-full rounded-2xl bg-white shadow-2xl dark:bg-slate-800 ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto`}>
-        <div className="sticky top-0 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4 dark:border-white/10 dark:bg-slate-800">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-          <button type="button" onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10">
-            <X className="h-4 w-4 text-slate-500" />
-          </button>
-        </div>
-        <div className="p-6">{children}</div>
-      </div>
-    </div>
-  );
+  return <SharedModal isOpen title={title} onClose={onClose} size={wide ? 'wizard' : 'md'}>{children}</SharedModal>;
 }
 
 function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
+  const generatedId = useId();
+  let controlId = generatedId;
+  let associated = false;
+  const associateControl = (nodes: ReactNode): ReactNode => Children.map(nodes, node => {
+    if (!isValidElement(node)) return node;
+    const element = node as ReactElement<{ id?: string; children?: ReactNode }>;
+    if (!associated && typeof element.type === 'string' && ['input', 'select', 'textarea'].includes(element.type)) {
+      associated = true;
+      controlId = element.props.id ?? generatedId;
+      return cloneElement(element, { id: controlId });
+    }
+    return element.props.children ? cloneElement(element, {}, associateControl(element.props.children)) : element;
+  });
+  const controls = associateControl(children);
   return (
-    <div>
-      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">{label}{info && <InfoTip text={info} fieldKey={infoKey} />}</label>
-      {children}
+    <div className="min-w-0">
+      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"><label htmlFor={controlId}>{label}</label>{info && <InfoTip text={info} fieldKey={infoKey} />}</div>
+      {controls}
     </div>
   );
 }
@@ -1131,6 +1134,8 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
   const { t } = useLocale();
   // Which Saudi statutory leave the selected type is, as the server classifies it: the Hajj waiver
@@ -1156,7 +1161,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
   return (
     <Modal title={isEdit ? 'Edit Leave Policy' : 'New Leave Policy'} onClose={onClose} wide>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Policy Name *"><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. UAE Annual Leave — Full-Time" /></Field>
           <Field label="Leave Type *" info="The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow." infoKey="leave.leave_type">
             <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
@@ -1165,7 +1170,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
             </select>
           </Field>
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Country">
             <select className={sel} value={form.countryCode} onChange={e => set('countryCode', e.target.value)}>
               {['UAE', 'KSA', 'QAT', 'KWT', 'BHR', 'OMN', 'OTHER'].map(c => <option key={c}>{c}</option>)}
@@ -1174,7 +1179,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
           <Field label="Department (blank=all)"><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} /></Field>
           <Field label="Grade (blank=all)"><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} /></Field>
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Employment Type">
             <select className={sel} value={form.employmentType} onChange={e => set('employmentType', e.target.value)}>
               <option value="">All</option>
@@ -1191,7 +1196,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Entitlement &amp; Accrual</p>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Annual Days"><input type="number" step="0.5" className={inp} value={form.annualEntitlementDays} onChange={e => set('annualEntitlementDays', Number(e.target.value))} /></Field>
             <Field label="Accrual Method">
               <select className={sel} value={form.accrualMethod} onChange={e => set('accrualMethod', e.target.value)}>
@@ -1210,7 +1215,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Request Rules</p>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Min Days/Request"><input type="number" step="0.5" className={inp} value={form.minimumDaysPerRequest} onChange={e => set('minimumDaysPerRequest', Number(e.target.value))} /></Field>
             <Field label="Max Days/Request (0=unlimited)"><input type="number" step="0.5" className={inp} value={form.maximumDaysPerRequest} onChange={e => set('maximumDaysPerRequest', Number(e.target.value))} /></Field>
             <Field label="Notice Required (days)"><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
@@ -1230,7 +1235,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Payroll Impact">
             <select className={sel} value={form.payrollImpact} onChange={e => set('payrollImpact', e.target.value)}>
               {['Full', 'Half', 'None', 'Custom'].map(p => <option key={p}>{p}</option>)}
@@ -1243,10 +1248,10 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
           </Field>
         </div>
 
-        {error && <p className="text-xs text-rose-500">{error}</p>}
+        {error && <p ref={errorRef} role="alert" tabIndex={-1} className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Policy'}</button>
+          <button type="button" className={`${btn.primary} !bg-blue-600 hover:!bg-blue-700`} onClick={save} disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Policy'}</button>
         </div>
       </div>
     </Modal>

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 
 const areas = [
   ['organization', 'Organization and core HR'], ['recruitment', 'Recruitment'],
@@ -21,7 +22,7 @@ test.afterEach(async ({ page }) => {
 });
 
 // API interception is deliberate: these are browser navigation contracts, never tenant writes.
-async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; officer?: boolean; authDelay?: number; finance?: boolean; statutory?: boolean; beforeSetup?: boolean } = {}) {
+async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; officer?: boolean; authDelay?: number; finance?: boolean; statutory?: boolean; beforeSetup?: boolean; readOnly?: boolean; intercept?: (route: Route) => Promise<boolean> } = {}) {
   const writes: string[] = [];
   const reads: string[] = [];
   await page.addInitScript(({ arabic }) => {
@@ -34,9 +35,10 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path === '/api/auth/me' && options.authDelay) await new Promise(resolve => setTimeout(resolve, options.authDelay));
     const reply = (json: unknown) => route.fulfill({ json });
     if (request.method() !== 'GET') writes.push(path); else reads.push(path);
+    if (await options.intercept?.(route)) return;
     const company = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
     const companies = options.group ? [company, { ...company, id: 'second-company', legalNameEn: 'Second Fixture LLC' }] : [company];
-    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.officer ? 'HR Officer' : 'Admin'], permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.finance ? ['finance.gl.manage'] : []), ...(options.statutory ? ['payroll.rates.statutory_override'] : []), ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
+    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.readOnly ? 'Auditor' : options.officer ? 'HR Officer' : 'Admin'], permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.finance ? ['finance.gl.manage'] : []), ...(options.statutory ? ['payroll.rates.statutory_override'] : []), ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR' });
     if (path === '/api/country-packs/available') return reply([]);
@@ -53,6 +55,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path.includes('/features/')) return reply(options.disabled ? [{ key: 'learning', labelEn: 'Learning', enabled: false, navPaths: ['/learning'] }] : []);
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/leave/types') return reply([{ id: 'annual-type', code: 'ANNUAL', nameEn: 'Annual', category: 'Annual', isPaid: true, isActive: true }]);
+    if (path === '/api/leave/holidays/calendars' || path === '/api/leave/holidays/blackouts') return reply([]);
     if (path === '/api/leave/policies') return reply({ items: [{ id: 'existing-policy', name: 'Saved annual policy', leaveTypeId: 'annual-type', countryCode: 'KSA', annualEntitlementDays: 28, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full' }], total: 1 });
     if (path === '/api/recruitment/onboarding/checklists' || path.endsWith('/template-tasks')) return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
@@ -71,7 +74,8 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     await page.evaluate(url => history.replaceState({ fixtureMarker: 'preserved' }, '', url), setupUrl);
     await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toBeVisible();
   } else await page.goto(setupUrl);
-  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
+  if (options.readOnly) await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible({ timeout: 30_000 });
+  else await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   return { writes, reads };
 }
 
@@ -86,6 +90,200 @@ test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
   await dialog.getByRole('button', { name: 'Save Changes' }).click();
   expect((await request).postDataJSON()).toMatchObject({ name: 'Saved annual policy', annualEntitlementDays: 30, leaveTypeId: 'annual-type' });
   expect(writes).toEqual(['/api/leave/policies/existing-policy']);
+});
+
+// These fixtures intercept every API call. Saved/read-back assertions prove the
+// canonical form contract; they are not server authorization or persistence proof.
+async function maintenancePolicy(page: Page, options: { arabic?: boolean; failFirst?: boolean } = {}) {
+  let saved = { id: 'existing-policy', name: 'Annual leave policy for regional operations and extended service teams', leaveTypeId: 'annual-type', countryCode: 'KSA', annualEntitlementDays: 28, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full' };
+  let attempts = 0;
+  await boot(page, { area: 'leave', setting: 'leavePolicies', arabic: options.arabic, intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/leave/types') { await route.fulfill({ json: [{ id: 'annual-type', code: 'ANNUAL', nameEn: 'Annual leave for regional operations and extended service teams', category: 'Annual', isPaid: true, isActive: true }] }); return true; }
+    if (path === '/api/leave/policies') { await route.fulfill({ json: { items: [saved], total: 1 } }); return true; }
+    if (path === '/api/leave/policies/existing-policy' && route.request().method() === 'PUT') {
+      attempts++;
+      if (options.failFirst && attempts === 1) await route.fulfill({ status: 503, json: { message: 'Temporary policy save failure. Retry your changes.' } });
+      else { saved = { ...saved, ...route.request().postDataJSON() }; await route.fulfill({ json: saved }); }
+      return true;
+    }
+    return false;
+  } });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  return page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+}
+
+test('tenant_admin_can_revisit_and_edit_saved_settings', async ({ page }) => {
+  const dialog = await maintenancePolicy(page);
+  await expect(dialog.getByLabel('Annual Days', { exact: true })).toHaveValue('28');
+  await dialog.getByLabel('Annual Days', { exact: true }).fill('30');
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(dialog.getByLabel('Annual Days', { exact: true })).toHaveValue('30');
+});
+
+test('read_only_user_cannot_edit', async ({ page }) => {
+  const { writes, reads } = await boot(page, { readOnly: true, area: 'leave', setting: 'leavePolicies' });
+  await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Add Company|New Policy|Edit/, exact: true })).toHaveCount(0);
+  expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
+  expect(writes).toEqual([]);
+});
+
+test('company_switch_does_not_reuse_other_company_draft', async ({ page }) => {
+  await boot(page, { group: true });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByLabel(/^Industry/).fill('Company A private draft');
+  await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).not.toHaveValue('Company A private draft');
+  await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: /Workspace Fixture LLC/ }).click();
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Company A private draft');
+});
+
+test('forged_area_or_return_path_is_ignored', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'forged-area', setting: 'leavePolicies&returnTo=https%3A%2F%2Fexample.invalid%2Fcapture' });
+  await expect(page.getByRole('heading', { name: 'Workspace overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
+  await selectArea(page, 'Leave and absence');
+  await page.getByTestId('setup-area-content').getByRole('link', { name: 'Open workspace', exact: true }).click();
+  await expect(page).toHaveURL(/127\.0\.0\.1:5197\/leave\?/);
+  expect(writes).toEqual([]);
+});
+
+test('failed_save_retains_values', async ({ page }, info) => {
+  const dialog = await maintenancePolicy(page, { failFirst: true });
+  await dialog.getByLabel('Annual Days', { exact: true }).fill('31');
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  const alert = dialog.getByRole('alert');
+  await expect(alert).toHaveText('Save failed.');
+  await expect(alert).toBeFocused();
+  await expect(dialog.getByLabel('Annual Days', { exact: true })).toHaveValue('31');
+  await expect(alert).toBeInViewport();
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).scrollIntoViewIfNeeded();
+  await expect(alert).toBeInViewport();
+  await page.screenshot({ path: `/tmp/kynex-setup-final-evidence/error-${info.project.name}.png` });
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(dialog.getByLabel('Annual Days', { exact: true })).toHaveValue('31');
+});
+
+for (const arabic of [false, true]) {
+  test(`workspace_axe_${arabic ? 'ar' : 'en'}`, async ({ page }, info) => {
+    if (info.project.name === 'mobile') await page.setViewportSize({ width: 390, height: 844 });
+    await boot(page, { arabic });
+    expect((await new AxeBuilder({ page }).include('[data-testid="setup-studio-workspace"]').analyze()).violations.filter(v => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `/tmp/kynex-setup-final-evidence/workspace-${info.project.name}-${arabic ? 'ar' : 'en'}.png` });
+  });
+  test(`rtl_mobile_long_labels_remain_accessible_${arabic ? 'ar' : 'en'}`, async ({ page }, info) => {
+    if (info.project.name === 'mobile') await page.setViewportSize({ width: 390, height: 844 });
+    const dialog = await maintenancePolicy(page, { arabic });
+    await expect(dialog).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('dir', arabic ? 'rtl' : 'ltr');
+    await expect(dialog.getByLabel('Policy Name *', { exact: true })).toHaveValue(/regional operations/);
+    expect((await new AxeBuilder({ page }).include('[role="dialog"]').analyze()).violations.filter(v => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const close = dialog.getByRole('button', { name: 'Close', exact: true });
+    const save = dialog.getByRole('button', { name: 'Save Changes', exact: true });
+    await close.focus(); await page.keyboard.press('Shift+Tab'); await expect(save).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(close).toBeFocused();
+    for (const control of [save, dialog.getByRole('button', { name: 'Cancel', exact: true })]) {
+      await control.scrollIntoViewIfNeeded();
+      expect(await control.evaluate(element => { const r = element.getBoundingClientRect(); return element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })).toBe(true);
+    }
+    await dialog.getByLabel('Annual Days', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `/tmp/kynex-setup-final-evidence/leave-${info.project.name}-${arabic ? 'ar' : 'en'}.png` });
+    await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  });
+}
+
+test('same_scope_company_refresh_keeps_newest_response', async ({ page }) => {
+  await boot(page, { area: 'organization', setting: 'branches' });
+  const held: Route[] = [];
+  await page.route('**/api/companies?**', route => { held.push(route); });
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
+  await expect.poll(() => held.length).toBe(1);
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
+  await expect.poll(() => held.length).toBe(2);
+  const company = (name: string) => ({ items: [{ id: 'fixture-company', legalNameEn: name, countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true }], total: 1 });
+  await held[1].fulfill({ json: company('Newest company name') });
+  await expect(page.getByTestId('setup-studio-workspace').getByText('Newest company name', { exact: true }).first()).toBeVisible();
+  await held[0].fulfill({ json: company('Stale company name') });
+  await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('option', { name: 'Newest company name', exact: true })).toBeAttached();
+  await expect(page.getByRole('option', { name: 'Stale company name', exact: true })).toHaveCount(0);
+});
+
+for (const failCurrent of [false, true]) {
+  test(`company_switch_discards_old_reference_responses_${failCurrent ? 'failure' : 'success'}`, async ({ page }) => {
+    await boot(page, { group: true, area: 'organization', setting: 'branches' });
+    const held: Route[] = [];
+    await page.route(/\/api\/(companies|grades|organization\/cost-centers)\?/, route => { held.push(route); });
+    const switchTo = async (name: RegExp) => {
+      await page.getByTestId('company-switcher').getByRole('button').click();
+      await page.getByRole('menuitem', { name }).click();
+    };
+    await switchTo(/Second Fixture LLC/);
+    await expect(page).toHaveURL(/companyId=second-company/);
+    await expect.poll(() => held.filter(route => route.request().headers()['x-company-id'] === 'second-company').length).toBeGreaterThanOrEqual(3);
+    await switchTo(/Workspace Fixture LLC/);
+    await expect(page).toHaveURL(/companyId=fixture-company/);
+    await expect.poll(() => held.filter(route => route.request().headers()['x-company-id'] === 'fixture-company').length).toBeGreaterThanOrEqual(3);
+    const oldScope = held.filter(route => route.request().headers()['x-company-id'] === 'second-company');
+    const currentScope = held.filter(route => route.request().headers()['x-company-id'] === 'fixture-company');
+    expect(new Set(oldScope.map(route => new URL(route.request().url()).pathname))).toEqual(new Set(['/api/companies', '/api/grades', '/api/organization/cost-centers']));
+    expect(new Set(currentScope.map(route => new URL(route.request().url()).pathname))).toEqual(new Set(['/api/companies', '/api/grades', '/api/organization/cost-centers']));
+    const fulfill = async (route: Route, old: boolean) => {
+      const path = new URL(route.request().url()).pathname;
+      const name = old ? 'STALE scope value' : 'Current scope value';
+      const item = path.endsWith('companies') ? { id: 'fixture-company', legalNameEn: name, countryCode: 'SAU', isActive: true }
+        : path.endsWith('grades') ? { id: 'grade', code: 'G1', name, level: 1, isActive: true }
+        : { id: 'cost', code: 'CC1', name, isActive: true };
+      await route.fulfill(failCurrent && !old ? { status: 503, json: { message: 'Current scope unavailable' } } : { json: { items: [item], total: 1 } });
+    };
+    for (const route of currentScope) await fulfill(route, false);
+    await expect(page.getByTestId('setup-studio-workspace').getByText(failCurrent ? 'Workspace Fixture LLC' : 'Current scope value', { exact: true }).first()).toBeVisible();
+    for (const route of oldScope) await fulfill(route, true);
+    await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+    await expect(page.getByRole('dialog').getByRole('option', { name: 'STALE scope value', exact: true })).toHaveCount(0);
+    if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: 'Current scope value', exact: true })).toBeAttached();
+    await page.keyboard.press('Escape');
+    // Select another existing form without reloading SetupPage or refetching the references.
+    await page.getByRole('listitem').filter({ has: page.getByRole('heading', { name: 'Departments', exact: true }) }).getByRole('button', { name: 'Open settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Add Department', exact: true }).click();
+    await expect(page.getByRole('dialog').getByRole('option', { name: 'STALE scope value', exact: true })).toHaveCount(0);
+    if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: 'Current scope value', exact: true })).toBeAttached();
+    await page.keyboard.press('Escape');
+    await page.getByRole('listitem').filter({ has: page.getByRole('heading', { name: 'Designations', exact: true }) }).getByRole('button', { name: 'Open settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Add Designation', exact: true }).click();
+    await expect(page.getByRole('dialog').getByRole('option', { name: /STALE scope value/ })).toHaveCount(0);
+    if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: /Current scope value/ })).toBeAttached();
+  });
+}
+
+test('shared_leave_modal_preserves_holiday_and_source_page_editors', async ({ page }) => {
+  await boot(page, { area: 'leave', setting: 'holidayCalendars' });
+  await page.getByTestId('setup-area-content').getByText('Calendars', { exact: true }).locator('..').getByRole('button').click();
+  const calendar = page.getByRole('dialog', { name: 'New Holiday Calendar', exact: true });
+  await calendar.getByLabel('Calendar Name *', { exact: true }).fill('Local holiday fixture');
+  await page.keyboard.press('Escape'); await expect(calendar).toHaveCount(0);
+  await page.route('**/api/leave/reports/dashboard*', route => route.fulfill({ status: 503, json: { message: 'Fixture dashboard unavailable' } }));
+  await page.goto('/leave');
+  await page.getByRole('tab', { name: 'Policies', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByRole('dialog').getByLabel('Annual Days', { exact: true })).toHaveValue('28');
+  await page.keyboard.press('Escape');
 });
 
 test('existing_record_identity_survives_edit', async ({ page }) => {
@@ -499,22 +697,33 @@ test('history_company_change_confirms_pending_files_once', async ({ page }) => {
 test('starter_change_company_decline_keeps_url_and_file', async ({ page }) => {
   await boot(page, { group: true });
   await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByLabel(/^Industry/).fill('Retained company draft');
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'retained.txt', mimeType: 'text/plain', buffer: Buffer.from('Retained policy') });
   const original = page.url();
+  const originalHistory = await page.evaluate(() => history.state);
   let prompts = 0;
   const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
   page.on('dialog', decline);
   await page.getByRole('button', { name: 'Change company', exact: true }).click();
   await expect.poll(() => prompts).toBe(1);
   await expect(page).toHaveURL(original);
+  expect(await page.evaluate(() => history.state)).toEqual(originalHistory);
   expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('retained.txt');
   page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
+  page.once('dialog', async dialog => { prompts++; await dialog.accept(); });
   await page.getByRole('button', { name: 'Change company', exact: true }).click();
   await expect(page).not.toHaveURL(/companyId=/);
   await expect(page).toHaveURL(/mode=starter/);
   await expect(page.locator('input[type=file]')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toBeVisible();
+  expect(prompts).toBe(2);
+  await page.getByRole('button', { name: /Workspace Fixture LLC/ }).click();
+  await expect(page).toHaveURL(/companyId=fixture-company/);
+  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Retained company draft');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(0);
 });
 
 test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {

@@ -1,6 +1,6 @@
 # Setup Studio: unified HR configuration and policy workspace
 
-Status: proposed design for owner review. This document authorizes no application changes or production deployment. It consolidates the agreed direction after specialist review; implementation planning follows written-design approval.
+Status: approved design; Package 1 implementation is under validation. Owner approval in the task conversation authorizes the bounded workspace implementation plan. Packages 2 (document-to-form adapters) and 3 (policy-library convergence and Kody) remain required programme work with separate reviewed implementation plans. No production deployment is authorized by this document.
 
 ## 1. Outcome and authority
 
