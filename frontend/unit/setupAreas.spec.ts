@@ -56,6 +56,42 @@ test('restricted_destination_is_not_available', () => {
   expect(destinationAvailability(destination('recruitment'), { ...context, flagStatus: 'error', hasPermission: () => false })).toBe('restricted');
 });
 
+test('organization_reader_can_open_only_companies_among_setup_tabs', () => {
+  const reader = { ...context, hasPermission: (key: string) => key === 'organization.read' };
+  expect(destinationAvailability(destination('companies'), reader)).toBe('available');
+  expect(destinationAvailability(destination('companies'), { ...reader, isCompanyScopedGroup: true })).toBe('available');
+  for (const item of destinations().filter(item => item.presentation === 'embedded' && item.id !== 'companies')) {
+    expect(destinationAvailability(item, reader), item.id).toBe('restricted');
+  }
+});
+
+test('establishment_writer_can_open_existing_setup_tabs', () => {
+  const writer = { ...context, hasPermission: (key: string) => key === 'organization.establishment.write' };
+  for (const item of destinations().filter(item => item.presentation === 'embedded')) {
+    expect(destinationAvailability(item, writer), item.id).toBe('available');
+  }
+  expect(destinationAvailability(destination('recruitment'), writer)).toBe('restricted');
+});
+
+test('establishment_writer_still_obeys_company_scoped_setup_allowlist', () => {
+  const writer = { ...context, isCompanyScopedGroup: true, hasPermission: (key: string) => key === 'organization.establishment.write' };
+  for (const id of ['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']) {
+    expect(destinationAvailability(destination(id), writer), id).toBe('available');
+  }
+  for (const id of ['establishment', 'departments', 'grades', 'statutoryRules']) {
+    expect(destinationAvailability(destination(id), writer), id).toBe('restricted');
+  }
+});
+
+test('rates_reader_does_not_gain_unrelated_setup_tabs', () => {
+  const reader = { ...context, hasPermission: (key: string) => key === 'payroll.rates.read' };
+  expect(destinationAvailability(destination('statutoryRules'), reader)).toBe('available');
+  for (const item of destinations().filter(item => item.presentation === 'embedded' && item.id !== 'statutoryRules')) {
+    expect(destinationAvailability(item, reader), item.id).toBe('restricted');
+  }
+  expect(destinationAvailability(destination('statutoryRules'), { ...context, hasPermission: key => key === 'payroll.rates.statutory_override' })).toBe('restricted');
+});
+
 test('loading_or_disabled_feature_is_not_available', () => {
   expect(destinationAvailability(destination('recruitment'), { ...context, flagStatus: 'loading' })).toBe('checking');
   expect(destinationAvailability(destination('recruitment'), { ...context, isFeatureEnabled: () => false })).toBe('unavailable');

@@ -26,8 +26,19 @@ type DestinationInput = Omit<SetupDestination, 'requiredPermissions' | 'required
   assistance?: SetupDestination['assistance'];
 };
 
-// Reuse the canonical route's any-of permissions and feature key. Dedicated subroutes
-// inherit their parent metadata; their own route wrappers and APIs remain authoritative.
+const setupWriterPermissions = ['organization.write', 'organization.establishment.write'] as const;
+
+// Setup's menu gate differs from its route and per-tab visibility. Mirror SetupPage's
+// canWrite/canReadCompanies/canReadStatutoryRules permission branches for discovery;
+// its additional role checks and each editor's write checks still apply at render/save.
+function setupTabPermissions(id: string): readonly string[] {
+  if (id === 'companies') return [...setupWriterPermissions, 'organization.read'];
+  if (id === 'statutoryRules') return [...setupWriterPermissions, 'payroll.rates.read'];
+  return setupWriterPermissions;
+}
+
+// Reuse canonical module permissions/flags. Setup resolves per-tab permissions above;
+// dedicated subroutes inherit parent metadata. Route wrappers and APIs remain authoritative.
 function destination(input: DestinationInput): SetupDestination {
   const pathname = input.path.split('?')[0];
   const route = navigationItems
@@ -37,7 +48,7 @@ function destination(input: DestinationInput): SetupDestination {
   return {
     ...input,
     assistance: input.assistance ?? 'not-connected',
-    requiredPermissions: route.requiredPermissions ?? [],
+    requiredPermissions: pathname === '/setup' ? setupTabPermissions(input.id) : route.requiredPermissions ?? [],
     requiredFeatureKey: route.requiredFeatureKey,
   };
 }
