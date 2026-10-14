@@ -1,4 +1,4 @@
-# Policy-first setup: Leave Policy pilot
+# Policy-based Setup Studio navigation, with a Leave Policy pilot
 
 Status: proposed written specification, awaiting owner approval. The policy-first direction was approved in conversation; this document does not authorize implementation or production deployment.
 
@@ -6,13 +6,26 @@ Status: proposed written specification, awaiting owner approval. The policy-firs
 
 An HR administrator chooses a policy area by name, supplies a document or reuses a binder, and reviews source-backed values in the application's existing form. No parallel questionnaire, policy configuration table, replacement form, or automatic operational save is introduced.
 
+Owner clarification: the main problem is the outer five-step navigation (Company details, Working week, People & pay, Grades & benefits, Review & create). In the policy workspace, replace that navigation with directly selectable policy areas. Adding a dropdown inside Company details does not satisfy this requirement. The full policy index is part of the navigation scope; Leave is only the first fully verified extraction-to-save adapter, not the only policy visible.
+
 The first acceptance target is the local Evostel single-company shadow tenant. The first connected path updates one explicitly selected existing leave policy at a time. Creating a new leave policy remains available through the current manual workflow; AI-assisted creation and Group/company overrides are later slices, not implied by this pilot. If there are no existing policies, show that fact and link to the existing creation workflow rather than fabricating a policy.
 
 Production Evostel, employee leave balances, payroll runs, leave applications, policy publication, and employee notifications remain untouched.
 
+## Policy navigation replaces the outer wizard
+
+- Keep the tenant/company context visible above the workspace. Organization details and master-data setup remain available through their existing settings routes, separately from policy work. Preserve any unfinished old company-setup draft and provide an explicit return path; do not delete it or make it a prerequisite for editing an already configured company's policy.
+- Replace the five numbered steps with a searchable, grouped policy index. Users can open any area in any order; there is no mandatory sequence, Step 1 of 5 counter, or company-creation Continue button in this policy workspace.
+- The index must represent the organization's policy inventory, including client-specific titles when known. Reconcile the existing app areas with the actual supplied HR manual. Suggested grouping includes employment (manpower planning, recruitment, onboarding/orientation, probation/confirmation), time and rewards (working hours/attendance, leave, overtime, compensation/grades, benefits), and employee lifecycle/governance (performance, learning, conduct/grievances, travel/expenses, separation/offboarding). These are candidate navigation categories, not a declaration of legally mandatory policies or supported automation.
+- Do not hide a policy because automated mapping is unavailable. Its detail view must accurately say whether it has a connected existing form, a manual existing workflow, document/reference support only, or a capability gap. Map only verified existing destinations; never generate fake working forms or configuration status for unimplemented modules.
+- For each policy, display actual saved/draft state independently from automation availability. A policy may be configured manually even when AI preparation is unavailable. “Document uploaded” is not “Configured.” Unknown/load-error is not “Not configured.”
+- Selecting a policy changes the main content area to that policy's existing records, sources, proposed field changes and relevant next action. Keep upload/prepare/review/save guidance inside the selected policy; it must not recreate the outer five-step company wizard.
+- Preserve per-policy drafts and user edits when changing selection. A change in selected policy cannot silently reuse another area's extraction or overwrite its form. Full-binder upload remains a shared source option, with output restricted to the selected area.
+- Retain existing policy-library support for organization-specific documents that lack a mapped form. Do not add a new custom-policy configuration engine or table in this slice.
+
 ## User journey
 
-1. **Choose policy area.** Setup Studio presents named areas: Leave, Attendance, Overtime, Onboarding, Grades, and Benefits. Leave receives the new guided path first. Other areas retain their current entry points and accurately disclose whether scoped AI preparation is available; a label is not evidence of a completed mapping. Use a readable list on desktop and a labelled selector on narrow screens.
+1. **Choose policy area in the left navigation.** Select Leave directly from the policy index replacing the old five-step rail. Leave receives the new guided path first. Other listed policies open verified existing destinations or clearly explain their capability gap; a label is not evidence of a completed mapping. Use a readable grouped list on desktop and a labelled searchable selector on narrow screens.
 2. **Choose the record.** Keep tenant/company identity visible. For Leave, load actual saved records and let the user select the exact policy to update. Show its leave type, country, applicability and current status. Never select a record solely because its name resembles an AI-generated name. Loading, access failure and no records are separate states.
 3. **Choose sources.** Reuse the existing document upload, library and binder controls. Accept a dedicated leave document, multiple chapters, or the whole binder. Selecting Leave restricts the output, not the filename or file packaging. Keep add/replace/remove, cancellation and resume.
 4. **Prepare leave policy fields.** This is the single extraction action. Explain that only leave fields will be proposed and nothing will be saved. Retain explicit AI consent and existing file/processing limits; this slice does not claim increased capacity.
@@ -80,7 +93,7 @@ Carry-forward and expiry are explicitly unsupported by the current API/runtime. 
 
 ## Acceptance gates for the local shadow pilot
 
-1. Named Leave selection leads to the selected existing record and form without repeating company setup.
+1. The policy workspace replaces the old five-step rail with the full inventoried policy index, not a dropdown nested within Company details. Any policy can be opened without completing another. Named Leave selection leads to the selected existing record and form without repeating company setup; existing company-setup drafts remain recoverable.
 2. Leave-only and mixed-binder inputs prepare only allowed leave fields. An onboarding-only document yields no leave values and performs no operational writes.
 3. Unexpected/out-of-scope model fields are rejected on the server, including onboarding recovery output. Forged domain/target/scope submissions are refused.
 4. Current values are loaded from the selected record. Explicit false/zero survive; missing fields, unrelated settings, identity and scope are preserved.
