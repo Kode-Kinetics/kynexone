@@ -38,9 +38,16 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
     // A company deep link is consumed once. Later top-bar selections are authoritative;
     // retaining the old query must never force the previous company back into context.
     if (appliedCompanyParam.current !== requestedCompany) {
+      const hasConsumedInitialCompany = appliedCompanyParam.current !== undefined;
       appliedCompanyParam.current = requestedCompany;
       if (validRequestedCompany && validRequestedCompany !== authorizedCompany) {
         setSelectedCompany(validRequestedCompany);
+        return;
+      }
+      // An absent ID on initial entry may use the saved preference. After entry,
+      // a history transition to no ID restores the group's All companies scope.
+      if (hasConsumedInitialCompany && requestedCompany === null && isGroupScope && authorizedCompany !== null) {
+        setSelectedCompany(null);
         return;
       }
     }
@@ -49,7 +56,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
       if (authorizedCompany) next.set('companyId', authorizedCompany); else next.delete('companyId');
       router.replace(`/setup?${next.toString()}`, { scroll: false });
     }
-  }, [requestedCompany, validRequestedCompany, authorizedCompany, params, router, setSelectedCompany]);
+  }, [requestedCompany, validRequestedCompany, authorizedCompany, isGroupScope, params, router, setSelectedCompany]);
   const companyName = companies.find(company => company.id === authorizedCompany)?.legalNameEn
     ?? permittedCompanies.find(company => company.id === authorizedCompany)?.name;
   const activeArea = resolveSetupArea(params?.get('area') ?? null);

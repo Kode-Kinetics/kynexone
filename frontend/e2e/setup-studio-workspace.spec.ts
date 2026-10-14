@@ -156,3 +156,24 @@ test('group_company_switch_updates_scope_and_next_area_without_reset', async ({ 
   expect(new URL(page.url()).searchParams.has('companyId')).toBe(false);
   expect(writes).toEqual([]);
 });
+
+test('history_back_to_absent_company_restores_all_companies_scope', async ({ page }) => {
+  const { writes } = await boot(page, { group: true });
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: 'All companies', exact: true }).click();
+  await expect(page).not.toHaveURL(/companyId=/);
+  await expect(page.getByTestId('setup-studio-workspace').getByText('All authorized companies', { exact: true })).toBeVisible();
+  await selectArea(page, 'Leave and absence');
+  await expect(page).toHaveURL(/area=leave/);
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await expect(page).toHaveURL(/companyId=second-company/);
+  await page.goBack();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Workspace overview', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-studio-workspace').getByText('All authorized companies', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('All companies');
+  await expect(page).not.toHaveURL(/companyId=/);
+  await selectArea(page, 'Leave and absence');
+  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: 'Open workspace', exact: true })).toHaveAttribute('href', '/leave');
+  expect(writes).toEqual([]);
+});
