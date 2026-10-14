@@ -41,25 +41,18 @@ export function useSetupNavigationGuard(dirty: boolean, clear: () => void, pendi
   current.current = { dirty: dirty || pendingFiles, confirmDestination };
   useEffect(() => {
     const history = window.history;
-    const originalPush = history.pushState;
-    const originalReplace = history.replaceState;
     const key = '__kynexSetupPosition';
-    let position = typeof history.state?.[key] === 'number' ? history.state[key] : 0;
+    let position: number | null = typeof history.state?.[key] === 'number' ? history.state[key] : null;
     let restoring = false;
     let traverseConfirmed = false;
-    originalReplace.call(history, { ...history.state, [key]: position }, '');
-    const push: History['pushState'] = function (state, unused, url) {
-      position += 1;
-      originalPush.call(history, { ...state, [key]: position }, unused, url);
-    };
-    const replace: History['replaceState'] = function (state, unused, url) {
-      originalReplace.call(history, { ...state, [key]: position }, unused, url);
-    };
-    history.pushState = push;
-    history.replaceState = replace;
+    const historyWritten = (event: Event) => { position = (event as CustomEvent<number>).detail; };
     const pop = (event: PopStateEvent) => {
       if (restoring) { restoring = false; return false; }
-      const next = typeof event.state?.[key] === 'number' ? event.state[key] : position - 1;
+      const next = typeof event.state?.[key] === 'number' ? event.state[key] : null;
+      // The bootstrap tags every same-document entry, including before Setup.
+      // Never guess a delta for an entry created outside that bookkeeping.
+      // Cross-document departures use the native beforeunload guard instead.
+      if (next === null || position === null) { position = next; traverseConfirmed = false; return true; }
       if (next !== position && !traverseConfirmed && !current.current.confirmDestination(location.href)) {
         restoring = true;
         history.go(position - next);
@@ -89,14 +82,14 @@ export function useSetupNavigationGuard(dirty: boolean, clear: () => void, pendi
       if (!current.current.confirmDestination(link.href)) { event.preventDefault(); event.stopPropagation(); }
     };
     window.addEventListener('kynexone:setup-history', beforeHistory);
+    window.addEventListener('kynexone:history-write', historyWritten);
     navigation?.addEventListener('navigate', beforeTraverse);
     window.addEventListener('kynexone:before-navigation', beforeNavigation);
     window.addEventListener('beforeunload', beforeUnload);
     document.addEventListener('click', beforeLink, true);
     return () => {
-      if (history.pushState === push) history.pushState = originalPush;
-      if (history.replaceState === replace) history.replaceState = originalReplace;
       window.removeEventListener('kynexone:setup-history', beforeHistory);
+      window.removeEventListener('kynexone:history-write', historyWritten);
       navigation?.removeEventListener('navigate', beforeTraverse);
       window.removeEventListener('kynexone:before-navigation', beforeNavigation);
       window.removeEventListener('beforeunload', beforeUnload);
