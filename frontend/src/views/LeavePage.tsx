@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
@@ -1043,7 +1043,7 @@ export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boole
   const [types, setTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  useEffect(() => { onDirtyChange?.(showCreate); return () => onDirtyChange?.(false); }, [showCreate, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange?.(showCreate); return () => onDirtyChange?.(false); }, [showCreate, onDirtyChange]);
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
@@ -1260,7 +1260,7 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
   const [statusFilter, setStatusFilter] = useState('Active');
   const [showCreate, setShowCreate] = useState(false);
   const [editPolicy, setEditPolicy] = useState<LeavePolicy | null>(null);
-  useEffect(() => { onDirtyChange?.(showCreate || !!editPolicy); return () => onDirtyChange?.(false); }, [showCreate, editPolicy, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange?.(showCreate || !!editPolicy); return () => onDirtyChange?.(false); }, [showCreate, editPolicy, onDirtyChange]);
 
   const load = () => {
     setLoading(true);
@@ -1354,7 +1354,7 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
   const [editingHoliday, setEditingHoliday] = useState<PublicHoliday | null>(null);
   const [holidayModal, setHolidayModal] = useState<'none' | 'add' | 'edit'>('none');
   const [holidayForm, setHolidayForm] = useState({ ...BLANK_HOLIDAY_FORM });
-  useEffect(() => { onDirtyChange?.(calModal !== 'none' || holidayModal !== 'none'); return () => onDirtyChange?.(false); }, [calModal, holidayModal, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange?.(calModal !== 'none' || holidayModal !== 'none'); return () => onDirtyChange?.(false); }, [calModal, holidayModal, onDirtyChange]);
 
 
   const reloadCalendars = () => holidayCalendarApi.listCalendars().then(cs => {

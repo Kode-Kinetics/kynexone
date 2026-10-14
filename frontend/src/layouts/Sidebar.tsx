@@ -122,6 +122,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   };
 
   const handleNav = (path?: string) => {
+    if (path && !window.dispatchEvent(new CustomEvent('kynexone:before-navigation', { cancelable: true, detail: { path } }))) return;
     if (path) router.push(path);
     onClose();
   };

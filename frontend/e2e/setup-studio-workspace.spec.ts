@@ -21,7 +21,7 @@ test.afterEach(async ({ page }) => {
 });
 
 // API interception is deliberate: these are browser navigation contracts, never tenant writes.
-async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; officer?: boolean } = {}) {
+async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; officer?: boolean; authDelay?: number; finance?: boolean } = {}) {
   const writes: string[] = [];
   const reads: string[] = [];
   await page.addInitScript(({ arabic }) => {
@@ -31,15 +31,19 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
   }, { arabic: options.arabic });
   await page.route('**/api/**', async route => {
     const request = route.request(); const path = new URL(request.url()).pathname;
+    if (path === '/api/auth/me' && options.authDelay) await new Promise(resolve => setTimeout(resolve, options.authDelay));
     const reply = (json: unknown) => route.fulfill({ json });
     if (request.method() !== 'GET') writes.push(path); else reads.push(path);
     const company = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
     const companies = options.group ? [company, { ...company, id: 'second-company', legalNameEn: 'Second Fixture LLC' }] : [company];
-    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.officer ? 'HR Officer' : 'Admin'], permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
+    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.officer ? 'HR Officer' : 'Admin'], permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.finance ? ['finance.gl.manage'] : []), ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR' });
     if (path === '/api/country-packs/available') return reply([]);
     if (path === '/api/reference/countries') return reply([{ code: 'SA', name: 'Saudi Arabia' }]);
+    if (path === '/api/admin/system-settings') return reply([]);
+    if (path === '/api/finance/gl/accounts' || path === '/api/finance/gl/mappings') return reply([]);
+    if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });
     if (path === '/api/recruitment/onboarding/summary') return reply({ total: 0, pending: 0, completed: 0, blocked: 0, completionPct: 0 });
     if (path === '/api/companies') return reply({ items: companies, total: companies.length, page: 1, pageSize: 100 });
     if (path === '/api/features/disabled-keys') {
@@ -180,6 +184,274 @@ async function selectArea(page: Page, label: string) {
   if (await disclosure.isVisible()) await disclosure.click();
   await page.getByRole('navigation', { name: 'Setup areas', exact: true }).getByRole('button', { name: label, exact: true }).click();
 }
+
+async function clickDashboard(page: Page) {
+  const mobile = page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('link', { name: 'Home', exact: true });
+  if (await mobile.isVisible()) await mobile.click();
+  else await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Dashboard', exact: true }).click();
+}
+
+test('return_from_library_preserves_area_and_company', async ({ page }) => {
+  const { writes } = await boot(page, { group: true, area: 'leave' });
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await expect(page).toHaveURL(/area=leave/);
+  await expect(page).toHaveURL(/companyId=second-company/);
+  await expect(page.getByTestId('setup-studio-workspace')).toContainText('Second Fixture LLC');
+  expect(writes).toEqual([]);
+});
+
+test('cancel_return_keeps_dirty_edits_on_back_forward_and_sidebar', async ({ page }) => {
+  await boot(page, { area: 'payroll' });
+  await selectArea(page, 'Onboarding and confirmation');
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
+  await page.getByTestId('setup-area-content').getByRole('button', { name: 'Open settings', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Keep history draft');
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  const originalUrl = page.url();
+  await page.evaluate(() => history.back());
+  await expect.poll(() => prompts).toBe(1);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep history draft');
+  await clickDashboard(page);
+  await expect.poll(() => prompts).toBe(2);
+  await expect(page).toHaveURL(originalUrl);
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  await page.evaluate(() => history.back());
+  await expect(page).not.toHaveURL(originalUrl);
+  await page.evaluate(() => history.forward());
+  await expect(page).toHaveURL(originalUrl);
+});
+
+test('unsupported_area_does_not_claim_prefill', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'leave' });
+  await expect(page.getByTestId('setup-area-content')).toContainText('Document filling is not connected for this area');
+  await expect(page.getByRole('button', { name: 'Fill from document', exact: true })).toHaveCount(0);
+  await selectArea(page, 'Onboarding and confirmation');
+  await expect(page.getByTestId('setup-area-content')).toContainText('Onboarding task suggestions can be prepared');
+  expect(writes).toEqual([]);
+});
+
+test('declined_forward_keeps_editor_and_url', async ({ page }) => {
+  await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  await selectArea(page, 'Payroll');
+  await expect(page).toHaveURL(/area=payroll/);
+  await page.evaluate(() => history.back());
+  await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Keep forward draft');
+  const originalUrl = page.url();
+  let prompts = 0;
+  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  await page.evaluate(() => history.forward());
+  await expect.poll(() => prompts).toBe(1);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep forward draft');
+});
+
+test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }));
+  await boot(page, { area: 'payroll', authDelay: 150 });
+  await selectArea(page, 'Onboarding and confirmation');
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
+  await page.getByTestId('setup-area-content').getByRole('button', { name: 'Open settings', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Keep fallback draft');
+  const originalUrl = page.url();
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  await page.evaluate(() => history.back());
+  await expect.poll(() => prompts).toBe(1);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep fallback draft');
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  await clickDashboard(page);
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await page.evaluate(() => history.pushState(history.state, '', '/dashboard?history-check=1'));
+  await expect(page).toHaveURL(/history-check=1/);
+  await page.evaluate(() => history.back());
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
+test('administration_access_and_filters_do_not_create_unsaved_edits', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
+  await page.getByRole('button', { name: 'Branches', exact: true }).click();
+  let prompts = 0;
+  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Audit Logs', exact: true }).click();
+  await page.getByPlaceholder('e.g. MasterDataType').fill('filtered');
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+  expect(prompts).toBe(0);
+});
+
+test('legacy_draft_is_preserved_on_workspace_entry', async ({ page }) => {
+  await boot(page, { area: 'onboarding' });
+  await expect(page.locator('#setup-importOrganization')).toHaveCount(0);
+  await expect(page.locator('.setup-studio')).toHaveCount(0);
+  const draft = JSON.stringify({ version: 1, savedAt: '2026-10-14T00:00:00Z', step: 0, profile: { countryCode: 'SA', currencyCode: 'SAR', industry: 'Retained services', companySize: '51-200', legalEntityName: 'Workspace Fixture LLC', sections: { entity: true }, configuration: { attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], policySources: [] } } });
+  const bundle = JSON.stringify({ tenantId: 'tenant', userId: 'reviewer', companyId: 'fixture-company', companyName: 'Workspace Fixture LLC', accountType: 'Group', sources: [{ documentId: 'doc', contentSha256: 'hash', name: 'Retained source' }], tasks: [{ id: 'task', taskTitle: 'Arrange access', taskDescription: '', category: 'Access', assignedToName: null, dueOffsetDays: null, isMandatory: null, condition: null, sourceQuote: 'Arrange access', sourceStart: 0, sourceLength: 14, documentId: 'doc', contentSha256: 'hash', sourceName: 'Retained source' }], edits: {}, saved: {} });
+  await page.evaluate(({ draft, bundle }) => {
+    localStorage.setItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company', draft);
+    localStorage.setItem('kynexone-policy-form-draft:v1:tenant:reviewer:fixture-company', bundle);
+  }, { draft, bundle });
+  await page.reload();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company'))).toBe(draft);
+  expect(await page.evaluate(() => localStorage.getItem('kynexone-policy-form-draft:v1:tenant:reviewer:fixture-company'))).toBe(bundle);
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Retained services');
+  await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+  await expect(page).toHaveURL(/area=onboarding/);
+  expect(await page.evaluate(() => localStorage.getItem('kynexone-policy-form-draft:v1:tenant:reviewer:fixture-company'))).toBe(bundle);
+});
+
+test('document_navigation_does_not_publish_and_retains_only_current_company_file', async ({ page }) => {
+  const { writes } = await boot(page, { group: true, area: 'onboarding' });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  await page.locator('input[type=file]').setInputFiles({ name: 'unsent-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Arrange onboarding access.') });
+  await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('unsent-policy.txt');
+  await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('unsent-policy.txt');
+  await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(0);
+  expect(writes).toEqual([]);
+});
+
+test('pending_file_departure_decline_retains_file_and_accept_leaves', async ({ page }) => {
+  await boot(page, { area: 'onboarding' });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.locator('input[type=file]').setInputFiles({ name: 'pending.txt', mimeType: 'text/plain', buffer: Buffer.from('Pending policy') });
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  await clickDashboard(page);
+  await expect.poll(() => prompts).toBe(1);
+  await expect(page).toHaveURL(/mode=starter/);
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('pending.txt');
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  await clickDashboard(page);
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+
+test('history_company_change_confirms_pending_files_once', async ({ page }) => {
+  await boot(page, { group: true });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  await page.getByTestId('company-switcher').getByRole('button').click();
+  await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.locator('input[type=file]').setInputFiles({ name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('Second company policy') });
+  let prompts = 0;
+  page.on('dialog', async dialog => { prompts++; await dialog.accept(); });
+  await page.evaluate(() => history.go(-2));
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Workspace Fixture LLC');
+  expect(prompts).toBe(1);
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(0);
+});
+
+test('starter_change_company_decline_keeps_url_and_file', async ({ page }) => {
+  await boot(page, { group: true });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.locator('input[type=file]').setInputFiles({ name: 'retained.txt', mimeType: 'text/plain', buffer: Buffer.from('Retained policy') });
+  const original = page.url();
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  await page.getByRole('button', { name: 'Change company', exact: true }).click();
+  await expect.poll(() => prompts).toBe(1);
+  await expect(page).toHaveURL(original);
+  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('retained.txt');
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Change company', exact: true }).click();
+  await expect(page).not.toHaveURL(/companyId=/);
+  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page.locator('input[type=file]')).toHaveCount(0);
+});
+
+test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
+  await boot(page, { area: 'organization', setting: 'branches' });
+  await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+  await page.getByPlaceholder('DXB-01', { exact: true }).fill('SAVED');
+  await page.getByPlaceholder('Dubai Head Office', { exact: true }).fill('Saved branch');
+  await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  let prompts = 0;
+  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  await selectArea(page, 'Payroll');
+  await expect(page).toHaveURL(/area=payroll/);
+  expect(prompts).toBe(0);
+});
+
+test('gl_authored_values_are_guarded_but_search_is_not', async ({ page }) => {
+  await boot(page, { area: 'payroll', setting: 'glMapping', finance: true });
+  await page.getByRole('searchbox', { name: 'Search accounts by code or name' }).fill('filter only');
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await expect(page).toHaveURL(/tab=policyLibrary/);
+  expect(prompts).toBe(0);
+  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await page.getByPlaceholder('5006', { exact: true }).fill('5010');
+  await page.getByPlaceholder('Account name', { exact: true }).fill('Retain authored GL account');
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  expect(prompts).toBe(1);
+  await expect(page.getByPlaceholder('Account name', { exact: true })).toHaveValue('Retain authored GL account');
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await expect(page).toHaveURL(/tab=policyLibrary/);
+  // GL save callbacks are intentionally not part of this bounded integration:
+  // the conservative guard may also prompt after a successful GL save.
+});
+
+test('starter_return_stays_when_browser_draft_save_fails', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'leave' });
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByLabel(/^Industry/).fill('Retain on storage failure');
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.startsWith('kynexone-setup-draft:')) throw new DOMException('Full', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Retain on storage failure');
+  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page.getByRole('status')).toContainText('could not save');
+  expect(writes).toEqual([]);
+});
 
 test('all_areas_reachable_without_company_wizard', async ({ page }) => {
   const { writes } = await boot(page);

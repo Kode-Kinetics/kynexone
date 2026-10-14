@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowUpRight, ChevronRight } from 'lucide-react';
@@ -9,7 +9,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useFeatureFlags } from '../../contexts/FeatureFlagContext';
 import { useT } from '../../hooks/useT';
-import { useCompanyChangeGuard } from '../../hooks/useCompanyChangeGuard';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
 
@@ -19,58 +18,22 @@ const availabilityLabels = {
 };
 const scopeLabels = { company: 'Company scope', tenant: 'Tenant-wide controls', mixed: 'Scope varies by record' };
 
-export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary, onOpenLegacyDraft }: {
+export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary, onOpenLegacyDraft, onOpenAdministration, confirmLeave, onDirtyChange }: {
   companies: CompanyDto[];
   renderSettings: (id: string, onDirtyChange: (dirty: boolean) => void) => ReactNode;
   onOpenLibrary: () => void;
   onOpenLegacyDraft: () => void;
+  onOpenAdministration: () => void;
+  confirmLeave: () => boolean;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const t = useT();
   const router = useRouter();
   const params = useSearchParams();
   const { hasPermission, hasRole } = useAuth();
-  const { companies: permittedCompanies, selectedCompanyId, setSelectedCompany, accountType, isGroupScope, companyVersion } = useCompany();
-  const [editorDirty, setEditorDirty] = useState(false);
-  const confirmLeave = useCallback(() => !editorDirty || window.confirm(t('Leave this form and discard unsaved changes?')), [editorDirty, t]);
-  useCompanyChangeGuard(confirmLeave);
-  useEffect(() => {
-    const beforeUnload = (event: BeforeUnloadEvent) => { if (editorDirty) { event.preventDefault(); event.returnValue = ''; } };
-    const beforeLink = (event: MouseEvent) => {
-      const link = (event.target as Element)?.closest?.('a[href]');
-      if (link && !confirmLeave()) { event.preventDefault(); event.stopPropagation(); }
-    };
-    window.addEventListener('beforeunload', beforeUnload);
-    document.addEventListener('click', beforeLink, true);
-    return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', beforeLink, true); };
-  }, [confirmLeave, editorDirty]);
+  const { companies: permittedCompanies, selectedCompanyId, accountType, isGroupScope, companyVersion } = useCompany();
   const flags = useFeatureFlags();
-  const requestedCompany = params?.get('companyId');
-  const appliedCompanyParam = useRef<string | null | undefined>(undefined);
   const authorizedCompany = selectedCompanyId && permittedCompanies.some(company => company.id === selectedCompanyId) ? selectedCompanyId : null;
-  const validRequestedCompany = requestedCompany && permittedCompanies.some(company => company.id === requestedCompany) ? requestedCompany : null;
-  useEffect(() => {
-    // A company deep link is consumed once. Later top-bar selections are authoritative;
-    // retaining the old query must never force the previous company back into context.
-    if (appliedCompanyParam.current !== requestedCompany) {
-      const hasConsumedInitialCompany = appliedCompanyParam.current !== undefined;
-      appliedCompanyParam.current = requestedCompany;
-      if (validRequestedCompany && validRequestedCompany !== authorizedCompany) {
-        setSelectedCompany(validRequestedCompany);
-        return;
-      }
-      // An absent ID on initial entry may use the saved preference. After entry,
-      // a history transition to no ID restores the group's All companies scope.
-      if (hasConsumedInitialCompany && requestedCompany === null && isGroupScope && authorizedCompany !== null) {
-        setSelectedCompany(null);
-        return;
-      }
-    }
-    if ((requestedCompany ?? null) !== authorizedCompany) {
-      const next = new URLSearchParams(params?.toString());
-      if (authorizedCompany) next.set('companyId', authorizedCompany); else next.delete('companyId');
-      router.replace(`/setup?${next.toString()}`, { scroll: false });
-    }
-  }, [requestedCompany, validRequestedCompany, authorizedCompany, isGroupScope, params, router, setSelectedCompany]);
   const companyName = companies.find(company => company.id === authorizedCompany)?.legalNameEn
     ?? permittedCompanies.find(company => company.id === authorizedCompany)?.name;
   const activeArea = resolveSetupArea(params?.get('area') ?? null);
@@ -82,7 +45,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const navigate = (areaId: SetupAreaId | 'overview', setting?: string) => {
     if (!confirmLeave()) return;
-    setEditorDirty(false);
+    onDirtyChange(false);
     const next = new URLSearchParams(params?.toString());
     next.set('tab', 'aiSetup'); next.set('area', areaId); next.delete('mode');
     if (authorizedCompany) next.set('companyId', authorizedCompany); else next.delete('companyId');
@@ -98,7 +61,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   };
   const selectedDestination = area?.destinations.find(destination => destination.id === params?.get('setting') && destination.presentation === 'embedded');
   const selectedAvailable = selectedDestination && destinationAvailability(selectedDestination, access) === 'available';
-  const editor = selectedAvailable ? renderSettings(selectedDestination.id, setEditorDirty) : null;
+  const editor = selectedAvailable ? renderSettings(selectedDestination.id, onDirtyChange) : null;
   const destinationRow = (destination: SetupDestination) => {
     const availability = destinationAvailability(destination, access);
     return (
@@ -123,8 +86,9 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
           <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Area navigation does not save changes. Starter drafts are stored in this browser; settings use each form’s save action.')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {canManagePolicies && <button type="button" onClick={() => { if (confirmLeave()) onOpenLibrary(); }} className="btn-secondary text-sm">{t('Policy library')}</button>}
-          <button type="button" onClick={() => { if (confirmLeave()) onOpenLegacyDraft(); }} className="btn-secondary text-sm">{t('Starter configuration draft')}</button>
+          {canManagePolicies && <button type="button" onClick={onOpenLibrary} className="btn-secondary text-sm">{t('Policy library')}</button>}
+          <button type="button" onClick={onOpenLegacyDraft} className="btn-secondary text-sm">{t('Starter configuration draft')}</button>
+          <button type="button" onClick={onOpenAdministration} className="btn-secondary text-sm">{t('Administration settings')}</button>
         </div>
       </div>
       <div className="flex min-w-0 flex-col gap-5 lg:flex-row lg:items-start">
@@ -138,9 +102,12 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
               {SETUP_AREAS.map(item => <li key={item.id}><button type="button" onClick={() => navigate(item.id)} className="flex w-full items-center justify-between gap-3 py-3 text-start text-sm hover:text-sapphire dark:hover:text-cyanAccent"><span className="font-medium text-slate-900 dark:text-white">{t(item.label)}</span><ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 rtl:rotate-180" /></button></li>)}
             </ul>
           </> : <>
+            <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">{t(area.id === 'onboarding'
+              ? 'Onboarding task suggestions can be prepared in the starter policy guide, then reviewed in the existing onboarding form. Templates are tenant-wide; nothing is saved automatically.'
+              : 'Document filling is not connected for this area. Edit its existing settings manually; the starter guide does not apply changes only to this area.')}</p>
             {selectedAvailable && <div className="mt-5 border-t border-slate-200 pt-4 dark:border-white/10">
               <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-300">{t(selectedDestination.label)} · {t(scopeLabels[selectedDestination.scope])}</p>
-              <div key={`${selectedDestination.id}:${companyVersion}`} onChangeCapture={() => setEditorDirty(true)}>{editor ?? <Link href={destinationHref(selectedDestination)} className="btn-secondary inline-flex text-sm">{t('Continue to existing settings')}</Link>}</div>
+              <div key={`${selectedDestination.id}:${companyVersion}`}>{editor ?? <Link href={destinationHref(selectedDestination)} className="btn-secondary inline-flex text-sm">{t('Continue to existing settings')}</Link>}</div>
             </div>}
             {(['settings', 'operations'] as const).map(kind => {
               const destinations = area.destinations.filter(destination => kind === 'operations' ? destination.kind === 'operations' : destination.kind !== 'operations');

@@ -167,6 +167,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
               id="gl-scope"
               value={scope ?? ''}
               onChange={(e) => setScope(e.target.value || null)}
+              data-setup-filter
               className="select mt-0.5 h-8 min-w-[220px] text-sm font-medium"
             >
               {isGroupScope && <option value="">{t('All companies (group defaults)')}</option>}
