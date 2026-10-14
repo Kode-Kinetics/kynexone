@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useFeatureFlags } from '../../contexts/FeatureFlagContext';
 import { useT } from '../../hooks/useT';
+import { useCompanyChangeGuard } from '../../hooks/useCompanyChangeGuard';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
 
@@ -31,17 +32,16 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const { companies: permittedCompanies, selectedCompanyId, setSelectedCompany, accountType, isGroupScope, companyVersion } = useCompany();
   const [editorDirty, setEditorDirty] = useState(false);
   const confirmLeave = useCallback(() => !editorDirty || window.confirm(t('Leave this form and discard unsaved changes?')), [editorDirty, t]);
+  useCompanyChangeGuard(confirmLeave);
   useEffect(() => {
-    const beforeCompany = (event: Event) => { if (!confirmLeave()) event.preventDefault(); };
     const beforeUnload = (event: BeforeUnloadEvent) => { if (editorDirty) { event.preventDefault(); event.returnValue = ''; } };
     const beforeLink = (event: MouseEvent) => {
       const link = (event.target as Element)?.closest?.('a[href]');
       if (link && !confirmLeave()) { event.preventDefault(); event.stopPropagation(); }
     };
-    window.addEventListener('kynexone:before-company-change', beforeCompany);
     window.addEventListener('beforeunload', beforeUnload);
     document.addEventListener('click', beforeLink, true);
-    return () => { window.removeEventListener('kynexone:before-company-change', beforeCompany); window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', beforeLink, true); };
+    return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', beforeLink, true); };
   }, [confirmLeave, editorDirty]);
   const flags = useFeatureFlags();
   const requestedCompany = params?.get('companyId');

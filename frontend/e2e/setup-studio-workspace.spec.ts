@@ -39,6 +39,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR' });
     if (path === '/api/country-packs/available') return reply([]);
+    if (path === '/api/reference/countries') return reply([{ code: 'SA', name: 'Saudi Arabia' }]);
     if (path === '/api/recruitment/onboarding/summary') return reply({ total: 0, pending: 0, completed: 0, blocked: 0, completionPct: 0 });
     if (path === '/api/companies') return reply({ items: companies, total: companies.length, page: 1, pageSize: 100 });
     if (path === '/api/features/disabled-keys') {
@@ -101,6 +102,39 @@ test('existing_setup_deep_links_still_work', async ({ page }) => {
   await expect(page.getByRole('button', { name: /Add Company/ })).toBeVisible();
   await page.goto('/setup?tab=companies');
   await expect(page.getByRole('button', { name: /Add Company/ })).toBeVisible();
+});
+
+test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshes_scope', async ({ page }) => {
+  const { writes } = await boot(page, { group: true });
+  await page.goto('/setup?tab=branches');
+  await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+  await page.getByPlaceholder('DXB-01', { exact: true }).fill('DRAFT-BRANCH');
+  await page.getByPlaceholder('Dubai Head Office', { exact: true }).fill('Keep this branch');
+  const switchCompany = async () => {
+    // Exercise the global context action while its editor modal is open. The modal
+    // covers the top bar, so dispatch to the actual controls instead of its backdrop.
+    await page.getByTestId('company-switcher').getByRole('button').dispatchEvent('click');
+    await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).dispatchEvent('click');
+  };
+  let prompts = 0;
+  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
+  page.on('dialog', decline);
+  await switchCompany();
+  await expect(page.getByPlaceholder('DXB-01', { exact: true })).toHaveValue('DRAFT-BRANCH');
+  await expect(page.getByPlaceholder('Dubai Head Office', { exact: true })).toHaveValue('Keep this branch');
+  await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('fixture-company');
+  expect(prompts).toBe(1);
+  const retainedRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/companies');
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
+  expect((await retainedRequest).headers()['x-company-id']).toBe('fixture-company');
+  page.off('dialog', decline);
+  page.once('dialog', dialog => dialog.accept());
+  const refreshed = page.waitForRequest(request => new URL(request.url()).pathname === '/api/branches' && request.headers()['x-company-id'] === 'second-company');
+  await switchCompany();
+  await refreshed;
+  await expect(page.getByRole('dialog', { name: 'Add Branch', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('second-company');
+  expect(writes).toEqual([]);
 });
 
 test('unsaved_template_blocks_area_and_company_switch_when_declined', async ({ page }) => {
