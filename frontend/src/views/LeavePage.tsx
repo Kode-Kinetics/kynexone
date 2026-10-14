@@ -1039,10 +1039,11 @@ function CreateLeaveTypeModal({ onClose, onSaved }: { onClose: () => void; onSav
   );
 }
 
-function LeaveTypesTab() {
+export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [types, setTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  useEffect(() => { onDirtyChange?.(showCreate); return () => onDirtyChange?.(false); }, [showCreate, onDirtyChange]);
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
@@ -1252,13 +1253,14 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
   );
 }
 
-function PoliciesTab() {
+export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [policies, setPolicies] = useState<LeavePolicy[]>([]);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('Active');
   const [showCreate, setShowCreate] = useState(false);
   const [editPolicy, setEditPolicy] = useState<LeavePolicy | null>(null);
+  useEffect(() => { onDirtyChange?.(showCreate || !!editPolicy); return () => onDirtyChange?.(false); }, [showCreate, editPolicy, onDirtyChange]);
 
   const load = () => {
     setLoading(true);
@@ -1337,7 +1339,7 @@ function PoliciesTab() {
 const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', holidayType: 'National', isRecurring: false, isOptional: false };
 const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
 
-function HolidayCalendarTab() {
+export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const { t } = useLocale();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
   const [selected, setSelected] = useState<PublicHolidayCalendar | null>(null);
@@ -1352,6 +1354,7 @@ function HolidayCalendarTab() {
   const [editingHoliday, setEditingHoliday] = useState<PublicHoliday | null>(null);
   const [holidayModal, setHolidayModal] = useState<'none' | 'add' | 'edit'>('none');
   const [holidayForm, setHolidayForm] = useState({ ...BLANK_HOLIDAY_FORM });
+  useEffect(() => { onDirtyChange?.(calModal !== 'none' || holidayModal !== 'none'); return () => onDirtyChange?.(false); }, [calModal, holidayModal, onDirtyChange]);
 
 
   const reloadCalendars = () => holidayCalendarApi.listCalendars().then(cs => {

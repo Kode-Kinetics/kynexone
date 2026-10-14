@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowUpRight, ChevronRight } from 'lucide-react';
@@ -20,7 +20,7 @@ const scopeLabels = { company: 'Company scope', tenant: 'Tenant-wide controls', 
 
 export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary, onOpenLegacyDraft }: {
   companies: CompanyDto[];
-  renderSettings: (id: string) => ReactNode;
+  renderSettings: (id: string, onDirtyChange: (dirty: boolean) => void) => ReactNode;
   onOpenLibrary: () => void;
   onOpenLegacyDraft: () => void;
 }) {
@@ -28,7 +28,21 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const router = useRouter();
   const params = useSearchParams();
   const { hasPermission, hasRole } = useAuth();
-  const { companies: permittedCompanies, selectedCompanyId, setSelectedCompany, accountType, isGroupScope } = useCompany();
+  const { companies: permittedCompanies, selectedCompanyId, setSelectedCompany, accountType, isGroupScope, companyVersion } = useCompany();
+  const [editorDirty, setEditorDirty] = useState(false);
+  const confirmLeave = useCallback(() => !editorDirty || window.confirm(t('Leave this form and discard unsaved changes?')), [editorDirty, t]);
+  useEffect(() => {
+    const beforeCompany = (event: Event) => { if (!confirmLeave()) event.preventDefault(); };
+    const beforeUnload = (event: BeforeUnloadEvent) => { if (editorDirty) { event.preventDefault(); event.returnValue = ''; } };
+    const beforeLink = (event: MouseEvent) => {
+      const link = (event.target as Element)?.closest?.('a[href]');
+      if (link && !confirmLeave()) { event.preventDefault(); event.stopPropagation(); }
+    };
+    window.addEventListener('kynexone:before-company-change', beforeCompany);
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('click', beforeLink, true);
+    return () => { window.removeEventListener('kynexone:before-company-change', beforeCompany); window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', beforeLink, true); };
+  }, [confirmLeave, editorDirty]);
   const flags = useFeatureFlags();
   const requestedCompany = params?.get('companyId');
   const appliedCompanyParam = useRef<string | null | undefined>(undefined);
@@ -62,11 +76,13 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const activeArea = resolveSetupArea(params?.get('area') ?? null);
   const area = SETUP_AREAS.find(item => item.id === activeArea);
   const access = {
-    hasPermission, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath,
+    hasPermission, hasRole, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath,
     flagStatus: flags.status, isCompanyScopedGroup: accountType === 'Group' && !isGroupScope,
   };
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const navigate = (areaId: SetupAreaId | 'overview', setting?: string) => {
+    if (!confirmLeave()) return;
+    setEditorDirty(false);
     const next = new URLSearchParams(params?.toString());
     next.set('tab', 'aiSetup'); next.set('area', areaId); next.delete('mode');
     if (authorizedCompany) next.set('companyId', authorizedCompany); else next.delete('companyId');
@@ -77,11 +93,12 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
     const [pathname, query] = destination.path.split('?');
     const target = new URLSearchParams(query);
     if (authorizedCompany) target.set('companyId', authorizedCompany);
+    target.set('setupArea', destination.areaId);
     return `${pathname}${target.size ? `?${target.toString()}` : ''}`;
   };
   const selectedDestination = area?.destinations.find(destination => destination.id === params?.get('setting') && destination.presentation === 'embedded');
   const selectedAvailable = selectedDestination && destinationAvailability(selectedDestination, access) === 'available';
-  const editor = selectedAvailable ? renderSettings(selectedDestination.id) : null;
+  const editor = selectedAvailable ? renderSettings(selectedDestination.id, setEditorDirty) : null;
   const destinationRow = (destination: SetupDestination) => {
     const availability = destinationAvailability(destination, access);
     return (
@@ -106,8 +123,8 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
           <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Area navigation does not save changes. Starter drafts are stored in this browser; settings use each form’s save action.')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {canManagePolicies && <button type="button" onClick={onOpenLibrary} className="btn-secondary text-sm">{t('Policy library')}</button>}
-          <button type="button" onClick={onOpenLegacyDraft} className="btn-secondary text-sm">{t('Starter configuration draft')}</button>
+          {canManagePolicies && <button type="button" onClick={() => { if (confirmLeave()) onOpenLibrary(); }} className="btn-secondary text-sm">{t('Policy library')}</button>}
+          <button type="button" onClick={() => { if (confirmLeave()) onOpenLegacyDraft(); }} className="btn-secondary text-sm">{t('Starter configuration draft')}</button>
         </div>
       </div>
       <div className="flex min-w-0 flex-col gap-5 lg:flex-row lg:items-start">
@@ -123,7 +140,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
           </> : <>
             {selectedAvailable && <div className="mt-5 border-t border-slate-200 pt-4 dark:border-white/10">
               <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-300">{t(selectedDestination.label)} · {t(scopeLabels[selectedDestination.scope])}</p>
-              {editor ?? <Link href={destinationHref(selectedDestination)} className="btn-secondary inline-flex text-sm">{t('Continue to existing settings')}</Link>}
+              <div key={`${selectedDestination.id}:${companyVersion}`} onChangeCapture={() => setEditorDirty(true)}>{editor ?? <Link href={destinationHref(selectedDestination)} className="btn-secondary inline-flex text-sm">{t('Continue to existing settings')}</Link>}</div>
             </div>}
             {(['settings', 'operations'] as const).map(kind => {
               const destinations = area.destinations.filter(destination => kind === 'operations' ? destination.kind === 'operations' : destination.kind !== 'operations');

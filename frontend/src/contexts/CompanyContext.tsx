@@ -65,6 +65,8 @@ export function CurrentCompanyProvider({ children }: { children: React.ReactNode
   }, [user, companies, isGroupScope]);
 
   const setSelectedCompany = useCallback((companyId: string | null) => {
+    // Editors can cancel before either the view or API header changes scope.
+    if (!window.dispatchEvent(new CustomEvent('kynexone:before-company-change', { cancelable: true, detail: { companyId } }))) return;
     setSelectedCompanyId(companyId);
     setActiveCompanyId(companyId);
     setCompanyVersion((v) => v + 1);

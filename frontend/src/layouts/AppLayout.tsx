@@ -1,4 +1,5 @@
 'use client';
+import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
@@ -391,7 +392,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
           />
           <ResetCodeNotice className="mx-4 mt-4 sm:mx-6 lg:mx-8" />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
+          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn />{children}</main>
         </div>
       </div>
 

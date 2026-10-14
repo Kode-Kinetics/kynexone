@@ -10,6 +10,8 @@ export interface SetupDestination {
   kind: 'settings' | 'templates' | 'operations';
   requiredPermissions: readonly string[];
   requiredFeatureKey?: string;
+  editorRoles?: readonly string[];
+  editorPermission?: string;
   scope: 'company' | 'tenant' | 'mixed';
   presentation: 'embedded' | 'route';
   assistance: 'existing-onboarding' | 'not-connected';
@@ -87,7 +89,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
   {
     id: 'onboarding', label: 'Onboarding and confirmation',
     description: 'Shared onboarding checklists and tasks; probation and confirmation remain in Performance.',
-    destinations: [destination({ id: 'onboarding', areaId: 'onboarding', label: 'Onboarding checklists', path: '/recruitment/onboarding', kind: 'templates', scope: 'tenant', presentation: 'route', assistance: 'existing-onboarding' })],
+    destinations: [destination({ id: 'onboarding', areaId: 'onboarding', label: 'Onboarding checklists', path: '/recruitment/onboarding', kind: 'templates', scope: 'tenant', presentation: 'embedded', editorRoles: ['Admin', 'HR Manager'], editorPermission: 'recruitment.write', assistance: 'existing-onboarding' })],
   },
   {
     id: 'time', label: 'Time and attendance',
@@ -103,7 +105,10 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
   {
     id: 'leave', label: 'Leave and absence',
     description: 'Leave types, policies and holidays within the existing leave workspace.',
-    destinations: [route('leave', 'leave', 'Leave policies and holidays', '/leave', 'settings', 'mixed')],
+    destinations: [
+      ...[['leaveTypes', 'Leave types'], ['leavePolicies', 'Leave policies'], ['holidayCalendars', 'Holiday calendars']].map(([id, label]) => destination({ id, label, areaId: 'leave', path: '/leave', kind: 'settings', scope: 'tenant', presentation: 'embedded', editorRoles: ['Admin', 'HR Manager'] })),
+      route('leave', 'leave', 'Leave policies and holidays', '/leave', 'settings', 'mixed'),
+    ],
   },
   {
     id: 'compensation', label: 'Compensation and benefits',
@@ -175,6 +180,7 @@ export function resolveSetupArea(value: string | null): SetupAreaId | 'overview'
 
 export interface SetupAccessContext {
   hasPermission: (permission: string) => boolean;
+  hasRole?: (role: string) => boolean;
   isFeatureEnabled: (key: string) => boolean;
   verdictForPath: (path: string) => { allowed: boolean };
   flagStatus: 'loading' | 'ready' | 'error';
@@ -185,6 +191,8 @@ const companyScopedSetupIds = new Set(['companies', 'branches', 'costCenters', '
 
 export function destinationAvailability(destination: SetupDestination, context: SetupAccessContext): 'available' | 'restricted' | 'unavailable' | 'checking' | 'unknown' {
   if (destination.requiredPermissions.length > 0 && !destination.requiredPermissions.some(context.hasPermission)) return 'restricted';
+  if (destination.editorRoles && !destination.editorRoles.some(role => context.hasRole?.(role))) return 'restricted';
+  if (destination.editorPermission && !context.hasPermission(destination.editorPermission)) return 'restricted';
   if (context.isCompanyScopedGroup && (
     destination.scope === 'tenant'
     || (destination.presentation === 'embedded' && !companyScopedSetupIds.has(destination.id))

@@ -3,6 +3,7 @@ import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAcces
 
 const context: SetupAccessContext = {
   hasPermission: () => true,
+  hasRole: () => true,
   isFeatureEnabled: () => true,
   verdictForPath: () => ({ allowed: true }),
   flagStatus: 'ready',
@@ -49,6 +50,15 @@ test('unknown_area_resolves_to_overview', () => {
   expect(resolveSetupArea('overview')).toBe('overview');
 });
 
+test('canonical_editors_require_route_editor_feature_and_scope_authority', () => {
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, hasRole: role => role === 'HR Officer' })).toBe('restricted');
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, hasPermission: key => key === 'organization.write' })).toBe('restricted');
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, isCompanyScopedGroup: true })).toBe('restricted');
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, verdictForPath: () => ({ allowed: false }) })).toBe('unavailable');
+  expect(destinationAvailability(destination('onboarding'), { ...context, hasPermission: key => key === 'recruitment.read' })).toBe('restricted');
+  expect(destinationAvailability(destination('onboarding'), { ...context, hasRole: role => role === 'Recruiter' })).toBe('restricted');
+});
+
 test('restricted_destination_is_not_available', () => {
   expect(destinationAvailability(destination('recruitment'), { ...context, hasPermission: () => false })).toBe('restricted');
   // Route permissions are alternatives, matching PermissionGate; they are not editor authority.
@@ -67,7 +77,7 @@ test('organization_reader_can_open_only_companies_among_setup_tabs', () => {
 
 test('establishment_writer_can_open_existing_setup_tabs', () => {
   const writer = { ...context, hasPermission: (key: string) => key === 'organization.establishment.write' };
-  for (const item of destinations().filter(item => item.presentation === 'embedded')) {
+  for (const item of destinations().filter(item => item.presentation === 'embedded' && item.path.startsWith('/setup?'))) {
     expect(destinationAvailability(item, writer), item.id).toBe('available');
   }
   expect(destinationAvailability(destination('recruitment'), writer)).toBe('restricted');
