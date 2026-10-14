@@ -4,6 +4,7 @@ import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, User
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
+import { confirmAppNavigation } from '../lib/confirmAppNavigation';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale, LOCALES } from '../contexts/LocaleContext';
 import { CompanySwitcher } from '../components/CompanySwitcher';
@@ -332,14 +333,14 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: To
               </div>
               <button
                 type="button"
-                onClick={() => { setUserMenuOpen(false); router.push('/ess'); }}
+                onClick={() => { if (!confirmAppNavigation('/ess')) return; setUserMenuOpen(false); router.push('/ess'); }}
                 className="flex w-full items-center gap-2.5 px-4 py-2.5 text-start text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
               >
                 <UserCircle2 className="h-4 w-4 text-slate-400" /> {t('My Profile')}
               </button>
               <button
                 type="button"
-                onClick={async () => { setUserMenuOpen(false); await logout(); router.replace('/login'); }}
+                onClick={async () => { if (!confirmAppNavigation('/login')) return; setUserMenuOpen(false); await logout(); router.replace('/login'); }}
                 className="flex w-full items-center gap-2.5 border-t border-slate-100 px-4 py-2.5 text-start text-sm text-rose-600 transition hover:bg-rose-50 dark:border-white/[0.07] dark:text-rose-400 dark:hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" /> {t('Sign out')}

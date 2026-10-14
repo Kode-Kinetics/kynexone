@@ -1,5 +1,6 @@
 'use client';
 import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
+import { confirmAppNavigation } from '../lib/confirmAppNavigation';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
@@ -242,6 +243,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const closeCommandPalette = () => setCommandOpen(false);
 
   const runCommand = (path: string) => {
+    if (!confirmAppNavigation(path)) return;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     router.push(path);
@@ -249,6 +251,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const openEmployeeResult = (id: number) => {
+    if (!confirmAppNavigation(`/people?employeeId=${id}`)) return;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     router.push(`/people?employeeId=${id}`);
@@ -256,6 +259,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const openUserResult = (searchText: string) => {
+    if (!confirmAppNavigation(`/user-management?search=${encodeURIComponent(searchText)}`)) return;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     router.push(`/user-management?search=${encodeURIComponent(searchText)}`);
@@ -263,6 +267,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const openReportResult = (key: string) => {
+    if (!confirmAppNavigation(`/reports?report=${encodeURIComponent(key)}`)) return;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     router.push(`/reports?report=${encodeURIComponent(key)}`);

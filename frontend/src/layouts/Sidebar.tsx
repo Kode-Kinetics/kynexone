@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { confirmAppNavigation } from '../lib/confirmAppNavigation';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -122,12 +123,13 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   };
 
   const handleNav = (path?: string) => {
-    if (path && !window.dispatchEvent(new CustomEvent('kynexone:before-navigation', { cancelable: true, detail: { path } }))) return;
+    if (path && !confirmAppNavigation(path)) return;
     if (path) router.push(path);
     onClose();
   };
 
   const handleLogout = async () => {
+    if (!confirmAppNavigation('/login')) return;
     await logout();
     router.replace('/login');
   };

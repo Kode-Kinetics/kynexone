@@ -740,9 +740,144 @@ test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
   expect(prompts).toBe(0);
 });
 
+for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) test(`shell_${destination}_protects_authored_values`, async ({ page }) => {
+  // TopBar's user menu is intentionally desktop-only.
+  if (destination !== 'palette') await page.setViewportSize({ width: 1440, height: 1000 });
+  await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Retain shell draft');
+  const originalUrl = page.url();
+  let prompts = 0; let accept = false;
+  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  if (destination === 'palette') {
+    await page.keyboard.press('Control+k');
+    await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
+  } else if (destination !== 'sidebar_signout') await page.getByRole('button', { name: 'Open user menu' }).click();
+  const target = destination === 'palette'
+    ? page.getByRole('button', { name: /Dashboard.*\/dashboard/ })
+    : destination === 'sidebar_signout' ? page.getByRole('button', { name: 'Sign out', exact: true })
+    : page.locator('header').getByRole('button', { name: destination === 'profile' ? 'My Profile' : 'Sign out', exact: true });
+  await target.click();
+  expect(prompts).toBe(1);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Retain shell draft');
+  accept = true;
+  await target.click();
+  // This fixture has no ess.read: accepted profile navigation must preserve
+  // the incumbent access-denied redirect, not briefly assert the pending URL.
+  await expect(page).toHaveURL(destination === 'palette' || destination === 'profile' ? /\/dashboard$/ : /\/login$/);
+  if (destination === 'profile') await expect(page.getByText('Access Denied', { exact: true })).toBeVisible();
+  expect(prompts).toBe(2);
+  if (destination === 'palette') {
+    // The same seam is inert after Setup unmounts.
+    await page.getByRole('button', { name: 'Open command search' }).click();
+    await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
+    await page.getByRole('button', { name: /Dashboard.*\/dashboard/ }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    expect(prompts).toBe(2);
+  }
+});
+
+for (const direct of [false, true]) test(`${direct ? 'direct' : 'embedded'}_same_destination_keeps_dirty_state`, async ({ page }) => {
+  await boot(page, { area: direct ? 'payroll' : 'onboarding', setting: direct ? 'glMapping' : 'onboarding', finance: true });
+  if (direct) await page.goto('/setup?tab=glMapping&companyId=fixture-company');
+  else await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  const field = page.getByPlaceholder(direct ? 'Account name' : 'Task title', { exact: true });
+  await field.fill('Retain same destination draft');
+  const originalUrl = page.url();
+  let prompts = 0; let accept = true;
+  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  const same = direct ? page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'GL & rates', exact: true })
+    : page.getByTestId('setup-area-content').getByRole('button', { name: 'Open settings', exact: true }).first();
+  await same.click();
+  expect(prompts).toBe(0);
+  await expect(page).toHaveURL(originalUrl);
+  await expect(field).toHaveValue('Retain same destination draft');
+  accept = false;
+  const depart = () => direct ? page.getByRole('button', { name: 'Policy library', exact: true }).click() : selectArea(page, 'Payroll');
+  await depart();
+  expect(prompts).toBe(1);
+  await expect(field).toHaveValue('Retain same destination draft');
+  accept = true;
+  await depart();
+  await expect(page).toHaveURL(direct ? /tab=policyLibrary/ : /area=payroll/);
+  expect(prompts).toBe(2);
+});
+
+test('gl_internal_scope_and_subtabs_protect_authored_values', async ({ page }) => {
+  await boot(page, { area: 'payroll', setting: 'glMapping', finance: true });
+  const scope = page.getByLabel('Configuration scope');
+  await expect(scope).toHaveValue('');
+  const name = page.getByPlaceholder('Account name', { exact: true });
+  await page.getByPlaceholder('5006', { exact: true }).fill('5010');
+  await name.fill('Group authored account');
+  let prompts = 0; let accept = false;
+  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  await scope.selectOption('');
+  await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).click();
+  expect(prompts).toBe(0);
+  await scope.selectOption('fixture-company');
+  expect(prompts).toBe(1);
+  await expect(scope).toHaveValue('');
+  await expect(name).toHaveValue('Group authored account');
+  await page.getByRole('tab', { name: 'ERP API access', exact: true }).click();
+  expect(prompts).toBe(2);
+  await expect(name).toHaveValue('Group authored account');
+  await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).press('End');
+  expect(prompts).toBe(3);
+  await expect(name).toHaveValue('Group authored account');
+  accept = true;
+  await scope.selectOption('fixture-company');
+  expect(prompts).toBe(4);
+  await expect(scope).toHaveValue('fixture-company');
+  await expect(name).toHaveValue('');
+  await page.getByPlaceholder('5006', { exact: true }).fill('5020');
+  await name.fill('Company authored account');
+  const save = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/finance/gl/accounts');
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  const request = await save;
+  expect(new URL(request.url()).searchParams.get('companyId')).toBe('fixture-company');
+  expect(request.postDataJSON()).toMatchObject({ code: '5020', name: 'Company authored account' });
+  await expect(name).toHaveValue('');
+  await name.fill('Discard on tab change');
+  await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).press('End');
+  expect(prompts).toBe(5);
+  await expect(page.getByRole('tab', { name: 'ERP API access', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).click();
+  await expect(name).toHaveValue('');
+  expect(prompts).toBe(5);
+});
+
+test('gl_banner_navigation_guards_period_draft', async ({ page }) => {
+  await boot(page, { area: 'payroll', setting: 'glMapping', finance: true, intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/finance/gl/control-accounts/health') {
+      await route.fulfill({ json: { generatedAtUtc: '2026-10-14T00:00:00Z', companyId: null, healthy: false, violations: ['Review balance'], accounts: [{ driver: 'salary', account: '5000', nature: 'Debit', scopedBalance: -1, tenantBalance: -1, isHealthy: false, violation: 'Review balance' }] } }); return true;
+    }
+    if (path.endsWith('/periods')) { await route.fulfill({ json: [] }); return true; }
+    return false;
+  } });
+  await page.getByRole('tab', { name: 'Accounting periods', exact: true }).click();
+  await page.getByLabel('Note (optional)', { exact: true }).fill('Keep period explanation');
+  let prompts = 0; let accept = false;
+  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  const banner = page.getByRole('button', { name: 'Control account 5000: Review balance', exact: true });
+  await banner.click();
+  expect(prompts).toBe(1);
+  await expect(page.getByLabel('Note (optional)', { exact: true })).toHaveValue('Keep period explanation');
+  accept = true;
+  await banner.click();
+  expect(prompts).toBe(2);
+  await expect(page.getByRole('tab', { name: 'Accounts & Mapping', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Accounting periods', exact: true }).click();
+  await expect(page.getByLabel('Note (optional)', { exact: true })).toHaveValue('');
+  expect(prompts).toBe(2);
+});
+
 test('gl_authored_values_are_guarded_but_search_is_not', async ({ page }) => {
   await boot(page, { area: 'payroll', setting: 'glMapping', finance: true });
   await page.getByRole('searchbox', { name: 'Search accounts by code or name' }).fill('filter only');
+  await page.getByRole('combobox', { name: 'Filter by account type' }).selectOption('Expense');
   let prompts = 0;
   const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
   page.on('dialog', decline);
@@ -761,6 +896,27 @@ test('gl_authored_values_are_guarded_but_search_is_not', async ({ page }) => {
   await expect(page).toHaveURL(/tab=policyLibrary/);
   // GL save callbacks are intentionally not part of this bounded integration:
   // the conservative guard may also prompt after a successful GL save.
+});
+
+test('gl_group_statutory_country_browsing_is_not_authored_work', async ({ page }) => {
+  await boot(page, { area: 'payroll', setting: 'glMapping', statutory: true, group: true, intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/companies') {
+      await route.fulfill({ json: { items: [
+        { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' },
+        { id: 'second-company', legalNameEn: 'Second Fixture LLC', countryCode: 'ARE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active' },
+      ], total: 2, page: 1, pageSize: 100 } }); return true;
+    }
+    if (path.startsWith('/api/finance/rates/')) { await route.fulfill({ json: [] }); return true; }
+    return false;
+  } });
+  await page.getByRole('tab', { name: 'Statutory Rates', exact: true }).click();
+  await page.getByLabel('Country', { exact: true }).selectOption('ARE');
+  let prompts = 0;
+  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await expect(page).toHaveURL(/tab=policyLibrary/);
+  expect(prompts).toBe(0);
 });
 
 test('starter_return_stays_when_browser_draft_save_fails', async ({ page }) => {

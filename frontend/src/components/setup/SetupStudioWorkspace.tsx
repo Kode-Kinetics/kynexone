@@ -44,6 +44,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   };
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const navigate = (areaId: SetupAreaId | 'overview', setting?: string) => {
+    if (areaId === activeArea && (setting ?? null) === params?.get('setting')) return;
     if (!confirmLeave()) return;
     onDirtyChange(false);
     const next = new URLSearchParams(params?.toString());

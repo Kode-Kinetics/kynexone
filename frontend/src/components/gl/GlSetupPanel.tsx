@@ -22,9 +22,10 @@ type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'eo
 interface Props {
   companies: CompanyDto[];
   costCenters: CostCenterDto[];
+  confirmLeave?: () => boolean;
 }
 
-export function GlSetupPanel({ companies, costCenters }: Props) {
+export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
   const t = useT();
   const { locale, dir } = useLocale();
   const { hasPermission, hasRole } = useAuth();
@@ -85,6 +86,16 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
 
   const [active, setActive] = useState<SubTab>(() => tabs[0]?.id ?? 'coa');
   const activeTab = tabs.some((x) => x.id === active) ? active : tabs[0]?.id;
+  const selectTab = (tab: SubTab) => {
+    if (tab === activeTab) return true;
+    if (confirmLeave && !confirmLeave()) return false;
+    setActive(tab);
+    return true;
+  };
+  const selectScope = (next: string | null) => {
+    if (next === scope || (confirmLeave && !confirmLeave())) return;
+    setScope(next);
+  };
 
   // ── Effective routing + control-account health, shared by the banner, the
   //    "Where does it post?" view and the drivers table ──
@@ -113,7 +124,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
   }, [focusDriver, activeTab, resolve.data]);
 
   const goToDriver = (driverKey: string) => {
-    setActive('coa');
+    if (!selectTab('coa')) return;
     setFocusDriver(driverKey);
   };
 
@@ -127,7 +138,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
     else if (e.key === 'End') next = tabs.length - 1;
     if (next < 0) return;
     e.preventDefault();
-    setActive(tabs[next].id);
+    if (!selectTab(tabs[next].id)) return;
     document.getElementById(`gl-tab-${tabs[next].id}`)?.focus();
   };
 
@@ -166,7 +177,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
             <select
               id="gl-scope"
               value={scope ?? ''}
-              onChange={(e) => setScope(e.target.value || null)}
+              onChange={(e) => selectScope(e.target.value || null)}
               data-setup-filter
               className="select mt-0.5 h-8 min-w-[220px] text-sm font-medium"
             >
@@ -251,7 +262,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
             aria-selected={activeTab === id}
             aria-controls={`gl-panel-${id}`}
             tabIndex={activeTab === id ? 0 : -1}
-            onClick={() => setActive(id)}
+            onClick={() => selectTab(id)}
             onKeyDown={(e) => onTabKey(e, index)}
             className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-shadow ${
               activeTab === id
@@ -266,7 +277,7 @@ export function GlSetupPanel({ companies, costCenters }: Props) {
       </div>
 
       {/* Panels */}
-      <div role="tabpanel" id={`gl-panel-${activeTab}`} aria-labelledby={`gl-tab-${activeTab}`}>
+      <div key={scopeKey} role="tabpanel" id={`gl-panel-${activeTab}`} aria-labelledby={`gl-tab-${activeTab}`}>
         {activeTab === 'coa' && (
           <AccountsMappingsPanel
             scope={scope}
