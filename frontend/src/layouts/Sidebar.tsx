@@ -10,7 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
-import { confirmAppNavigation } from '../lib/confirmAppNavigation';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -31,6 +31,7 @@ function pathIsActive(pathname: string | null, path: string | undefined, allPath
 
 export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: SidebarProps) {
   const router = useRouter();
+  const navigationGuard = useNavigationGuard();
   const pathname = usePathname();
   const { user, logout, hasPermission } = useAuth();
   const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
@@ -123,15 +124,15 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
   };
 
   const handleNav = (path?: string) => {
-    if (path && !confirmAppNavigation(path)) return;
-    if (path) router.push(path);
+    if (path) navigationGuard.push(path);
     onClose();
   };
 
-  const handleLogout = async () => {
-    if (!confirmAppNavigation('/login')) return;
-    await logout();
-    router.replace('/login');
+  const handleLogout = () => {
+    navigationGuard.run('sign-out:/login', async () => {
+      await logout();
+      router.replace('/login');
+    });
   };
 
   const isActive = (path?: string) => {

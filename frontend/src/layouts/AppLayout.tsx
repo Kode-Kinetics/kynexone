@@ -1,6 +1,5 @@
 'use client';
 import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
-import { confirmAppNavigation } from '../lib/confirmAppNavigation';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
@@ -24,6 +23,7 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { LocaleProvider } from '../contexts/LocaleContext';
 import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -57,6 +57,7 @@ interface PaletteItem {
 
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
+  const navigationGuard = useNavigationGuard();
   const pathname = usePathname();
   // <main> remounts (and fades in) on navigation. The Self-Service workspace's tabs are one screen:
   // keyed as one, its tab row stays put and keeps keyboard focus when a tab is chosen.
@@ -243,34 +244,33 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const closeCommandPalette = () => setCommandOpen(false);
 
   const runCommand = (path: string) => {
-    if (!confirmAppNavigation(path)) return;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(path);
+    navigationGuard.push(path);
     closeCommandPalette();
   };
 
   const openEmployeeResult = (id: number) => {
-    if (!confirmAppNavigation(`/people?employeeId=${id}`)) return;
+    const path = `/people?employeeId=${id}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/people?employeeId=${id}`);
+    navigationGuard.push(path);
     closeCommandPalette();
   };
 
   const openUserResult = (searchText: string) => {
-    if (!confirmAppNavigation(`/user-management?search=${encodeURIComponent(searchText)}`)) return;
+    const path = `/user-management?search=${encodeURIComponent(searchText)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/user-management?search=${encodeURIComponent(searchText)}`);
+    navigationGuard.push(path);
     closeCommandPalette();
   };
 
   const openReportResult = (key: string) => {
-    if (!confirmAppNavigation(`/reports?report=${encodeURIComponent(key)}`)) return;
+    const path = `/reports?report=${encodeURIComponent(key)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/reports?report=${encodeURIComponent(key)}`);
+    navigationGuard.push(path);
     closeCommandPalette();
   };
 

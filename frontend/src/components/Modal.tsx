@@ -12,6 +12,7 @@ interface ModalProps {
   footer?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'wizard';
   headerContent?: React.ReactNode;
+  closeDisabled?: boolean;
 }
 
 const sizeClass = {
@@ -22,7 +23,7 @@ const sizeClass = {
   wizard: 'max-w-4xl',
 };
 
-export function Modal({ isOpen, title, onClose, children, footer, headerContent, size = 'md' }: ModalProps) {
+export function Modal({ isOpen, title, onClose, children, footer, headerContent, size = 'md', closeDisabled = false }: ModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -88,7 +89,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-midnight/55 backdrop-blur-md"
-        onClick={onClose}
+        onClick={() => { if (!closeDisabled) onClose(); }}
         aria-hidden="true"
       />
 
@@ -107,6 +108,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
             ref={closeButtonRef}
             type="button"
             onClick={onClose}
+            disabled={closeDisabled}
             aria-label="Close"
             className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200/80 bg-white text-slate-400 shadow-[0_4px_12px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] transition hover:-translate-y-px hover:text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:hover:text-white"
           >

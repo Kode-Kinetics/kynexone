@@ -16,13 +16,14 @@ import { GlPeriodsPanel } from './GlPeriodsPanel';
 import { ErpApiKeysPanel } from './ErpApiKeysPanel';
 import { EosbProvisionPanel } from './EosbProvisionPanel';
 import { problemLabel, problemRank, routeRowId, useScopedResource } from './glUi';
+import type { SetupNavigationGuard } from '../../hooks/useSetupNavigationGuard';
 
 type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'eosb' | 'erpApi';
 
 interface Props {
   companies: CompanyDto[];
   costCenters: CostCenterDto[];
-  confirmLeave?: () => boolean;
+  confirmLeave?: SetupNavigationGuard;
 }
 
 export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
@@ -86,15 +87,17 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
 
   const [active, setActive] = useState<SubTab>(() => tabs[0]?.id ?? 'coa');
   const activeTab = tabs.some((x) => x.id === active) ? active : tabs[0]?.id;
-  const selectTab = (tab: SubTab) => {
-    if (tab === activeTab) return true;
-    if (confirmLeave && !confirmLeave()) return false;
-    setActive(tab);
+  const selectTab = (tab: SubTab, afterSelect?: () => void) => {
+    if (tab === activeTab) { afterSelect?.(); return true; }
+    const select = () => { setActive(tab); afterSelect?.(); };
+    if (confirmLeave) return confirmLeave(`setup-gl-tab:${tab}`, select);
+    select();
     return true;
   };
   const selectScope = (next: string | null) => {
-    if (next === scope || (confirmLeave && !confirmLeave())) return;
-    setScope(next);
+    if (next === scope) return;
+    if (confirmLeave) confirmLeave(`setup-gl-scope:${next ?? 'group'}`, () => setScope(next));
+    else setScope(next);
   };
 
   // ── Effective routing + control-account health, shared by the banner, the
@@ -124,8 +127,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
   }, [focusDriver, activeTab, resolve.data]);
 
   const goToDriver = (driverKey: string) => {
-    if (!selectTab('coa')) return;
-    setFocusDriver(driverKey);
+    selectTab('coa', () => setFocusDriver(driverKey));
   };
 
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -138,8 +140,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
     else if (e.key === 'End') next = tabs.length - 1;
     if (next < 0) return;
     e.preventDefault();
-    if (!selectTab(tabs[next].id)) return;
-    document.getElementById(`gl-tab-${tabs[next].id}`)?.focus();
+    selectTab(tabs[next].id, () => requestAnimationFrame(() => document.getElementById(`gl-tab-${tabs[next].id}`)?.focus()));
   };
 
   if (tabs.length === 0) {

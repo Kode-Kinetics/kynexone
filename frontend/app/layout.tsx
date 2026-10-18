@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from 'next';
 import { geist, geistMono, plexArabicFallback } from './fonts/fonts';
 import { Providers } from '@/src/components/Providers';
 import { LOCALE_BOOT } from '@/src/i18n/localeBoot';
-import { SETUP_HISTORY_BOOT } from '@/src/lib/setupHistoryBoot';
 
 import '@/src/styles/index.css';
 
@@ -57,7 +56,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" dir="ltr" suppressHydrationWarning className={`${geist.variable} ${geistMono.variable} ${plexArabicFallback.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: LOCALE_BOOT }} />
-        <script dangerouslySetInnerHTML={{ __html: SETUP_HISTORY_BOOT }} />
       </head>
       <body>
         <Providers>{children}</Providers>

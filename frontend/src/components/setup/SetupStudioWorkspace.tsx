@@ -11,6 +11,7 @@ import { useFeatureFlags } from '../../contexts/FeatureFlagContext';
 import { useT } from '../../hooks/useT';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
+import type { SetupNavigationGuard } from '../../hooks/useSetupNavigationGuard';
 
 const availabilityLabels = {
   available: 'Available to open', restricted: 'Your role does not have access',
@@ -24,7 +25,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   onOpenLibrary: () => void;
   onOpenLegacyDraft: () => void;
   onOpenAdministration: () => void;
-  confirmLeave: () => boolean;
+  confirmLeave: SetupNavigationGuard;
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const t = useT();
@@ -45,13 +46,15 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const navigate = (areaId: SetupAreaId | 'overview', setting?: string) => {
     if (areaId === activeArea && (setting ?? null) === params?.get('setting')) return;
-    if (!confirmLeave()) return;
-    onDirtyChange(false);
     const next = new URLSearchParams(params?.toString());
     next.set('tab', 'aiSetup'); next.set('area', areaId); next.delete('mode');
     if (authorizedCompany) next.set('companyId', authorizedCompany); else next.delete('companyId');
     if (setting) next.set('setting', setting); else next.delete('setting');
-    router.push(`/setup?${next.toString()}`, { scroll: false });
+    const href = `/setup?${next.toString()}`;
+    confirmLeave(href, () => {
+      onDirtyChange(false);
+      router.push(href, { scroll: false });
+    });
   };
   const destinationHref = (destination: SetupDestination) => {
     const [pathname, query] = destination.path.split('?');

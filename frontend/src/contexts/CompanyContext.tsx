@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useAuth } from './AuthContext';
 import type { CompanyAccess } from '../api/auth';
 import { setActiveCompanyId } from '../api/client';
+import { useNavigationGuard } from './NavigationGuardContext';
 
 /**
  * Current-company selection for multi-company (Group) users.
@@ -40,6 +41,7 @@ const storageKey = (userId: string) => `kynexone-company:${userId}`;
 
 export function CurrentCompanyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const navigationGuard = useNavigationGuard();
   const companies = useMemo(() => user?.companies ?? [], [user?.companies]);
   const isGroupScope = user?.isGroupScope ?? false;
   const accountType = user?.accountType ?? 'SingleCompany';
@@ -65,18 +67,18 @@ export function CurrentCompanyProvider({ children }: { children: React.ReactNode
   }, [user, companies, isGroupScope]);
 
   const setSelectedCompany = useCallback((companyId: string | null) => {
-    // Editors can cancel before either the view or API header changes scope.
-    if (!window.dispatchEvent(new CustomEvent('kynexone:before-company-change', { cancelable: true, detail: { companyId } }))) return;
-    setSelectedCompanyId(companyId);
-    setActiveCompanyId(companyId);
-    setCompanyVersion((v) => v + 1);
-    if (user) {
-      try {
-        if (companyId) localStorage.setItem(storageKey(user.id), companyId);
-        else localStorage.removeItem(storageKey(user.id));
-      } catch { /* storage unavailable */ }
-    }
-  }, [user]);
+    navigationGuard.run(`company:${companyId ?? 'all'}`, () => {
+      setSelectedCompanyId(companyId);
+      setActiveCompanyId(companyId);
+      setCompanyVersion((v) => v + 1);
+      if (user) {
+        try {
+          if (companyId) localStorage.setItem(storageKey(user.id), companyId);
+          else localStorage.removeItem(storageKey(user.id));
+        } catch { /* storage unavailable */ }
+      }
+    });
+  }, [navigationGuard, user]);
 
   const value = useMemo<CompanyContextValue>(() => ({
     companies,
