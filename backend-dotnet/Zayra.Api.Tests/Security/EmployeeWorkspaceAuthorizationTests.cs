@@ -210,6 +210,78 @@ public sealed class EmployeeWorkspaceAuthorizationTests
         { "Certificate", "salary and payroll" },
     };
 
+    public static TheoryData<string, string> ProductionCatalogSensitiveDocumentTypes => new()
+    {
+        // Exact current documentTypesForCountry labels and statutory catalog keys.
+        { "Passport Number", "Identity" },
+        { "passport_number", "Identity" },
+        { "National ID (Hawiyya)", "Identity" },
+        { "id_number", "Identity" },
+        { "Iqama (residence permit)", "Identity" },
+        { "Iqama (residence permit) no.", "Identity" },
+        { "iqama_number", "Identity" },
+        { "Muqeem Reference", "Identity" },
+        { "Muqeem number", "Identity" },
+        { "muqeem_reference", "Identity" },
+        { "GOSI Reference", "Identity" },
+        { "gosi_reference", "Identity" },
+        { "Qiwa Contract Number", "Identity" },
+        { "qiwa_contract_reference", "Identity" },
+        { "Work Permit Number", "Identity" },
+        { "work_permit", "Identity" },
+        { "Emirates ID", "Identity" },
+        { "emirates_id", "Identity" },
+        { "MOHRE work permit / labour card no.", "Identity" },
+        { "Residence visa number", "Identity" },
+        { "Visa number", "Identity" },
+        { "visa_number", "Identity" },
+        { "Visa File Number", "Identity" },
+        { "visa_file_number", "Identity" },
+        { "Labour Card Number", "Identity" },
+        { "labor_card_number", "Identity" },
+        { "Qatar ID (QID)", "Identity" },
+        { "qid", "Identity" },
+        { "Residence permit number", "Identity" },
+        { "Kuwait Civil ID", "Identity" },
+        { "civil_id", "Identity" },
+        { "Residency (Article) number", "Identity" },
+        { "Residency Number", "Identity" },
+        { "residency_number", "Identity" },
+        { "Oman Resident Card / Civil ID", "Identity" },
+        { "Oman Resident Card / Civil ID no.", "Identity" },
+        { "Bahrain CPR (Personal no.)", "Identity" },
+        { "LMRA work permit number", "Identity" },
+        { "LMRA work permit no.", "Identity" },
+        { "Sponsor name", "Identity" },
+        { "sponsor", "Identity" },
+
+        // Exact sensitive payroll catalog labels/keys accepted as protected document types.
+        { "Salary", "Payroll" },
+        { "SalaryStructure", "Payroll" },
+        { "Basic salary", "Payroll" },
+        { "BasicSalary", "Payroll" },
+        { "Housing allowance", "Payroll" },
+        { "HousingAllowance", "Payroll" },
+        { "Transport allowance", "Payroll" },
+        { "TransportAllowance", "Payroll" },
+        { "Food allowance", "Payroll" },
+        { "FoodAllowance", "Payroll" },
+        { "Mobile allowance", "Payroll" },
+        { "MobileAllowance", "Payroll" },
+        { "Other allowance", "Payroll" },
+        { "OtherAllowance", "Payroll" },
+        { "Fixed deduction", "Payroll" },
+        { "FixedDeduction", "Payroll" },
+        { "IBAN (WPS)", "Payroll" },
+        { "BankIban", "Payroll" },
+        { "Bank account number", "Payroll" },
+        { "AccountNumber", "Payroll" },
+        { "Bank routing code", "Payroll" },
+        { "BankRoutingCode", "Payroll" },
+        { "MOL personal ID", "Payroll" },
+        { "MolId", "Payroll" },
+    };
+
     [Theory]
     [MemberData(nameof(SensitiveDocumentAliases))]
     public async Task SensitiveDocumentClassification_MasksMetadataAndBlocksRawBytes(
@@ -245,15 +317,77 @@ public sealed class EmployeeWorkspaceAuthorizationTests
         download.Should().BeOfType<ForbidResult>();
     }
 
+    [Theory]
+    [MemberData(nameof(ProductionCatalogSensitiveDocumentTypes))]
+    public async Task ProductionCatalogSensitiveDocumentType_WithBlankCategory_MasksMetadataAndBlocksRawBytes(
+        string documentType, string expectedCategory)
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = SeedEmployee(db, tenantId, companyId: null);
+        var document = new EmployeeDocument
+        {
+            TenantId = tenantId,
+            EmployeeId = employee.Id,
+            DocumentType = documentType,
+            DocumentCategory = string.Empty,
+            FileName = "protected-catalog-record.pdf",
+            ContentType = "application/pdf",
+            StorageUrl = $"{tenantId:N}/protected-catalog-record.pdf",
+            Notes = "protected catalog metadata",
+        };
+        db.EmployeeDocuments.Add(document);
+        await db.SaveChangesAsync();
+
+        EmployeeDocumentSensitivity.CanonicalCategory(documentType, category: null)
+            .Should().Be(expectedCategory);
+        var metadata = EmployeeDocumentDto.Project(document, includeSensitive: false);
+        metadata.FileName.Should().BeEmpty();
+        metadata.StorageUrl.Should().BeEmpty();
+        metadata.Notes.Should().BeEmpty();
+
+        var controller = Controller(db,
+            Caller(["employees.read", "employees.documents"], tenantId),
+            new FixedScope([employee.Id]), new ByteDocumentStorage());
+        var download = await controller.DownloadDocument(document.Id, CancellationToken.None);
+
+        download.Should().BeOfType<ForbidResult>();
+    }
+
     [Fact]
-    public async Task PassportUpload_WithoutClientCategory_IsCanonicalizedAsIdentity()
+    public void ServerCatalog_SensitiveIdentityAndPayrollLabelsAndKeys_AreProtectedDocumentTypes()
+    {
+        var sensitiveCatalogFields = EmployeeFieldRegistry.Catalog
+            .Where(field => field.Sensitive && field.Section is "identity" or "payroll" or "salary")
+            .ToList();
+
+        sensitiveCatalogFields.Should().NotBeEmpty();
+        foreach (var field in sensitiveCatalogFields)
+        {
+            EmployeeDocumentSensitivity.IsSensitive(field.Key, category: null)
+                .Should().BeTrue($"catalog key '{field.Key}' is sensitive");
+            EmployeeDocumentSensitivity.IsSensitive(field.Label, category: null)
+                .Should().BeTrue($"catalog label '{field.Label}' is sensitive");
+        }
+    }
+
+    [Theory]
+    [InlineData("Passport Number copy")]
+    [InlineData("Unverified salary discussion")]
+    public void SensitiveDocumentTypeRegistry_DoesNotUseSubstringMatching(string documentType)
+    {
+        EmployeeDocumentSensitivity.IsSensitive(documentType, category: null).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ProductionPassportNumberUpload_WithoutClientCategory_IsCanonicalizedAsIdentity()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var employee = SeedEmployee(db, tenantId, companyId: null);
         var service = CreateService(db);
         var upload = new EmployeeDocumentUploadMetadata(
-            "Passport", null, null, null, null, false, null, null);
+            "Passport Number", null, null, null, null, false, null, null);
 
         var document = await service.UploadDocumentAsync(
             tenantId, employee.Id, upload, FormFile("passport.pdf"), Context(tenantId), CancellationToken.None);

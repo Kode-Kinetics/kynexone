@@ -721,19 +721,44 @@ public static class EmployeeDocumentSensitivity
         "payroll", "payrolldocument", "payrolldocuments", "payrollandbank", "salaryandpayroll",
     };
 
-    private static readonly HashSet<string> IdentityDocumentTypes = new(StringComparer.Ordinal)
-    {
-        "passport", "nationalid", "nationalidentity", "iqama", "residencepermit", "residencypermit",
-        "visa", "workpermit", "muqeem", "gosi", "gosicertificate", "qiwa", "qiwacontract",
-        "emiratesid", "laborcard", "labourcard", "visafile", "qid", "civilid", "residencyid",
-        "residencenumber", "residencynumber",
-    };
+    // Exact server-owned registry. Values include the current remote/fallback field-catalog labels,
+    // their stable keys, and supported legacy aliases. Classification remains normalized equality;
+    // it never guesses from a free-form substring such as "passport" or "salary" inside another value.
+    private static readonly HashSet<string> IdentityDocumentTypes = ExactRegistry(
+        "Passport", "Passport Number", "passport_number", "Passport expiry", "PassportExpiryDate",
+        "National ID", "National Identity", "National ID (Hawiyya)", "id_number",
+        "Iqama", "Iqama (residence permit)", "Iqama (residence permit) no.", "iqama_number",
+        "Residence permit", "Residence permit number", "Residency permit",
+        "Visa", "Visa number", "Residence visa number", "visa_number", "Visa expiry", "VisaExpiryDate",
+        "Visa file", "Visa File Number", "visa_file_number",
+        "Work permit", "Work Permit Number", "work_permit",
+        "MOHRE work permit / labour card no.",
+        "LMRA work permit number", "LMRA work permit no.",
+        "Muqeem", "Muqeem Reference", "Muqeem number", "muqeem_reference",
+        "GOSI", "GOSI certificate", "GOSI Reference", "gosi_reference",
+        "Qiwa", "Qiwa contract", "Qiwa Contract Number", "qiwa_contract_reference",
+        "Emirates ID", "emirates_id",
+        "Labor card", "Labour card", "Labour Card Number", "labor_card_number",
+        "QID", "Qatar ID (QID)",
+        "Civil ID", "Kuwait Civil ID", "civil_id",
+        "Oman Resident Card / Civil ID", "Oman Resident Card / Civil ID no.",
+        "Bahrain CPR (Personal no.)",
+        "Residency ID", "Residence number", "Residency Number", "Residency (Article) number", "residency_number",
+        "Sponsor name", "sponsor");
 
-    private static readonly HashSet<string> PayrollDocumentTypes = new(StringComparer.Ordinal)
-    {
-        "bankletter", "bankstatement", "iban", "wps", "wpsbankdetails", "payslip",
-        "payslipstatement", "salarycertificate", "payroll",
-    };
+    private static readonly HashSet<string> PayrollDocumentTypes = ExactRegistry(
+        "Bank letter", "Bank statement", "IBAN", "IBAN (WPS)", "BankIban",
+        "Bank account number", "AccountNumber", "Bank routing code", "BankRoutingCode",
+        "WPS", "WPS bank details", "Payslip", "Payslip statement", "Salary certificate", "Payroll",
+        "Salary", "SalaryStructure",
+        "Basic salary", "BasicSalary",
+        "Housing allowance", "HousingAllowance",
+        "Transport allowance", "TransportAllowance",
+        "Food allowance", "FoodAllowance",
+        "Mobile allowance", "MobileAllowance",
+        "Other allowance", "OtherAllowance",
+        "Fixed deduction", "FixedDeduction",
+        "MOL personal ID", "MolId");
 
     public static bool IsSensitive(string? documentType, string? category) =>
         CanonicalSensitiveCategory(documentType, category) is not null;
@@ -758,6 +783,9 @@ public static class EmployeeDocumentSensitivity
         string.IsNullOrWhiteSpace(value)
             ? string.Empty
             : new string(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static HashSet<string> ExactRegistry(params string[] values) =>
+        values.Select(Normalize).ToHashSet(StringComparer.Ordinal);
 }
 
 /// <summary>
