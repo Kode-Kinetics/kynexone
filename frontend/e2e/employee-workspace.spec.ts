@@ -389,3 +389,48 @@ test('workspace stale employee A responses never replace employee B after client
   await expect(page.getByRole('heading', { name: 'Second Route Employee' })).toBeVisible();
   await expect(page.getByText('QA Master Data Test 2026-10-17', { exact: true })).toHaveCount(0);
 });
+
+test('directory is full width and employee names are canonical links with exact return state', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+
+  await page.goto('/people?search=QA&status=Draft&readiness=NeedsAttention&access=not_invited&page=2');
+  const employeeLink = page.getByRole('link', { name: 'QA Master Data Test 2026-10-17', exact: true });
+  await expect(employeeLink).toBeVisible();
+  await expect(page.getByText('Select an employee', { exact: true })).toHaveCount(0);
+  await expect(employeeLink).toHaveAttribute('href', /\/people\/901\?.*returnTo=/);
+
+  await employeeLink.focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/people\/901/);
+  await page.getByRole('link', { name: 'Back to People' }).click();
+  await expect(page).toHaveURL(/\/people\?search=QA&status=Draft&readiness=NeedsAttention&access=not_invited&page=2&anchor=employee-901/);
+  await expect(employeeLink).toBeFocused();
+});
+
+test('directory filters, view, and page are canonical URL state and clear transient selection', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people');
+  await expect(page.getByRole('heading', { name: 'Employee Management' })).toBeVisible();
+
+  await page.getByLabel('Select QA Master Data Test 2026-10-17').check();
+  await page.getByLabel('Status filter').selectOption('Draft');
+  await expect(page).toHaveURL(/status=Draft/);
+  await expect(page.getByRole('status').filter({ hasText: 'Selection cleared' })).toBeVisible();
+
+  await page.getByLabel('Readiness filter').selectOption('NeedsAttention');
+  await expect(page).toHaveURL(/readiness=NeedsAttention/);
+  await page.getByRole('tab', { name: 'Ex-Employees' }).click();
+  await expect(page).toHaveURL(/view=ex/);
+  await page.getByPlaceholder('Search former employee code, name, email').fill('former');
+  await expect(page).toHaveURL(/search=former/);
+});
+
+test('Ex-Employees uses canonical search and page state and remains read only', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people?view=ex&search=former&page=2');
+
+  await expect(page.getByText('Read-only archive of former staff.', { exact: false })).toBeVisible();
+  await expect(page.getByPlaceholder('Search former employee code, name, email')).toHaveValue('former');
+  await expect(page.getByText(/Page 2 of/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /Add Employee/i })).toHaveCount(0);
+});

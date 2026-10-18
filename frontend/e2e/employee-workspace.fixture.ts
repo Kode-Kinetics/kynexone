@@ -213,6 +213,7 @@ export async function bootEmployeeWorkspaceFixture(page: Page): Promise<Employee
     if (path.includes('/features/')) return reply([]);
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/admin/system-settings' || path === '/api/country-packs/available') return reply([]);
+    if (path === '/api/admin/master-data/values') return reply([]);
 
     const readinessMatch = path.match(/^\/api\/employees\/(\d+)\/readiness$/);
     if (readinessMatch) {

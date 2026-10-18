@@ -25,7 +25,8 @@ import { useSuccessionAccess } from '../components/succession/SuccessionParts';
 import { SUCCESSION_FLAG } from '../lib/succession';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
-import { createUrlSeed } from '../lib/urlSeed';
+import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
@@ -289,7 +290,7 @@ interface EmployeeUsageData {
 export function EmployeesPage() {
   const wizardFormat = useFormat();
   const { t } = useLocale();
-  const searchParams = useSearchParams();
+  const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
   // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
@@ -299,21 +300,19 @@ export function EmployeesPage() {
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  // `?search=` seeds the box on load and when navigation changes it; it never overwrites typing.
-  const [searchSeed] = useState(createUrlSeed);
-  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
-  const [status, setStatus] = useState<StatusFilter>('');
+  const page = directoryQuery.state.page ?? 1;
+  const search = directoryQuery.state.search ?? '';
+  const status = (directoryQuery.state.status ?? '') as StatusFilter;
   // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
   // loaded page). "Needs info" = the worklist the import results view deep-links into.
-  const [readinessFilter, setReadinessFilter] = useState<'' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready'>('');
+  const readinessFilter = (directoryQuery.state.readiness ?? '') as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready';
   // Per-gap deep-link from the import results view: narrow the worklist to one typed gap
   // (e.g. link:manager) within a specific import batch. Both are server-side filters.
-  const [gapTypeFilter, setGapTypeFilter] = useState('');
-  const [importBatchFilter, setImportBatchFilter] = useState('');
-  const [view, setView] = useState<'current' | 'ex'>('current');
+  const gapTypeFilter = directoryQuery.state.gapType ?? '';
+  const importBatchFilter = directoryQuery.state.importBatchId ?? '';
+  const view = directoryQuery.state.view ?? 'current';
   // Self-service (sign-in access) filter chip: one state, or everyone.
-  const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
+  const accessFilter = (directoryQuery.state.access ?? '') as '' | EmployeeAccessState;
   const [accessSummary, setAccessSummary] = useState<EmployeeAccessSummary | null>(null);
   const [everyoneCount, setEveryoneCount] = useState<number | null>(null);
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
@@ -333,6 +332,7 @@ export function EmployeesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
+  const [selectionNotice, setSelectionNotice] = useState('');
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -467,6 +467,32 @@ export function EmployeesPage() {
   const [activatedPrompt, setActivatedPrompt] = useState<{ id: number; name: string; access: EmployeeAccessDto } | null>(null);
   const [createdEmployee, setCreatedEmployee] = useState<{ id: number; name: string; access: EmployeeAccessDto | null } | null>(null);
 
+  const setSearch = useCallback((value: string) => {
+    directoryQuery.update({ search: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setStatus = useCallback((value: StatusFilter) => {
+    directoryQuery.update({ status: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setReadinessFilter = useCallback((value: '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready') => {
+    directoryQuery.update({ readiness: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setGapTypeFilter = useCallback((value: string) => {
+    directoryQuery.update({ gapType: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setImportBatchFilter = useCallback((value: string) => {
+    directoryQuery.update({ importBatchId: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setAccessFilter = useCallback((value: '' | EmployeeAccessState) => {
+    directoryQuery.update({ access: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setView = useCallback((value: 'current' | 'ex') => {
+    directoryQuery.update({ view: value === 'current' ? undefined : value, page: undefined, anchor: undefined }, { history: 'push' });
+  }, [directoryQuery]);
+  const setPage = useCallback((value: number | ((current: number) => number)) => {
+    const next = typeof value === 'function' ? value(page) : value;
+    directoryQuery.update({ page: next <= 1 ? undefined : next, anchor: undefined }, { history: 'push' });
+  }, [directoryQuery, page]);
+
   const surfaceAdvisoryWarning = (payload: unknown) => {
     const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
     if (w) setAdvisoryWarning(w);
@@ -577,7 +603,6 @@ export function EmployeesPage() {
         }
       });
   }, [canReadUsage]);
-  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter]);
   useEffect(() => {
     setSelectedId(null);
     setDetail(null);
@@ -593,7 +618,14 @@ export function EmployeesPage() {
   // A stale "select all matching" flag (or a leftover page pick) must never carry across a FILTER
   // change or a tab switch — otherwise a bulk action could resolve against a different set than the
   // operator sees. Page navigation deliberately does NOT clear (cross-page picking is allowed).
-  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
+  useEffect(() => {
+    if (selectedIds.size > 0 || selectAllMatching) setSelectionNotice('Selection cleared because the directory changed.');
+    clearSelection();
+    setBulkResult(null);
+  // Selection is intentionally read only when a directory dimension changes; selecting a row must
+  // not trigger this effect and immediately clear itself.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
 
   const pageIds = useMemo(() => employees.map((e) => e.id), [employees]);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
@@ -819,23 +851,11 @@ export function EmployeesPage() {
     }
   };
   useEffect(() => {
-    // Keyed on the URL only. It used to depend on `search` and re-apply the URL value whenever the
-    // box differed from it, which replaced every keystroke with the URL's search.
-    const seeded = searchSeed.take(searchParams?.get('search') ?? null);
-    if (seeded !== undefined) setSearch(seeded);
-  }, [searchParams, searchSeed]);
-  useEffect(() => {
-    const employeeId = searchParams?.get('employeeId') ?? null;
-    if (!employeeId) return;
-    const id = Number(employeeId);
-    if (Number.isFinite(id) && id > 0 && selectedId !== id) {
-      // ?tab=package (from the contract register's "Review proposal") opens the employee on that tab.
-      const requestedTab = searchParams?.get('tab');
-      const tabWanted = visibleTabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
-      void openDetail(id, tabWanted !== null).then(() => { if (tabWanted) setActiveTab(tabWanted); });
-      if (tabWanted) setActiveTab(tabWanted);
-    }
-  }, [searchParams, selectedId]);
+    const anchor = directoryQuery.state.anchor;
+    if (!anchor || loading) return;
+    const frame = requestAnimationFrame(() => document.getElementById(anchor)?.focus({ preventScroll: false }));
+    return () => cancelAnimationFrame(frame);
+  }, [directoryQuery.state.anchor, employees, loading]);
 
   const selectedEmployee = useMemo(() => detail ?? null, [detail]);
   const selectedEmployeeCompanyCountry =
@@ -1840,7 +1860,9 @@ export function EmployeesPage() {
   // Readiness / gap filtering is now SERVER-SIDE (see load()), so `total`/pagination match the
   // filtered set across all pages — the post-import deep-link no longer breaks past page 1.
   const importFilterActive = gapTypeFilter !== '' || importBatchFilter !== '';
-  const clearImportFilter = () => { setGapTypeFilter(''); setImportBatchFilter(''); setReadinessFilter(''); };
+  const clearImportFilter = () => {
+    directoryQuery.update({ gapType: undefined, importBatchId: undefined, readiness: undefined, page: undefined, anchor: undefined });
+  };
 
   // Activate-button gating. The readiness gate fires only on first-time activations from a
   // non-occupying status — mandated Suspended→Active / Offboarded→Active reinstatements are NOT
@@ -1848,6 +1870,7 @@ export function EmployeesPage() {
   const activationBlockers = readiness?.blocking.length ?? 0;
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
+  const showLegacyEmployeeAside = false;
 
   return (
     <div className="space-y-5">
@@ -1898,11 +1921,15 @@ export function EmployeesPage() {
                 canImport={canImportEmployees}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
                 onViewIncomplete={(filter) => {
-                  setSearch('');
-                  setStatus('');
-                  setReadinessFilter((filter?.readiness as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready') ?? '');
-                  setGapTypeFilter(filter?.gapType ?? '');
-                  setImportBatchFilter(filter?.importBatchId ?? '');
+                  directoryQuery.update({
+                    search: undefined,
+                    status: undefined,
+                    readiness: filter?.readiness,
+                    gapType: filter?.gapType,
+                    importBatchId: filter?.importBatchId,
+                    page: undefined,
+                    anchor: undefined,
+                  });
                 }}
               />
               {canWriteEmployees && <div className="relative group">
@@ -1927,6 +1954,7 @@ export function EmployeesPage() {
       </div>
 
       {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      <p role="status" aria-live="polite" className="sr-only">{selectionNotice}</p>
       {actionNotice && <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"><span>{actionNotice}</span>
         {lastSavedDraft && actionNotice === t('{name} was saved as a draft.', { name: lastSavedDraft.name }) && canWriteEmployees && <button type="button" onClick={() => openEmployeeWindow(lastSavedDraft.id)} className="font-semibold underline underline-offset-2">{t(canEditEmployees ? 'Resume draft' : 'View draft')}</button>}
       </div>}
@@ -1938,9 +1966,14 @@ export function EmployeesPage() {
       )}
 
       {view === 'ex' ? (
-        <ExEmployeesTable />
+        <ExEmployeesTable
+          search={search}
+          page={page}
+          onSearchChange={(value) => setSearch(value)}
+          onPageChange={(value) => setPage(value)}
+        />
       ) : (
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <div className="grid grid-cols-1 gap-5" data-testid="people-directory-full-width">
         <section className="min-w-0 space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
@@ -2113,7 +2146,20 @@ export function EmployeesPage() {
                       <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'No employees match this filter.' : 'No employees yet'}</p>
                       <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
                       {(search || status || readinessFilter || importFilterActive || accessFilter) ? (
-                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); setAccessFilter(''); clearImportFilter(); }}>Clear filters</button>
+                        <button
+                          type="button"
+                          className="btn-secondary mt-4"
+                          onClick={() => directoryQuery.update({
+                            search: undefined,
+                            status: undefined,
+                            readiness: undefined,
+                            access: undefined,
+                            gapType: undefined,
+                            importBatchId: undefined,
+                            page: undefined,
+                            anchor: undefined,
+                          })}
+                        >Clear filters</button>
                       ) : canWriteEmployees ? (
                         <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
                       ) : null}
@@ -2122,11 +2168,7 @@ export function EmployeesPage() {
                   {!loading && employees.map((employee) => {
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
-                    <tr
-                      key={employee.id}
-                      onClick={() => openEmployeeWindow(employee.id)}
-                      className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
-                    >
+                    <tr key={employee.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
@@ -2140,14 +2182,15 @@ export function EmployeesPage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <button
-                              type="button"
-                              aria-label={`Open profile for ${employee.fullName}`}
-                              onClick={(event) => { event.stopPropagation(); openEmployeeWindow(employee.id); }}
+                            <a
+                              id={`employee-${employee.id}`}
+                              href={employeeWorkspaceHref(employee.id, {
+                                returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
+                              })}
                               className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
-                            </button>
+                            </a>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
@@ -2186,7 +2229,7 @@ export function EmployeesPage() {
           </div>
         </section>
 
-        <aside className={`surface min-h-[560px] overflow-hidden ${selectedId && activeTab === 'benefits' ? 'order-first xl:order-none' : ''}`}>
+        {showLegacyEmployeeAside && <aside className={`surface min-h-[560px] overflow-hidden ${selectedId && activeTab === 'benefits' ? 'order-first xl:order-none' : ''}`}>
           {!selectedId && (
             <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
               <Users className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
@@ -2503,7 +2546,7 @@ export function EmployeesPage() {
               </div>
             </div>
           )}
-        </aside>
+        </aside>}
       </div>
       )}
 

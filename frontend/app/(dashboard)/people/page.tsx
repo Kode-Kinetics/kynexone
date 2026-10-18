@@ -3,7 +3,7 @@
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { PermissionGate } from '@/src/components/PermissionGate';
-import { EmployeesPage } from '@/src/views/EmployeesPage';
+import { EmployeeDirectoryPage } from '@/src/views/employees/EmployeeDirectoryPage';
 import { legacyEmployeeTarget } from '@/src/lib/peopleRoutes';
 
 function PeopleRouteOwner() {
@@ -21,7 +21,7 @@ function PeopleRouteOwner() {
 
   return (
     <PermissionGate permissions={['employees.read']}>
-      <EmployeesPage />
+      <EmployeeDirectoryPage />
     </PermissionGate>
   );
 }
