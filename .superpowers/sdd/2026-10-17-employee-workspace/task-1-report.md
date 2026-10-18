@@ -171,3 +171,70 @@ Result: PASSED — 250 passed, 0 failed, 0 skipped in 18 seconds. The first run 
 `EmployeesController.cs` and `EmployeeManagementService.cs` both contained unrelated pre-existing work. Only fix-round hunks were selected into the index with generated noninteractive patches (`git diff ... | awk ... | git apply --cached`); the remaining fix files were staged by exact path. `git diff --cached --check` passed, and commit `a11ec768` contains only the seven files listed above. Unrelated tracked and untracked work remains in place and unstaged.
 
 The full backend suite was not rerun in this fix round because the earlier run exceeded the explicit 20-minute cap; the final branch gate still owns that run. The optional `IHrmHierarchyService.GetOrgChartAsync` visibility parameter is the only domain-interface change and was reported before commit.
+
+## Fix round 2: production field-catalog document types
+
+### Status and commit
+
+COMPLETE for the remaining re-review finding. Implementation commit: `3ba8b40e` (`fix(employees): classify catalog document types`).
+
+### RED evidence
+
+Tests first added the exact current `documentTypesForCountry` remote/fallback statutory labels and keys, sensitive payroll catalog labels/keys, the normal blank-category `Passport Number` upload payload, metadata masking, and raw-download denial. Command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~ProductionCatalogSensitiveDocumentType_WithBlankCategory|FullyQualifiedName~ProductionPassportNumberUpload_WithoutClientCategory"
+```
+
+Result before the registry change: FAILED — 59 failed, 7 passed, 0 skipped, 66 total. `Passport Number` canonicalized to an empty category, the upload persisted it as non-sensitive, and the other unregistered exact catalog values failed the same behavior assertions.
+
+An additional server-catalog drift guard was then added and run with:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~ServerCatalog_SensitiveIdentityAndPayrollLabelsAndKeys_AreProtectedDocumentTypes"
+```
+
+Result: FAILED — 1 failed, 0 passed, 0 skipped. It identified `PassportExpiryDate` as the first sensitive server-catalog key still absent from the exact registry; inspection identified and added its label/key and the corresponding `VisaExpiryDate` label/key.
+
+### GREEN evidence
+
+Exact production-label/key, upload, metadata, and raw-download cases:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~ProductionCatalogSensitiveDocumentType_WithBlankCategory|FullyQualifiedName~ProductionPassportNumberUpload_WithoutClientCategory"
+```
+
+Result: PASSED — 66 passed, 0 failed, 0 skipped in 1 second.
+
+Server-catalog drift guard plus explicit non-substring cases:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~ServerCatalog_SensitiveIdentityAndPayrollLabelsAndKeys_AreProtectedDocumentTypes|FullyQualifiedName~SensitiveDocumentTypeRegistry_DoesNotUseSubstringMatching"
+```
+
+Result: PASSED — 3 passed, 0 failed, 0 skipped.
+
+Final focused authorization suite:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests"
+```
+
+Result: PASSED — 154 passed, 0 failed, 0 skipped in 2 seconds.
+
+Final affected security/catalog regression suite:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests|FullyQualifiedName~EmployeeAuthzRegressionTests|FullyQualifiedName~SensitiveFieldMaskingTests|FullyQualifiedName~EmployeeBulkActionTests|FullyQualifiedName~EmployeeAccessTests|FullyQualifiedName~EmployeeCompletionHttpTests|FullyQualifiedName~DocumentStorageSecurityTests|FullyQualifiedName~LegacyRoleGateBypassSweepTests|FullyQualifiedName~HrmHierarchyTests|FullyQualifiedName~EmployeeFieldWiringTests"
+```
+
+Result: PASSED — 345 passed, 0 failed, 0 skipped in 19 seconds.
+
+### Fix-round changed files, preservation, and concerns
+
+- `backend-dotnet/Zayra.Api/Application/Employees/EmployeeManagementDtos.cs`: replaced hand-normalized short tokens with an explicit server-owned registry of exact current remote/fallback catalog labels, stable keys, and supported legacy aliases. Matching remains punctuation/case-normalized equality and never uses substring or free-form `Contains` logic.
+- `backend-dotnet/Zayra.Api.Tests/Security/EmployeeWorkspaceAuthorizationTests.cs`: added exact production label/key metadata and raw-byte tests, blank-category `Passport Number` upload coverage, a server-catalog drift guard, and non-substring negative cases.
+
+Both changed files were clean at fix-round start and were staged by exact path. `git diff --cached --check` passed; commit `3ba8b40e` contains only these two files. All unrelated tracked and untracked changes remain unstaged and untouched.
+
+Per the round instruction, the full backend suite was not run. Builds emitted pre-existing compiler/analyzer warnings, but every requested focused and affected scoped test completed with zero failures and zero skips.
