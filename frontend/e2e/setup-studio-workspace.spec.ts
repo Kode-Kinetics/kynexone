@@ -60,7 +60,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path === '/api/recruitment/onboarding/checklists' || path.endsWith('/template-tasks')) return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
-  const setupUrl = `/setup?tab=aiSetup&companyId=fixture-company&source=retained${options.area ? `&area=${options.area}` : ''}${options.setting ? `&setting=${options.setting}` : ''}`;
+  const setupUrl = `/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained${options.area ? `&area=${options.area}` : ''}${options.setting ? `&setting=${options.setting}` : ''}`;
   if (options.beforeSetup) {
     await page.goto('/dashboard?before=0');
     await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeAttached();
@@ -628,7 +628,7 @@ const guidedPreview = {
 
 async function openGuidedSetup(page: Page, options: Parameters<typeof boot>[1] = {}) {
   const activity = await boot(page, options);
-  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
   return activity;
 }
@@ -648,9 +648,72 @@ async function seedCurrentGuidedDraft(page: Page, industry: string) {
   }, industry);
   await page.reload();
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
-  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toHaveValue(industry);
 }
+
+test('ai_setup_defaults_to_guided', async ({ page }) => {
+  const { writes } = await boot(page);
+  await page.goto('/setup?tab=aiSetup&companyId=fixture-company');
+  await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Guided Setup', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test.describe('path switch', () => {
+  test('guided_path_switch_cancel_preserves_values_and_focus', async ({ page }) => {
+    const { writes } = await openGuidedSetup(page);
+    await page.getByLabel(/^Industry/).fill('Uncommitted guided services');
+    const configuration = page.getByRole('button', { name: 'Configuration Center', exact: true });
+    const before = page.url();
+    await configuration.click();
+    const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+    await expect(dialog).toContainText('Leave this form and discard unsaved changes?');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page).toHaveURL(before);
+    await expect(page.getByLabel(/^Industry/)).toHaveValue('Uncommitted guided services');
+    await expect(configuration).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+
+  test('guided_path_switch_confirm_discards_once', async ({ page }) => {
+    const { writes } = await openGuidedSetup(page);
+    await page.getByLabel(/^Industry/).fill('Persist before switching');
+    const historyLength = await page.evaluate(() => history.length);
+    await page.getByRole('button', { name: 'Configuration Center', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+    await expect(dialog).toHaveCount(1);
+    await dialog.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+    await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+    await expect(page).toHaveURL(/path=configuration/);
+    await expect(dialog).toHaveCount(0);
+    expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
+    expect(await page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company') ?? 'null');
+      return saved?.profile?.industry;
+    })).toBe('Persist before switching');
+    expect(writes).toEqual([]);
+  });
+
+  test('guided_unuploaded_file_blocks_configuration_switch', async ({ page }) => {
+    const { writes } = await openGuidedSetup(page);
+    await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+    await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+    const picker = page.locator('input[type=file]');
+    await picker.setInputFiles({ name: 'pending-switch-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Do not lose this pending file.') });
+    const configuration = page.getByRole('button', { name: 'Configuration Center', exact: true });
+    const before = page.url();
+    await configuration.click();
+    const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+    await expect(dialog).toContainText('Selected files have not been uploaded');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page).toHaveURL(before);
+    expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('pending-switch-policy.txt');
+    await expect(configuration).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+});
 
 test('guided_setup_keeps_five_named_steps', async ({ page }) => {
   const { writes } = await openGuidedSetup(page);
@@ -819,7 +882,7 @@ test('guided_policy_library_cancel_preserves_values_and_focus', async ({ page })
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
   await expect(dialog).toContainText('Selected files have not been uploaded');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page).toHaveURL(/path=guided/);
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Retained guided services');
   expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('retained-policy.txt');
   await expect(library).toBeFocused();
@@ -862,7 +925,7 @@ test('guided_unuploaded_file_blocks_existing_exit', async ({ page }) => {
   await exit.click();
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
   await expect(dialog).toContainText('Selected files have not been uploaded');
-  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page).toHaveURL(/path=guided/);
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Blocked exit services');
   expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('blocked-policy.txt');

@@ -1,4 +1,7 @@
 const ar: Record<string, string> = {
+  "Setup paths": "مسارات الإعداد",
+  "Guided Setup": "الإعداد الموجّه",
+  "Configuration Center": "مركز الإعدادات",
   "Leave this form and discard unsaved changes?": "هل تريد مغادرة هذا النموذج وتجاهل التغييرات غير المحفوظة؟",
   "Back to Setup Studio": "العودة إلى استوديو الإعداد",
   "Leave types": "أنواع الإجازات",

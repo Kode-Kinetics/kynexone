@@ -5,6 +5,11 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
+import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
+import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
+import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
+import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
@@ -69,6 +74,8 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { resolveSetupArea } from '../lib/setupAreas';
+import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
@@ -78,6 +85,7 @@ type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' 
   | 'statutoryRules' | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
 type SettingsCategory = 'organization' | 'peoplePay' | 'system';
 type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization' | 'policyLibrary'>;
+function isSettingsTab(id: string): id is SettingsTab { return tabs.some(tab => tab.id === id); }
 
 const tabs: { id: SettingsTab; label: string; description: string; icon: React.ElementType; category: SettingsCategory }[] = [
   { id: 'companies', label: msg('Companies'), description: msg('Legal entities, registration details and operating currencies.'), icon: Building2, category: 'organization' },
@@ -2288,7 +2296,7 @@ export function SetupPage() {
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole } = useAuth();
-  const { accountType, isGroupScope } = useCompany();
+  const { accountType, isGroupScope, companies: authorizedCompanies } = useCompany();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
@@ -2312,6 +2320,15 @@ export function SetupPage() {
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [pendingStarterFiles, setPendingStarterFiles] = useState(false);
+  const clearDirty = useCallback(() => setEditorDirty(false), []);
+  const authorizedCompany = useSetupCompanyQuery();
+  const confirmLeave = useSetupNavigationGuard(editorDirty, clearDirty, pendingStarterFiles, authorizedCompany);
+  const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
+    authorizedCompanyIds: new Set(authorizedCompanies.map(company => company.id)),
+    selectedCompanyId: authorizedCompany,
+  });
 
   // Also follow links and browser navigation after the page has already mounted.
   useEffect(() => {
@@ -2342,6 +2359,32 @@ export function SetupPage() {
     ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab)
     : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
+  const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration';
+  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  const starterScope = authorizedCompany ?? 'group';
+  const setupPathHref = (path: SetupStudioPath) => {
+    const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
+    return `/setup?${next.toString()}`;
+  };
+  const selectSetupPath = (path: SetupStudioPath) => {
+    if (path === setupPath.path) return;
+    const href = setupPathHref(path);
+    confirmLeave(href, () => {
+      setActiveTab('aiSetup');
+      router.push(href, { scroll: false });
+    });
+  };
+  const returnToWorkspace = () => {
+    if (pendingStarterFiles) {
+      selectSetupPath('configuration');
+      return;
+    }
+    // AiSetupAssistant invokes this callback only after saveForLater succeeds.
+    // The persisted draft no longer needs the dirty-value blocker.
+    clearDirty();
+    setActiveTab('aiSetup');
+    router.push(setupPathHref('configuration'), { scroll: false });
+  };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
   const SelectedSettingIcon = selectedSetting.icon;
   const navigationTabs = canWrite ? [
@@ -2354,6 +2397,35 @@ export function SetupPage() {
     ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
   ] : visibleTabs.map((tab) => ({ id: tab.id, label: t(tab.label), icon: tab.icon }));
 
+  const renderExistingPanel = (id: SettingsTab): React.ReactNode => {
+    if (!visibleTabs.some(tab => tab.id === id)) return null;
+    switch (id) {
+      case 'establishment': return <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />;
+      case 'companies': return <CompaniesTab />;
+      case 'branches': return <BranchesTab companies={companies} />;
+      case 'departments': return <DepartmentsTab costCenters={costCenters} />;
+      case 'designations': return <DesignationsTab grades={grades} />;
+      case 'grades': return <GradesTab />;
+      case 'costCenters': return <CostCentersTab companies={companies} />;
+      case 'masterData': return <MasterDataTab />;
+      case 'numberingRules': return <NumberingRulesTab />;
+      case 'systemSettings': return <SystemSettingsTab />;
+      case 'gccSettings': return <GCCSettingsTab />;
+      case 'statutoryRules': return <StatutoryRulesPanel />;
+      case 'fiscalYears': return <FiscalYearsTab />;
+      case 'locations': return <LocationsTab />;
+      case 'glMapping': return <div onChangeCapture={event => {
+        // Incumbent GL subeditors have no save-state callback yet. Protect their
+        // authored forms/rows conservatively, excluding the surrounding filters.
+        if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
+      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} /></div>;
+      case 'notificationTemplates': return <NotificationTemplatesTab />;
+      case 'emailConfig': return <EmailConfigTab />;
+      case 'adminAuditLogs': return <AdminAuditLogsTab />;
+    }
+  };
+  const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
+
   return (
     <div className="setup-page space-y-4">
       <header className="setup-page-header min-w-0">
@@ -2365,7 +2437,9 @@ export function SetupPage() {
         </p>
       </header>
 
-      <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
+      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
+
+      {!isWorkspace && <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
             const selected = selectedTab === id;
             return (
@@ -2386,17 +2460,39 @@ export function SetupPage() {
               </button>
             );
           })}
-      </nav>
+      </nav>}
 
-      {/* Keep drafts and uploaded files intact when users explore another path. */}
+      {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
         <>
           <section id="setup-aiSetup" aria-label={t('Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
-            <AiSetupAssistant companies={companies} />
+            {isStarter && <div onChangeCapture={event => {
+              setEditorDirty(true);
+              const target = event.target;
+              if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} /></SetupPendingFilesState.Provider></div>}
+            {isWorkspace && <SetupStudioWorkspace
+              companies={companies}
+              confirmLeave={confirmLeave}
+              onDirtyChange={setEditorDirty}
+              renderSettings={(id, onDirtyChange) => {
+                if (isSettingsTab(id)) return renderExistingSettings(id);
+              }}
+              onOpenLibrary={() => selectTab('policyLibrary')}
+              onOpenAdministration={() => selectTab(isCompanyScopedGroup ? 'companies' : 'systemSettings')}
+              onOpenLegacyDraft={() => {
+                if (!confirmLeave()) return;
+                const params = new URLSearchParams(searchParams?.toString());
+                params.set('tab', 'aiSetup'); params.set('mode', 'starter'); params.delete('path');
+                params.set('area', resolveSetupArea(params.get('area')));
+                if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
+                router.push(`/setup?${params.toString()}`, { scroll: false });
+              }}
+            />}
           </section>
-          <section id="setup-importOrganization" aria-label={t('Import organization')} hidden={isCompanyScopedGroup || selectedTab !== 'importOrganization'}>
+          {!isCompanyScopedGroup && selectedTab === 'importOrganization' && <section id="setup-importOrganization" aria-label={t('Import organization')}>
             <OrgStructureImportPanel />
-          </section>
+          </section>}
         </>
       )}
 
