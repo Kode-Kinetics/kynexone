@@ -364,16 +364,16 @@ public class SensitiveFieldMaskingTests
         db.EmployeeTransferRequests.Add(transfer);
         await db.SaveChangesAsync();
 
-        var managerController = CreateController(db, tenantId, "Manager");
-        var result = await managerController.ApproveHrTransfer(
+        var hrOfficerController = CreateController(db, tenantId, "HR Officer");
+        var result = await hrOfficerController.ApproveHrTransfer(
             transfer.Id,
             new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(db, new AuditService(db)),
             CancellationToken.None);
 
         var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result).Value);
-        dto.Salary.Should().BeNull("Manager must NOT see salary in transfer approval response");
-        dto.BankIban.Should().BeEmpty("Manager must NOT see IBAN in transfer approval response");
-        dto.IqamaNumber.Should().BeEmpty("Manager must NOT see Iqama in transfer approval response");
+        dto.Salary.Should().BeNull("HR Officer must NOT see salary in transfer approval response");
+        dto.BankIban.Should().BeEmpty("HR Officer must NOT see IBAN in transfer approval response");
+        dto.IqamaNumber.Should().BeEmpty("HR Officer must NOT see Iqama in transfer approval response");
     }
 
     // ── P2.1: ESS Profile — returns EssEmployeeProfileDto, not raw Employee ──────

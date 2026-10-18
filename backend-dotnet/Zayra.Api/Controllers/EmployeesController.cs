@@ -2744,7 +2744,11 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         maxDepth = Math.Clamp(maxDepth, 1, 10);
-        var chart = await hierarchy.GetOrgChartAsync(tenantId, rootEmployeeId, maxDepth, ct);
+        var visibleEmployeeIds = await ResolveVisibleEmployeeIdsAsync(ct);
+        if (rootEmployeeId.HasValue && visibleEmployeeIds is not null
+            && !visibleEmployeeIds.Contains(rootEmployeeId.Value))
+            return Forbid();
+        var chart = await hierarchy.GetOrgChartAsync(tenantId, rootEmployeeId, maxDepth, ct, visibleEmployeeIds);
         return Ok(chart);
     }
 
@@ -2854,9 +2858,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDetailDto>> Get(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var employee = await employeeManagement.GetAsync(tenantId, id, CanViewSensitive(), Context(), cancellationToken);
         return employee is null ? NotFound() : Ok(employee);
     }
@@ -3260,6 +3262,7 @@ public class EmployeesController : ControllerBase
             TenantId = tenantId,
             DraftId = draftId,
             DocumentType = request.DocumentType.Trim(),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, category: null),
             FileName = request.FileName.Trim(),
             ContentType = request.ContentType.Trim(),
             StorageUrl = storageUrl,
@@ -3293,6 +3296,7 @@ public class EmployeesController : ControllerBase
             TenantId = tenantId,
             DraftId = draftId,
             DocumentType = request.DocumentType.Trim(),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, category: null),
             FileName = stored.FileName,
             ContentType = stored.ContentType,
             StorageUrl = stored.StorageUrl,
@@ -3328,17 +3332,13 @@ public class EmployeesController : ControllerBase
         if (document is null) return NotFound();
 
         // Identity and payroll files contain the same protected facts masked on the employee record.
-        if (EmployeeDocumentDto.IsSensitiveCategory(document.DocumentCategory)
+        if (EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
             && !User.HasPermission("employees.sensitive"))
             return Forbid();
 
         if (document.EmployeeId.HasValue)
         {
-            // The company rule the filter used to apply, then the caller's data scope for this employee.
-            if (!this.GetEntityScope().CanAccessCompany(document.CompanyId)) return NotFound();
-            var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-            if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(document.EmployeeId.Value))
-                return Forbid();
+            if (!await CanAccessEmployeeAsync(document.EmployeeId.Value, cancellationToken)) return Forbid();
         }
         else if (document.DraftId.HasValue)
         {
@@ -3714,6 +3714,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         // Work-email and draft entitlement edits commit atomically with their audit/default rows.
         // Placement edits also serialize with activation and individual benefit writers.
         var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
@@ -3997,6 +3998,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDetailDto>> ChangeStatus(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             // D1 privilege boundary: SeparationType decides the end-of-service award (Article80 forfeits
@@ -4025,6 +4027,7 @@ public class EmployeesController : ControllerBase
     [Consumes("multipart/form-data")]
     public async Task<ActionResult<EmployeeDocumentDto>> UploadEmployeeDocument(int id, [FromForm] EmployeeDocumentUploadForm form, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var request = new EmployeeDocumentUploadMetadata(
@@ -4046,9 +4049,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeDocumentDto>>> EmployeeDocuments(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var docs = await employeeManagement.GetDocumentsAsync(RequireTenant(), id, cancellationToken);
         return Ok(docs.Select(document => EmployeeDocumentDto.Project(document, CanViewSensitive())).ToList());
     }
@@ -4057,6 +4058,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
         return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
@@ -4065,6 +4067,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
         return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
@@ -4073,6 +4076,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
         return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
@@ -4081,6 +4085,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
     }
 
@@ -4089,9 +4094,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<IReadOnlyCollection<EmployeeHistoryDto>>> EmployeeHistory(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var history = await employeeManagement.GetHistoryAsync(tenantId, id, cancellationToken);
         return Ok(history.Select(EmployeeHistoryDto.Project).ToList());
     }
@@ -4100,6 +4103,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Activate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
@@ -4114,6 +4118,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Terminate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
@@ -4497,6 +4502,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
         await SoftDeleteEmployeeAsync(tenantId, employee, reason: null, Context(), cancellationToken);
@@ -4919,6 +4925,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("manager.approve")]
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var tenantId = RequireTenant();
@@ -4957,6 +4964,7 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == tenantId, cancellationToken);
         if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != "PendingHrApproval")
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot be HR-approved." });
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == transfer.EmployeeId && x.TenantId == tenantId, cancellationToken);
@@ -5257,6 +5265,7 @@ public class EmployeesController : ControllerBase
     {
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == RequireTenant(), cancellationToken);
         if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != expectedStatus)
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot move to '{nextStatus}'." });
         if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
@@ -6196,8 +6205,35 @@ public class EmployeesController : ControllerBase
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
-        return scope.CanAccessEmployee(employeeId);
+        var tenantId = RequireTenant();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        if (!scope.CanAccessEmployee(employeeId)) return false;
+
+        var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Employee authorization must resolve the target company before the ambient company filter can hide it.")
+            .AsNoTracking()
+            .Where(x => x.Id == employeeId)
+            .Select(x => new { x.CompanyId })
+            .SingleOrDefaultAsync(cancellationToken);
+        return employee is null || this.GetEntityScope().CanAccessCompany(employee.CompanyId);
+    }
+
+    private async Task<IReadOnlyCollection<int>?> ResolveVisibleEmployeeIdsAsync(CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var dataScope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        var companyScope = this.GetEntityScope();
+        if (dataScope.IsUnrestricted && companyScope.IsGroupLevel) return null;
+
+        var employees = ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Org-chart authorization builds the caller-visible employee set before hierarchy projection.")
+            .AsNoTracking();
+        if (!dataScope.IsUnrestricted)
+            employees = employees.Where(x => dataScope.AllowedEmployeeIds!.Contains(x.Id));
+        if (!companyScope.IsGroupLevel)
+            employees = employees.Where(x => x.CompanyId.HasValue
+                && companyScope.AccessibleCompanyIds.Contains(x.CompanyId.Value));
+        return await employees.Select(x => x.Id).ToListAsync(cancellationToken);
     }
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }

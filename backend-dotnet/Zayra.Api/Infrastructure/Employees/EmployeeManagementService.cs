@@ -1093,7 +1093,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             TenantId = tenantId,
             EmployeeId = employeeId,
             DocumentType = request.DocumentType.Trim(),
-            DocumentCategory = Clean(request.DocumentCategory),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, request.DocumentCategory),
             FileName = stored.FileName,
             ContentType = stored.ContentType,
             StorageUrl = stored.StorageUrl,
@@ -1306,7 +1306,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
-        if (request.DocumentCategory is not null) doc.DocumentCategory = request.DocumentCategory.Trim();
+        if (request.DocumentCategory is not null || !string.IsNullOrWhiteSpace(request.DocumentType))
+            doc.DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(doc.DocumentType,
+                request.DocumentCategory ?? doc.DocumentCategory);
         if (request.IssueDate.HasValue) doc.IssueDate = request.IssueDate;
         if (request.ExpiryDate.HasValue) doc.ExpiryDate = request.ExpiryDate;
         if (request.RenewalReminderDate.HasValue) doc.RenewalReminderDate = request.RenewalReminderDate;

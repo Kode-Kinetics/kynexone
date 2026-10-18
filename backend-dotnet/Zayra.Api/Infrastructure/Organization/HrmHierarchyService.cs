@@ -18,11 +18,16 @@ public class HrmHierarchyService : IHrmHierarchyService
     }
 
     public async Task<IReadOnlyList<OrgChartNodeDto>> GetOrgChartAsync(
-        Guid tenantId, int? rootEmployeeId, int maxDepth, CancellationToken ct)
+        Guid tenantId, int? rootEmployeeId, int maxDepth, CancellationToken ct,
+        IReadOnlyCollection<int>? visibleEmployeeIds = null)
     {
-        var employees = await _db.Employees
+        var query = _db.Employees
             .AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == EmployeeStatuses.Active)
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == EmployeeStatuses.Active);
+        if (visibleEmployeeIds is not null)
+            query = query.Where(e => visibleEmployeeIds.Contains(e.Id));
+
+        var employees = await query
             .Select(e => new
             {
                 e.Id,

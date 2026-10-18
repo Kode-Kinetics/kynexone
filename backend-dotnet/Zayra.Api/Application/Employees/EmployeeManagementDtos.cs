@@ -664,9 +664,10 @@ public record EmployeeDocumentDto
     public string Notes { get; init; } = string.Empty;
 
     public static bool IsSensitiveCategory(string? category) =>
-        category is not null
-        && (category.Equals("identity", StringComparison.OrdinalIgnoreCase)
-            || category.Equals("payroll", StringComparison.OrdinalIgnoreCase));
+        EmployeeDocumentSensitivity.IsSensitive(documentType: null, category);
+
+    public static bool IsSensitiveDocument(string? documentType, string? category) =>
+        EmployeeDocumentSensitivity.IsSensitive(documentType, category);
 
     /// <summary>
     /// Identity and payroll documents remain visible as workflow records without exposing their
@@ -674,7 +675,7 @@ public record EmployeeDocumentDto
     /// </summary>
     public static EmployeeDocumentDto Project(EmployeeDocument d, bool includeSensitive = true)
     {
-        var showProtectedMetadata = includeSensitive || !IsSensitiveCategory(d.DocumentCategory);
+        var showProtectedMetadata = includeSensitive || !IsSensitiveDocument(d.DocumentType, d.DocumentCategory);
         return new()
         {
             Id                   = d.Id,
@@ -698,6 +699,65 @@ public record EmployeeDocumentDto
             Notes                = showProtectedMetadata ? d.Notes : string.Empty,
         };
     }
+}
+
+/// <summary>
+/// Server-owned sensitivity classification for employee documents. Known identity/payroll document
+/// types override a missing or misleading client category, so legacy rows and today's category-free
+/// Passport upload payload fail closed. Normalization is case-, spacing-, punctuation-, and alias-insensitive.
+/// </summary>
+public static class EmployeeDocumentSensitivity
+{
+    public const string Identity = "Identity";
+    public const string Payroll = "Payroll";
+
+    private static readonly HashSet<string> IdentityCategories = new(StringComparer.Ordinal)
+    {
+        "identity", "identitydocument", "identitydocuments", "identification", "personalidentity",
+    };
+
+    private static readonly HashSet<string> PayrollCategories = new(StringComparer.Ordinal)
+    {
+        "payroll", "payrolldocument", "payrolldocuments", "payrollandbank", "salaryandpayroll",
+    };
+
+    private static readonly HashSet<string> IdentityDocumentTypes = new(StringComparer.Ordinal)
+    {
+        "passport", "nationalid", "nationalidentity", "iqama", "residencepermit", "residencypermit",
+        "visa", "workpermit", "muqeem", "gosi", "gosicertificate", "qiwa", "qiwacontract",
+        "emiratesid", "laborcard", "labourcard", "visafile", "qid", "civilid", "residencyid",
+        "residencenumber", "residencynumber",
+    };
+
+    private static readonly HashSet<string> PayrollDocumentTypes = new(StringComparer.Ordinal)
+    {
+        "bankletter", "bankstatement", "iban", "wps", "wpsbankdetails", "payslip",
+        "payslipstatement", "salarycertificate", "payroll",
+    };
+
+    public static bool IsSensitive(string? documentType, string? category) =>
+        CanonicalSensitiveCategory(documentType, category) is not null;
+
+    public static string CanonicalCategory(string? documentType, string? category) =>
+        CanonicalSensitiveCategory(documentType, category)
+        ?? (string.IsNullOrWhiteSpace(category) ? string.Empty : category.Trim());
+
+    private static string? CanonicalSensitiveCategory(string? documentType, string? category)
+    {
+        var typeKey = Normalize(documentType);
+        if (IdentityDocumentTypes.Contains(typeKey)) return Identity;
+        if (PayrollDocumentTypes.Contains(typeKey)) return Payroll;
+
+        var categoryKey = Normalize(category);
+        if (IdentityCategories.Contains(categoryKey)) return Identity;
+        if (PayrollCategories.Contains(categoryKey)) return Payroll;
+        return null;
+    }
+
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 }
 
 /// <summary>
