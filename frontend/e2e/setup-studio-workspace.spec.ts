@@ -1552,7 +1552,7 @@ test('restricted_unknown_or_disabled_destination_never_mounts_editor', async ({ 
   }
 });
 
-test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', async ({ page }) => {
+test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', async ({ browser, page }) => {
   let allowed = true;
   const { reads } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
@@ -1567,7 +1567,8 @@ test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', 
   await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
 
-  const adminPage = await page.context().newPage();
+  const adminContext = await browser.newContext();
+  const adminPage = await adminContext.newPage();
   await adminPage.exposeFunction('revokeFixtureAccess', () => { allowed = false; });
   await adminPage.setContent('<button type="button" onclick="window.revokeFixtureAccess()">Revoke setup access</button>');
   await adminPage.getByRole('button', { name: 'Revoke setup access', exact: true }).click();
@@ -1581,7 +1582,7 @@ test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', 
   await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
   await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
-  await adminPage.close();
+  await adminContext.close();
 });
 
 test('protected_403_revalidates_authoritative_permissions_and_unmounts_editor', async ({ page }) => {
@@ -1645,6 +1646,115 @@ test('stale_authorization_refresh_cannot_restore_revoked_permissions', async ({ 
   await page.waitForTimeout(300);
   await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+});
+
+test('public_auth_routes_ignore_focus_and_visibility_revalidation', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let authReads = 0;
+  await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'stale-public-route-token'));
+  await page.route('**/api/auth/me', async route => {
+    authReads += 1;
+    await route.fulfill({ json: { id: 'unexpected' } });
+  });
+
+  for (const route of ['/login', '/welcome']) {
+    await page.goto(route);
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(250);
+  }
+
+  expect(authReads).toBe(0);
+  await context.close();
+});
+
+test('transient_background_auth_failure_preserves_dirty_editor_and_blocks_actions_until_success', async ({ page }) => {
+  let authState: 'allowed' | 'unavailable' = 'allowed';
+  const { writes } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
+    if (authState === 'unavailable') {
+      await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
+      return true;
+    }
+    await route.fulfill({ json: {
+      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: ['Admin'],
+      permissions: ['organization.read', 'organization.write', 'leave.read'], accountType: 'Group', isGroupScope: true,
+      companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+    } });
+    return true;
+  } });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+  const annualDays = dialog.getByLabel('Annual Days', { exact: true });
+  await annualDays.fill('31');
+
+  authState = 'unavailable';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+  const status = page.getByTestId('authorization-revalidation-status');
+  await expect(status).toContainText('Authorization could not be revalidated');
+  await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(annualDays).toHaveValue('31');
+  await expect(page.getByTestId('setup-authorization-boundary')).toHaveAttribute('inert', '');
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click({ force: true });
+  await expect(dialog).toBeVisible();
+  await expect(annualDays).toHaveValue('31');
+  expect(writes.filter(path => path === '/api/leave/policies/existing-policy')).toEqual([]);
+
+  authState = 'allowed';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(status).toHaveCount(0);
+  await expect(page.getByTestId('setup-authorization-boundary')).not.toHaveAttribute('inert', '');
+  await expect(annualDays).toHaveValue('31');
+});
+
+test('background_401_clears_the_established_session', async ({ page }) => {
+  let revoke = false;
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me' && revoke) {
+      await route.fulfill({ status: 401, json: { message: 'Session revoked.' } });
+      return true;
+    }
+    if (path === '/api/auth/refresh') {
+      await route.fulfill({ status: 401, json: { message: 'Session revoked.' } });
+      return true;
+    }
+    return false;
+  } });
+  revoke = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+  await expect(page).toHaveURL(/\/login/);
+});
+
+test('onboarding_checklists_mount_the_tracked_canonical_editor_and_api', async ({ page }) => {
+  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboarding', intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/recruitment/onboarding/checklists') {
+      await route.fulfill({ json: [{
+        id: 'new-hire-checklist', code: 'NEW_HIRE', name: 'New hire preparation', description: 'Canonical onboarding template',
+        applicableTo: 'All', departmentName: '', isActive: true,
+      }] });
+      return true;
+    }
+    if (path === '/api/recruitment/onboarding/checklists/new-hire-checklist/template-tasks') {
+      await route.fulfill({ json: [] });
+      return true;
+    }
+    return false;
+  } });
+
+  await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
+  await expect(page.getByText('Checklist Setup', { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('Code', { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toBeVisible();
+  await expect.poll(() => reads.filter(path => path === '/api/recruitment/onboarding/checklists').length).toBeGreaterThan(0);
+  await expect.poll(() => reads.filter(path => path === '/api/recruitment/onboarding/checklists/new-hire-checklist/template-tasks').length).toBeGreaterThan(0);
 });
 
 test('tenant_setting_says_applies_to_all_companies', async ({ page }) => {

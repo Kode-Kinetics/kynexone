@@ -154,3 +154,44 @@ npx tsc --noEmit
 - Staged-index TypeScript still stops only at the previously documented unrelated `unit/employeeAccess.spec.ts` / committed `employeeAccess` export mismatch; live-worktree TypeScript is green.
 
 Fix-round-2 commit hash is reported in the controller handoff.
+
+## Fix round 3
+
+Review found three remaining authorization-lifecycle gaps and one masked editor-composition gap. Background authorization refresh now applies the same public-route and token eligibility rule as initial session loading, so focus/visibility events on `/login`, `/welcome`, or a tokenless page do not call `/api/auth/me`. An established session now has a separate `checking`/`unavailable` refresh state: network and 5xx failures preserve the current user, mounted editor, and unsaved form values while making the Setup surface inert and visibly pausing mutation/navigation. A later authoritative success restores interaction; a definitive 401/403 still clears the session. Existing generation ordering continues to make the newest identity response authoritative.
+
+The Onboarding checklists destination now mounts the tracked recruitment `OnboardingTab` in a configuration-only mode. That mode opens the canonical Checklist Setup and Template Tasks form immediately, reads and writes through the existing `/api/recruitment/onboarding/checklists` and `/template-tasks` endpoints, suppresses employee-task operations, and reports authored form state to the Configuration navigation guard. It does not depend on the untracked `OnboardingPolicyWorkspace.tsx` user file.
+
+The cross-session permission-loss fixture now uses `browser.newContext()` for the independent administrator actor.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'public_auth_routes|transient_background_auth_failure|background_401|onboarding_checklists_mount|permission_loss_in_another_session'
+```
+
+- Public routes made two unexpected `/api/auth/me` requests.
+- A transient 500 removed the established Setup screen instead of exposing a preserved-but-blocked editor.
+- The 401 path did not satisfy the new explicit session-clear contract fixture.
+- The clean-index onboarding run could not find `Checklist Setup`; the dirty worktree's untracked onboarding workspace had masked the missing tracked composition.
+
+Clean-index onboarding RED was captured independently from a `git checkout-index` export on port 5298: 0 passed, 1 failed because `Checklist Setup` was absent.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'public_auth_routes|transient_background_auth_failure|background_401|onboarding_checklists_mount|permission_loss_in_another_session|stale_authorization_refresh'
+npx playwright test -c playwright.unit.config.ts unit/authLoadState.spec.ts
+npx tsc --noEmit
+```
+
+- Live focused browser contracts: 6 passed.
+- Auth load-state units: 9 passed.
+- Live TypeScript: exit 0, no diagnostics.
+
+A fresh `git checkout-index` export served on port 5300 passed the complete Task 4 desktop/mobile acceptance set: 53 passed and 3 intentional project-specific skips. This includes canonical PUT, failed-save retention, record identity, English/Arabic axe, navigation/focus/scroll/touch targets, public-route suppression, transient failure preservation/action blocking/recovery, 401 clearing, independent-context revocation, stale-response ordering, and canonical onboarding API/editor coverage.
+
+Index-only TypeScript reaches only the previously documented unrelated committed-index mismatch in `unit/employeeAccess.spec.ts` (`workEmailDomainProblem` is not exported by the committed `employeeAccess` source). The live worktree TypeScript gate is green because the user-owned employee-access source and test changes remain together and unstaged.
+
+The temporary clean-index development server was stopped after evidence capture. Fix-round-3 commit hash is reported in the controller handoff.

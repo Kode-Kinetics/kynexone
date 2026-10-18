@@ -2427,18 +2427,22 @@ function OffersTab() {
 
 // ── Onboarding Tab ────────────────────────────────────────────────────────────
 
-function OnboardingTab() {
+export function OnboardingTab({ configurationOnly = false, onDirtyChange }: { configurationOnly?: boolean; onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState('');
   const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [showTemplate, setShowTemplate] = useState(false);
+  const [showTemplate, setShowTemplate] = useState(configurationOnly);
   const [checklistForm, setChecklistForm] = useState({ code: '', name: '', description: '', applicableTo: 'All', departmentName: '' });
   const [templateForm, setTemplateForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true,
   });
+  useEffect(() => {
+    onDirtyChange?.(!!(checklistForm.code || checklistForm.name || checklistForm.description || checklistForm.departmentName || checklistForm.applicableTo !== 'All' || templateForm.taskTitle || templateForm.taskDescription || templateForm.assignedToName || templateForm.category !== 'General' || templateForm.dueOffsetDays !== 0 || templateForm.orderIndex !== 0 || templateForm.isMandatory !== true));
+    return () => onDirtyChange?.(false);
+  }, [checklistForm, templateForm, onDirtyChange]);
   const [generateForm, setGenerateForm] = useState({ employeeId: '', applicationId: '', startDate: '' });
   const [taskForm, setTaskForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false,
@@ -2458,7 +2462,7 @@ function OnboardingTab() {
     try { setSummary(await onboardingApi.summary()); } catch {}
   };
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { if (!configurationOnly) load(); }, [statusFilter, configurationOnly]);
 
   const loadChecklists = async () => {
     try {
@@ -2649,7 +2653,7 @@ function OnboardingTab() {
                   ))}
                 </div>
               )}
-              <div className="grid grid-cols-3 gap-2">
+              {!configurationOnly && <><div className="grid grid-cols-3 gap-2">
                 <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
                   value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
                 <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
@@ -2660,14 +2664,14 @@ function OnboardingTab() {
               <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
                 className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
                 Generate Tasks From Checklist
-              </button>
+              </button></>}
             </div>
           </div>
         )}
         {taskError && <p className="mt-3 text-xs text-rose-500">{taskError}</p>}
       </div>
 
-      <div className="flex items-center gap-3">
+      {!configurationOnly && <><div className="flex items-center gap-3">
         <select title="Filter by task status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
           <option value="">All Statuses</option>
@@ -2762,7 +2766,7 @@ function OnboardingTab() {
           ))}
         </div>
       )}
-      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} /></>}
     </div>
   );
 }

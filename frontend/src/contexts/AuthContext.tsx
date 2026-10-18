@@ -18,6 +18,7 @@ export interface MfaEnrollmentPendingState {
 }
 
 export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll';
+export type AuthorizationRefreshStatus = 'idle' | 'checking' | 'unavailable';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -30,6 +31,10 @@ interface AuthContextValue {
   authError: AuthLoadError | null;
   /** Re-run the session check (`/me`) after an authError. */
   retryAuth: () => Promise<void>;
+  /** State of an authoritative check made after an already-established session. */
+  authorizationRefreshStatus: AuthorizationRefreshStatus;
+  /** Retry a failed background authorization check without discarding the current screen. */
+  retryAuthorization: () => Promise<void>;
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
@@ -45,6 +50,13 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const PUBLIC_AUTH_PATHS = new Set(['/login', '/reset-password', '/accept-invitation', '/welcome']);
+
+function canCheckAuthenticatedUser(): boolean {
+  return typeof window !== 'undefined'
+    && !PUBLIC_AUTH_PATHS.has(window.location.pathname)
+    && Boolean(localStorage.getItem('zayra_access_token'));
+}
 
 /** HR's live reset code may be reported on the reply or on the user; keep it on the user either way. */
 function withResetNotice(res: AuthResponse): AuthUser {
@@ -58,12 +70,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
   const [authError, setAuthError] = useState<AuthLoadError | null>(null);
+  const [authorizationRefreshStatus, setAuthorizationRefreshStatus] = useState<AuthorizationRefreshStatus>('idle');
   const authLoadGeneration = useRef(0);
 
   // Ask the server who the user is. Only a 401 ends the session (lib/authLoadState.ts): a network
   // error or a 5xx keeps the tokens and sets authError, so an outage never signs anyone out.
-  const loadUser = useCallback(async () => {
+  const checkUser = useCallback(async (background: boolean) => {
+    if (!canCheckAuthenticatedUser()) {
+      if (background) setAuthorizationRefreshStatus('idle');
+      return;
+    }
     const generation = ++authLoadGeneration.current;
+    if (background) setAuthorizationRefreshStatus('checking');
     let next;
     try {
       next = afterMeSuccess(await authApi.me());
@@ -73,18 +91,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // A slower, older identity response must never restore permissions that a newer response
     // has already removed (for example, after another administrator revokes this session's role).
     if (generation !== authLoadGeneration.current) return;
-    if (next.clearSession) clearSessionKeepingLocale();
-    setUser(next.user);
-    setAuthError(next.authError);
-  }, []);
-
-  useEffect(() => {
-    if (['/login', '/reset-password', '/accept-invitation', '/welcome'].includes(window.location.pathname)) {
-      setIsLoading(false);
+    if (next.clearSession) {
+      clearSessionKeepingLocale();
+      setUser(null);
+      setAuthError(null);
+      setAuthorizationRefreshStatus('idle');
       return;
     }
-    const token = localStorage.getItem('zayra_access_token');
-    if (!token) {
+    if (background && next.authError) {
+      // A transient background failure says nothing about the already-established identity.
+      // Keep its mounted forms and authored values, but freeze privileged interaction until a
+      // later authoritative response confirms the user's current permissions.
+      setAuthError(next.authError);
+      setAuthorizationRefreshStatus('unavailable');
+      return;
+    }
+    setUser(next.user);
+    setAuthError(next.authError);
+    setAuthorizationRefreshStatus('idle');
+  }, []);
+
+  const loadUser = useCallback(() => checkUser(false), [checkUser]);
+  const refreshAuthorization = useCallback(() => checkUser(true), [checkUser]);
+
+  useEffect(() => {
+    if (!canCheckAuthenticatedUser()) {
       setIsLoading(false);
       return;
     }
@@ -96,28 +127,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // protected-request 403s and same-origin role-management flows request the same authoritative
     // check. Coalescing focus + visibility avoids duplicate /me traffic when a tab is restored.
     let refreshTimer: number | undefined;
-    const refreshAuthorization = () => {
+    const scheduleAuthorizationRefresh = () => {
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
         refreshTimer = undefined;
-        void loadUser();
+        if (canCheckAuthenticatedUser()) void refreshAuthorization();
       }, 150);
     };
     const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') refreshAuthorization();
+      if (document.visibilityState === 'visible') scheduleAuthorizationRefresh();
     };
-    window.addEventListener('focus', refreshAuthorization);
+    window.addEventListener('focus', scheduleAuthorizationRefresh);
     document.addEventListener('visibilitychange', refreshWhenVisible);
-    window.addEventListener('kynexone:auth-changed', refreshAuthorization);
-    window.addEventListener('kynexone:authorization-stale', refreshAuthorization);
+    window.addEventListener('kynexone:auth-changed', scheduleAuthorizationRefresh);
+    window.addEventListener('kynexone:authorization-stale', scheduleAuthorizationRefresh);
     return () => {
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
-      window.removeEventListener('focus', refreshAuthorization);
+      window.removeEventListener('focus', scheduleAuthorizationRefresh);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
-      window.removeEventListener('kynexone:auth-changed', refreshAuthorization);
-      window.removeEventListener('kynexone:authorization-stale', refreshAuthorization);
+      window.removeEventListener('kynexone:auth-changed', scheduleAuthorizationRefresh);
+      window.removeEventListener('kynexone:authorization-stale', scheduleAuthorizationRefresh);
     };
-  }, [loadUser]);
+  }, [refreshAuthorization]);
 
   // The offline screen shows its own "Retrying…" state, so a retry does not flip isLoading (which
   // would swap that screen for a bare spinner and back).
@@ -143,6 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
+    setAuthorizationRefreshStatus('idle');
     setUser(withResetNotice(res));
     return 'authenticated';
   }, []);
@@ -156,6 +188,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
+    setAuthorizationRefreshStatus('idle');
     setUser(withResetNotice(res));
   }, [mfaPending]);
 
@@ -168,6 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearSessionKeepingLocale();
     authLoadGeneration.current += 1;
     setUser(null);
+    setAuthorizationRefreshStatus('idle');
     setMfaPending(null);
     setMfaEnrollmentPending({ enrollmentToken, expiresInSeconds });
   }, []);
@@ -185,6 +219,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authLoadGeneration.current += 1;
     setUser(null);
     setAuthError(null);
+    setAuthorizationRefreshStatus('idle');
     setMfaPending(null);
     setMfaEnrollmentPending(null);
   }, []);
@@ -200,7 +235,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, authorizationRefreshStatus, retryAuthorization: refreshAuthorization, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

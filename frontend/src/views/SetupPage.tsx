@@ -85,6 +85,7 @@ import Link from 'next/link';
 const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
 const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
 const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
+const OnboardingChecklistSettings = dynamic(() => import('./RecruitmentPage').then(module => module.OnboardingTab));
 
 type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -2301,7 +2302,7 @@ export function SetupPage() {
   const t = useT();
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
-  const { hasPermission, hasRole } = useAuth();
+  const { hasPermission, hasRole, authorizationRefreshStatus, retryAuthorization } = useAuth();
   const { accountType, isGroupScope, companies: authorizedCompanies, setSelectedCompany } = useCompany();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
@@ -2450,9 +2451,45 @@ export function SetupPage() {
     }
   };
   const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
+  const authorizationBlocked = authorizationRefreshStatus !== 'idle';
 
   return (
-    <div className="setup-page space-y-4">
+    <>
+      {authorizationBlocked && <section
+        data-testid="authorization-revalidation-status"
+        role="status"
+        aria-live="polite"
+        className="fixed inset-x-4 top-4 z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
+      >
+        <p className="font-semibold">
+          {authorizationRefreshStatus === 'checking'
+            ? t('Revalidating your access…')
+            : t('Authorization could not be revalidated.')}
+        </p>
+        <p className="mt-1">
+          {authorizationRefreshStatus === 'checking'
+            ? t('Changes and navigation are temporarily paused.')
+            : t('Your unsaved changes are preserved. Retry before continuing.')}
+        </p>
+        {authorizationRefreshStatus === 'unavailable' && <button type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
+      </section>}
+      <div
+        data-testid="setup-authorization-boundary"
+        inert={authorizationBlocked ? true : undefined}
+        aria-busy={authorizationRefreshStatus === 'checking'}
+        aria-disabled={authorizationBlocked || undefined}
+        onClickCapture={event => {
+          if (!authorizationBlocked) return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onSubmitCapture={event => {
+          if (!authorizationBlocked) return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      >
+      <div className="setup-page space-y-4">
       <header className="setup-page-header min-w-0">
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
@@ -2512,6 +2549,7 @@ export function SetupPage() {
               renderSettings={(id, onDirtyChange) => {
                 if (isSettingsTab(id)) return renderExistingSettings(id);
                 if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
+                if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingChecklistSettings configurationOnly onDirtyChange={onDirtyChange} />;
                 if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
                 if (id === 'leaveTypes') return <LeaveTypesTab onDirtyChange={onDirtyChange} />;
                 if (id === 'leavePolicies') return <PoliciesTab onDirtyChange={onDirtyChange} />;
@@ -2571,5 +2609,7 @@ export function SetupPage() {
         </section>
       )}
     </div>
+      </div>
+    </>
   );
 }
