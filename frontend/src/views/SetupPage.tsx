@@ -2296,7 +2296,7 @@ export function SetupPage() {
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole } = useAuth();
-  const { accountType, isGroupScope, companies: authorizedCompanies } = useCompany();
+  const { accountType, isGroupScope, companies: authorizedCompanies, setSelectedCompany } = useCompany();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
@@ -2329,6 +2329,9 @@ export function SetupPage() {
     authorizedCompanyIds: new Set(authorizedCompanies.map(company => company.id)),
     selectedCompanyId: authorizedCompany,
   });
+  const configurationScopeBlocked = setupPath.path === 'configuration' && setupPath.notice === 'unauthorized-company';
+  const configurationScopePending = setupPath.path === 'configuration' && setupPath.companyId !== null && setupPath.companyId !== authorizedCompany;
+  const configurationScopeUnavailable = configurationScopeBlocked || configurationScopePending;
 
   // Also follow links and browser navigation after the page has already mounted.
   useEffect(() => {
@@ -2337,6 +2340,12 @@ export function SetupPage() {
 
   useEffect(() => {
     const refreshCompanies = () => { if (canReadCompanies) companiesApi.listAll().then(setCompanies).catch(() => {}); };
+    if (configurationScopeUnavailable) {
+      setCompanies([]);
+      setGrades([]);
+      setCostCenters([]);
+      return;
+    }
     refreshCompanies();
     window.addEventListener('kynexone:companies-changed', refreshCompanies);
     if (canWrite) {
@@ -2344,7 +2353,7 @@ export function SetupPage() {
       costCentersApi.listAll().then(setCostCenters).catch(() => {});
     }
     return () => window.removeEventListener('kynexone:companies-changed', refreshCompanies);
-  }, [canReadCompanies, canWrite]);
+  }, [canReadCompanies, canWrite, configurationScopeUnavailable]);
 
   const selectTab = (tab: Tab) => {
     setActiveTab(tab);
@@ -2359,12 +2368,22 @@ export function SetupPage() {
     ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab)
     : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
-  const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration';
+  const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
   const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
   const starterScope = authorizedCompany ?? 'group';
   const setupPathHref = (path: SetupStudioPath) => {
     const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
     return `/setup?${next.toString()}`;
+  };
+  const recoverConfigurationScope = (companyId: string | null) => {
+    setSelectedCompany(companyId);
+    const next = serializeSetupPath({
+      ...setupPath,
+      companyId,
+      notice: undefined,
+      needsReplace: false,
+    }, new URLSearchParams(searchParams?.toString()));
+    router.replace(`/setup?${next.toString()}`, { scroll: false });
   };
   const selectSetupPath = (path: SetupStudioPath) => {
     if (path === setupPath.path) return;
@@ -2439,7 +2458,7 @@ export function SetupPage() {
 
       {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
 
-      {!isWorkspace && <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
+      {!isWorkspace && !configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
             const selected = selectedTab === id;
             return (
@@ -2466,11 +2485,20 @@ export function SetupPage() {
       {canWrite && (
         <>
           <section id="setup-aiSetup" aria-label={t('Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
+            {configurationScopeBlocked && <section role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10">
+              <h2 className="text-lg font-semibold text-amber-950 dark:text-amber-100">{t('Company access required')}</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-800 dark:text-amber-200">{t('This link names a company you cannot access. Configuration Center has not opened and no broader company scope was substituted.')}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {authorizedCompanies.map(company => <button key={company.id} type="button" className="btn-secondary" onClick={() => recoverConfigurationScope(company.id)}>{t('Use {company}', { company: company.name })}</button>)}
+                {isGroupScope && <button type="button" className="btn-secondary" onClick={() => recoverConfigurationScope(null)}>{t('Use all authorized companies')}</button>}
+              </div>
+            </section>}
+            {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
             {isStarter && <div onChangeCapture={event => {
               setEditorDirty(true);
               const target = event.target;
               if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} /></SetupPendingFilesState.Provider></div>}
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               confirmLeave={confirmLeave}

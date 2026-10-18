@@ -713,6 +713,55 @@ test.describe('path switch', () => {
     await expect(configuration).toBeFocused();
     expect(writes).toEqual([]);
   });
+
+  test('guided_return_to_configuration_preserves_saved_draft', async ({ page }) => {
+    const { writes } = await openGuidedSetup(page);
+    await page.evaluate(() => localStorage.setItem(
+      'kynexone-setup-draft:v1:tenant:reviewer:fixture-company',
+      JSON.stringify({ profile: { industry: 'Saved return-path services' } }),
+    ));
+    await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
+    await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+    await expect(page).toHaveURL(/path=configuration/);
+    expect(await page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company') ?? 'null');
+      return saved?.profile?.industry;
+    })).toBe('Saved return-path services');
+    expect(writes).toEqual([]);
+  });
+
+  test('guided_pending_file_blocks_return_to_configuration', async ({ page }) => {
+    const { writes } = await openGuidedSetup(page);
+    await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+    await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+    const picker = page.locator('input[type=file]');
+    await picker.setInputFiles({ name: 'pending-return-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Keep this return-path file.') });
+    const exit = page.getByRole('button', { name: 'Return to workspace', exact: true });
+    await exit.click();
+    const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+    await expect(dialog).toContainText('Selected files have not been uploaded');
+    await expect(page).toHaveURL(/path=guided/);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('pending-return-policy.txt');
+    await expect(exit).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+});
+
+test('forged_company_configuration_is_fail_closed_until_explicit_recovery', async ({ page }) => {
+  const { reads, writes } = await boot(page, { group: true });
+  reads.length = 0;
+  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=forged-company&area=leave&setting=leavePolicies');
+  await expect(page.getByRole('alert').getByRole('heading', { name: 'Company access required', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
+  await page.waitForTimeout(250);
+  expect(reads.filter(path => path === '/api/companies' || path.startsWith('/api/grades') || path.startsWith('/api/cost-centers') || path.startsWith('/api/leave/'))).toEqual([]);
+  await expect(page).toHaveURL(/companyId=forged-company/);
+  await page.getByRole('button', { name: 'Use Workspace Fixture LLC', exact: true }).click();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+  await expect(page).toHaveURL(/companyId=fixture-company/);
+  expect(writes).toEqual([]);
 });
 
 test('guided_setup_keeps_five_named_steps', async ({ page }) => {

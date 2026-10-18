@@ -78,7 +78,7 @@ const SETUP_STEPS = [
 ];
 const APPROVAL_MODELS = [['DepartmentHead', 'Department head, then HR'], ['SupervisorFirst', 'Supervisor, department head, then HR']];
 
-export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[]; }) {
+export function AiSetupAssistant({ companies = [], onReturnToWorkspace }: { companies?: CompanyDto[]; onReturnToWorkspace?: () => void; }) {
   // Release A: grade allowances and benefits are set in Benefits by grade, so the draft's legacy grade pay lines are
   // neither shown nor sent (the server would skip them and say so).
   const releaseA = useReleaseA();
@@ -497,6 +497,9 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
 
   return (
     <div className="setup-studio overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
+      {onReturnToWorkspace && <div className="flex justify-end border-b border-slate-200 px-5 py-3 dark:border-white/10">
+        <button type="button" className="btn-secondary" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>
+      </div>}
       <div className="grid lg:grid-cols-[200px_minmax(0,1fr)]">
         <aside className="setup-step-rail border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
           <nav aria-label="Company setup steps">

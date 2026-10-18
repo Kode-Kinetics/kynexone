@@ -42,13 +42,14 @@ export function useSetupCompanyQuery() {
       }
     }
     if (pathResolution.notice === 'unauthorized-company') {
-      const next = serializeSetupPath(pathResolution, new URLSearchParams(params?.toString()));
-      consumed.current = null;
+      // Keep the forged target visible in the URL so SetupPage can render an
+      // explicit recovery state. Silently removing it would broaden a failed
+      // company request into the all-company Configuration workspace.
+      consumed.current = requested;
       if (authorized !== null) {
         pendingClear.current = true;
         setSelectedCompany(null);
       }
-      router.replace(`/setup?${next.toString()}`, { scroll: false });
       return;
     }
     if (consumed.current !== requested) {
