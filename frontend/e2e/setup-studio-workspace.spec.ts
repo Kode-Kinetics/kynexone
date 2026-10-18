@@ -611,6 +611,195 @@ test('fallback_multiple_pre_setup_entries_restore_exact_url_and_history', async 
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Guard after remount');
 });
 
+// Owner-approved Guided Setup characterization. These tests intentionally use
+// the current draft schema, existing exits, and synthetic APIs only.
+const guidedPreview = {
+  configurationVersion: 1,
+  engine: 'Browser fixture',
+  notes: [],
+  draft: {
+    branches: [{ code: 'HQ', nameEn: 'Head Office', city: 'Dammam', isHeadOffice: true }],
+    departments: [], costCenters: [], designations: [], grades: [], gradePayComponents: [],
+    leaveTypes: [], shifts: [], payComponents: [], statutoryRules: [], leavePolicies: [], benefitPlans: [],
+    workingWeek: null, employeeIdRule: null, hrConfig: null, holidayCalendar: null,
+    attendancePolicy: null, overtimePolicy: null, localization: null,
+  },
+};
+
+async function openGuidedSetup(page: Page, options: Parameters<typeof boot>[1] = {}) {
+  const activity = await boot(page, options);
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
+  return activity;
+}
+
+async function seedCurrentGuidedDraft(page: Page, industry: string) {
+  await page.evaluate(value => {
+    localStorage.setItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company', JSON.stringify({
+      version: 1,
+      savedAt: '2026-10-18T00:00:00Z',
+      step: 0,
+      profile: {
+        countryCode: 'SA', currencyCode: 'SAR', industry: value, companySize: '51-200',
+        legalEntityName: 'Workspace Fixture LLC', sections: { entity: true },
+        configuration: { attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], policySources: [] },
+      },
+    }));
+  }, industry);
+  await page.reload();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue(industry);
+}
+
+test('guided_setup_keeps_five_named_steps', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page);
+  const steps = page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button');
+  await expect(steps).toHaveCount(5);
+  for (const [index, title] of ['Company details', 'Working week', 'People & pay', 'Grades & benefits', 'Review & create'].entries()) {
+    await expect(steps.nth(index)).toContainText(title);
+  }
+  expect(writes).toEqual([]);
+});
+
+test('guided_setup_keeps_company_scope_and_change_company', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page, { group: true });
+  await expect(page.getByText('Setting up Workspace Fixture LLC', { exact: true })).toBeVisible();
+  await expect(page.getByText('SAU · SAR · Protected company scope', { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Workspace Fixture LLC');
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveAttribute('readonly', '');
+  await page.getByRole('button', { name: 'Change company', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /Second Fixture LLC/ }).click();
+  await expect(page.getByText('Setting up Second Fixture LLC', { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
+  expect(writes).toEqual([]);
+});
+
+test('guided_setup_keeps_save_policy_and_cancel_controls', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page);
+  const save = page.getByRole('button', { name: 'Save for later', exact: true });
+  const library = page.getByRole('button', { name: 'Policy library / updates', exact: true });
+  const cancelSetup = page.getByRole('button', { name: 'Cancel setup', exact: true });
+  await expect(save).toBeVisible();
+  await expect(library).toBeVisible();
+  await expect(cancelSetup).toBeVisible();
+  await page.getByLabel(/^Industry/).fill('Guided regression services');
+  await save.click();
+  await expect(page.getByRole('status').filter({ hasText: 'Draft and preview edits saved' })).toBeVisible();
+  await cancelSetup.click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm', exact: true });
+  await expect(dialog).toContainText('Discard this setup draft');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Guided regression services');
+  await expect(cancelSetup).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
+test('guided_setup_keeps_policy_upload_entry', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page);
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  const uploadEntry = page.getByRole('button', { name: 'Upload document', exact: true });
+  await expect(uploadEntry).toBeVisible();
+  await uploadEntry.click();
+  await expect(page.locator('input[type=file]')).toBeAttached();
+  await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeDisabled();
+  expect(writes).toEqual([]);
+});
+
+test('guided_setup_continue_reaches_existing_review', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page);
+  await page.getByLabel(/^Industry/).fill('Guided regression services');
+  for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button').nth(4)).toHaveAttribute('aria-current', 'step');
+  await expect(page.getByRole('heading', { name: 'Choose what to include', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Apply .*item/ })).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('guided_setup_apply_remains_explicit', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page, { intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/setup-assistant/preview' && route.request().method() === 'POST') {
+      await route.fulfill({ json: guidedPreview });
+      return true;
+    }
+    if (path === '/api/setup-assistant/apply' && route.request().method() === 'POST') {
+      await route.fulfill({ json: { applied: { branches: 1 }, total: 1 } });
+      return true;
+    }
+    return false;
+  } });
+  await page.getByLabel(/^Industry/).fill('Guided regression services');
+  for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  expect(writes).toEqual([]);
+  await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Apply 1 item(s) to Workspace Fixture LLC', exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Your workspace changes only when you choose Apply.' })).toBeVisible();
+  expect(writes).toEqual(['/api/setup-assistant/preview']);
+  await page.getByRole('button', { name: 'Apply 1 item(s) to Workspace Fixture LLC', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Setup Applied', exact: true })).toBeVisible();
+  expect(writes).toEqual(['/api/setup-assistant/preview', '/api/setup-assistant/apply']);
+});
+
+test('guided_policy_library_cancel_preserves_values_and_focus', async ({ page }) => {
+  const { writes } = await boot(page);
+  await seedCurrentGuidedDraft(page, 'Retained guided services');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  const picker = page.locator('input[type=file]');
+  await picker.setInputFiles({ name: 'retained-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Retain this pending policy.') });
+  await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeEnabled();
+  const library = page.getByRole('button', { name: 'Policy library / updates', exact: true });
+  await library.click();
+  const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+  await expect(dialog).toContainText('Selected files have not been uploaded');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Retained guided services');
+  expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('retained-policy.txt');
+  await expect(library).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
+test('guided_policy_library_confirm_discards_once', async ({ page }) => {
+  const { writes } = await boot(page);
+  await seedCurrentGuidedDraft(page, 'Confirmed guided services');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  await page.locator('input[type=file]').setInputFiles({ name: 'departing-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Confirm one guarded departure.') });
+  await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+  await expect(dialog).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Policy library', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=policyLibrary/);
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('guided_unuploaded_file_blocks_existing_exit', async ({ page }) => {
+  const { writes } = await boot(page);
+  await seedCurrentGuidedDraft(page, 'Blocked exit services');
+  await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload document', exact: true }).click();
+  const picker = page.locator('input[type=file]');
+  await picker.setInputFiles({ name: 'blocked-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Block this existing exit.') });
+  await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeEnabled();
+  const exit = page.getByRole('button', { name: 'Return to workspace', exact: true });
+  await exit.click();
+  const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+  await expect(dialog).toContainText('Selected files have not been uploaded');
+  await expect(page).toHaveURL(/mode=starter/);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Blocked exit services');
+  expect(await picker.evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('blocked-policy.txt');
+  await expect(exit).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 test('legacy_draft_is_preserved_on_workspace_entry', async ({ page }) => {
   await boot(page, { area: 'onboarding' });
   await expect(page.locator('#setup-importOrganization')).toHaveCount(0);
