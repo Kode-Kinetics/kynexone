@@ -657,7 +657,7 @@ test('guided_setup_keeps_five_named_steps', async ({ page }) => {
   const steps = page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button');
   await expect(steps).toHaveCount(5);
   for (const [index, title] of ['Company details', 'Working week', 'People & pay', 'Grades & benefits', 'Review & create'].entries()) {
-    await expect(steps.nth(index)).toContainText(title);
+    await expect(steps.nth(index).getByText(title, { exact: true })).toHaveCount(1);
   }
   expect(writes).toEqual([]);
 });
@@ -673,6 +673,34 @@ test('guided_setup_keeps_company_scope_and_change_company', async ({ page }) => 
   await page.getByRole('button', { name: /Second Fixture LLC/ }).click();
   await expect(page.getByText('Setting up Second Fixture LLC', { exact: true })).toBeVisible();
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
+  expect(writes).toEqual([]);
+});
+
+test('guided_direct_entry_keeps_authorized_company_scope_and_recovers_draft', async ({ page }) => {
+  const { writes } = await boot(page, { group: true });
+  await page.addInitScript(() => localStorage.removeItem('kynexone-company:reviewer'));
+  await page.evaluate(() => {
+    localStorage.removeItem('kynexone-company:reviewer');
+    localStorage.setItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company', JSON.stringify({
+      version: 1,
+      savedAt: '2026-10-18T00:00:00Z',
+      step: 0,
+      profile: {
+        countryCode: 'SA', currencyCode: 'SAR', industry: 'Direct entry retained services', companySize: '51-200',
+        legalEntityName: 'Workspace Fixture LLC', sections: { entity: true },
+        configuration: { attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], policySources: [] },
+      },
+    }));
+  });
+  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=fixture-company');
+  await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
+  await expect(page.getByText('Setting up Workspace Fixture LLC', { exact: true })).toBeVisible();
+  await expect(page.getByText('SAU · SAR · Protected company scope', { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/^Industry/)).toHaveValue('Direct entry retained services');
+  await expect(page).toHaveURL(/mode=starter/);
+  await expect(page).toHaveURL(/companyId=fixture-company/);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('kynexone-company:reviewer'))).toBe('fixture-company');
+  await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
 
@@ -709,8 +737,43 @@ test('guided_setup_keeps_policy_upload_entry', async ({ page }) => {
 
 test('guided_setup_continue_reaches_existing_review', async ({ page }) => {
   const { writes } = await openGuidedSetup(page);
+  const controlFor = (label: string, selector: 'select' | 'input') =>
+    page.locator('label').filter({ has: page.getByText(label, { exact: true }) }).locator(selector);
   await page.getByLabel(/^Industry/).fill('Guided regression services');
-  for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'How does your team work?', exact: true })).toBeVisible();
+  await expect(controlFor('How do people work?', 'select')).toBeVisible();
+  await expect(page.getByRole('group', { name: 'How is time recorded?', exact: true })).toBeVisible();
+  await controlFor('How do people work?', 'select').selectOption('FieldRoster');
+  await controlFor('Weekend (days off)', 'select').selectOption('Sat-Sun');
+
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Set your people and pay preferences', exact: true })).toBeVisible();
+  await expect(controlFor('Workforce', 'select')).toBeVisible();
+  await expect(controlFor('Pay cycle', 'select')).toBeVisible();
+  await controlFor('Workforce', 'select').selectOption('Mixed');
+  await controlFor('Probation preference (months)', 'input').fill('6');
+  await controlFor('Notice preference (days)', 'input').fill('45');
+
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Configure your grades and benefits', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Salary grades', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Benefits', exact: true })).toBeVisible();
+  await controlFor('How would you like to build your grades?', 'select').selectOption('manual');
+  await page.getByRole('button', { name: 'Add salary grade', exact: true }).click();
+  await page.getByLabel(/^Grade code/).fill('M2');
+
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(controlFor('Workforce', 'select')).toHaveValue('Mixed');
+  await expect(controlFor('Probation preference (months)', 'input')).toHaveValue('6');
+  await expect(controlFor('Notice preference (days)', 'input')).toHaveValue('45');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(controlFor('How do people work?', 'select')).toHaveValue('FieldRoster');
+  await expect(controlFor('Weekend (days off)', 'select')).toHaveValue('Sat-Sun');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(page.getByLabel(/^Grade code/)).toHaveValue('M2');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button').nth(4)).toHaveAttribute('aria-current', 'step');
   await expect(page.getByRole('heading', { name: 'Choose what to include', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toBeVisible();
@@ -770,13 +833,20 @@ test('guided_policy_library_confirm_discards_once', async ({ page }) => {
   await page.getByRole('button', { name: 'Upload document', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'departing-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Confirm one guarded departure.') });
   await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeEnabled();
+  const historyLength = await page.evaluate(() => history.length);
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
   await expect(dialog).toHaveCount(1);
+  expect(await page.evaluate(() => history.length)).toBe(historyLength);
   await dialog.getByRole('button', { name: 'Discard and leave', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Policy library', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=policyLibrary/);
   await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
+  expect(await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('kynexone-setup-draft:v1:tenant:reviewer:fixture-company') ?? 'null');
+    return saved?.profile?.industry;
+  })).toBe('Confirmed guided services');
   expect(writes).toEqual([]);
 });
 
