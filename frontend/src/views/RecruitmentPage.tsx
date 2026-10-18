@@ -2574,7 +2574,7 @@ export function OnboardingTab({ configurationOnly = false, onDirtyChange }: { co
 
       <div className="surface p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <select title="Onboarding checklist" value={selectedChecklistId} onChange={e => setSelectedChecklistId(e.target.value)}
+          <select aria-label="Onboarding checklist" title="Onboarding checklist" value={selectedChecklistId} onChange={e => setSelectedChecklistId(e.target.value)}
             className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
             <option value="">Select checklist</option>
             {checklists.map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
@@ -2595,17 +2595,17 @@ export function OnboardingTab({ configurationOnly = false, onDirtyChange }: { co
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">Checklist Setup</p>
               <div className="grid grid-cols-2 gap-2">
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
+                <input aria-label="Checklist code" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
                   value={checklistForm.code} onChange={e => setChecklistForm(f => ({ ...f, code: e.target.value }))} />
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
+                <input aria-label="Checklist name" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
                   value={checklistForm.name} onChange={e => setChecklistForm(f => ({ ...f, name: e.target.value }))} />
-                <select title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <select aria-label="Applicable to" title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={checklistForm.applicableTo} onChange={e => setChecklistForm(f => ({ ...f, applicableTo: e.target.value }))}>
                   {['All', 'ByDepartment', 'ByRole'].map(v => <option key={v}>{v}</option>)}
                 </select>
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
+                <input aria-label="Department" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
                   value={checklistForm.departmentName} onChange={e => setChecklistForm(f => ({ ...f, departmentName: e.target.value }))} />
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                <input aria-label="Checklist description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
                   value={checklistForm.description} onChange={e => setChecklistForm(f => ({ ...f, description: e.target.value }))} />
               </div>
               <button type="button" onClick={createChecklist} disabled={templateSaving}
@@ -2617,19 +2617,19 @@ export function OnboardingTab({ configurationOnly = false, onDirtyChange }: { co
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">Template Tasks</p>
               <div className="grid grid-cols-2 gap-2">
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
+                <input aria-label="Task title" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
                   value={templateForm.taskTitle} onChange={e => setTemplateForm(f => ({ ...f, taskTitle: e.target.value }))} />
-                <select title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <select aria-label="Template category" title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.category} onChange={e => setTemplateForm(f => ({ ...f, category: e.target.value }))}>
                   {['General', 'Document', 'IT', 'Training', 'Policy', 'Access'].map(c => <option key={c}>{c}</option>)}
                 </select>
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
+                <input aria-label="Owner" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
                   value={templateForm.assignedToName} onChange={e => setTemplateForm(f => ({ ...f, assignedToName: e.target.value }))} />
-                <input type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <input aria-label="Due offset days" type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.dueOffsetDays} onChange={e => setTemplateForm(f => ({ ...f, dueOffsetDays: Number(e.target.value) }))} />
-                <input type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <input aria-label="Order" type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.orderIndex} onChange={e => setTemplateForm(f => ({ ...f, orderIndex: Number(e.target.value) }))} />
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                <input aria-label="Task description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
                   value={templateForm.taskDescription} onChange={e => setTemplateForm(f => ({ ...f, taskDescription: e.target.value }))} />
               </div>
               <div className="flex flex-wrap items-center gap-2">

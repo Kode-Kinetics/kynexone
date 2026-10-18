@@ -195,3 +195,37 @@ A fresh `git checkout-index` export served on port 5300 passed the complete Task
 Index-only TypeScript reaches only the previously documented unrelated committed-index mismatch in `unit/employeeAccess.spec.ts` (`workEmailDomainProblem` is not exported by the committed `employeeAccess` source). The live worktree TypeScript gate is green because the user-owned employee-access source and test changes remain together and unstaged.
 
 The temporary clean-index development server was stopped after evidence capture. Fix-round-3 commit hash is reported in the controller handoff.
+
+## Fix round 4
+
+The final accessibility remediation gives every input in the canonical onboarding checklist/template configuration form a durable accessible name: checklist selector, code, name, applicability, department, checklist description, task title, category, owner, due offset, order, and task description. English and Arabic focused-editor runs now exercise those names and report zero serious/critical Axe violations.
+
+Authorization recovery is now localized for Arabic across the checking title, unavailable title, paused-interaction explanation, preserved-draft explanation, and Retry action. When background authorization enters `checking`, focus moves from the active Setup control to the live status region; on a transient failure it moves to Retry; and after an authoritative successful retry it returns to the previously active control when that element remains connected and outside an inert subtree. This keeps keyboard users informed while preserving their authored value and work position.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'arabic_authorization_unavailable|authorization_revalidation_hands_focus|onboarding_configuration_editor_axe'
+```
+
+- 0/4 passed before production changes.
+- Arabic recovery copy remained English, the checking status did not receive focus, and both locale Axe runs exposed unnamed onboarding controls.
+
+GREEN evidence from a fresh `git checkout-index` export served on port 5301:
+
+```bash
+SETUP_EXPERIENCE_BASE_URL=http://127.0.0.1:5301 npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'arabic_authorization_unavailable|authorization_revalidation_hands_focus|onboarding_configuration_editor_axe'
+```
+
+- 4 passed in 14.8 seconds.
+
+The complete exact Task 4 desktop/mobile acceptance set, including the new Arabic, keyboard-focus, and bilingual Axe contracts, passed from the same index-only export: 61 passed and 3 intentional project-specific skips in 1.9 minutes.
+
+TypeScript evidence:
+
+- Live worktree `npx tsc --noEmit`: exit 0, no diagnostics.
+- Clean index `npx tsc --noEmit`: reaches only the previously documented unrelated committed-index mismatch in `unit/employeeAccess.spec.ts` (`workEmailDomainProblem` is not exported by the committed employee-access source).
+- The temporary clean-index development server was stopped after verification.
+
+Fix-round-4 commit hash is reported in the controller handoff.

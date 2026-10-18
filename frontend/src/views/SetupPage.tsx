@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { notifyApiError } from '../api/client';
@@ -2452,6 +2452,32 @@ export function SetupPage() {
   };
   const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
   const authorizationBlocked = authorizationRefreshStatus !== 'idle';
+  const authorizationStatusRef = useRef<HTMLElement | null>(null);
+  const authorizationRetryRef = useRef<HTMLButtonElement | null>(null);
+  const authorizationRestoreFocusRef = useRef<HTMLElement | null>(null);
+  const previousAuthorizationStatusRef = useRef(authorizationRefreshStatus);
+
+  useEffect(() => {
+    const previous = previousAuthorizationStatusRef.current;
+    previousAuthorizationStatusRef.current = authorizationRefreshStatus;
+    if (authorizationRefreshStatus !== 'idle') {
+      if (previous === 'idle') {
+        const active = document.activeElement;
+        authorizationRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
+      }
+      const frame = window.requestAnimationFrame(() => {
+        (authorizationRefreshStatus === 'unavailable' ? authorizationRetryRef.current : authorizationStatusRef.current)?.focus();
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (previous === 'idle') return;
+    const restore = authorizationRestoreFocusRef.current;
+    authorizationRestoreFocusRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      if (restore?.isConnected && !restore.closest('[inert]')) restore.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [authorizationRefreshStatus]);
 
   return (
     <>
@@ -2459,6 +2485,8 @@ export function SetupPage() {
         data-testid="authorization-revalidation-status"
         role="status"
         aria-live="polite"
+        tabIndex={-1}
+        ref={authorizationStatusRef}
         className="fixed inset-x-4 top-4 z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
       >
         <p className="font-semibold">
@@ -2471,7 +2499,7 @@ export function SetupPage() {
             ? t('Changes and navigation are temporarily paused.')
             : t('Your unsaved changes are preserved. Retry before continuing.')}
         </p>
-        {authorizationRefreshStatus === 'unavailable' && <button type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
+        {authorizationRefreshStatus === 'unavailable' && <button ref={authorizationRetryRef} type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
       </section>}
       <div
         data-testid="setup-authorization-boundary"

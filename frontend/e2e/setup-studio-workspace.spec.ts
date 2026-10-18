@@ -1671,6 +1671,23 @@ test('public_auth_routes_ignore_focus_and_visibility_revalidation', async ({ bro
   await context.close();
 });
 
+test('arabic_authorization_unavailable_status_and_retry_are_translated', async ({ page }) => {
+  let unavailable = false;
+  await boot(page, { arabic: true, area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me' || !unavailable) return false;
+    await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
+    return true;
+  } });
+
+  unavailable = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+  const status = page.getByTestId('authorization-revalidation-status');
+  await expect(status.getByText('تعذر إعادة التحقق من الصلاحيات.', { exact: true })).toBeVisible();
+  await expect(status.getByText('تم الاحتفاظ بتغييراتك غير المحفوظة. أعد المحاولة قبل المتابعة.', { exact: true })).toBeVisible();
+  await expect(status.getByRole('button', { name: 'إعادة التحقق من الصلاحيات', exact: true })).toBeVisible();
+});
+
 test('transient_background_auth_failure_preserves_dirty_editor_and_blocks_actions_until_success', async ({ page }) => {
   let authState: 'allowed' | 'unavailable' = 'allowed';
   const { writes } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
@@ -1709,6 +1726,36 @@ test('transient_background_auth_failure_preserves_dirty_editor_and_blocks_action
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(status).toHaveCount(0);
   await expect(page.getByTestId('setup-authorization-boundary')).not.toHaveAttribute('inert', '');
+  await expect(annualDays).toHaveValue('31');
+});
+
+test('authorization_revalidation_hands_focus_to_status_and_retry_then_restores_the_editor', async ({ page }) => {
+  let authState: 'allowed' | 'pending' = 'allowed';
+  let releasePending!: () => void;
+  const pendingResponse = new Promise<void>(resolve => { releasePending = resolve; });
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me' || authState === 'allowed') return false;
+    await pendingResponse;
+    await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
+    return true;
+  } });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const annualDays = page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true }).getByLabel('Annual Days', { exact: true });
+  await annualDays.fill('31');
+  await annualDays.focus();
+
+  authState = 'pending';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const status = page.getByTestId('authorization-revalidation-status');
+  await expect(status).toBeFocused();
+  releasePending();
+  const retry = status.getByRole('button', { name: 'Retry authorization', exact: true });
+  await expect(retry).toBeFocused();
+
+  authState = 'allowed';
+  await page.keyboard.press('Enter');
+  await expect(status).toHaveCount(0);
+  await expect(annualDays).toBeFocused();
   await expect(annualDays).toHaveValue('31');
 });
 
@@ -1756,6 +1803,32 @@ test('onboarding_checklists_mount_the_tracked_canonical_editor_and_api', async (
   await expect.poll(() => reads.filter(path => path === '/api/recruitment/onboarding/checklists').length).toBeGreaterThan(0);
   await expect.poll(() => reads.filter(path => path === '/api/recruitment/onboarding/checklists/new-hire-checklist/template-tasks').length).toBeGreaterThan(0);
 });
+
+for (const locale of [{ name: 'en', arabic: false }, { name: 'ar', arabic: true }]) {
+  test(`onboarding_configuration_editor_axe_${locale.name}`, async ({ page }) => {
+    await boot(page, { arabic: locale.arabic, area: 'onboarding', setting: 'onboarding', intercept: async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/recruitment/onboarding/checklists') {
+        await route.fulfill({ json: [{
+          id: 'new-hire-checklist', code: 'NEW_HIRE', name: 'New hire preparation', description: 'Canonical onboarding template',
+          applicableTo: 'All', departmentName: '', isActive: true,
+        }] });
+        return true;
+      }
+      if (path === '/api/recruitment/onboarding/checklists/new-hire-checklist/template-tasks') {
+        await route.fulfill({ json: [] });
+        return true;
+      }
+      return false;
+    } });
+
+    for (const label of ['Onboarding checklist', 'Checklist code', 'Checklist name', 'Applicable to', 'Department', 'Checklist description', 'Task title', 'Template category', 'Owner', 'Due offset days', 'Order', 'Task description']) {
+      await expect(page.getByLabel(label, { exact: true })).toBeVisible();
+    }
+    const accessibility = await new AxeBuilder({ page }).include('[data-testid="setup-focused-workspace"]').analyze();
+    expect(accessibility.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
+  });
+}
 
 test('tenant_setting_says_applies_to_all_companies', async ({ page }) => {
   await boot(page, { area: 'organization', setting: 'departments' });
