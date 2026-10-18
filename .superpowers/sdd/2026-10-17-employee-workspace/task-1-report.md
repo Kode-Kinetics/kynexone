@@ -1,0 +1,108 @@
+# Task 1 report: server-authoritative Employee workspace permissions
+
+## Status
+
+COMPLETE for Task 1. The focused authorization suite and affected adjacent suites are green with no skipped cases. The full backend suite was stopped cleanly at the requested 20-minute cap, so it remains incomplete evidence for the final branch gate.
+
+## Commits
+
+- Implementation: `07e0c0c9` (`fix(employees): enforce workspace permissions`)
+
+## TDD evidence
+
+### RED: permission matrix
+
+Command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests" --no-restore
+```
+
+Result: FAILED as expected — 18 failed, 31 passed, 0 skipped, 49 total. Failures proved missing explicit read/write/import-template gates, missing conjunctive raw-download authorization, and exposed sensitive document metadata.
+
+### RED: direct document-metadata masking
+
+After adding the metadata assertion and temporarily retaining the old controller projection, command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests.SensitiveRead_WithoutSensitivePermission_IsMasked" --no-restore
+```
+
+Result: FAILED as expected — the sensitive passport filename was returned instead of an empty masked value.
+
+### GREEN: focused Task 1 suite
+
+Command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests" --no-restore
+```
+
+Result: PASSED — 50 passed, 0 failed, 0 skipped.
+
+### GREEN: required adjacent suites
+
+Command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests|FullyQualifiedName~EmployeeAuthzRegressionTests|FullyQualifiedName~SensitiveFieldMaskingTests|FullyQualifiedName~EmployeeBulkActionTests|FullyQualifiedName~EmployeeAccessTests|FullyQualifiedName~EmployeeCompletionHttpTests"
+```
+
+Result: PASSED — 180 passed, 0 failed, 0 skipped in 18 seconds.
+
+### Full backend suite and reconciliation
+
+Command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore
+```
+
+Result: INCOMPLETE — cancelled cleanly after 20 minutes while the test host remained CPU-active. Before cancellation it exposed two failures:
+
+1. `DocumentStorageSecurityTests.EmployeeDownload_UsesProviderNeutralBytes_WhenResolvePathIsUnsupported` lacked the newly required `employees.read` and `employees.documents` fixture claims.
+2. `LegacyRoleGateBypassSweepTests.EveryRoleGateBypass_IsReviewed_AndNoNewOneAppears` showed that the `HR Director` import-template allow-list entry must remain because that role legitimately has `employees.bulk_import`.
+
+Both were corrected. Exact reconciliation command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~DocumentStorageSecurityTests.EmployeeDownload_UsesProviderNeutralBytes_WhenResolvePathIsUnsupported|FullyQualifiedName~LegacyRoleGateBypassSweepTests.EveryRoleGateBypass_IsReviewed_AndNoNewOneAppears"
+```
+
+Result: PASSED — 2 passed, 0 failed, 0 skipped.
+
+Final combined affected gate:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests|FullyQualifiedName~EmployeeAuthzRegressionTests|FullyQualifiedName~SensitiveFieldMaskingTests|FullyQualifiedName~EmployeeBulkActionTests|FullyQualifiedName~EmployeeAccessTests|FullyQualifiedName~EmployeeCompletionHttpTests|FullyQualifiedName~DocumentStorageSecurityTests|FullyQualifiedName~LegacyRoleGateBypassSweepTests"
+```
+
+Result: PASSED — 190 passed, 0 failed, 0 skipped in 22 seconds.
+
+## Changed files and hunks
+
+- `backend-dotnet/Zayra.Api/Controllers/EmployeesController.cs`
+  - Added explicit `employees.read` gates to list/archive/detail/catalog/org-chart/reporting-line/hierarchy/workflow-approver/document-metadata/history/readiness reads.
+  - Added `employees.bulk_import` to import-template and `employees.write` to update.
+  - Enforced raw download imperatively as `employees.read` AND `employees.documents`, with `employees.sensitive` also required for Identity or Payroll categories.
+  - Passed the effective sensitive permission into every document DTO projection used by employee/draft document responses.
+- `backend-dotnet/Zayra.Api/Application/Employees/EmployeeManagementDtos.cs`
+  - Made sensitive Identity/Payroll document projection permission-aware and masked protected metadata without removing workflow/status/category identity.
+  - Propagated employee-detail `includeSensitive` into document projection.
+- `backend-dotnet/Zayra.Api.Tests/Security/EmployeeWorkspaceAuthorizationTests.cs`
+  - Added the required named, table-driven endpoint/action tests, raw-download AND matrix, sensitive-category cases, production authorization-pipeline checks, data-scope checks, and body-dependent bulk-action checks.
+- `backend-dotnet/Zayra.Api.Tests/Security/EmployeeAuthzRegressionTests.cs`
+  - Made the legacy role assertion select the role-bearing `AuthorizeAttribute` when permission-derived authorization attributes are also present.
+- `backend-dotnet/Zayra.Api.Tests/Security/LegacyRoleGateBypassAllowList.cs`
+  - Removed only import-template bypasses invalidated by the new local permission gate; retained the legitimate HR Director permission case.
+- `backend-dotnet/Zayra.Api.Tests/DocumentStorageSecurityTests.cs`
+  - Reconciled the provider-neutral download fixture with the new conjunctive read/document requirements.
+
+## Dirty-worktree preservation
+
+The initial branch and dirty state were inspected before edits. `EmployeesController.cs` already contained unrelated user work, especially work-email validation/derivation changes. Only Task 1 controller hunks were applied to the Git index through a generated zero-interaction filtered patch (`git diff ... | awk ... | git apply --cached`). All other Task 1 files were staged explicitly by exact path. The cached diff was reviewed with `git diff --cached`, checked with `git diff --cached --check`, and the resulting commit was inspected with `git show`. The unrelated controller changes and every other pre-existing modification/untracked file remain unstaged and were not reset, stashed, switched, or absorbed.
+
+## Concerns
+
+- The full backend suite did not produce a final result within 20 minutes. The final branch gate must rerun it; only the two failures emitted before cancellation are known, and both now have green targeted coverage.
+- The worktree remains intentionally dirty with extensive pre-existing user changes. Any later integration must continue to avoid broad staging.
