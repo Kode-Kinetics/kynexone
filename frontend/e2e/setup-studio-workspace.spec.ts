@@ -1,5 +1,8 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import path from 'node:path';
+
+const task5Evidence = (name: string) => path.resolve(__dirname, '../../docs/evidence/setup-studio-task5', name);
 
 const areas = [
   ['organization', 'Organization and core HR'], ['recruitment', 'Recruitment'],
@@ -1930,4 +1933,164 @@ test('arabic_uses_employee_reference_lists_rename', async ({ page }) => {
 
   await expect(page.getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
   await expect(page.getByText('Employee Reference Lists', { exact: true })).toHaveCount(0);
+});
+
+test('guided_visual_contract_survives_configuration_redesign', async ({ page }, testInfo) => {
+  const { writes } = await openGuidedSetup(page);
+  const wizard = page.locator('#setup-aiSetup');
+  const steps = wizard.getByRole('navigation', { name: 'Company setup steps' }).getByRole('button');
+  const names = ['Company details', 'Working week', 'People & pay', 'Grades & benefits', 'Review & create'];
+
+  await expect(page.getByRole('button', { name: 'Guided Setup', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(wizard.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
+  await expect(steps).toHaveCount(5);
+  for (const [index, name] of names.entries()) await expect(steps.nth(index)).toContainText(name);
+  await expect(steps.first()).toHaveAttribute('aria-current', 'step');
+  await expect(wizard.getByRole('button', { name: 'Save for later', exact: true })).toBeVisible();
+  await expect(wizard.getByRole('button', { name: 'Policy library / updates', exact: true })).toBeVisible();
+  await expect(wizard.getByRole('button', { name: 'Cancel setup', exact: true })).toBeVisible();
+  await expect(wizard.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
+  if (testInfo.project.name === 'desktop') {
+    const boxes = await steps.evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect()).map(box => ({ x: box.x, y: box.y })));
+    expect(boxes.every((box, index) => index === 0 || box.y > boxes[index - 1].y)).toBe(true);
+    expect(Math.max(...boxes.map(box => box.x)) - Math.min(...boxes.map(box => box.x))).toBeLessThan(4);
+    if (process.env.CAPTURE_TASK5_EVIDENCE === '1') await page.screenshot({ path: task5Evidence('guided-preserved-desktop.png'), fullPage: true });
+  }
+  expect(writes).toEqual([]);
+});
+
+test('english_and_arabic_paths_have_no_serious_or_critical_axe_findings', async ({ page }, testInfo) => {
+  const { writes } = await boot(page);
+  for (const locale of ['en', 'ar'] as const) {
+    await page.evaluate(value => localStorage.setItem('kynexone-locale-choice-v2', value), locale);
+    await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=organization');
+    await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+    let result = await new AxeBuilder({ page }).include('[data-testid="setup-studio-workspace"]').analyze();
+    expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
+    if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await page.screenshot({ path: task5Evidence(`configuration-${locale}-desktop.png`), fullPage: true });
+
+    await page.goto('/setup?tab=aiSetup&path=guided&companyId=fixture-company');
+    await expect(page.locator('#setup-aiSetup')).toBeVisible();
+    result = await new AxeBuilder({ page }).include('#setup-aiSetup').analyze();
+    expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
+  }
+  expect(writes).toEqual([]);
+});
+
+test('mobile_390_and_320_have_no_page_overflow', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 720 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    const navigation = page.getByTestId('focused-navigation-top');
+    await expect(navigation.getByRole('button', { name: 'Back to Organization and core HR', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Next: Designations', exact: true })).toBeVisible();
+    const browse = page.getByRole('button', { name: 'Browse all areas', exact: true });
+    await browse.scrollIntoViewIfNeeded();
+    await expect(browse).toBeInViewport();
+    await browse.click();
+    const dialog = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true });
+    await expect(dialog).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'mobile') await page.screenshot({ path: task5Evidence(`configuration-${width}-navigator.png`) });
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  }
+  expect(writes).toEqual([]);
+});
+
+test('rtl_long_labels_keep_navigation_reachable', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const { writes } = await boot(page, { arabic: true, area: 'organization', setting: 'departments' });
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+
+  const topNavigation = page.getByTestId('focused-navigation-top');
+  for (const button of await topNavigation.getByRole('button').all()) {
+    await button.scrollIntoViewIfNeeded();
+    await expect(button).toBeInViewport();
+  }
+  const browse = page.getByRole('button', { name: 'استعراض جميع المجالات', exact: true });
+  await browse.scrollIntoViewIfNeeded();
+  await expect(browse).toBeInViewport();
+  await browse.click();
+  const dialog = page.getByRole('dialog');
+  const longestArea = dialog.getByRole('button', { name: 'الامتثال والإدارة النظامية', exact: true });
+  await longestArea.scrollIntoViewIfNeeded();
+  await expect(longestArea).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'إغلاق', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'mobile') await page.screenshot({ path: task5Evidence('configuration-rtl-320.png') });
+  expect(writes).toEqual([]);
+});
+
+test('two_hundred_percent_zoom_keeps_actions_reachable', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+
+  for (const position of ['top', 'bottom']) {
+    const navigation = page.getByTestId(`focused-navigation-${position}`);
+    await navigation.scrollIntoViewIfNeeded();
+    await expect(navigation.getByRole('button', { name: 'Back to Organization and core HR', exact: true })).toBeInViewport();
+    await expect(navigation.getByRole('button', { name: 'Previous: Branches', exact: true })).toBeInViewport();
+    await expect(navigation.getByRole('button', { name: 'Next: Designations', exact: true })).toBeInViewport();
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await page.screenshot({ path: task5Evidence('configuration-200-percent.png'), fullPage: true });
+  expect(writes).toEqual([]);
+});
+
+test('four_hundred_percent_reflow_has_no_two_axis_scroll', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+
+  await page.getByTestId('focused-navigation-bottom').scrollIntoViewIfNeeded();
+  await expect(page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Next: Designations', exact: true })).toBeInViewport();
+  const overflow = await page.evaluate(() => ({
+    page: document.documentElement.scrollWidth - window.innerWidth,
+    twoAxis: [...document.querySelectorAll<HTMLElement>('body *')].filter(element => {
+      const style = getComputedStyle(element);
+      const xScrollable = /(auto|scroll)/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1;
+      const yScrollable = /(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1;
+      return xScrollable && yScrollable;
+    }).map(element => element.getAttribute('data-testid') ?? element.tagName),
+  }));
+  expect(overflow.page).toBeLessThanOrEqual(1);
+  expect(overflow.twoAxis).toEqual([]);
+  if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await page.screenshot({ path: task5Evidence('configuration-400-percent.png'), fullPage: true });
+  expect(writes).toEqual([]);
+});
+
+test('dirty_cancel_preserves_url_values_scroll_and_focus', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  const taskTitle = page.getByLabel('Task title', { exact: true });
+  await taskTitle.fill('Preserve this authored onboarding task');
+  const back = page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true });
+  await back.scrollIntoViewIfNeeded();
+  const before = { url: page.url(), scrollY: await page.evaluate(() => window.scrollY) };
+  await back.click();
+  const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await expect(page).toHaveURL(before.url);
+  await expect(taskTitle).toHaveValue('Preserve this authored onboarding task');
+  await expect(back).toBeFocused();
+  await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(Math.round(before.scrollY));
+  expect(writes).toEqual([]);
+});
+
+test('dirty_confirm_navigates_once', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  await page.getByLabel('Task title', { exact: true }).fill('Discard this onboarding task once');
+  const beforeHistory = await page.evaluate(() => history.length);
+  await page.getByTestId('focused-navigation-top').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+  await expect(dialog).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+
+  await expect(page).toHaveURL(/area=onboarding(?!.*setting=)/);
+  await expect(page.getByTestId('setup-area-blueprint')).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => history.length)).toBe(beforeHistory + 1);
+  expect(writes).toEqual([]);
 });

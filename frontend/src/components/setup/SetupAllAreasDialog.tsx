@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { SETUP_AREAS, type SetupAreaId } from '../../lib/setupAreas';
 import { useT } from '../../hooks/useT';
@@ -50,7 +51,7 @@ export function SetupAllAreasDialog({ open, activeArea, onSelect, onClose, trigg
     }
   };
 
-  return (
+  return createPortal(
     <>
       <div aria-hidden="true" className="fixed inset-0 z-40 bg-slate-950/55 backdrop-blur-sm" />
       <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="setup-all-areas-title" onKeyDown={onKeyDown}
@@ -78,6 +79,7 @@ export function SetupAllAreasDialog({ open, activeArea, onSelect, onClose, trigg
           </ul>
         </nav>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

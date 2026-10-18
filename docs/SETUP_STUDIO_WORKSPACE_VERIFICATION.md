@@ -1,4 +1,80 @@
-# Setup Studio Package 1 verification
+# Setup Studio Configuration Center final acceptance — 2026-10-18
+
+Status: the Task 5 Configuration Center acceptance contract is implemented and its focused live-worktree gates pass. One test-proven Configuration defect was fixed: the mobile area navigator now portals to `document.body`, so the sticky application header no longer covers its title or Close control. The approved five-step Guided Setup was not restyled.
+
+This is local acceptance evidence, not production approval. Fixture tests intercept every API request and issue no tenant writes. The authenticated shadow-tenant inspection was strictly read-only; no Save, Apply, archive, policy publication, or record mutation was performed.
+
+## Task 5 evidence
+
+The eight required cross-cutting contracts are committed in `frontend/e2e/setup-studio-workspace.spec.ts`:
+
+- `guided_visual_contract_survives_configuration_redesign`
+- `english_and_arabic_paths_have_no_serious_or_critical_axe_findings`
+- `mobile_390_and_320_have_no_page_overflow`
+- `rtl_long_labels_keep_navigation_reachable`
+- `two_hundred_percent_zoom_keeps_actions_reachable`
+- `four_hundred_percent_reflow_has_no_two_axis_scroll`
+- `dirty_cancel_preserves_url_values_scroll_and_focus`
+- `dirty_confirm_navigates_once`
+
+RED: the first desktop-focused run passed 6 and failed 2. At 320/390 widths, the mobile navigator was visible but its Close control was not clickable because the shell's sticky header intercepted the pointer; the Arabic navigator failure was an ambiguous test locator rather than a product defect. After portaling the dialog and anchoring the Arabic accessible name, the exact desktop/mobile acceptance set passed **16/16**. The tests prove zero serious/critical Axe violations for English and Arabic Guided/Configuration regions, no document overflow at 320/390, reachable navigation at the 200%/400% reflow equivalents, and exact dirty cancel/confirm behavior including URL, authored value, scroll, focus, history, and zero writes.
+
+Stable screenshots under `docs/evidence/setup-studio-task5/`:
+
+- `guided-preserved-desktop.png`
+- `configuration-en-desktop.png`
+- `configuration-ar-desktop.png`
+- `configuration-390-navigator.png`
+- `configuration-320-navigator.png`
+- `configuration-rtl-320.png`
+- `configuration-200-percent.png`
+- `configuration-400-percent.png`
+
+These screenshots use the intercepted browser fixture. They are responsive/layout evidence, not authenticated persistence evidence.
+
+## Commands and results
+
+- Setup path/catalogue/canonical-form units: **27 passed**.
+- Exact Task 5 acceptance, desktop and mobile: **16 passed**; the final mobile screenshot refresh also passed **2/2**.
+- Setup lifecycle: **10 passed**.
+- Policy binder: **6 passed**.
+- Policy review: **8 passed**.
+- Live-worktree TypeScript after the build: exit 0.
+- Production build with `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:5127`: exit 0, 87 static pages generated.
+
+The broad dirty-worktree suites are not all green and are not reported as Task 5 regressions:
+
+- Setup Studio workspace: **185 passed, 3 skipped, 48 failed**. All 16 Task 5 cases passed. The failures are older dirty/untracked expectations centered on native browser-dialog handling versus the current application dialog, plus one authorization focus flake and one mobile company-switch case.
+- Setup experience: **61 passed, 3 intentional mobile skips, 2 failed**. Both failures are pre-existing owner-protected Guided desktop compactness expectations (`Upload and review` and `Continue` fully in viewport). Task 5 did not restyle Guided.
+- Policy form prefill: **13 passed, 9 failed**. All nine failures are untracked workspace tests that still enter `/setup?tab=aiSetup&area=onboarding&setting=onboarding` without the Configuration path and expect the old area heading. The retained direct form contracts pass.
+
+An index-only export independently passed **27/27** units and **14/16** Task 5 cases. Its two Guided failures show a known repository-baseline dependency: the committed index lacks the user-owned, unstaged Guided toolbar integration containing `Save for later`; the same tests pass in the preserved working tree. Index-only TypeScript reaches the known unrelated `unit/employeeAccess.spec.ts` / `workEmailDomainProblem` export mismatch, while the index-only production build succeeds. No unrelated user hunks were staged to hide those gaps.
+
+## Authenticated shadow-tenant read-only check
+
+The controller repaired only the local runtime target and opened the existing signed-in tenant at `http://127.0.0.1:5197` with API `http://127.0.0.1:5127`.
+
+- Persona: **Evostel Shadow Administrator**, role **Admin**.
+- Explicit company scope: **Evostel Policy Shadow — Local**, company ID `009f78a6-91ee-4a86-b7a8-28caa07e0e64`.
+- Guided route visibly retained all five named steps, Company details, the HR policy call to action, `Step 1 of 5`, Continue, and the Employee Reference Lists label.
+- Configuration Leave canvas showed whole-row Leave types, Leave policies, and Holiday calendars.
+- Focused Leave policies showed top Back/Previous/Next navigation, **14 populated Active policies**, and the incumbent New/Edit/Archive actions; no action was invoked.
+- Frontend `/build-info`: `{ "service": "kynexone-web", "commit": "unknown" }`.
+- Backend `/health/live`: HTTP 200, service `zayra-api`, commit `2e992b3da05dc3f923376638d0e205b7de0132cd`.
+- Source HEAD at the time of verification: `a6c48b080cc170acec5b311f617ae0fb43f72096` before the Task 5 commit.
+
+The frontend does not expose a matching source commit, and the backend identity differs from the frontend source HEAD. Therefore this proves a healthy local signed-in UI against a live local API and populated canonical data; it does **not** prove same-commit frontend/backend provenance, server authorization exhaustiveness, production deployment, or persistence of a new Task 5 write.
+
+## Task 5 remaining gates and nonclaims
+
+- The clean commit cannot reconstruct the full accepted working tree until the user-owned Guided and related dirty integration is separately reconciled.
+- The 48 broad workspace failures, 2 Guided compactness failures, and 9 legacy prefill-entry failures remain outside this bounded Configuration-only fix and require separate baseline ownership.
+- Browser automation supplied keyboard, focus, RTL, 320/390, 200%, and 400% evidence. Authenticated shadow-tenant validation remained read-only by design.
+- No backend, schema, database, authentication, deployment, feature-flag, or production mutation was made by Task 5.
+
+---
+
+# Historical Setup Studio Package 1 verification
 
 Status: Package 1 locally verified and independently code-reviewed, 2026-10-14. Bounded authenticated local QA passed on the final build. Owner acceptance and release integration remain separate; this document does not authorize production deployment.
 
