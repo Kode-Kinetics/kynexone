@@ -434,3 +434,53 @@ test('Ex-Employees uses canonical search and page state and remains read only', 
   await expect(page.getByText(/Page 2 of/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Add Employee/i })).toHaveCount(0);
 });
+
+test('workspace destination mapping renders one addressable record surface and one primary scroller', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=employment&panel=details');
+
+  await expect(page.getByRole('heading', { name: 'Employment details' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Employee record sections' }).getByRole('link', { name: 'Employment' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('[data-employee-workspace-scroll]')).toHaveCount(1);
+  await expect(page.getByText('Evostel', { exact: true })).toBeVisible();
+  await expect(page.getByText('Jeddah Office', { exact: true })).toBeVisible();
+  await expect(page.getByText('QA Finance Manager', { exact: true })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Pay & Benefits' }).click();
+  await expect(page).toHaveURL(/section=pay-benefits/);
+  await expect(page.getByRole('heading', { name: 'Pay & Benefits' })).toBeVisible();
+});
+
+test('workspace overview distinguishes blockers from recommendations and presents the next action', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=overview');
+
+  await expect(page.getByRole('heading', { name: 'Recommended next action' })).toBeVisible();
+  await expect(page.getByText('Contract document', { exact: true })).toBeVisible();
+  await expect(page.getByText('Blocks activation', { exact: true })).toBeVisible();
+  await expect(page.getByText('IBAN', { exact: true })).toBeVisible();
+  await expect(page.getByText('Blocks payroll', { exact: true })).toBeVisible();
+});
+
+test('workspace permission persona never renders sensitive values or unauthorized mutation controls', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read', 'dashboard.read'] });
+  await page.goto('/people/901?section=pay-benefits');
+
+  await expect(page.getByText('SA4420000001234567891234', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Sensitive payroll details are restricted.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Edit/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Delete employee/i })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Compliance & Documents' }).click();
+  await expect(page.getByText('P-SECRET-901', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Upload document/i })).toHaveCount(0);
+  expect(fixture.mutationCalls).toEqual([]);
+});
+
+test('workspace destination gives a permission-safe fallback for an unavailable panel', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read', 'dashboard.read'], disabledFeatures: ['release_a', 'succession'] });
+  await page.goto('/people/901?section=activity&panel=development');
+
+  await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
+  await expect(page.getByText('This panel is not available for your current access.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'View activity overview' })).toHaveAttribute('href', /section=activity/);
+});

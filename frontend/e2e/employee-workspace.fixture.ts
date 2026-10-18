@@ -10,6 +10,12 @@ export interface EmployeeWorkspaceFixtureControl {
   detailCalls: Map<number, number>;
   readinessCalls: Map<number, number>;
   listCalls: number;
+  mutationCalls: string[];
+}
+
+interface EmployeeWorkspaceFixtureOptions {
+  permissions?: string[];
+  disabledFeatures?: string[];
 }
 
 const employees = {
@@ -50,10 +56,10 @@ const employees = {
     leavePolicyCode: '',
     attendancePolicyCode: '',
     bankName: '',
-    bankIban: '',
+    bankIban: 'SA4420000001234567891234',
     wpsBankDetails: '',
     sponsorName: '',
-    passportNumber: '',
+    passportNumber: 'P-SECRET-901',
     visaNumber: '',
     visaFileNumber: '',
     iqamaNumber: '',
@@ -178,7 +184,22 @@ async function fulfillMode(route: Route, mode: ResponseMode, body: unknown) {
   return route.fulfill({ json: body });
 }
 
-export async function bootEmployeeWorkspaceFixture(page: Page): Promise<EmployeeWorkspaceFixtureControl> {
+export async function bootEmployeeWorkspaceFixture(
+  page: Page,
+  options: EmployeeWorkspaceFixtureOptions = {},
+): Promise<EmployeeWorkspaceFixtureControl> {
+  const permissions = options.permissions ?? [
+    'employees.read',
+    'employees.write',
+    'employees.sensitive',
+    'employees.documents',
+    'employees.approve',
+    'employees.delete',
+    'employees.access.issue',
+    'employees.access.reset',
+    'manager.approve',
+    'dashboard.read',
+  ];
   const control: EmployeeWorkspaceFixtureControl = {
     detailMode: new Map(),
     readinessMode: new Map(),
@@ -187,6 +208,7 @@ export async function bootEmployeeWorkspaceFixture(page: Page): Promise<Employee
     detailCalls: new Map(),
     readinessCalls: new Map(),
     listCalls: 0,
+    mutationCalls: [],
   };
 
   await page.addInitScript(() => {
@@ -203,13 +225,13 @@ export async function bootEmployeeWorkspaceFixture(page: Page): Promise<Employee
     if (path === '/api/auth/me') return reply({
       id: 'workspace-reviewer', tenantId: 'tenant', tenantSlug: 'fixture', email: 'reviewer@example.test',
       fullName: 'Workspace Reviewer', roles: ['Admin'],
-      permissions: ['employees.read', 'employees.write', 'employees.sensitive', 'dashboard.read'],
+      permissions,
       accountType: 'SingleCompany', isGroupScope: false,
       companies: [{ id: 'fixture-company', name: 'Evostel', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
     });
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR', defaultLanguage: 'en' });
-    if (path === '/api/features/disabled-keys') return reply(['release_a']);
+    if (path === '/api/features/disabled-keys') return reply(options.disabledFeatures ?? ['release_a']);
     if (path.includes('/features/')) return reply([]);
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/admin/system-settings' || path === '/api/country-packs/available') return reply([]);
@@ -232,10 +254,14 @@ export async function bootEmployeeWorkspaceFixture(page: Page): Promise<Employee
       const employeeId = Number(detailMatch[1]);
       count(control.detailCalls, employeeId);
       await delay(control.detailDelayMs.get(employeeId) ?? 0);
+      const source = employees[employeeId as keyof typeof employees] ?? employees[901];
+      const body = permissions.includes('employees.sensitive')
+        ? source
+        : { ...source, bankIban: '', passportNumber: '', salary: undefined };
       return fulfillMode(
         route,
         control.detailMode.get(employeeId) ?? 'success',
-        employees[employeeId as keyof typeof employees] ?? employees[901],
+        body,
       );
     }
 
@@ -263,6 +289,7 @@ export async function bootEmployeeWorkspaceFixture(page: Page): Promise<Employee
       return reply({ items, total: items.length, page: 1, pageSize: 100 });
     }
 
+    if (route.request().method() !== 'GET') control.mutationCalls.push(`${route.request().method()} ${path}`);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
 

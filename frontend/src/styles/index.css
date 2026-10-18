@@ -664,3 +664,21 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-work-area > section { padding-top: 0.5rem; }
   .setup-step-footer { margin-top: 0.5rem; padding-top: 0.5rem; }
 }
+
+/* Employee Workspace keeps the application shell as the only viewport scroller. The record rail
+ * becomes a compact horizontal section chooser below desktop without creating a second page-height
+ * scrollbar. */
+.employee-workspace [data-employee-workspace-scroll] {
+  min-block-size: 24rem;
+  overflow: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+  .employee-workspace *,
+  .employee-workspace *::before,
+  .employee-workspace *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

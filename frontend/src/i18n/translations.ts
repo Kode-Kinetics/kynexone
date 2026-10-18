@@ -16,6 +16,7 @@ import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
+import { employeeWorkspace } from './employeeWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -31,6 +32,7 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  ...employeeWorkspace.en,
   ...gradeBenefitDefaults.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
@@ -1413,6 +1415,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...employeeWorkspace.ar,
   ...gradeBenefitDefaults.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",
