@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
@@ -79,6 +80,11 @@ import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../l
 import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
+
+// Load canonical leave forms only when their Configuration Center setting is focused.
+const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
+const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
+const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
 
 type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -2505,6 +2511,12 @@ export function SetupPage() {
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {
                 if (isSettingsTab(id)) return renderExistingSettings(id);
+                if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
+                if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
+                if (id === 'leaveTypes') return <LeaveTypesTab onDirtyChange={onDirtyChange} />;
+                if (id === 'leavePolicies') return <PoliciesTab onDirtyChange={onDirtyChange} />;
+                if (id === 'holidayCalendars') return <HolidayCalendarTab onDirtyChange={onDirtyChange} />;
+                return null;
               }}
               onOpenLibrary={() => selectTab('policyLibrary')}
               onOpenAdministration={() => selectTab(isCompanyScopedGroup ? 'companies' : 'systemSettings')}

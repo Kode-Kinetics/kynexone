@@ -1552,29 +1552,99 @@ test('restricted_unknown_or_disabled_destination_never_mounts_editor', async ({ 
   }
 });
 
-test('permission_loss_unmounts_focused_editor_and_stops_reads', async ({ page }) => {
+test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', async ({ page }) => {
   let allowed = true;
-  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboarding', intercept: async route => {
+  const { reads } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
     await route.fulfill({ json: {
-      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: ['Admin'],
-      permissions: ['organization.read', 'organization.write', ...(allowed ? ['recruitment.read', 'recruitment.write'] : [])],
+      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
+      permissions: ['organization.read', 'organization.write', ...(allowed ? ['leave.read'] : [])],
       accountType: 'Group', isGroupScope: true,
       companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
     } });
     return true;
   } });
   await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
 
-  allowed = false;
+  const adminPage = await page.context().newPage();
+  await adminPage.exposeFunction('revokeFixtureAccess', () => { allowed = false; });
+  await adminPage.setContent('<button type="button" onclick="window.revokeFixtureAccess()">Revoke setup access</button>');
+  await adminPage.getByRole('button', { name: 'Revoke setup access', exact: true }).click();
   reads.length = 0;
-  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:auth-changed')));
+  await page.bringToFront();
+  // Headless Chromium does not emit a native focus event for bringToFront; deliver the same
+  // browser lifecycle signal after the independent admin page changes the server fixture.
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
 
   await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
   await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
-  expect(reads.filter(path => path.startsWith('/api/recruitment/onboarding'))).toEqual([]);
+  expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
+  await adminPage.close();
+});
+
+test('protected_403_revalidates_authoritative_permissions_and_unmounts_editor', async ({ page }) => {
+  let allowed = true;
+  const { reads } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill({ json: {
+        id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
+        permissions: ['organization.read', 'organization.write', ...(allowed ? ['leave.read'] : [])],
+        accountType: 'Group', isGroupScope: true,
+        companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+      } });
+      return true;
+    }
+    if (path === '/api/leave/policies/existing-policy' && route.request().method() === 'PUT' && !allowed) {
+      await route.fulfill({ status: 403, json: { message: 'Setup access was revoked.' } });
+      return true;
+    }
+    return false;
+  } });
+  await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+
+  allowed = false;
+  reads.length = 0;
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+
+  await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
+  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
+  expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
+});
+
+test('stale_authorization_refresh_cannot_restore_revoked_permissions', async ({ page }) => {
+  let authCall = 0;
+  let releaseStale!: () => void;
+  const staleResponse = new Promise<void>(resolve => { releaseStale = resolve; });
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
+    authCall += 1;
+    const allowed = authCall < 3;
+    if (authCall === 2) await staleResponse;
+    await route.fulfill({ json: {
+      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
+      permissions: ['organization.read', 'organization.write', ...(allowed ? ['leave.read'] : [])],
+      accountType: 'Group', isGroupScope: true,
+      companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+    } });
+    return true;
+  } });
+  await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
+
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:auth-changed')));
+  await expect.poll(() => authCall).toBe(2);
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:auth-changed')));
+  await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
+  releaseStale();
+
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
+  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
 });
 
 test('tenant_setting_says_applies_to_all_companies', async ({ page }) => {

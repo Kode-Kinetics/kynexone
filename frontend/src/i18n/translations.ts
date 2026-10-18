@@ -5,6 +5,7 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
+import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
@@ -33,6 +34,7 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   ...employeeWorkspace.en,
+  ...setupStudio.en,
   ...gradeBenefitDefaults.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
@@ -1416,6 +1418,7 @@ const en: Dict = {
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
   ...employeeWorkspace.ar,
+  ...setupStudio.ar,
   ...gradeBenefitDefaults.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",

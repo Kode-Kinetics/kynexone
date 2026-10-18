@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
 import type { AuthResponse, AuthUser } from '../api/auth';
 import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
@@ -58,16 +58,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
 
   const [authError, setAuthError] = useState<AuthLoadError | null>(null);
+  const authLoadGeneration = useRef(0);
 
   // Ask the server who the user is. Only a 401 ends the session (lib/authLoadState.ts): a network
   // error or a 5xx keeps the tokens and sets authError, so an outage never signs anyone out.
   const loadUser = useCallback(async () => {
+    const generation = ++authLoadGeneration.current;
     let next;
     try {
       next = afterMeSuccess(await authApi.me());
     } catch (err) {
       next = afterMeFailure<AuthUser>(err);
     }
+    // A slower, older identity response must never restore permissions that a newer response
+    // has already removed (for example, after another administrator revokes this session's role).
+    if (generation !== authLoadGeneration.current) return;
     if (next.clearSession) clearSessionKeepingLocale();
     setUser(next.user);
     setAuthError(next.authError);
@@ -87,11 +92,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadUser]);
 
   useEffect(() => {
-    // Refresh from the authoritative session when a role/permission management flow reports a change.
-    // Same-origin callers can request a recheck, but cannot provide or inject the resulting privileges.
-    const refreshAuthorization = () => { void loadUser(); };
+    // Focus/visibility covers changes made in another browser or by another administrator. Relevant
+    // protected-request 403s and same-origin role-management flows request the same authoritative
+    // check. Coalescing focus + visibility avoids duplicate /me traffic when a tab is restored.
+    let refreshTimer: number | undefined;
+    const refreshAuthorization = () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        void loadUser();
+      }, 150);
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshAuthorization();
+    };
+    window.addEventListener('focus', refreshAuthorization);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     window.addEventListener('kynexone:auth-changed', refreshAuthorization);
-    return () => window.removeEventListener('kynexone:auth-changed', refreshAuthorization);
+    window.addEventListener('kynexone:authorization-stale', refreshAuthorization);
+    return () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      window.removeEventListener('focus', refreshAuthorization);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('kynexone:auth-changed', refreshAuthorization);
+      window.removeEventListener('kynexone:authorization-stale', refreshAuthorization);
+    };
   }, [loadUser]);
 
   // The offline screen shows its own "Retrying…" state, so a retry does not flip isLoading (which
@@ -114,6 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     localStorage.setItem('zayra_access_token', res.accessToken);
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
+    authLoadGeneration.current += 1;
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
@@ -126,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const res = await authApi.mfaVerifyChallenge(mfaPending.challengeToken, totpCode);
     localStorage.setItem('zayra_access_token', res.accessToken);
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
+    authLoadGeneration.current += 1;
     setMfaPending(null);
     setMfaEnrollmentPending(null);
     setAuthError(null);
@@ -139,6 +166,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // itself, which ends this session server-side; here we only drop the local copy, the same way
     // every other session exit does (the display language survives, nothing else of this user does).
     clearSessionKeepingLocale();
+    authLoadGeneration.current += 1;
     setUser(null);
     setMfaPending(null);
     setMfaEnrollmentPending({ enrollmentToken, expiresInSeconds });
@@ -154,6 +182,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Same wipe as an expired session: a shared computer keeps nothing of this user's
     // (search history, company selection, import history), only the display language.
     clearSessionKeepingLocale();
+    authLoadGeneration.current += 1;
     setUser(null);
     setAuthError(null);
     setMfaPending(null);

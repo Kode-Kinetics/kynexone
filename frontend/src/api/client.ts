@@ -120,6 +120,8 @@ client.interceptors.response.use(
             ? err.response.data.message
             : 'You do not have permission to perform this action. Please contact your administrator.';
         window.dispatchEvent(new CustomEvent('zayra:access-denied', { detail: reason }));
+        const isIdentityCheck = typeof original?.url === 'string' && /^\/api\/auth\/me(?:\?|$)/.test(original.url);
+        if (!isIdentityCheck) window.dispatchEvent(new Event('kynexone:authorization-stale'));
       }
       return Promise.reject(err);
     }

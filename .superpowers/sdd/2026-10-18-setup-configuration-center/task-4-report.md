@@ -112,3 +112,45 @@ npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole
 - Staged-index TypeScript still reaches only the unrelated committed-index `workEmailDomainProblem` mismatch documented in Task 2/Task 4; live-worktree TypeScript remains green.
 
 Fix commit message: `fix: complete Configuration navigation contracts`; final hash is reported in the controller handoff.
+
+## Fix round 2
+
+Review found that the round-1 permission-loss proof still depended on a same-window application event and that concurrent identity reads were not ordered. The remediation now revalidates `/api/auth/me` after window focus, visible `visibilitychange`, a same-origin role-management signal, or a relevant protected-request 403. Focus/visibility signals are coalesced for 150 ms, and an identity-load generation guard makes the newest request authoritative. Direct login, MFA completion, enrolment handoff, and logout also invalidate older identity reads.
+
+The API client emits the authorization-stale signal only for relevant non-feature/non-panel 403 responses and excludes `/api/auth/me`, preventing a refused identity check from creating a refresh loop.
+
+Index-only verification exposed two Task-4 composition omissions that the dirty worktree had masked: the canonical leave editors were not present in the committed Configuration Center renderer, and the committed Setup Studio Arabic catalogue was not aggregated into the application dictionary. The fix stages only the three canonical leave adapters and the `setupStudio` catalogue import/spreads; the unrelated onboarding, policy-binder, company-form, and employee-workspace hunks remain unstaged.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions"
+```
+
+- Focus-based cross-page revocation and protected-403 revalidation both failed because the focused editor remained mounted.
+- After correcting the race fixture to snapshot each response's permissions before delaying it, `stale_authorization_refresh_cannot_restore_revoked_permissions` failed because the older privileged response remounted the editor.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions"
+```
+
+- 3 passed in 7.8 seconds.
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions|tenant_setting_says_applies_to_all_companies|focused_workspace_keeps_all_area_navigator_without_extra_editor|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|mobile_focused_navigation_controls_are_44px_touch_targets|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading|arabic_uses_employee_reference_lists_rename"
+npx playwright test -c playwright.unit.config.ts unit/authLoadState.spec.ts
+npx tsc --noEmit
+```
+
+- Exact Task 4 desktop/mobile contracts: 35 passed, 3 intentional project-specific skips.
+- Auth load-state units: 9 passed.
+- TypeScript: exit 0, no diagnostics.
+- The exact Task 4 command also passed from a fresh `git checkout-index` export served on port 5297: 35 passed, 3 intentional project-specific skips. The three new auth contracts passed independently in that export (3/3), and staged auth load-state units passed 9/9.
+- Staged-index TypeScript still stops only at the previously documented unrelated `unit/employeeAccess.spec.ts` / committed `employeeAccess` export mismatch; live-worktree TypeScript is green.
+
+Fix-round-2 commit hash is reported in the controller handoff.
