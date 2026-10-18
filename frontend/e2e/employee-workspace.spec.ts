@@ -1,4 +1,5 @@
 import { devices, expect, test, type Browser, type Page } from '@playwright/test';
+import { bootEmployeeWorkspaceFixture } from './employee-workspace.fixture';
 
 async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'; forcePopstate?: boolean } = {}) {
   await page.addInitScript(({ locale, forcePopstate }) => {
@@ -292,4 +293,99 @@ test('guard remains topmost over an existing setup dialog and cancel preserves i
   await expect(page.getByRole('dialog')).toHaveCount(2);
   await guardDialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(settingDialog).toBeVisible();
+});
+
+test('workspace route opens direct and legacy employee URLs without loading the directory first', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+
+  await page.goto('/people/901?section=employment');
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+  await expect(page).toHaveURL(/\/people\/901\?section=employment$/);
+  expect(fixture.listCalls).toBe(0);
+
+  await page.goto('/people?employeeId=901&tab=package&search=QA&page=2');
+  await expect(page).toHaveURL(/\/people\/901\?section=pay-benefits&panel=package/);
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+  expect(fixture.listCalls).toBe(0);
+});
+
+test('workspace route rejects invalid and nonpositive employee IDs before API loading', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+
+  await page.goto('/people/not-an-id');
+  await expect(page.getByRole('heading', { name: 'Invalid employee link' })).toBeVisible();
+  await page.goto('/people/0');
+  await expect(page.getByRole('heading', { name: 'Invalid employee link' })).toBeVisible();
+
+  expect([...fixture.detailCalls.values()].reduce((sum, value) => sum + value, 0)).toBe(0);
+  expect([...fixture.readinessCalls.values()].reduce((sum, value) => sum + value, 0)).toBe(0);
+});
+
+test('workspace loading shows missing and forbidden recovery states with Back to People', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.detailMode.set(901, 'not-found');
+
+  await page.goto('/people/901');
+  await expect(page.getByRole('heading', { name: 'Employee record not found' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Back to People' })).toHaveAttribute('href', '/people');
+
+  fixture.detailMode.set(901, 'forbidden');
+  await page.getByRole('button', { name: 'Retry employee record' }).click();
+  await expect(page.getByRole('heading', { name: 'You do not have access to this employee' })).toBeVisible();
+});
+
+test('workspace loading recovers from a network failure without discarding the route', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.detailMode.set(901, 'network');
+
+  await page.goto('/people/901');
+  await expect(page.getByRole('heading', { name: 'Employee record could not be reached' })).toBeVisible({ timeout: 15_000 });
+  fixture.detailMode.set(901, 'success');
+  await page.getByRole('button', { name: 'Retry employee record' }).click();
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+  await expect(page).toHaveURL(/\/people\/901$/);
+});
+
+test('workspace loading settles detail before readiness and retries readiness independently', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.readinessDelayMs.set(901, 700);
+  fixture.readinessMode.set(901, 'server-error');
+
+  await page.goto('/people/901');
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+  await expect(page.getByText('Loading readiness…', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: 'Readiness could not be loaded.' })).toBeVisible();
+
+  fixture.readinessMode.set(901, 'success');
+  fixture.readinessDelayMs.set(901, 0);
+  await page.getByRole('button', { name: 'Retry readiness' }).click();
+  await expect(page.getByText('3 of 5 complete', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+});
+
+test('workspace loading can settle readiness before detail without rendering a previous identity', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.detailDelayMs.set(901, 700);
+
+  await page.goto('/people/901');
+  await expect(page.getByText('Loading employee record…', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'QA Master Data Test 2026-10-17' })).toBeVisible();
+  await expect(page.getByText('3 of 5 complete', { exact: true })).toBeVisible();
+});
+
+test('workspace stale employee A responses never replace employee B after client navigation', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.detailDelayMs.set(901, 1_200);
+  fixture.readinessDelayMs.set(901, 1_200);
+
+  await page.goto('/people/901');
+  await page.getByRole('button', { name: 'Open command search', exact: true }).click();
+  await page.getByPlaceholder('Search modules, employees, reports…').fill('Second Route');
+  await page.getByRole('button', { name: /Second Route Employee/ }).click();
+
+  await expect(page).toHaveURL(/\/people\/902/);
+  await expect(page.getByRole('heading', { name: 'Second Route Employee' })).toBeVisible();
+  await page.waitForTimeout(1_400);
+  await expect(page.getByRole('heading', { name: 'Second Route Employee' })).toBeVisible();
+  await expect(page.getByText('QA Master Data Test 2026-10-17', { exact: true })).toHaveCount(0);
 });
