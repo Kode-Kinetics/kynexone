@@ -106,3 +106,68 @@ The initial branch and dirty state were inspected before edits. `EmployeesContro
 
 - The full backend suite did not produce a final result within 20 minutes. The final branch gate must rerun it; only the two failures emitted before cancellation are known, and both now have green targeted coverage.
 - The worktree remains intentionally dirty with extensive pre-existing user changes. Any later integration must continue to avoid broad staging.
+
+## Fix round 1: independent-review findings
+
+### Status and commit
+
+COMPLETE for the three review findings. Implementation commit: `a11ec768` (`fix(employees): close workspace authorization gaps`).
+
+### RED evidence
+
+Sensitive classification and employee/company/team scope tests were added first and run with:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests" --no-restore
+```
+
+Result: FAILED — 23 failed, 59 passed, 0 skipped, 82 total. The failures demonstrated category-free Passport metadata/raw-byte exposure, missing employee/company scope checks across lifecycle/document/transfer actions, and tenant-wide org-chart output. Two first-pass null-category fixtures also exposed an EF InMemory setup limitation; those fixtures were corrected to model the legacy null row without changing the intended authorization assertion.
+
+The existing bulk action implementation already used the correct permission map, so the strengthened exact-positive/cross-permission test was mutation-validated. `activate` was temporarily mapped to `employees.delete`, then this exact test was run:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests.BulkAction_UsesItsOwnPermission" --no-restore
+```
+
+Result with the deliberate mutation: FAILED — 1 failed, 3 passed, 0 skipped, 4 total. The exact-positive `employees.approve` case caught the wrong permission. The production mapping was restored immediately.
+
+### GREEN evidence
+
+Final focused authorization command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests"
+```
+
+Result: PASSED — 86 passed, 0 failed, 0 skipped in 2 seconds.
+
+Final bulk matrix command after restoring the correct implementation:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests.BulkAction_UsesItsOwnPermission" --no-restore
+```
+
+Result: PASSED — 4 passed, 0 failed, 0 skipped.
+
+Final affected security/regression command:
+
+```bash
+dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore --filter "FullyQualifiedName~EmployeeWorkspaceAuthorizationTests|FullyQualifiedName~EmployeeAuthzRegressionTests|FullyQualifiedName~SensitiveFieldMaskingTests|FullyQualifiedName~EmployeeBulkActionTests|FullyQualifiedName~EmployeeAccessTests|FullyQualifiedName~EmployeeCompletionHttpTests|FullyQualifiedName~DocumentStorageSecurityTests|FullyQualifiedName~LegacyRoleGateBypassSweepTests|FullyQualifiedName~HrmHierarchyTests"
+```
+
+Result: PASSED — 250 passed, 0 failed, 0 skipped in 18 seconds. The first run of this set correctly exposed one stale masking fixture whose `Manager` principal had no linked employee and therefore no resolved data scope. The fixture now uses an organization-scoped `HR Officer` without `employees.sensitive`, preserving the masking assertion while satisfying the new authorization boundary.
+
+### Fix-round changed files and hunks
+
+- `backend-dotnet/Zayra.Api/Application/Employees/EmployeeManagementDtos.cs`: added a normalized, server-owned identity/payroll classifier and used document type plus category for fail-closed metadata projection.
+- `backend-dotnet/Zayra.Api/Infrastructure/Employees/EmployeeManagementService.cs`: canonicalized upload and metadata-update categories; known sensitive document types override blank or misleading client categories.
+- `backend-dotnet/Zayra.Api/Controllers/EmployeesController.cs`: applied the shared employee data/company-scope check across audited reads and mutations, used the classifier for raw downloads and draft documents, and passed a resolved visible employee set to org-chart projection.
+- `backend-dotnet/Zayra.Api/Application/Organization/IHrmHierarchyService.cs` and `backend-dotnet/Zayra.Api/Infrastructure/Organization/HrmHierarchyService.cs`: added an optional trailing visible-employee-ID contract and filtered the employee source before tree construction. Existing callers remain source-compatible.
+- `backend-dotnet/Zayra.Api.Tests/Security/EmployeeWorkspaceAuthorizationTests.cs`: added alias/null/casing classification tests, restricted-scope action-family tests, company- and team-scoped org-chart tests, and exact positive plus cross-permission bulk matrices with seeded in-scope employees.
+- `backend-dotnet/Zayra.Api.Tests/Security/SensitiveFieldMaskingTests.cs`: reconciled the HR-transfer masking fixture with the newly enforced data-scope boundary.
+
+### Fix-round preservation method and concerns
+
+`EmployeesController.cs` and `EmployeeManagementService.cs` both contained unrelated pre-existing work. Only fix-round hunks were selected into the index with generated noninteractive patches (`git diff ... | awk ... | git apply --cached`); the remaining fix files were staged by exact path. `git diff --cached --check` passed, and commit `a11ec768` contains only the seven files listed above. Unrelated tracked and untracked work remains in place and unstaged.
+
+The full backend suite was not rerun in this fix round because the earlier run exceeded the explicit 20-minute cap; the final branch gate still owns that run. The optional `IHrmHierarchyService.GetOrgChartAsync` visibility parameter is the only domain-interface change and was reported before commit.
