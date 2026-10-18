@@ -108,6 +108,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default, [FromQuery] string? access = null)
     {
         page = Math.Max(1, page);
@@ -165,6 +166,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("ex-employees")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<PagedResult<ExEmployeeListItemDto>>> ExEmployees(
         [FromQuery] string? search, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
@@ -490,6 +492,7 @@ public class EmployeesController : ControllerBase
     /// registry-derived placeholder row showing the expected shape of every column.</summary>
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.bulk_import")]
     public IActionResult ImportTemplate() =>
         File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow)), "text/csv", "employees_import_template.csv");
 
@@ -506,6 +509,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("field-catalog")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> FieldCatalog(
         [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? nationality,
         CancellationToken ct = default,
@@ -2731,6 +2735,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("org-chart")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> OrgChart(
         [FromServices] IHrmHierarchyService hierarchy,
         [FromQuery] int? rootEmployeeId = null,
@@ -2767,6 +2772,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/reporting-lines")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyList<ReportingLineDto>>> GetReportingLines(
         int id,
         [FromServices] IHrmHierarchyService hierarchy,
@@ -2809,6 +2815,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/hierarchy")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<HierarchyResolverDto>> ResolveHierarchy(
         int id,
         [FromServices] IHrmHierarchyService hierarchy,
@@ -2825,6 +2832,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/workflow-approvers")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Payroll Manager,Payroll Officer,Finance Approver,Finance Controller,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<WorkflowApproverResolutionDto>> ResolveWorkflowApprovers(
         int id,
         [FromQuery] string workflowType,
@@ -2842,6 +2850,7 @@ public class EmployeesController : ControllerBase
     public record SetManagerRequest(int? ManagerEmployeeId);
 
     [HttpGet("{id:int}")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<EmployeeDetailDto>> Get(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -3265,7 +3274,7 @@ public class EmployeesController : ControllerBase
             return Task.FromResult<IActionResult?>(null);
         }, cancellationToken);
         if (refusal is not null) return (ActionResult)refusal;
-        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
     }
 
     [HttpPost("drafts/{draftId:guid}/documents/upload")]
@@ -3297,12 +3306,17 @@ public class EmployeesController : ControllerBase
         }, cancellationToken);
         if (refusal is not null) return (ActionResult)refusal;
         await NotifyBestEffortAsync("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
-        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
     }
 
     [HttpGet("documents/{documentId:guid}/download")]
     public async Task<IActionResult> DownloadDocument(Guid documentId, CancellationToken cancellationToken)
     {
+        // Raw content is more privileged than document metadata. HasPermission is ANY-of, so the
+        // required employees.read AND employees.documents conjunction is deliberately enforced here.
+        if (!User.HasPermission("employees.read") || !User.HasPermission("employees.documents"))
+            return Forbid();
+
         var tenantId = RequireTenant();
         // Loaded tenant-wide, then authorized below by whoever the document belongs to. The company
         // filter cannot decide this: a draft's documents have no company until the hire is activated,
@@ -3312,6 +3326,11 @@ public class EmployeesController : ControllerBase
                 "A draft's documents carry no company until activation; access is decided below by employee or draft scope.")
             .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
+
+        // Identity and payroll files contain the same protected facts masked on the employee record.
+        if (EmployeeDocumentDto.IsSensitiveCategory(document.DocumentCategory)
+            && !User.HasPermission("employees.sensitive"))
+            return Forbid();
 
         if (document.EmployeeId.HasValue)
         {
@@ -3692,6 +3711,7 @@ public class EmployeesController : ControllerBase
 
     [HttpPut("{id:int}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
         // Work-email and draft entitlement edits commit atomically with their audit/default rows.
@@ -4017,19 +4037,20 @@ public class EmployeesController : ControllerBase
                 form.ApprovalStatus,
                 form.Notes);
             var document = await employeeManagement.UploadDocumentAsync(RequireTenant(), id, request, form.File, Context(), cancellationToken);
-            return Created($"/api/employees/{id}/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+            return Created($"/api/employees/{id}/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpGet("{id:int}/documents")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeDocumentDto>>> EmployeeDocuments(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
         if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
             return Forbid();
         var docs = await employeeManagement.GetDocumentsAsync(RequireTenant(), id, cancellationToken);
-        return Ok(docs.Select(EmployeeDocumentDto.Project).ToList());
+        return Ok(docs.Select(document => EmployeeDocumentDto.Project(document, CanViewSensitive())).ToList());
     }
 
     [HttpPut("{id:int}/documents/{docId:guid}")]
@@ -4037,7 +4058,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
@@ -4045,7 +4066,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
@@ -4053,7 +4074,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpDelete("{id:int}/documents/{docId:guid}")]
@@ -4064,6 +4085,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpGet("{id:int}/history")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeHistoryDto>>> EmployeeHistory(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -4120,6 +4142,7 @@ public class EmployeesController : ControllerBase
     /// checklist drawer, and the inline 422 rendering.</summary>
     [HttpGet("{id:int}/readiness")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> Readiness(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();

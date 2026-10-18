@@ -386,7 +386,7 @@ public record EmployeeDetailDto
             // Collections — projected to DTOs; raw entity collections accepted for backward compat
             PayrollProfile                = payrollProfile is not null ? EmployeePayrollProfileDto.Project(payrollProfile, includeSensitive) : null,
             ComplianceRecords             = complianceRecords ?? [],
-            Documents                     = documentDtos ?? documents?.Select(EmployeeDocumentDto.Project).ToList() ?? [],
+            Documents                     = documentDtos ?? documents?.Select(document => EmployeeDocumentDto.Project(document, includeSensitive)).ToList() ?? [],
             History                       = history?.Select(EmployeeHistoryDto.Project).ToList() ?? [],
             Transfers                     = transfers?.Select(EmployeeTransferDto.Project).ToList() ?? [],
         };
@@ -663,28 +663,41 @@ public record EmployeeDocumentDto
     public Guid? VerifiedBy { get; init; }
     public string Notes { get; init; } = string.Empty;
 
-    public static EmployeeDocumentDto Project(EmployeeDocument d) => new()
+    public static bool IsSensitiveCategory(string? category) =>
+        category is not null
+        && (category.Equals("identity", StringComparison.OrdinalIgnoreCase)
+            || category.Equals("payroll", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Identity and payroll documents remain visible as workflow records without exposing their
+    /// identifying metadata to a caller that lacks employees.sensitive.
+    /// </summary>
+    public static EmployeeDocumentDto Project(EmployeeDocument d, bool includeSensitive = true)
     {
-        Id                   = d.Id,
-        EmployeeId           = d.EmployeeId,
-        DraftId              = d.DraftId,
-        DocumentType         = d.DocumentType,
-        DocumentCategory     = d.DocumentCategory,
-        FileName             = d.FileName,
-        ContentType          = d.ContentType,
-        StorageUrl           = d.StorageUrl,
-        IsRequired           = d.IsRequired,
-        IssueDate            = d.IssueDate,
-        ExpiryDate           = d.ExpiryDate,
-        RenewalReminderDate  = d.RenewalReminderDate,
-        ApprovalStatus       = d.ApprovalStatus,
-        VersionNumber        = d.VersionNumber,
-        UploadedBy           = d.UploadedBy,
-        UploadedAtUtc        = d.UploadedAtUtc,
-        VerifiedAtUtc        = d.VerifiedAtUtc,
-        VerifiedBy           = d.VerifiedBy,
-        Notes                = d.Notes,
-    };
+        var showProtectedMetadata = includeSensitive || !IsSensitiveCategory(d.DocumentCategory);
+        return new()
+        {
+            Id                   = d.Id,
+            EmployeeId           = d.EmployeeId,
+            DraftId              = d.DraftId,
+            DocumentType         = showProtectedMetadata ? d.DocumentType : "Sensitive document",
+            DocumentCategory     = d.DocumentCategory,
+            FileName             = showProtectedMetadata ? d.FileName : string.Empty,
+            ContentType          = d.ContentType,
+            StorageUrl           = showProtectedMetadata ? d.StorageUrl : string.Empty,
+            IsRequired           = d.IsRequired,
+            IssueDate            = showProtectedMetadata ? d.IssueDate : null,
+            ExpiryDate           = showProtectedMetadata ? d.ExpiryDate : null,
+            RenewalReminderDate  = showProtectedMetadata ? d.RenewalReminderDate : null,
+            ApprovalStatus       = d.ApprovalStatus,
+            VersionNumber        = d.VersionNumber,
+            UploadedBy           = d.UploadedBy,
+            UploadedAtUtc        = d.UploadedAtUtc,
+            VerifiedAtUtc        = d.VerifiedAtUtc,
+            VerifiedBy           = d.VerifiedBy,
+            Notes                = showProtectedMetadata ? d.Notes : string.Empty,
+        };
+    }
 }
 
 /// <summary>

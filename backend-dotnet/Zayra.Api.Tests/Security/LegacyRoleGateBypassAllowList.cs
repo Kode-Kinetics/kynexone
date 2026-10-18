@@ -309,8 +309,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Employees.GetReportingLines", "HR Director", SeniorHr),
         ("GET Employees.Headcount", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Manager,Supervisor,Recruiter,HR Assistant", AggregateOnly),
         ("GET Employees.Headcount", "HR Director", SeniorHr),
-        ("GET Employees.ImportTemplate", "Payroll Manager,Payroll Officer,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant,Auditor", OrgReadByDesign),
-        ("GET Employees.ImportTemplate", "Manager,Supervisor", TeamScopedRead),
         ("GET Employees.ImportTemplate", "HR Director", SeniorHr),
         ("GET Employees.MissingDocuments", "Payroll Manager,Finance,Finance Approver,Compliance Officer,Recruiter,HR Assistant", OrgReadByDesign),
         ("GET Employees.MissingDocuments", "Manager,Supervisor", TeamScopedRead),
