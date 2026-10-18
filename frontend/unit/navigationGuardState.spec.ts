@@ -79,3 +79,15 @@ test('failed discard keeps the intent open with an announced error and never nav
   expect(state.snapshot().error).toBe('Draft could not be discarded.');
   expect(state.snapshot().busy).toBe(false);
 });
+
+test('replacing an intent advances identity and clears a same-message failure', async () => {
+  const state = createNavigationGuardState();
+  queueIntent(state, { destination: '/people', run: () => {} });
+  const firstSequence = state.snapshot().sequence;
+  await expect(confirmIntent(state, [async () => { throw new Error('Could not discard.'); }])).rejects.toThrow();
+
+  queueIntent(state, { destination: '/payroll', run: () => {} });
+
+  expect(state.snapshot().sequence).toBe(firstSequence + 1);
+  expect(state.snapshot().error).toBe('');
+});

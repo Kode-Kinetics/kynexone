@@ -18,7 +18,7 @@ interface CompanyContextValue {
   companies: CompanyAccess[];
   /** null = "All companies" (group-scope users) or the only company (single). */
   selectedCompanyId: string | null;
-  setSelectedCompany: (companyId: string | null) => void;
+  setSelectedCompany: (companyId: string | null, restoreFocus?: HTMLElement | null) => void;
   isGroupScope: boolean;
   accountType: 'SingleCompany' | 'Group';
   /** Switcher renders only for users who can actually switch. */
@@ -66,7 +66,7 @@ export function CurrentCompanyProvider({ children }: { children: React.ReactNode
     setActiveCompanyId(initial);
   }, [user, companies, isGroupScope]);
 
-  const setSelectedCompany = useCallback((companyId: string | null) => {
+  const setSelectedCompany = useCallback((companyId: string | null, restoreFocus?: HTMLElement | null) => {
     navigationGuard.run(`company:${companyId ?? 'all'}`, () => {
       setSelectedCompanyId(companyId);
       setActiveCompanyId(companyId);
@@ -77,7 +77,7 @@ export function CurrentCompanyProvider({ children }: { children: React.ReactNode
           else localStorage.removeItem(storageKey(user.id));
         } catch { /* storage unavailable */ }
       }
-    });
+    }, restoreFocus);
   }, [navigationGuard, user]);
 
   const value = useMemo<CompanyContextValue>(() => ({

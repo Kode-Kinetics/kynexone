@@ -14,6 +14,7 @@ export function CompanySwitcher() {
   const { companies, selectedCompanyId, setSelectedCompany, isGroupScope, showSwitcher } = useCompany();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -32,6 +33,7 @@ export function CompanySwitcher() {
   return (
     <div ref={ref} className="relative" data-testid="company-switcher">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Switch company"
@@ -48,7 +50,7 @@ export function CompanySwitcher() {
             <button
               type="button"
               role="menuitem"
-              onClick={() => { setSelectedCompany(null); setOpen(false); }}
+              onClick={() => { setSelectedCompany(null, triggerRef.current); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === null ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
               <span>All companies</span>
@@ -60,7 +62,7 @@ export function CompanySwitcher() {
               key={company.id}
               type="button"
               role="menuitem"
-              onClick={() => { setSelectedCompany(company.id); setOpen(false); }}
+              onClick={() => { setSelectedCompany(company.id, triggerRef.current); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === company.id ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
               <span className="min-w-0 flex-1 truncate text-start">

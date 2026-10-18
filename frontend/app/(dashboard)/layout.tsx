@@ -9,6 +9,7 @@ import { ServerUnreachable } from '@/src/components/ServerUnreachable';
 import { TenantSettingsProvider } from '@/src/contexts/TenantSettingsContext';
 import { CurrentCompanyProvider } from '@/src/contexts/CompanyContext';
 import { NavigationGuardProvider } from '@/src/contexts/NavigationGuardContext';
+import { LocaleProvider } from '@/src/contexts/LocaleContext';
 import { applyTheme, getStoredTheme } from '@/src/utils/theme';
 import type { ThemeMode } from '@/src/types/ui';
 
@@ -37,15 +38,17 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <TenantSettingsProvider>
-      <NavigationGuardProvider>
-        <CurrentCompanyProvider>
-          <AppLayout theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
-            {/* Inside AppLayout so a switched-off module keeps the chrome and the user can navigate
-                away, rather than dropping them on a bare page. */}
-            <ModuleGate>{children}</ModuleGate>
-          </AppLayout>
-        </CurrentCompanyProvider>
-      </NavigationGuardProvider>
+      <LocaleProvider>
+        <NavigationGuardProvider>
+          <CurrentCompanyProvider>
+            <AppLayout theme={theme} onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>
+              {/* Inside AppLayout so a switched-off module keeps the chrome and the user can navigate
+                  away, rather than dropping them on a bare page. */}
+              <ModuleGate>{children}</ModuleGate>
+            </AppLayout>
+          </CurrentCompanyProvider>
+        </NavigationGuardProvider>
+      </LocaleProvider>
     </TenantSettingsProvider>
   );
 }

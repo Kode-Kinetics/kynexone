@@ -1,7 +1,7 @@
 'use client';
 import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
@@ -20,7 +20,6 @@ import { reportsApi } from '../api/reports';
 import { usersApi } from '../api/identity';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
-import { LocaleProvider } from '../contexts/LocaleContext';
 import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
@@ -82,6 +81,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [reportResults, setReportResults] = useState<Array<{ key: string; label: string; sublabel: string }>>([]);
   const [searching, setSearching] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const commandTriggerRef = useRef<HTMLButtonElement>(null);
+  const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
 
   const commandItems = useMemo(() => {
     const base = commandNavigationItems
@@ -246,7 +247,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const runCommand = (path: string) => {
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    navigationGuard.push(path);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
@@ -254,7 +255,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     const path = `/people?employeeId=${id}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    navigationGuard.push(path);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
@@ -262,7 +263,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     const path = `/user-management?search=${encodeURIComponent(searchText)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    navigationGuard.push(path);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
@@ -270,7 +271,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     const path = `/reports?report=${encodeURIComponent(key)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    navigationGuard.push(path);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
@@ -366,10 +367,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [activeIndex, commandOpen, paletteItems]);
 
+  // overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
+  // silently disabled every position:sticky inside it (the command bar scrolled away).
   return (
-    <LocaleProvider>
-    {/* overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
-        silently disabled every position:sticky inside it (the command bar scrolled away). */}
     <div className="tenant-app-shell wg-canvas min-h-screen overflow-x-clip text-slate-950 dark:text-white">
       <div className="flex min-h-screen">
         <Sidebar
@@ -381,6 +381,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             localStorage.setItem('sidebar-collapsed', String(next));
             return next;
           })}
+          navigationRestoreTarget={sidebarTriggerRef}
         />
         <div className="min-w-0 flex-1">
           <TopBar
@@ -388,6 +389,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             onToggleTheme={onToggleTheme}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSearch={openCommandPalette}
+            navigationButtonRef={sidebarTriggerRef}
+            searchButtonRef={commandTriggerRef}
           />
           <MfaEnrollmentPrompt
             loadStatus={authApi.mfaStatus}
@@ -588,6 +591,5 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
         </div>
       )}
     </div>
-    </LocaleProvider>
   );
 }

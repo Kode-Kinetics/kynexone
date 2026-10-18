@@ -8,6 +8,7 @@ export interface NavigationGuardSnapshot {
   intent: NavigationIntent | null;
   busy: boolean;
   error: string;
+  sequence: number;
 }
 
 type Listener = () => void;
@@ -18,6 +19,7 @@ export interface NavigationGuardState {
   pending: NavigationIntent | null;
   busy: boolean;
   error: string;
+  sequence: number;
   bypassDestination: string | null;
   listeners: Set<Listener>;
 }
@@ -27,9 +29,10 @@ export function createNavigationGuardState(): NavigationGuardState {
     pending: null,
     busy: false,
     error: '',
+    sequence: 0,
     bypassDestination: null,
     listeners: new Set(),
-    snapshot: () => ({ intent: state.pending, busy: state.busy, error: state.error }),
+    snapshot: () => ({ intent: state.pending, busy: state.busy, error: state.error, sequence: state.sequence }),
     subscribe: (listener) => {
       state.listeners.add(listener);
       return () => state.listeners.delete(listener);
@@ -50,6 +53,7 @@ export function queueIntent(state: NavigationGuardState, intent: NavigationInten
   if (state.busy) return 'queued';
   state.pending = intent;
   state.error = '';
+  state.sequence += 1;
   notify(state);
   return 'queued';
 }
@@ -66,6 +70,8 @@ export function cancelIntent(state: NavigationGuardState) {
 export async function confirmIntent(
   state: NavigationGuardState,
   discarders: ReadonlyArray<() => void | Promise<void>>,
+  fallbackError = 'Navigation could not be completed.',
+  errorOverride?: string,
 ) {
   if (state.busy || !state.pending) return;
   const intent = state.pending;
@@ -80,7 +86,7 @@ export async function confirmIntent(
     state.error = '';
   } catch (error) {
     state.bypassDestination = null;
-    state.error = error instanceof Error ? error.message : 'Navigation could not be completed.';
+    state.error = errorOverride ?? (error instanceof Error && error.message ? error.message : fallbackError);
     throw error;
   } finally {
     state.busy = false;

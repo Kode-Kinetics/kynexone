@@ -17,6 +17,7 @@ interface SidebarProps {
   isCollapsed: boolean;
   onClose: () => void;
   onToggleCollapse: () => void;
+  navigationRestoreTarget?: React.RefObject<HTMLButtonElement | null>;
 }
 
 function pathIsActive(pathname: string | null, path: string | undefined, allPaths: string[]) {
@@ -29,7 +30,7 @@ function pathIsActive(pathname: string | null, path: string | undefined, allPath
   return false;
 }
 
-export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: SidebarProps) {
+export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, navigationRestoreTarget }: SidebarProps) {
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
   const pathname = usePathname();
@@ -123,16 +124,22 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
     return requiredPermissions.some((p) => hasPermission(p));
   };
 
-  const handleNav = (path?: string) => {
-    if (path) navigationGuard.push(path);
+  const handleNav = (path?: string, activationTarget?: HTMLElement | null) => {
+    const restoreFocus = window.matchMedia('(min-width: 1024px)').matches
+      ? activationTarget
+      : navigationRestoreTarget?.current;
+    if (path) navigationGuard.push(path, restoreFocus);
     onClose();
   };
 
-  const handleLogout = () => {
+  const handleLogout = (activationTarget?: HTMLElement | null) => {
+    const restoreFocus = window.matchMedia('(min-width: 1024px)').matches
+      ? activationTarget
+      : navigationRestoreTarget?.current;
     navigationGuard.run('sign-out:/login', async () => {
       await logout();
       router.replace('/login');
-    });
+    }, restoreFocus);
   };
 
   const isActive = (path?: string) => {
@@ -275,7 +282,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                             onMouseLeave={hideTip}
                             onFocus={(e) => { if (e.currentTarget.matches(':focus-visible')) showTip(e.currentTarget, item.path, t(item.label), 0); }}
                             onBlur={hideTip}
-                            onClick={() => { hideTip(); handleNav(item.path); }}
+                            onClick={(event) => { hideTip(); handleNav(item.path, event.currentTarget); }}
                             aria-current={active ? 'page' : undefined}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
@@ -337,7 +344,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
               <button
                 type="button"
                 aria-label={t('Sign out')}
-                onClick={handleLogout}
+                onClick={(event) => handleLogout(event.currentTarget)}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
               >
                 <LogOut className="h-3.5 w-3.5" />
@@ -358,7 +365,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse }: Side
                 <button
                   type="button"
                   aria-label={t('Sign out')}
-                  onClick={handleLogout}
+                  onClick={(event) => handleLogout(event.currentTarget)}
                   className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
                 >
                   <LogOut className="h-3.5 w-3.5" />
