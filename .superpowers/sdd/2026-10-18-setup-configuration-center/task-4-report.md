@@ -82,3 +82,33 @@ Result: 136 passed, 2 skipped, 52 failed in 11.5 minutes. All new Task 4 tests p
 ## Commit
 
 Prepared as the isolated `feat: redesign Configuration Center navigation` commit; the final hash is reported in the controller handoff.
+
+## Fix round 1
+
+Review found four Important gaps and one Minor evidence gap in commit `3a0b2ff7`. The remediation adds deterministic origin restoration for explicit Back and browser Back/Forward after previous/next navigation, keeps the all-area navigator available beside the focused editor, gives focused navigation and dialog controls 44px minimum targets, makes the Setup Studio Arabic catalogue own the approved `Employee Reference Lists` rename, and proves live permission loss through an authoritative `/api/auth/me` refresh without reloading the page.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "back_after_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|permission_loss_unmounts_focused_editor_and_stops_reads|focused_workspace_keeps_all_area_navigator_without_extra_editor|arabic_uses_employee_reference_lists_rename"
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=mobile -g "mobile_focused_navigation_controls_are_44px_touch_targets"
+```
+
+- Desktop: the four new behavioral contracts failed for missing current-row restoration, live auth refresh, and focused navigator access; the Arabic rendering assertion was already green because the broader setup catalogue also carried that translation.
+- Mobile: the computed Back target height was 36px instead of the required 44px.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_unmounts_focused_editor_and_stops_reads|tenant_setting_says_applies_to_all_companies|focused_workspace_keeps_all_area_navigator_without_extra_editor|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|mobile_focused_navigation_controls_are_44px_touch_targets|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading|arabic_uses_employee_reference_lists_rename"
+```
+
+- 31 passed with 3 intentional desktop/mobile-specific skips.
+- `npx tsc --noEmit`: exit 0 with no diagnostics.
+- Relevant history/dirty subset: 6 passed and 10 known pre-existing dirty-guard failures. The passing contracts cover canonical-save guard clearing, URL Back area restoration, and absent-company history restoration. The failures are the previously documented stale onboarding/history tests: one leaves its confirmation modal open before trying a company switch, while the others expect native dialogs from the current custom navigation guard.
+- The same exact Task 4 command ran from a fresh `git checkout-index` export: 31 passed and 3 intentional project-specific skips, proving the fix does not depend on unstaged user work.
+- Staged-index TypeScript still reaches only the unrelated committed-index `workEmailDomainProblem` mismatch documented in Task 2/Task 4; live-worktree TypeScript remains green.
+
+Fix commit message: `fix: complete Configuration navigation contracts`; final hash is reported in the controller handoff.

@@ -104,7 +104,7 @@ const ar: Record<string, string> = {
   "Grades": "الدرجات",
   "Cost centers": "مراكز التكلفة",
   "Cost centres and budget": "مراكز التكلفة والميزانية",
-  "Master data": "البيانات الرئيسية",
+  "Employee Reference Lists": "قوائم القيم المرجعية للموظفين",
   "Employee records and contracts": "سجلات الموظفين والعقود",
   "Contract renewals": "تجديد العقود",
   "Recruitment and workforce planning": "التوظيف وتخطيط القوى العاملة",

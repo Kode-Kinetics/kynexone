@@ -60,7 +60,7 @@ export function SetupAllAreasDialog({ open, activeArea, onSelect, onClose, trigg
             <h2 ref={heading} tabIndex={-1} id="setup-all-areas-title" className="text-xl font-semibold text-slate-950 outline-none dark:text-white">{t('Browse all setup areas')}</h2>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Choose an area. No settings are changed by navigation.')}</p>
           </div>
-          <button type="button" onClick={close} aria-label={t('Close')} className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sapphire dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
+          <button type="button" onClick={close} aria-label={t('Close')} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sapphire dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
             <X aria-hidden="true" className="h-5 w-5" />
           </button>
         </div>

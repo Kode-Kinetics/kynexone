@@ -38,6 +38,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const returnOrigin = useRef<ReturnOrigin | null>(null);
   const restoreOrigin = useRef(false);
   const focusSelectedArea = useRef(false);
+  const previousSelectedDestination = useRef<string | null>(null);
 
   const authorizedCompany = selectedCompanyId && permittedCompanies.some(company => company.id === selectedCompanyId) ? selectedCompanyId : null;
   const companyName = companies.find(company => company.id === authorizedCompany)?.legalNameEn
@@ -108,17 +109,15 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
   const nextDestination = selectedIndex >= 0 && selectedIndex < orderedEmbedded.length - 1 ? orderedEmbedded[selectedIndex + 1] : undefined;
 
   useEffect(() => {
-    if (!focusSelectedArea.current || selectedDestination) return;
-    focusSelectedArea.current = false;
-    const frame = window.requestAnimationFrame(() => {
-      areaHeading.current?.scrollIntoView({ block: 'start' });
-      areaHeading.current?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeArea, selectedDestination]);
+    const currentDestination = selectedDestination?.id ?? null;
+    const previousDestination = previousSelectedDestination.current;
+    previousSelectedDestination.current = currentDestination;
 
-  useEffect(() => {
-    if (!restoreOrigin.current || selectedDestination) return;
+    if (currentDestination && previousDestination && currentDestination !== previousDestination && returnOrigin.current) {
+      returnOrigin.current = { ...returnOrigin.current, destinationId: currentDestination };
+    }
+    if (!currentDestination && previousDestination && !focusSelectedArea.current) restoreOrigin.current = true;
+    if (!restoreOrigin.current || currentDestination) return;
     restoreOrigin.current = false;
     const origin = returnOrigin.current;
     const frame = window.requestAnimationFrame(() => {
@@ -130,14 +129,27 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [selectedDestination]);
+  }, [selectedDestination?.id]);
+
+  useEffect(() => {
+    if (!focusSelectedArea.current || selectedDestination) return;
+    focusSelectedArea.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      areaHeading.current?.scrollIntoView({ block: 'start' });
+      areaHeading.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeArea, selectedDestination]);
 
   const openDestination = (destination: SetupDestination) => {
     returnOrigin.current = { destinationId: destination.id, scrollY: window.scrollY };
     navigate(destination.areaId, destination.id);
   };
   const backToArea = () => navigate(activeArea, undefined, () => { restoreOrigin.current = true; });
-  const moveTo = (destination: SetupDestination) => navigate(destination.areaId, destination.id);
+  const moveTo = (destination: SetupDestination) => {
+    if (returnOrigin.current) returnOrigin.current = { ...returnOrigin.current, destinationId: destination.id };
+    navigate(destination.areaId, destination.id);
+  };
   const chooseArea = (areaId: SetupAreaId | 'overview', afterAccepted: () => void) => {
     navigate(areaId, undefined, () => {
       focusSelectedArea.current = true;
@@ -164,20 +176,25 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
       </div>
 
       {selectedDestination && area ? (
-        <SetupFocusedWorkspace
-          destination={selectedDestination}
-          areaLabel={area.label}
-          scopeLabel={scopeLabel(selectedDestination)}
-          onBack={backToArea}
-          previousDestination={previousDestination}
-          nextDestination={nextDestination}
-          onPrevious={previousDestination ? () => moveTo(previousDestination) : undefined}
-          onNext={nextDestination ? () => moveTo(nextDestination) : undefined}
-        >
-          <div key={`${selectedDestination.id}:${companyVersion}`}>
-            {renderSettings(selectedDestination.id, onDirtyChange)}
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <SetupAreaNavigator activeArea={activeArea} onSelect={chooseArea} />
           </div>
-        </SetupFocusedWorkspace>
+          <SetupFocusedWorkspace
+            destination={selectedDestination}
+            areaLabel={area.label}
+            scopeLabel={scopeLabel(selectedDestination)}
+            onBack={backToArea}
+            previousDestination={previousDestination}
+            nextDestination={nextDestination}
+            onPrevious={previousDestination ? () => moveTo(previousDestination) : undefined}
+            onNext={nextDestination ? () => moveTo(nextDestination) : undefined}
+          >
+            <div key={`${selectedDestination.id}:${companyVersion}`}>
+              {renderSettings(selectedDestination.id, onDirtyChange)}
+            </div>
+          </SetupFocusedWorkspace>
+        </div>
       ) : (
         <section data-testid="setup-area-content" className="min-w-0 rounded-xl border border-slate-200 bg-white px-4 py-5 dark:border-white/10 dark:bg-slate-900 sm:px-6" aria-labelledby="setup-area-title">
           <div className="flex flex-wrap items-start justify-between gap-4">

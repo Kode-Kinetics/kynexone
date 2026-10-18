@@ -16,7 +16,7 @@ export function SetupAreaNavigator({ activeArea, onSelect }: {
   return (
     <>
       <button ref={trigger} type="button" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(true)}
-        className="btn-secondary inline-flex items-center gap-2 text-sm">
+        className="btn-secondary inline-flex min-h-11 min-w-11 items-center gap-2 text-sm">
         <LayoutGrid aria-hidden="true" className="h-4 w-4" />
         {t('Browse all areas')}
       </button>

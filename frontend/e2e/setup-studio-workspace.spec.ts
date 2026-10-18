@@ -1475,6 +1475,53 @@ test('back_restores_origin_focus_and_scroll', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBeGreaterThan(300);
 });
 
+test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll', async ({ page }) => {
+  await boot(page, { area: 'organization' });
+  for (const adjacent of [
+    { control: 'Previous: Branches', destination: 'Branches' },
+    { control: 'Next: Designations', destination: 'Designations' },
+  ]) {
+    const departments = page.getByRole('button', { name: 'Departments', exact: true });
+    const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
+      window.scrollTo({ top: 420, behavior: 'auto' });
+      const scrollY = window.scrollY;
+      element.click();
+      return scrollY;
+    });
+
+    await page.getByRole('button', { name: adjacent.control, exact: true }).first().click();
+    await expect(page.getByRole('heading', { level: 2, name: adjacent.destination, exact: true })).toBeFocused();
+    await page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first().click();
+
+    await expect(page.getByRole('button', { name: adjacent.destination, exact: true })).toBeFocused();
+    await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
+  }
+});
+
+test('browser_back_forward_restores_matching_row_focus_and_scroll', async ({ page }) => {
+  await boot(page, { area: 'organization' });
+  const departments = page.getByRole('button', { name: 'Departments', exact: true });
+  const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
+    window.scrollTo({ top: 420, behavior: 'auto' });
+    const scrollY = window.scrollY;
+    element.click();
+    return scrollY;
+  });
+  await page.getByRole('button', { name: 'Next: Designations', exact: true }).first().click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Designations', exact: true })).toBeFocused();
+
+  await page.goBack();
+  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
+  await page.goBack();
+  await expect(page.getByRole('button', { name: 'Departments', exact: true })).toBeFocused();
+  await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
+
+  await page.goForward();
+  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
+  await page.goForward();
+  await expect(page.getByRole('heading', { level: 2, name: 'Designations', exact: true })).toBeFocused();
+});
+
 test('previous_next_are_available_above_and_below_long_form', async ({ page }) => {
   await boot(page, { area: 'organization', setting: 'departments' });
 
@@ -1522,10 +1569,11 @@ test('permission_loss_unmounts_focused_editor_and_stops_reads', async ({ page })
 
   allowed = false;
   reads.length = 0;
-  await page.reload();
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:auth-changed')));
 
   await expect(page.getByTestId('setup-focused-workspace')).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
   expect(reads.filter(path => path.startsWith('/api/recruitment/onboarding'))).toEqual([]);
 });
 
@@ -1535,6 +1583,16 @@ test('tenant_setting_says_applies_to_all_companies', async ({ page }) => {
   await expect(page.getByTestId('setup-focused-workspace').getByText('Applies to all companies', { exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-focused-workspace').getByText('Company scope', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('setup-focused-workspace').getByText('Tenant-wide controls', { exact: true })).toHaveCount(0);
+});
+
+test('focused_workspace_keeps_all_area_navigator_without_extra_editor', async ({ page }) => {
+  await boot(page, { area: 'organization', setting: 'companies' });
+
+  await expect(page.getByRole('button', { name: 'Browse all areas', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Browse all areas', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Browse all setup areas', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(1);
+  await expect(page.getByTestId('setup-area-blueprint')).toHaveCount(0);
 });
 
 test('browse_all_areas_is_large_desktop_dialog', async ({ page }, testInfo) => {
@@ -1563,6 +1621,31 @@ test('mobile_area_navigator_is_full_screen', async ({ page }, testInfo) => {
   expect(Math.abs(box!.height - viewport.height)).toBeLessThanOrEqual(2);
 });
 
+test('mobile_focused_navigation_controls_are_44px_touch_targets', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile');
+  await boot(page, { area: 'organization', setting: 'departments' });
+
+  const controls = [
+    page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first(),
+    page.getByRole('button', { name: 'Previous: Branches', exact: true }).first(),
+    page.getByRole('button', { name: 'Next: Designations', exact: true }).first(),
+    page.getByRole('button', { name: 'Browse all areas', exact: true }),
+  ];
+  for (const control of controls) {
+    const box = await control.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  }
+
+  await page.getByRole('button', { name: 'Browse all areas', exact: true }).click();
+  const close = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true }).getByRole('button', { name: 'Close', exact: true });
+  const closeBox = await close.boundingBox();
+  expect(closeBox).not.toBeNull();
+  expect(closeBox!.width).toBeGreaterThanOrEqual(44);
+  expect(closeBox!.height).toBeGreaterThanOrEqual(44);
+});
+
 test('navigator_contains_focus_closes_with_escape_and_restores_trigger', async ({ page }) => {
   await boot(page, { area: 'organization' });
   const trigger = page.getByRole('button', { name: 'Browse all areas', exact: true });
@@ -1587,4 +1670,11 @@ test('area_selection_focuses_area_heading', async ({ page }) => {
 
   await expect(page).toHaveURL(/area=payroll/);
   await expect(page.getByRole('heading', { level: 2, name: 'Payroll', exact: true })).toBeFocused();
+});
+
+test('arabic_uses_employee_reference_lists_rename', async ({ page }) => {
+  await boot(page, { arabic: true, area: 'organization' });
+
+  await expect(page.getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
+  await expect(page.getByText('Employee Reference Lists', { exact: true })).toHaveCount(0);
 });

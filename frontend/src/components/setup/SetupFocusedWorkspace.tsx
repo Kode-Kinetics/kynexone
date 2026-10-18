@@ -31,16 +31,16 @@ export function SetupFocusedWorkspace({ destination, areaLabel, scopeLabel, onBa
 
   const navigation = (position: 'top' | 'bottom') => (
     <nav data-testid={`focused-navigation-${position}`} aria-label={t(position === 'top' ? 'Focused setting navigation' : 'Focused setting navigation after form')} className="flex flex-wrap items-center justify-between gap-2">
-      <button type="button" onClick={onBack} className="btn-secondary inline-flex items-center gap-1.5 text-sm">
+      <button type="button" onClick={onBack} className="btn-secondary inline-flex min-h-11 min-w-11 items-center gap-1.5 text-sm">
         <ArrowLeft aria-hidden="true" className="h-4 w-4 rtl:rotate-180" />
         {t('Back to {area}', { area: t(areaLabel) })}
       </button>
       <div className="flex flex-wrap gap-2">
         {onPrevious && previousDestination && (
-          <button type="button" onClick={onPrevious} className="btn-secondary text-sm">{t('Previous: {destination}', { destination: t(previousDestination.label) })}</button>
+          <button type="button" onClick={onPrevious} className="btn-secondary min-h-11 min-w-11 text-sm">{t('Previous: {destination}', { destination: t(previousDestination.label) })}</button>
         )}
         {onNext && nextDestination && (
-          <button type="button" onClick={onNext} className="btn-secondary inline-flex items-center gap-1.5 text-sm">
+          <button type="button" onClick={onNext} className="btn-secondary inline-flex min-h-11 min-w-11 items-center gap-1.5 text-sm">
             {t('Next: {destination}', { destination: t(nextDestination.label) })}
             <ArrowRight aria-hidden="true" className="h-4 w-4 rtl:rotate-180" />
           </button>

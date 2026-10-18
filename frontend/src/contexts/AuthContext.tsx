@@ -86,6 +86,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadUser().finally(() => setIsLoading(false));
   }, [loadUser]);
 
+  useEffect(() => {
+    // Refresh from the authoritative session when a role/permission management flow reports a change.
+    // Same-origin callers can request a recheck, but cannot provide or inject the resulting privileges.
+    const refreshAuthorization = () => { void loadUser(); };
+    window.addEventListener('kynexone:auth-changed', refreshAuthorization);
+    return () => window.removeEventListener('kynexone:auth-changed', refreshAuthorization);
+  }, [loadUser]);
+
   // The offline screen shows its own "Retrying…" state, so a retry does not flip isLoading (which
   // would swap that screen for a bare spinner and back).
   const retryAuth = loadUser;
