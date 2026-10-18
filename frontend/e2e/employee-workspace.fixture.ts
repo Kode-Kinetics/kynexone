@@ -11,6 +11,7 @@ export interface EmployeeWorkspaceFixtureControl {
   readinessCalls: Map<number, number>;
   listCalls: number;
   mutationCalls: string[];
+  mutations: Array<{ method: string; path: string; body: unknown }>;
 }
 
 interface EmployeeWorkspaceFixtureOptions {
@@ -209,6 +210,7 @@ export async function bootEmployeeWorkspaceFixture(
     readinessCalls: new Map(),
     listCalls: 0,
     mutationCalls: [],
+    mutations: [],
   };
 
   await page.addInitScript(() => {
@@ -252,6 +254,13 @@ export async function bootEmployeeWorkspaceFixture(
     const detailMatch = path.match(/^\/api\/employees\/(\d+)$/);
     if (detailMatch) {
       const employeeId = Number(detailMatch[1]);
+      if (route.request().method() !== 'GET') {
+        const method = route.request().method();
+        const body = route.request().postDataJSON();
+        control.mutationCalls.push(`${method} ${path}`);
+        control.mutations.push({ method, path, body });
+        return reply(employees[employeeId as keyof typeof employees] ?? employees[901]);
+      }
       count(control.detailCalls, employeeId);
       await delay(control.detailDelayMs.get(employeeId) ?? 0);
       const source = employees[employeeId as keyof typeof employees] ?? employees[901];
@@ -289,7 +298,12 @@ export async function bootEmployeeWorkspaceFixture(
       return reply({ items, total: items.length, page: 1, pageSize: 100 });
     }
 
-    if (route.request().method() !== 'GET') control.mutationCalls.push(`${route.request().method()} ${path}`);
+    if (route.request().method() !== 'GET') {
+      const method = route.request().method();
+      const body = route.request().postDataJSON();
+      control.mutationCalls.push(`${method} ${path}`);
+      control.mutations.push({ method, path, body });
+    }
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
 

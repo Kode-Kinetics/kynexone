@@ -484,3 +484,24 @@ test('workspace destination gives a permission-safe fallback for an unavailable 
   await expect(page.getByText('This panel is not available for your current access.', { exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'View activity overview' })).toHaveAttribute('href', /section=activity/);
 });
+
+test('route-owned employee editing reaches Review before sending changed fields', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901/edit?mode=guided&section=personal');
+
+  const flow = page.getByTestId('employee-edit-flow');
+  await expect(flow).toBeVisible();
+  await expect(flow.getByRole('navigation', { name: 'Employee setup progress' })).toBeVisible();
+  await flow.getByRole('textbox', { name: /^Preferred name/ }).fill('QA Master Updated');
+  await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(flow).toContainText('QA Master Updated');
+  expect(fixture.mutationCalls).toEqual([]);
+
+  await flow.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page).toHaveURL(/\/people\/901\?section=personal/);
+  expect(fixture.mutations).toEqual([{
+    method: 'PUT',
+    path: '/api/employees/901',
+    body: { effectiveDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), changes: { preferredName: 'QA Master Updated' } },
+  }]);
+});

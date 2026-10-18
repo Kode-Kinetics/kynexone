@@ -37,6 +37,7 @@ interface EmployeeWorkspaceShellProps {
   mode: 'view' | 'edit';
   returnTo: string;
   readiness: ReadinessState;
+  savedNotice?: string;
   onRetryReadiness(): void;
 }
 
@@ -61,6 +62,7 @@ export function EmployeeWorkspaceShell({
   mode,
   returnTo,
   readiness,
+  savedNotice,
   onRetryReadiness,
 }: EmployeeWorkspaceShellProps) {
   const { hasPermission } = useAuth();
@@ -147,11 +149,12 @@ export function EmployeeWorkspaceShell({
         </nav>
 
         <section data-employee-workspace-scroll className="min-w-0" aria-live="polite">
+          {savedNotice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">{t(savedNotice)}</p>}
           {section === 'overview' && <EmployeeOverview employee={employee} readiness={readiness.data} returnTo={returnTo} />}
           {section === 'personal' && <EmployeePersonalSection employee={employee} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'pay-benefits' && <EmployeePayBenefitsSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
-          {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} panel={panel} returnTo={returnTo} />}
+          {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} readiness={readiness.data} panel={panel} returnTo={returnTo} />}
           {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} />}
           {section === 'activity' && <EmployeeActivitySection employee={employee} panel={panel} returnTo={returnTo} />}
         </section>

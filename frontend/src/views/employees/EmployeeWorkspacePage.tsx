@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useEmployeeRecord, type EmployeeLoadError } from './useEmployeeRecord';
-import { validatePeopleReturnTo, type EmployeeSection } from '../../lib/peopleRoutes';
+import { employeeWorkspaceHref, validatePeopleReturnTo, type EmployeeSection } from '../../lib/peopleRoutes';
 import { EmployeeWorkspaceShell } from './EmployeeWorkspaceShell';
+import { EmployeeEditFlow } from './EmployeeEditFlow';
 
 interface EmployeeWorkspacePageProps {
   employeeIdParam: string;
@@ -82,6 +83,20 @@ function ValidEmployeeWorkspace({ employeeId, mode }: { employeeId: number; mode
     return <main className="min-h-full bg-slate-50/60 px-4 py-6 dark:bg-slate-950/30" aria-busy="true"><div className="mx-auto max-w-7xl space-y-4"><Link href={returnTo} className="inline-flex min-h-11 items-center font-semibold text-sapphire hover:underline">Back to People</Link><section className="surface p-6" role="status"><p className="font-semibold text-slate-700 dark:text-slate-200">Loading employee record…</p></section></div></main>;
   }
 
+  if (mode === 'edit') {
+    return <EmployeeEditFlow
+      employee={record.detail.data}
+      section={section}
+      panel={panel}
+      returnTo={returnTo}
+      onSaved={async (status) => {
+        await record.refreshRecord();
+        const target = employeeWorkspaceHref(record.detail.data!.id, { section, panel, returnTo });
+        window.location.assign(`${target}&saved=${status === 202 ? 'approval' : 'updated'}`);
+      }}
+    />;
+  }
+
   return <EmployeeWorkspaceShell
     employee={record.detail.data}
     section={section}
@@ -89,6 +104,9 @@ function ValidEmployeeWorkspace({ employeeId, mode }: { employeeId: number; mode
     mode={mode}
     returnTo={returnTo}
     readiness={record.readiness}
+    savedNotice={searchParams.get('saved') === 'approval'
+      ? 'Sensitive changes submitted to Approval Center.'
+      : searchParams.get('saved') === 'updated' ? 'Employee details saved.' : undefined}
     onRetryReadiness={() => void record.refreshReadiness()}
   />;
 }
