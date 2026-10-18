@@ -1,5 +1,7 @@
 # Setup Studio Guided Operating Blueprint
 
+> **Superseded in part on 2026-10-18:** The owner approved the existing five-step Guided Setup screen as the retained Guided experience. The adaptive Guided Operating Blueprint portions of this document are deferred. See `docs/superpowers/specs/2026-10-18-setup-studio-guided-wizard-retention-amendment.md`. Configuration Center and its shared twelve-area navigation remain in scope.
+
 Status: the two-path model, adaptive milestone approach, C+B visual direction, and shared twelve-area pattern were approved in conversation on 2026-10-18. This written specification is awaiting owner review. It authorizes no implementation, merge, deployment, production change, policy publication, or Evostel data mutation.
 
 ## 1. Purpose and audience

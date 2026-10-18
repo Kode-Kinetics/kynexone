@@ -1,5 +1,7 @@
 # Setup Studio Operating Blueprint Implementation Plan
 
+> **Superseded before implementation on 2026-10-18:** The owner approved the existing five-step Guided Setup screen as the retained baseline. Do not execute this plan. Use `docs/superpowers/plans/2026-10-18-setup-configuration-center.md` instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the current scroll-heavy Setup Studio and visible five-step starter with the approved two-path home, Configuration Center, and adaptive Guided Operating Blueprint while preserving every canonical form, permission boundary, draft, and verified Apply contract.
