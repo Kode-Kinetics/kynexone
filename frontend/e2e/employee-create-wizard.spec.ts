@@ -21,6 +21,17 @@ interface MockOptions {
   failFirstCreate?: boolean;
   workEmailConflict?: boolean;
   duplicate?: boolean;
+  masterData?: Record<string, Array<{
+    id: string;
+    typeId: string;
+    code: string;
+    valueEn: string;
+    valueAr: string;
+    sortOrder: number;
+    isDefault: boolean;
+    isSystemDefined: boolean;
+    isActive: boolean;
+  }>>;
   transliteration?: {
     status?: number;
     result?: { suggestion: string; requiresManualEntry?: boolean };
@@ -62,6 +73,7 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/companies') return reply(paged(companies));
+    if (path === '/api/admin/master-data/values') return reply(options.masterData?.[url.searchParams.get('typeCode') ?? ''] ?? []);
     if (path === '/api/branches') return reply(paged([{ id: 'branch-wizard', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
     if (path === '/api/departments') return reply(paged([
       { id: 'department-wizard', branchId: 'branch-wizard', costCenterId: 'cost-wizard', code: 'OPS', nameEn: 'Operations', managerEmployeeId: manager.id, isActive: true },
@@ -121,11 +133,9 @@ async function boot(page: Page, options: MockOptions = {}) {
     // Even unrelated shell requests stay local to this synthetic session.
     return reply(paged([]));
   });
-  await page.goto('/people');
-  await expect(page).toHaveURL(/\/people(?:\?|$)/);
+  await page.goto('/people/new');
+  await expect(page).toHaveURL(/\/people\/new(?:\?|$)/);
   await expect(page).not.toHaveTitle('');
-  await expect(page.getByRole('button', { name: 'Add Employee', exact: true }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Add Employee', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Add Employee', exact: true });
   await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
   if (!options.quick) {
@@ -228,6 +238,45 @@ test('department selection assigns its cost center and offers only its configure
   expect(errors).toEqual([]);
 });
 
+test('employee fields use active Master Data values and configured defaults', async ({ page }, info) => {
+  const value = (typeId: string, code: string, valueEn: string, sortOrder: number, isDefault = false) => ({
+    id: `${typeId}-${code}`,
+    typeId,
+    code,
+    valueEn,
+    valueAr: '',
+    sortOrder,
+    isDefault,
+    isSystemDefined: false,
+    isActive: true,
+  });
+  const { dialog, errors } = await boot(page, {
+    masterData: {
+      Gender: [value('gender', 'FEMALE', 'Female', 1), value('gender', 'NON_BINARY', 'Non-Binary', 2)],
+      MaritalStatus: [value('marital', 'SINGLE', 'Single', 1), value('marital', 'SEPARATED', 'Separated', 2)],
+      EmploymentType: [value('employment', 'FULL_TIME', 'Full-Time', 1), value('employment', 'SEASONAL', 'Seasonal', 2, true)],
+      ContractType: [value('contract', 'LIMITED', 'Limited Term', 1, true), value('contract', 'UNLIMITED', 'Unlimited Term', 2)],
+    },
+  });
+
+  await expect(dialog.getByRole('combobox', { name: 'Gender', exact: true }).locator('option'))
+    .toHaveText(['Select', 'Female', 'Non-Binary']);
+  await expect(dialog.getByRole('combobox', { name: 'Marital status', exact: true }).locator('option'))
+    .toHaveText(['Select', 'Single', 'Separated']);
+
+  await dialog.getByLabel('English full name', { exact: false }).fill('Master Data Employee');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await expandOptional(dialog, 'More employment details');
+  const employmentType = dialog.getByRole('combobox', { name: /^Employment type/ });
+  const contractType = dialog.getByRole('combobox', { name: 'Contract type', exact: true });
+  await expect(employmentType.locator('option')).toHaveText(['Select', 'Full-Time', 'Seasonal']);
+  await expect(employmentType).toHaveValue('Seasonal');
+  await expect(contractType.locator('option')).toHaveText(['Select', 'Limited Term', 'Unlimited Term']);
+  await expect(contractType).toHaveValue('Limited Term');
+  await evidence(page, info, 'master-data-employee-fields');
+  expect(errors).toEqual([]);
+});
+
 test('HR types the complete IT-issued work email without a fixed domain control', async ({ page }, info) => {
   const { dialog, creates, workEmailDerivations, errors } = await boot(page, { quick: true });
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
@@ -242,6 +291,19 @@ test('HR types the complete IT-issued work email without a fixed domain control'
   expect(creates).toHaveLength(1);
   expect(creates[0].workEmail).toBe('alex.it-issued@example.test');
   expect(workEmailDerivations).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('email regression: create preserves the complete address from a different domain', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@external.test');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates[0].workEmail).toBe('alex.it-issued@external.test');
   expect(errors).toEqual([]);
 });
 
@@ -301,18 +363,15 @@ test('saving a draft from Person persists it across reload and resumes the same 
   await dialog.getByLabel('Arabic full name', { exact: true }).fill('الاسم المعتمد');
   await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Resume draft', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=personal/);
   expect(creates).toHaveLength(1);
   expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', arabicName: 'الاسم المعتمد', companyId: company.id });
   expect(creates[0].gender ?? '').toBe('');
   await page.reload();
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const resumed = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const resumed = page.getByTestId('employee-edit-flow');
   await expect(resumed.getByRole('textbox', { name: /^English full name/ })).toHaveValue('Alex Morgan');
-  await expect(resumed.getByRole('textbox', { name: 'Arabic name', exact: true })).toHaveValue('الاسم المعتمد');
+  await expect(resumed.getByRole('textbox', { name: /^Arabic name/ })).toHaveValue('الاسم المعتمد');
   await resumed.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex resumed');
-  await expectContained(resumed, page);
   await evidence(page, info, 'resumed-draft');
   await resumed.getByRole('button', { name: /^Step 6: Review/ }).click();
   expect(updates).toHaveLength(0);
@@ -321,9 +380,8 @@ test('saving a draft from Person persists it across reload and resumes the same 
   expect(creates).toHaveLength(1);
   expect(updates).toHaveLength(1);
   expect(updates[0].changes).toEqual({ preferredName: 'Alex resumed' });
-  await page.reload();
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex resumed');
+  await page.goto('/people/901/edit?section=personal');
+  await expect(page.getByTestId('employee-edit-flow').getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex resumed');
   expect(errors).toEqual([]);
 });
 
@@ -335,6 +393,8 @@ test('optional bank and salary data survive returning to quick setup and saving 
   await dialog.getByLabel('Bank name', { exact: true }).fill('Test Bank');
   await next(dialog, 3);
   await dialog.getByLabel('Basic salary', { exact: true }).fill('7000');
+  await expandOptional(dialog, 'Add allowances and deductions');
+  await expect(dialog.getByLabel(/^Salary structure code/)).toHaveCount(0);
   await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
   await dialog.getByRole('checkbox', { name: /^Set up payroll and documents now/ }).uncheck();
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
@@ -344,7 +404,7 @@ test('optional bank and salary data survive returning to quick setup and saving 
   await expect(dialog.getByRole('button', { name: 'Create Employee', exact: true })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=pay-benefits/);
   expect(creates).toHaveLength(1);
   expect(creates[0]).toMatchObject({ englishName: 'Alex Morgan', payrollProfile: { bankName: 'Test Bank' }, salaryBreakdown: { basicSalary: 7000 } });
   expect(errors).toEqual([]);
@@ -390,7 +450,7 @@ test('the duplicate override preserves Save draft and exit intent', async ({ pag
   expect(creates).toHaveLength(0);
   await dialog.getByRole('button', { name: 'Create anyway', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText('Alex Morgan was saved as a draft.', { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=personal/);
   await expect(page.getByTestId('employee-added')).toHaveCount(0);
   expect(creates).toHaveLength(1);
   expect(creates[0].acknowledgeDuplicate).toBe(true);
@@ -691,15 +751,23 @@ for (const changedDraft of ['English name changed and restored', 'Arabic name ma
       page.once('dialog', prompt => prompt.accept());
       await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
       await expect(dialog).toHaveCount(0);
-      await page.getByRole('button', { name: 'Add Employee', exact: true }).first().click();
+      await page.goto('/people/new');
+      await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
       await expect(englishName).toHaveValue('');
       await englishName.fill('Ahmed Ali');
       expectedArabic = 'أحمد علي';
       await arabicName.fill(expectedArabic);
     }
-    const completed = page.waitForResponse(response => response.url().endsWith('/api/localization/transliterate'));
-    releaseSuggestion();
-    await (await completed).finished();
+    if (changedDraft === 'dialog closed and reopened') {
+      // Route ownership unmounts the old request; browsers may abort it before emitting a response.
+      // Releasing the delayed handler still proves the new route remains isolated from that result.
+      releaseSuggestion();
+      await page.waitForTimeout(100);
+    } else {
+      const completed = page.waitForResponse(response => response.url().endsWith('/api/localization/transliterate'));
+      releaseSuggestion();
+      await (await completed).finished();
+    }
     await expect(suggest).toBeEnabled();
     await expect(arabicName).toHaveValue(expectedArabic);
     await expect(dialog.getByRole('button', { name: 'Use this spelling', exact: true })).toHaveCount(0);

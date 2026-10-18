@@ -39,6 +39,7 @@ interface EmployeeWorkspaceShellProps {
   readiness: ReadinessState;
   savedNotice?: string;
   onRetryReadiness(): void;
+  onEmployeeChanged?(): void;
 }
 
 const destinations: Array<{ id: EmployeeSection; label: string; icon: typeof LayoutDashboard }> = [
@@ -64,6 +65,7 @@ export function EmployeeWorkspaceShell({
   readiness,
   savedNotice,
   onRetryReadiness,
+  onEmployeeChanged,
 }: EmployeeWorkspaceShellProps) {
   const { hasPermission } = useAuth();
   const { t } = useLocale();
@@ -155,7 +157,7 @@ export function EmployeeWorkspaceShell({
           {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'pay-benefits' && <EmployeePayBenefitsSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} readiness={readiness.data} panel={panel} returnTo={returnTo} />}
-          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} />}
+          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} />}
           {section === 'activity' && <EmployeeActivitySection employee={employee} panel={panel} returnTo={returnTo} />}
         </section>
       </div>

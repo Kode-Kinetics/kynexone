@@ -1,8 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
-import { useSearchParams } from 'next/navigation';
+import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { benefitsApi, benefitsErrorMessage, type GradeBenefitDefault } from '../api/benefits';
 import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
@@ -30,7 +29,7 @@ import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
-import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
 import { EmployeeCompletionHandoff } from '../components/EmployeeCompletionHandoff';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
@@ -87,10 +86,40 @@ import {
   SALARY_BREAKDOWN_EDIT_FIELDS,
 } from '../api/employeeFieldCatalog';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
+import { masterDataApi, type MasterDataValue } from '../api/setup';
+import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
 type EditField = EmployeeEditField;
+
+type EmployeeMasterDataKey = 'gender' | 'maritalStatus' | 'employmentType' | 'contractType';
+type EmployeeMasterDataChoice = { options: string[]; defaultValue: string };
+type EmployeeMasterDataState = Record<EmployeeMasterDataKey, EmployeeMasterDataChoice>;
+
+const EMPLOYEE_MASTER_DATA_FALLBACK: EmployeeMasterDataState = {
+  gender: { options: GENDER_OPTIONS, defaultValue: '' },
+  maritalStatus: { options: MARITAL_STATUS_OPTIONS, defaultValue: '' },
+  employmentType: { options: EMPLOYMENT_TYPE_OPTIONS, defaultValue: EMPLOYMENT_TYPE_OPTIONS[0] },
+  contractType: { options: CONTRACT_TYPE_OPTIONS, defaultValue: CONTRACT_TYPE_OPTIONS[0] },
+};
+
+function resolveMasterDataChoice(values: MasterDataValue[], fallback: EmployeeMasterDataChoice): EmployeeMasterDataChoice {
+  const activeValues = values
+    .filter((item) => item.isActive !== false && item.valueEn.trim().length > 0)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .filter((item, index, all) => all.findIndex((candidate) => candidate.valueEn === item.valueEn) === index);
+  if (activeValues.length === 0) return fallback;
+  return {
+    options: activeValues.map((item) => item.valueEn),
+    defaultValue: activeValues.find((item) => item.isDefault)?.valueEn ?? '',
+  };
+}
+
+function retainCurrentOption(choice: EmployeeMasterDataChoice, current?: string): string[] {
+  const value = current?.trim();
+  return value && !choice.options.includes(value) ? [...choice.options, value] : choice.options;
+}
 
 function employeeEditStep(field: EditField): number {
   if (field.key === 'salary' || field.key.startsWith('salaryBreakdown.')) return 3;
@@ -287,7 +316,7 @@ interface EmployeeUsageData {
   storageUsedMb: number;
 }
 
-export function EmployeesPage() {
+export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } = {}) {
   const wizardFormat = useFormat();
   const { t } = useLocale();
   const directoryQuery = usePeopleDirectoryQuery();
@@ -344,6 +373,7 @@ export function EmployeesPage() {
   const [pendingCreateExit, setPendingCreateExit] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<{ id: number; name: string } | null>(null);
   const createGeneration = useRef(0);
+  const createRouteOpened = useRef(false);
   const createSaveLock = useRef(false);
   const lastPersonProbe = useRef('');
   const createFormRef = useRef<HTMLFormElement>(null);
@@ -402,6 +432,9 @@ export function EmployeesPage() {
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentType, setDocumentType] = useState('Passport');
   const [documentExpiry, setDocumentExpiry] = useState('');
+  const [documentUploading, setDocumentUploading] = useState(false);
+  const [documentUploadNotice, setDocumentUploadNotice] = useState('');
+  const [documentUploadError, setDocumentUploadError] = useState('');
   const [statusSaving, setStatusSaving] = useState(false);
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [branches, setBranches] = useState<BranchDto[]>([]);
@@ -415,6 +448,10 @@ export function EmployeesPage() {
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
+  // Employee reference values come from tenant-wide Master Data. The constants remain a deliberate
+  // offline fallback so a temporary setup API failure never leaves a required create control empty.
+  const [employeeMasterData, setEmployeeMasterData] = useState<EmployeeMasterDataState>(EMPLOYEE_MASTER_DATA_FALLBACK);
+  const [employeeMasterDataLoaded, setEmployeeMasterDataLoaded] = useState(false);
   // Field catalog: resolved by the backend EmployeeFieldRegistry on TWO axes — company country ×
   // employee nationality — via GET /api/employees/field-catalog. LOCAL_FIELD_CATALOG is only the
   // offline fallback used when that endpoint is unavailable.
@@ -590,8 +627,30 @@ export function EmployeesPage() {
     setManagerCandidates(managerRes);
   }, []);
 
+  const loadEmployeeMasterData = useCallback(async () => {
+    const specs: Array<[EmployeeMasterDataKey, string]> = [
+      ['gender', 'Gender'],
+      ['maritalStatus', 'MaritalStatus'],
+      ['employmentType', 'EmploymentType'],
+      ['contractType', 'ContractType'],
+    ];
+    const results = await Promise.allSettled(specs.map(([, typeCode]) => masterDataApi.listValuesByCode(typeCode, true)));
+    setEmployeeMasterData((current) => {
+      const next = { ...current };
+      specs.forEach(([key], index) => {
+        const result = results[index];
+        next[key] = result.status === 'fulfilled'
+          ? resolveMasterDataChoice(result.value, EMPLOYEE_MASTER_DATA_FALLBACK[key])
+          : EMPLOYEE_MASTER_DATA_FALLBACK[key];
+      });
+      return next;
+    });
+    setEmployeeMasterDataLoaded(true);
+  }, []);
+
   useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
+  useEffect(() => { void loadEmployeeMasterData(); }, [loadEmployeeMasterData]);
   useEffect(() => {
     if (!canReadUsage) return;
     client.get<EmployeeUsageData>('/api/tenant-admin/usage')
@@ -814,8 +873,6 @@ export function EmployeesPage() {
 
   const saveSingleWorkEmail = async () => {
     if (!workEmailFor || !singleWorkEmail.trim()) return;
-    const singleDomain = workEmailDomainProblem(singleWorkEmail, companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain);
-    if (singleDomain) { setSingleWorkEmailError(t('Work email must end in @{domain}.', { domain: singleDomain })); return; }
     const localProblem = workEmailProblemKey(workEmailLocalProblem(singleWorkEmail));
     if (localProblem) { setSingleWorkEmailError(t(localProblem)); return; }
     setSingleWorkEmailBusy(true);
@@ -869,13 +926,25 @@ export function EmployeesPage() {
   );
   const editFields = useMemo(
     () => {
-      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode);
+      const currentValues = selectedEmployee as unknown as Record<string, unknown> | null;
+      const masterOptions: Partial<Record<string, EmployeeMasterDataChoice>> = {
+        gender: employeeMasterData.gender,
+        maritalStatus: employeeMasterData.maritalStatus,
+        employmentType: employeeMasterData.employmentType,
+        contractType: employeeMasterData.contractType,
+      };
+      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode).map((field) => {
+        const choice = masterOptions[field.key];
+        return choice
+          ? { ...field, options: retainCurrentOption(choice, String(currentValues?.[field.key] ?? '')) }
+          : field;
+      });
       return selectedEmployee && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown')
         && (selectedEmployee.salaryBreakdown != null || Number(selectedEmployee.salary ?? 0) <= 0)
         ? [...fields.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
         : fields;
     },
-    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee],
+    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee, employeeMasterData],
   );
 
   // Two-axis catalog fetch. The catalog is resolved by the backend on (company country × employee
@@ -1035,6 +1104,10 @@ export function EmployeesPage() {
     complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
     setDuplicateWarning([]);
     const next = emptyEmployee();
+    next.gender = employeeMasterData.gender.defaultValue;
+    next.maritalStatus = employeeMasterData.maritalStatus.defaultValue;
+    next.employmentType = employeeMasterData.employmentType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.employmentType.defaultValue;
+    next.contractType = employeeMasterData.contractType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.contractType.defaultValue;
     if (defaultCompany) {
       next.companyId = defaultCompany.id;
       next.payrollProfile = {
@@ -1053,6 +1126,17 @@ export function EmployeesPage() {
     setFormError('');
     setFormOpen(true);
   };
+
+  // `/people/new` owns direct creation. Until the create state is fully extracted from this
+  // legacy directory module, the route opens the same proven wizard exactly once after its
+  // organization lookups arrive. Closing it leaves the route instead of exposing the directory.
+  useEffect(() => {
+    if (!createOnly || createRouteOpened.current || companies.length === 0 || !employeeMasterDataLoaded) return;
+    createRouteOpened.current = true;
+    openCreateEmployee();
+    // openCreateEmployee deliberately snapshots the just-loaded lookup state once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOnly, companies.length, employeeMasterDataLoaded]);
 
   const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -1117,10 +1201,8 @@ export function EmployeesPage() {
     let message = '';
     if (step === 0 && !form.englishName.trim()) message = t('Enter the employee’s English full name to continue.');
     if (step === 1) {
-      const domainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
       const emailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
-      if (domainProblem) message = t('Work email must end in @{domain}.', { domain: domainProblem });
-      else if (emailProblem) message = t(emailProblem);
+      if (emailProblem) message = t(emailProblem);
     }
     if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
     if (step === 1 && !selectedFormCompany) message = t('Choose an employing company before saving.');
@@ -1225,7 +1307,7 @@ export function EmployeesPage() {
       ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
       ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
       ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
-      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction], ['Salary structure code', form.salaryBreakdown?.salaryStructureCode],
+      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction],
       ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
       ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
@@ -1266,11 +1348,6 @@ export function EmployeesPage() {
     }
     if (!form.englishName.trim()) {
       setFormError('English full name is required.');
-      return;
-    }
-    const formDomainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
-    if (formDomainProblem) {
-      setFormError(t('Work email must end in @{domain}.', { domain: formDomainProblem }));
       return;
     }
     const workEmailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
@@ -1318,6 +1395,15 @@ export function EmployeesPage() {
         setActionNotice(t('{name} was saved as a draft.', { name }));
         createGeneration.current++;
         setFormOpen(false);
+        if (createOnly) {
+          const section = formStep === 0 ? 'personal'
+            : formStep === 1 ? 'employment'
+              : formStep === 4 ? 'compliance-documents'
+                : 'pay-benefits';
+          writeEmployeeCreateResume(window.localStorage, { employeeId: created.id, section });
+          window.location.assign(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
+          return;
+        }
         await load();
         return;
       }
@@ -1509,10 +1595,17 @@ export function EmployeesPage() {
   const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
-  const closeEditModal = () => {
-    if (editSaving) return;
-    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return;
+  const closeEditModal = (): boolean => {
+    if (editSaving) return false;
+    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return false;
     setEditOpen(false);
+    return true;
+  };
+
+  const openFullProfile = async () => {
+    const id = editEmployeeId ?? selectedEmployee?.id;
+    if (!id || !closeEditModal()) return;
+    await openDetail(id, true);
   };
 
   const validateEditStep = (step: number) => {
@@ -1528,10 +1621,9 @@ export function EmployeesPage() {
         return false;
       }
       if (field.key === 'workEmail') {
-        const domain = workEmailDomainProblem(editForm.workEmail, companies.find((company) => company.id === selectedEmployee?.companyId)?.emailDomain);
         const problem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
-        if (domain || problem) {
-          setEditNotice(domain ? t('Work email must end in @{domain}.', { domain }) : t(problem!));
+        if (problem) {
+          setEditNotice(t(problem));
           return false;
         }
       }
@@ -1571,7 +1663,7 @@ export function EmployeesPage() {
 
   const editReviewSections = EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => ({
     title: step.label,
-    rows: editFields.filter((field) => employeeEditStep(field) === index).map((field): [string, string] => [
+    rows: editFields.filter((field) => !field.hidden && employeeEditStep(field) === index).map((field): [string, string] => [
       editChangedKeys.includes(field.key) && field.sensitive ? `${t(field.label)} · ${t('Approval')}` : field.label,
       editChangedKeys.includes(field.key)
         ? t('From {before} to {after}', { before: editDisplayValue(field, true), after: editDisplayValue(field) })
@@ -1585,6 +1677,10 @@ export function EmployeesPage() {
     setCreatedEmployee(null);
     setFormOpen(false);
     setFormError('');
+    if (createOnly) {
+      window.location.assign(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
+      return;
+    }
     if (thenOpen && id) void openDetail(id);
   };
 
@@ -1604,6 +1700,7 @@ export function EmployeesPage() {
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
+    if (createOnly) window.location.assign('/people');
   };
 
   // ── Duplicate warning actions (create path — no new record exists yet) ──
@@ -1614,12 +1711,20 @@ export function EmployeesPage() {
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
+    if (createOnly) {
+      window.location.assign(employeeWorkspaceHref(employeeId, { section: 'overview' }));
+      return;
+    }
     openDetail(employeeId);
   };
   const mergeFromCreate = (employeeId: number) => {
     if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
+    if (createOnly) {
+      window.location.assign(`/people/${employeeId}/edit?section=personal`);
+      return;
+    }
     setFormError('');
     openEmployeeWindow(employeeId);
   };
@@ -1630,8 +1735,6 @@ export function EmployeesPage() {
       if (!validateEditStep(step)) { setEditStep(step); return; }
     }
     if (editChangedKeys.includes('workEmail')) {
-      const editDomain = workEmailDomainProblem(editForm.workEmail, companies.find((c) => c.id === selectedEmployee?.companyId)?.emailDomain);
-      if (editDomain) { setEditNotice(t('Work email must end in @{domain}.', { domain: editDomain })); return; }
       const editEmailProblem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
       if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
     }
@@ -1786,18 +1889,36 @@ export function EmployeesPage() {
   };
 
   const uploadDocument = async () => {
-    if (!selectedId || !documentFile) return;
-    const uploaded = await employeesApi.uploadDocument(selectedId, {
-      documentType,
-      expiryDate: documentExpiry || undefined,
-      renewalReminderDate: documentExpiry || undefined,
-      isRequired: true,
-      approvalStatus: 'Pending',
-    }, documentFile);
-    setDetail((current) => current ? { ...current, documents: [uploaded, ...current.documents] } : current);
-    setDocumentFile(null);
-    setDocumentExpiry('');
-    loadReadiness(selectedId);
+    if (!selectedId || !documentFile || documentUploading) return;
+    setDocumentUploading(true);
+    setDocumentUploadNotice('');
+    setDocumentUploadError('');
+    const readinessView = blockedPanel ?? readiness;
+    const pendingDocumentTypes = readinessView
+      ? [...readinessView.blocking, ...readinessView.payBlocking, ...readinessView.recommended]
+        .flatMap((item) => item.fix?.kind === 'document' ? [item.fix.documentType] : [])
+      : [];
+    try {
+      const uploaded = await employeesApi.uploadDocument(selectedId, {
+        documentType,
+        expiryDate: documentExpiry || undefined,
+        renewalReminderDate: documentExpiry || undefined,
+        isRequired: true,
+        approvalStatus: 'Pending',
+      }, documentFile);
+      setDetail((current) => current ? { ...current, documents: [uploaded, ...current.documents] } : current);
+      setDocumentFile(null);
+      setDocumentExpiry('');
+      const remainingType = pendingDocumentTypes.find((type) => type.localeCompare(documentType, undefined, { sensitivity: 'accent' }) !== 0);
+      setDocumentUploadNotice(remainingType
+        ? `${documentType} uploaded. The ${remainingType} document checklist still requires a ${remainingType} file.`
+        : `${documentType} uploaded successfully.`);
+      await loadReadiness(selectedId);
+    } catch (error: unknown) {
+      setDocumentUploadError(describeApiError(error, t));
+    } finally {
+      setDocumentUploading(false);
+    }
   };
 
   // ── Fast-fix: close a single readiness gap without opening the ~40-field edit modal (§8.4) ──
@@ -1828,6 +1949,8 @@ export function EmployeesPage() {
   const handleFixDocument = (documentType: string) => {
     setActiveTab('documents');
     setDocumentType(documentType);
+    setDocumentUploadError('');
+    setDocumentUploadNotice(`Choose a ${documentType} file, then select Upload ${documentType}.`);
   };
 
   const requestTransfer = async () => {
@@ -1873,7 +1996,7 @@ export function EmployeesPage() {
   const showLegacyEmployeeAside = false;
 
   return (
-    <div className="space-y-5">
+    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
           {subscriptionBanner}
@@ -1935,9 +2058,9 @@ export function EmployeesPage() {
               {canWriteEmployees && <div className="relative group">
                 <button
                   type="button"
-                  onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
+                  onClick={() => { if (!atEmployeeLimit) window.location.assign('/people/new'); }}
                   disabled={atEmployeeLimit}
-                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" />
                   Add Employee
@@ -2462,14 +2585,16 @@ export function EmployeesPage() {
                 {activeTab === 'documents' && (
                   <div className="space-y-3">
                     <div className="grid gap-2">
-                      <select value={documentType} onChange={(e) => setDocumentType(e.target.value)} className="select w-full" aria-label="Document type">
+                      <select value={documentType} disabled={documentUploading} onChange={(e) => { setDocumentType(e.target.value); setDocumentUploadNotice(''); setDocumentUploadError(''); }} className="select w-full" aria-label="Document type">
                         {selectedDocumentTypes.map((item) => <option key={item}>{item}</option>)}
                       </select>
-                      <input type="date" value={documentExpiry} onChange={(e) => setDocumentExpiry(e.target.value)} className="input w-full" aria-label="Document expiry" />
-                      <input type="file" onChange={(e) => setDocumentFile(e.target.files?.[0] ?? null)} className="input w-full" aria-label="Upload document file" />
-                      <button type="button" onClick={uploadDocument} disabled={!documentFile} className="btn-primary justify-center disabled:opacity-50">
+                      <input type="date" value={documentExpiry} disabled={documentUploading} onChange={(e) => setDocumentExpiry(e.target.value)} className="input w-full" aria-label="Document expiry" />
+                      <input type="file" disabled={documentUploading} onChange={(e) => { setDocumentFile(e.target.files?.[0] ?? null); setDocumentUploadNotice(''); setDocumentUploadError(''); }} className="input w-full" aria-label="Upload document file" />
+                      {documentUploadNotice && <p role="status" className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">{documentUploadNotice}</p>}
+                      {documentUploadError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{documentUploadError}</p>}
+                      <button type="button" onClick={uploadDocument} disabled={!documentFile || documentUploading} className="btn-primary justify-center disabled:opacity-50">
                         <FileUp className="h-4 w-4" />
-                        Upload metadata and file
+                        {documentUploading ? 'Uploading…' : `Upload ${documentType}`}
                       </button>
                     </div>
                     {detail!.documents.map((doc) => (
@@ -2581,7 +2706,7 @@ export function EmployeesPage() {
             <span className="text-slate-500">{selectedEmployee?.employeeCode}</span>
             <div className="flex flex-wrap items-center gap-3">
               {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
-              <button type="button" onClick={closeEditModal} disabled={editSaving} className="text-sm font-semibold text-sapphire underline disabled:opacity-40">{t('Open full profile')}</button>
+              <button type="button" onClick={() => void openFullProfile()} disabled={editSaving} className="text-sm font-semibold text-sapphire underline disabled:opacity-40">{t('Open full profile')}</button>
             </div>
           </div>
           {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
@@ -2597,7 +2722,7 @@ export function EmployeesPage() {
                 <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>
               )}
               <fieldset disabled={editSaving} className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
-                {editFields.filter((field) => employeeEditStep(field) === index).map((field) => {
+                {editFields.filter((field) => !field.hidden && employeeEditStep(field) === index).map((field) => {
                   if (!canEditField(field)) return (
                     <div key={field.key} className="text-sm">
                       <p className="text-slate-500">{t(field.label)}</p>
@@ -2818,9 +2943,9 @@ export function EmployeesPage() {
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
             <EmployeeAdditionalDetails title="Additional personal details">
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
+            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={retainCurrentOption(employeeMasterData.gender, form.gender)} />
             <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
-            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
+            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={retainCurrentOption(employeeMasterData.maritalStatus, form.maritalStatus)} />
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2896,13 +3021,15 @@ export function EmployeesPage() {
               onChange={(v) => setField('workEmail', v)}
               type="email"
               placeholder={t('Enter your work email.')}
+              optional
+              info={t('Enter the complete work email address issued by IT, for example name@company.com.')}
               ltr
             />
             <EmployeeAdditionalDetails title="More employment details">
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
-            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
-            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
+            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={retainCurrentOption(employeeMasterData.employmentType, form.employmentType)} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
+            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={retainCurrentOption(employeeMasterData.contractType, form.contractType)} />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
             </EmployeeAdditionalDetails>
           </Section>
@@ -2942,7 +3069,6 @@ export function EmployeesPage() {
             <Input label="Mobile allowance" type="number" value={String(form.salaryBreakdown?.mobileAllowance ?? '')} onChange={(v) => setSalaryField('mobileAllowance', v)} />
             <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
             <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
-            <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
             </EmployeeAdditionalDetails>
           </Section>
 
@@ -3251,26 +3377,7 @@ function Section({ title, children, wide = false }: { title: string; children: R
   );
 }
 
-// Split a stored work email into its local-part + domain. Blank domain => nothing after the @.
-function splitEmail(value: string): { local: string; domain: string } {
-  const at = (value ?? '').indexOf('@');
-  if (at < 0) return { local: value ?? '', domain: '' };
-  return { local: value.slice(0, at), domain: value.slice(at + 1) };
-}
-
-/**
- * WorkEmailField — the employee work-email widget. The address is {local-part}@{company domain}; the
- * user only ever edits the LOCAL-PART and the domain is a locked, read-only chip (never editable
- * here — it is owned by Setup → Companies). Behaviour:
- *   • Locked-domain mode (company HAS a domain): editable local-part + "@domain" chip. On create
- *     (`autoDerive`) the local-part is auto-derived from the name and, via the server preview, shown
- *     with any tenant-uniqueness suffix (john.smith → john.smith2). The user can override it.
- *   • Manual mode (company has NO domain, edge-7): a full free-text email input + a needs-info hint.
- *     Never blocks create/import.
- * The server (derive-work-email) is authoritative; this only PREVIEWS it. If the endpoint is
- * unavailable it degrades to a local best-effort derivation (no uniqueness suffix) and the commit
- * still reconciles. Auto-derive never overwrites a value the user has touched.
- */
+/** Full IT-issued address. Suggestions and duplicate checks never change the entered value. */
 function WorkEmailField({
   label, value, onChange, englishName, arabicName, companyId, domain, pattern,
   suggest = false, excludeEmployeeId, originalValue, info, infoKey,
@@ -3284,8 +3391,7 @@ function WorkEmailField({
   domain: string;
   pattern: string;
   /**
-   * Offer the derived address as GHOST text while the field is empty. It is a suggestion only:
-   * nothing is saved unless HR accepts it (Tab, or the "Use" button). A blank field is fine.
+   * Offer a full address while empty. Only the explicit Use button accepts it.
    */
   suggest?: boolean;
   excludeEmployeeId?: number;
@@ -3295,39 +3401,19 @@ function WorkEmailField({
 }) {
   const { t } = useLocale();
   const cleanDomain = (domain ?? '').trim().toLowerCase();
-  const manualMode = cleanDomain === '';
-  const { local: localPart } = splitEmail(value);
-  const [touched, setTouched] = useState(false);
-  const [preview, setPreview] = useState<Pick<DeriveWorkEmailResponse, 'status' | 'unique' | 'suggestion'> | null>(null);
+  const inputId = useId();
+  const [preview, setPreview] = useState<DeriveWorkEmailResponse | null>(null);
   const [checking, setChecking] = useState(false);
-  // The suggested local-part (ghost text). Shown only while the field is empty; never written on its own.
   const [ghost, setGhost] = useState('');
-  // Guards a redundant re-derive for the same name/company.
-  const autoKeyRef = useRef('');
-
-  // Keep a typed local-part re-domained to the CURRENT company when the company/domain changes
-  // (multi-company: use the employing company's domain).
-  useEffect(() => {
-    if (manualMode || !touched) return;
-    const parts = splitEmail(value);
-    if (parts.local && parts.domain.toLowerCase() !== cleanDomain) {
-      onChange(assembleWorkEmail(parts.local, cleanDomain));
-    }
-    // Only react to the domain flip; value/onChange are read fresh from the closure.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cleanDomain]);
 
   // Debounced, server-authoritative with a local fallback, advisory only: a suggestion while the
   // field is empty, a uniqueness check once something is typed.
   useEffect(() => {
-    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); setGhost(''); return; }
-    const wantSuggestion = suggest && !localPart.trim();
-    if (!wantSuggestion && !localPart.trim()) { setPreview(null); return; }       // empty, no suggestion wanted
-    if (wantSuggestion && !englishName.trim()) { setPreview(null); setGhost(''); autoKeyRef.current = ''; return; }
-    const autoKey = `${englishName}|${arabicName ?? ''}|${companyId ?? ''}|${cleanDomain}|${pattern}`;
-    if (wantSuggestion && autoKey === autoKeyRef.current) return;                  // already suggested for this input
-    if (wantSuggestion) autoKeyRef.current = autoKey;
-
+    setPreview(null);
+    setGhost('');
+    setChecking(false);
+    const wantSuggestion = suggest && !value.trim() && !!cleanDomain && !!englishName.trim();
+    if (!wantSuggestion && (!value.trim() || workEmailLocalProblem(value))) return;
     let cancelled = false;
     setChecking(true);
     const handle = setTimeout(async () => {
@@ -3335,141 +3421,87 @@ function WorkEmailField({
       try {
         res = await employeesApi.deriveWorkEmail({
           englishName, arabicName, companyId,
-          localPart: wantSuggestion ? undefined : localPart,
+          workEmail: wantSuggestion ? undefined : value.trim(),
           excludeEmployeeId,
         });
       } catch {
         // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
-        const local = wantSuggestion ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
-        res = {
-          domain: cleanDomain, pattern, localPart: local,
-          workEmail: assembleWorkEmail(local, cleanDomain),
-          unique: true, suggestion: local,
-          status: local ? 'derived' : 'manual-arabic-only',
-        };
+        if (!cancelled) {
+          setChecking(false);
+          if (wantSuggestion) setGhost(assembleWorkEmail(deriveWorkEmailLocalPart(englishName, pattern), cleanDomain));
+        }
+        return;
       }
       if (cancelled) return;
       setChecking(false);
       if (wantSuggestion) {
-        const suggested = splitEmail(res.suggestedWorkEmail || res.workEmail || '').local || res.suggestion || res.localPart || '';
-        setGhost(suggested);
-        setPreview(res.status === 'manual-arabic-only' ? { status: res.status, unique: true, suggestion: '' } : null);
+        setGhost(res.suggestedWorkEmail || res.workEmail || '');
+        setPreview(res.status === 'manual-arabic-only' ? res : null);
       } else {
-        setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
+        setPreview(res);
       }
     }, 300);
-    return () => { cancelled = true; setChecking(false); clearTimeout(handle); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, suggest, manualMode, excludeEmployeeId]);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [englishName, arabicName, companyId, cleanDomain, pattern, value, suggest, excludeEmployeeId]);
 
-  const handleLocalChange = (raw: string) => {
-    setTouched(true);
-    const typed = raw.replace(/\s+/g, '');
-    const at = typed.indexOf('@');
-    // "@" + the company's own domain is just the full address: keep the part before it. Any OTHER domain
-    // is kept exactly as typed and refused below (never quietly turned into @company).
-    if (at >= 0 && typed.slice(at + 1).toLowerCase() !== cleanDomain) { onChange(typed); return; }
-    const next = at >= 0 ? typed.slice(0, at) : typed;
-    onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
-  };
-  const wrongDomain = !manualMode ? workEmailDomainProblem(value, cleanDomain) : null;
-
-  const showGhost = suggest && !localPart && !!ghost;
-  const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
+  const showGhost = suggest && !value && !!ghost;
 
   const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const typedProblem = wrongDomain ? null : workEmailProblemKey(workEmailLocalProblem(value));
-  const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
-  const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
+  const typedProblem = workEmailProblemKey(workEmailLocalProblem(value));
+  const conflict = preview?.workEmail === value.trim() && (preview.status === 'conflict' || preview.unique === false);
+  const conflictSuggestion = conflict ? preview?.suggestedWorkEmail : null;
 
   return (
-    <label className="col-span-full block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
+    <div className="col-span-full block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">
-        {label}
-        {info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}
+        <label htmlFor={inputId}>{label} <span className="font-normal text-slate-500">({t('Optional')})</span></label>
+        <InfoTip text={info || t('Enter the complete work email address issued by IT, for example name@company.com.')} fieldKey={infoKey} className="ms-1" />
         {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
       </span>
 
-      {manualMode ? (
-        <>
           <input
+            id={inputId}
             type="email"
             aria-label={label}
             value={value}
-            onChange={(e) => { setTouched(true); onChange(e.target.value); }}
+            onChange={(e) => onChange(e.target.value)}
             placeholder="name@company.com"
             className="input mt-1.5 w-full"
             spellCheck={false}
             autoCapitalize="none"
             dir="ltr"
           />
-          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-            {companyId
-              ? 'This company has no work-email domain set — enter the full address manually, or add a domain in Setup → Companies to auto-fill it.'
-              : 'Select a company to auto-build the work email from its domain, or enter the full address manually.'}
-          </p>
-        </>
-      ) : (
-        <>
-          <span dir="ltr" className={`mt-1.5 flex flex-wrap items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
-            <input
-              type="text"
-              value={wrongDomain ? value : localPart}
-              onChange={(e) => handleLocalChange(e.target.value)}
-              onKeyDown={(e) => {
-                // Tab takes the ghost suggestion (and moves on, as Tab does).
-                if (e.key === 'Tab' && !e.shiftKey && showGhost) acceptGhost();
-              }}
-              placeholder={showGhost ? ghost : undefined}
-              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 placeholder:italic focus:ring-0"
-              spellCheck={false}
-              autoCapitalize="none"
-              aria-label={label}
-              data-testid="work-email-local-part"
-            />
             {showGhost && (
+              <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span dir="ltr">{ghost}</span>
               <button
                 type="button"
-                onClick={(e) => { e.preventDefault(); acceptGhost(); }}
+                onClick={() => onChange(ghost)}
                 className="flex min-h-11 items-center px-2.5 text-xs font-semibold text-sapphire hover:underline"
                 aria-label={t('Use')}
               >
                 {t('Use')}
               </button>
+              </p>
             )}
-            <span
-              className="flex min-h-11 max-w-full items-center gap-1 bg-slate-100 px-2.5 py-2 text-sm font-medium text-slate-600 dark:bg-white/[0.06] dark:text-slate-400"
-              title="Domain is locked to the company. Change it in Setup → Companies."
-            >
-              <Lock className="h-3 w-3 shrink-0 opacity-60" aria-hidden="true" /><span className="min-w-0 break-all">@{cleanDomain}</span>
-            </span>
-          </span>
 
           {conflict ? (
             <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
               <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-              <span>{localPart}@{cleanDomain} is already used by another employee.</span>
-              {preview?.suggestion && preview.suggestion !== localPart && (
+              <span>{t('This email is already used by another employee.')}</span>
+              {conflictSuggestion && conflictSuggestion !== value.trim() && (
                 <button
                   type="button"
-                  onClick={() => handleLocalChange(preview.suggestion)}
+                  onClick={() => onChange(conflictSuggestion)}
                   className="font-semibold text-sapphire underline underline-offset-2"
                 >
-                  Use {preview.suggestion}
+                  {t('Use')} <span dir="ltr">{conflictSuggestion}</span>
                 </button>
               )}
             </p>
-          ) : arabicOnly ? (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Couldn&apos;t derive a Latin local-part from the name — type the part before the @ manually.
-            </p>
           ) : checking ? (
-            <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
+            <p className="mt-1 text-xs text-slate-400">{t('Checking…')}</p>
           ) : null}
-        </>
-      )}
-
-      {wrongDomain && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t('Work email must end in @{domain}.', { domain: wrongDomain })}</p>}
       {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
       {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
 
@@ -3478,7 +3510,7 @@ function WorkEmailField({
           This address is also the self-service (ESS) sign-in identity. Changing it updates the HR record only — it does not rename an existing mailbox or login automatically.
         </p>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -3486,19 +3518,20 @@ function WorkEmailField({
 // routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
 // letter+digit run and strands the country code at the wrong end; `field-ltr` (see
 // src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
-function Input({ label, value, onChange, inputId, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+function Input({ label, value, onChange, inputId, required, optional, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; optional?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+  const { t } = useLocale();
   const generatedId = useId();
   const controlId = inputId ?? generatedId;
   return (
     <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {optional && <span className="font-normal text-slate-500">({t('Optional')})</span>}{required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
           <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
+        <input id={controlId} aria-label={optional ? label : undefined} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );

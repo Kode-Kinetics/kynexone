@@ -108,6 +108,7 @@ function ValidEmployeeWorkspace({ employeeId, mode }: { employeeId: number; mode
       ? 'Sensitive changes submitted to Approval Center.'
       : searchParams.get('saved') === 'updated' ? 'Employee details saved.' : undefined}
     onRetryReadiness={() => void record.refreshReadiness()}
+    onEmployeeChanged={() => void record.refreshRecord()}
   />;
 }
 

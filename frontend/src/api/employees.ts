@@ -219,29 +219,28 @@ export interface ResolveDuplicateRequest {
 }
 
 // ── Work-email auto-derivation (create/edit modal preview mirrors the authoritative server) ──────
-// The employee WorkEmail is {local-part}@{employing-company.emailDomain}. The USER only ever edits
-// the local-part; the domain is locked to the company. Derivation + the tenant-wide uniqueness suffix
-// are computed SERVER-SIDE (POST /api/employees/derive-work-email) so the modal preview is byte-
-// identical to what the create/import commit will persist. The commit is always authoritative — this
-// endpoint is advisory preview only and must never block.
+// HR enters a complete IT-issued address. Company settings only produce optional suggestions; preview never
+// assigns an address. The server checks tenant-wide uniqueness again when saving.
 
-/** POST /api/employees/derive-work-email body. Omit `localPart` to let the server derive it from the
- *  name; pass it to check a local-part the user typed. `excludeEmployeeId` skips self on edit. */
+/** POST /api/employees/derive-work-email body. Pass `workEmail` to check the exact address, or omit
+ * it for a name/company suggestion. `excludeEmployeeId` skips self on edit. */
 export interface DeriveWorkEmailRequest {
   englishName: string;
   arabicName?: string;
   companyId?: string;
   /** When present, the server validates/uniquifies THIS local-part instead of deriving from the name. */
   localPart?: string;
+  /** Complete IT-issued address to check exactly as entered; company settings are suggestions only. */
+  workEmail?: string;
   excludeEmployeeId?: number;
 }
 
 /**
  * derive-work-email response. `status` drives the modal's hint + fallback:
- *   - "derived"            → domain present, a Latin local-part was formed (locked-domain widget).
- *   - "conflict"           → the user-typed local-part collides in the tenant; `suggestion` is free.
- *   - "manual-no-domain"   → company has no emailDomain (edge-7) → unlock a full manual email input.
- *   - "manual-arabic-only" → name has no ASCII token (e.g. pure Arabic) → type the local-part manually.
+ *   - "derived"            → a complete typed address was checked or a suggestion was formed.
+ *   - "conflict"           → the address collides in the tenant; `suggestedWorkEmail` is an alternative.
+ *   - "manual-no-domain"   → no domain is configured for a name-based suggestion.
+ *   - "manual-arabic-only" → no ASCII name token is available for a suggestion.
  */
 export interface DeriveWorkEmailResponse {
   domain: string;
@@ -261,7 +260,7 @@ export interface DeriveWorkEmailResponse {
  * OFFLINE FALLBACK ONLY — a best-effort client mirror of the server's BuildLocalPart, used only when
  * the derive endpoint is unavailable (404 during phased rollout, or a network blip) so the preview
  * still shows something. It CANNOT check tenant uniqueness (no DB), so it never suffixes — the commit
- * remains authoritative and will suffix/flag. Mirrors the server's ASCII-only tokenisation (accented
+ * remains authoritative and rejects duplicates. Mirrors the server's ASCII-only tokenisation (accented
  * Latin is folded; non-Latin scripts drop out → manual entry).
  */
 export function deriveWorkEmailLocalPart(englishName: string, pattern: string): string {
