@@ -19,6 +19,8 @@ The eight required cross-cutting contracts are committed in `frontend/e2e/setup-
 
 RED: the first desktop-focused run passed 6 and failed 2. At 320/390 widths, the mobile navigator was visible but its Close control was not clickable because the shell's sticky header intercepted the pointer; the Arabic navigator failure was an ambiguous test locator rather than a product defect. After portaling the dialog and anchoring the Arabic accessible name, the exact desktop/mobile acceptance set passed **16/16**. The tests prove zero serious/critical Axe violations for English and Arabic Guided/Configuration regions, no document overflow at 320/390, reachable navigation at the 200%/400% reflow equivalents, and exact dirty cancel/confirm behavior including URL, authored value, scroll, focus, history, and zero writes.
 
+Review correction: the first English/Arabic Axe loop was not trustworthy because the shared `boot` init script reset the locale to English on each navigation. A new Arabic `dir=rtl` assertion reproduced the false pass (`ltr` received). English and Arabic now boot in separate pages with independent locale init scripts. Before Axe, each path must expose its expected document direction and localized Configuration/Guided anchors. The corrected exact set remains **16/16**, and the related Arabic focused layout, authorization-recovery, and approved-rename cases pass **6/6**.
+
 Stable screenshots under `docs/evidence/setup-studio-task5/`:
 
 - `guided-preserved-desktop.png`
@@ -30,12 +32,13 @@ Stable screenshots under `docs/evidence/setup-studio-task5/`:
 - `configuration-200-percent.png`
 - `configuration-400-percent.png`
 
-These screenshots use the intercepted browser fixture. They are responsive/layout evidence, not authenticated persistence evidence.
+These screenshots use the intercepted browser fixture. They are responsive/layout evidence, not authenticated persistence evidence. The regenerated English and Arabic screenshots are visibly different and have distinct SHA-256 values: English `8fe06ae09dc83bed3d3696329cb85f55cd2f23105255d8e9c69d3edd49683a9e`; Arabic `8c6092db8673dc1357bff8f03eacd4bb9bce8fb16fab3106c32126c947c73df2`.
 
 ## Commands and results
 
 - Setup path/catalogue/canonical-form units: **27 passed**.
 - Exact Task 5 acceptance, desktop and mobile: **16 passed**; the final mobile screenshot refresh also passed **2/2**.
+- Corrected Arabic focused layout/auth/approved-rename cases: **6/6 passed**.
 - Setup lifecycle: **10 passed**.
 - Policy binder: **6 passed**.
 - Policy review: **8 passed**.
@@ -65,11 +68,21 @@ The controller repaired only the local runtime target and opened the existing si
 
 The frontend does not expose a matching source commit, and the backend identity differs from the frontend source HEAD. Therefore this proves a healthy local signed-in UI against a live local API and populated canonical data; it does **not** prove same-commit frontend/backend provenance, server authorization exhaustiveness, production deployment, or persistence of a new Task 5 write.
 
+### Native Chrome zoom, keyboard, and RTL gate
+
+This gate used the authenticated tenant and actual Chrome zoom controls, not only emulated viewport widths.
+
+- At 100%: `innerWidth=1728`, `devicePixelRatio=2`, `clientWidth=scrollWidth=1724`.
+- At native 200%: Chrome showed 200%; `innerWidth=864`, `devicePixelRatio=4`, `clientWidth=scrollWidth=860`, with no horizontal overflow. Shift+Tab reached Next, Previous, and Back. Browse all areas exposed Workspace overview and all 12 named areas.
+- At native 400%: Chrome showed 400%; `innerWidth=432`, `devicePixelRatio=8`, `clientWidth=scrollWidth=428`, with no horizontal overflow. Return opened the area dialog, Tab focused Close, Shift+Tab wrapped to Compliance and statutory administration, and Escape closed and restored focus to Browse all areas.
+- Live Arabic at native 400% exposed `html lang="ar" dir="rtl"`, localized heading `الإعداد والإدارة`, `innerWidth=432`, `devicePixelRatio=8`, `clientWidth=scrollWidth=428`, and reachable localized Back/Previous/Next actions.
+- The controller restored English/LTR/100% (`innerWidth=1728`, `devicePixelRatio=2`) and left the focused Leave policies tab open.
+
 ## Task 5 remaining gates and nonclaims
 
 - The clean commit cannot reconstruct the full accepted working tree until the user-owned Guided and related dirty integration is separately reconciled.
 - The 48 broad workspace failures, 2 Guided compactness failures, and 9 legacy prefill-entry failures remain outside this bounded Configuration-only fix and require separate baseline ownership.
-- Browser automation supplied keyboard, focus, RTL, 320/390, 200%, and 400% evidence. Authenticated shadow-tenant validation remained read-only by design.
+- Browser automation supplies repeatable focus, RTL, 320/390, and reflow regression evidence; native Chrome separately verifies actual 200%/400% zoom and keyboard behavior. Authenticated shadow-tenant validation remained read-only by design.
 - No backend, schema, database, authentication, deployment, feature-flag, or production mutation was made by Task 5.
 
 ---

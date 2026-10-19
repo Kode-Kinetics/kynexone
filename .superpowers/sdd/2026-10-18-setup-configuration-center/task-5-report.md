@@ -21,12 +21,15 @@ npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts \
 16 passed
 ```
 
+Review fix RED: the first Arabic acceptance used one page whose `boot` init script reset the locale to English on every navigation. Adding `html[dir="rtl"]` and Arabic anchor assertions reproduced the false positive: expected `rtl`, received `ltr`. The test now boots English and Arabic in separate pages with locale-specific init scripts, asserts `dir` plus localized Configuration and Guided anchors before Axe, captures runtime errors from both pages, and then runs Axe. The regenerated screenshots are no longer identical: English SHA-256 `8fe06ae09dc83bed3d3696329cb85f55cd2f23105255d8e9c69d3edd49683a9e`; Arabic `8c6092db8673dc1357bff8f03eacd4bb9bce8fb16fab3106c32126c947c73df2`.
+
 ## Required gates
 
 | Gate | Result |
 | --- | --- |
 | setupPathState/setupAreas/setupCanonicalForms | 27 passed |
 | exact Task 5 desktop/mobile | 16 passed |
+| Arabic focused layout/auth/approved-rename cases | 6 passed |
 | setup lifecycle | 10 passed |
 | setup experience | 61 passed, 3 skipped, 2 pre-existing Guided compactness failures |
 | policy form prefill | 13 passed, 9 stale untracked workspace-entry failures |
@@ -44,7 +47,15 @@ A fresh `git checkout-index` export passed 27/27 units, 14/16 Task 5 cases, and 
 
 ## Responsive, RTL, keyboard, and accessibility evidence
 
-The exact tests cover keyboard focus restoration, dialog focus containment/Escape, dirty cancel/confirm, English and Arabic Axe analysis, 320/390 widths, and the 720/320 CSS-pixel equivalents used for 200%/400% reflow. Stable screenshots are in `docs/evidence/setup-studio-task5/`.
+The exact tests cover keyboard focus restoration, dialog focus containment/Escape, dirty cancel/confirm, separately booted English and Arabic Axe analysis, 320/390 widths, and the 720/320 CSS-pixel equivalents used for 200%/400% reflow. Stable screenshots are in `docs/evidence/setup-studio-task5/`.
+
+The controller also performed the actual native Chrome gate on the authenticated tenant rather than relying only on viewport emulation:
+
+- Baseline 100%: `innerWidth=1728`, `devicePixelRatio=2`, `clientWidth=scrollWidth=1724`.
+- Native Chrome 200%: visible 200% zoom badge, `innerWidth=864`, `devicePixelRatio=4`, `clientWidth=scrollWidth=860`; no horizontal overflow. Shift+Tab reached Next, Previous, then Back. The all-area dialog exposed Workspace overview plus all 12 named areas.
+- Native Chrome 400%: visible 400% zoom badge, `innerWidth=432`, `devicePixelRatio=8`, `clientWidth=scrollWidth=428`; no horizontal overflow. Return opened Browse all areas, Tab focused Close, Shift+Tab wrapped to Compliance and statutory administration, and Escape closed the dialog and restored focus to Browse all areas.
+- Live Arabic at native 400%: `html lang="ar" dir="rtl"`, localized `الإعداد والإدارة`, `innerWidth=432`, `devicePixelRatio=8`, `clientWidth=scrollWidth=428`; localized Back/Previous/Next remained reachable.
+- Chrome was restored to English/LTR/100% (`innerWidth=1728`, `devicePixelRatio=2`) and the focused Leave policies tab was left open.
 
 ## Authenticated read-only validation
 

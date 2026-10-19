@@ -1960,21 +1960,36 @@ test('guided_visual_contract_survives_configuration_redesign', async ({ page }, 
 });
 
 test('english_and_arabic_paths_have_no_serious_or_critical_axe_findings', async ({ page }, testInfo) => {
-  const { writes } = await boot(page);
-  for (const locale of ['en', 'ar'] as const) {
-    await page.evaluate(value => localStorage.setItem('kynexone-locale-choice-v2', value), locale);
-    await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=organization');
-    await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
-    let result = await new AxeBuilder({ page }).include('[data-testid="setup-studio-workspace"]').analyze();
-    expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
-    if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await page.screenshot({ path: task5Evidence(`configuration-${locale}-desktop.png`), fullPage: true });
+  const arabicPage = await page.context().newPage();
+  const arabicErrors: string[] = [];
+  arabicPage.on('pageerror', error => arabicErrors.push(error.message));
+  arabicPage.on('console', message => { if (message.type() === 'error' && !message.text().includes('Failed to load resource')) arabicErrors.push(message.text()); });
+  const english = await boot(page);
+  const arabic = await boot(arabicPage, { arabic: true });
+  const locales = [
+    { locale: 'en', target: page, direction: 'ltr', referenceLists: 'Employee Reference Lists', guidedHeading: 'Start with your company' },
+    { locale: 'ar', target: arabicPage, direction: 'rtl', referenceLists: 'قوائم القيم المرجعية للموظفين', guidedHeading: 'ابدأ بمعلومات شركتك' },
+  ] as const;
 
-    await page.goto('/setup?tab=aiSetup&path=guided&companyId=fixture-company');
-    await expect(page.locator('#setup-aiSetup')).toBeVisible();
-    result = await new AxeBuilder({ page }).include('#setup-aiSetup').analyze();
+  for (const { locale, target, direction, referenceLists, guidedHeading } of locales) {
+    await target.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=organization');
+    await expect(target.getByTestId('setup-studio-workspace')).toBeVisible();
+    await expect(target.locator('html')).toHaveAttribute('dir', direction);
+    await expect(target.getByRole('button', { name: referenceLists, exact: true })).toBeVisible();
+    let result = await new AxeBuilder({ page: target }).include('[data-testid="setup-studio-workspace"]').analyze();
+    expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
+    if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await target.screenshot({ path: task5Evidence(`configuration-${locale}-desktop.png`), fullPage: true });
+
+    await target.goto('/setup?tab=aiSetup&path=guided&companyId=fixture-company');
+    await expect(target.locator('#setup-aiSetup')).toBeVisible();
+    await expect(target.locator('html')).toHaveAttribute('dir', direction);
+    await expect(target.locator('#setup-aiSetup').getByRole('heading', { name: guidedHeading, exact: true })).toBeVisible();
+    result = await new AxeBuilder({ page: target }).include('#setup-aiSetup').analyze();
     expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
   }
-  expect(writes).toEqual([]);
+  expect([...english.writes, ...arabic.writes]).toEqual([]);
+  expect(arabicErrors, 'No Arabic application runtime errors').toEqual([]);
+  await arabicPage.close();
 });
 
 test('mobile_390_and_320_have_no_page_overflow', async ({ page }, testInfo) => {
