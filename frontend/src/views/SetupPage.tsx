@@ -2354,8 +2354,15 @@ export function SetupPage() {
   const [editorDirty, setEditorDirty] = useState(false);
   const [pendingStarterFiles, setPendingStarterFiles] = useState(false);
   const clearDirty = useCallback(() => setEditorDirty(false), []);
+  // "Discard and leave" covers the selected-but-unuploaded files as well. Leaving the
+  // pending-file flag set kept the guard armed after the user had confirmed, so the
+  // company sync that follows a confirmed Back/Forward asked the same question again.
+  const discardSetupWork = useCallback(() => {
+    setEditorDirty(false);
+    setPendingStarterFiles(false);
+  }, []);
   const authorizedCompany = useSetupCompanyQuery();
-  const confirmLeave = useSetupNavigationGuard(editorDirty, clearDirty, pendingStarterFiles, authorizedCompany);
+  const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
     authorizedCompanyIds: new Set(authorizedCompanies.map(company => company.id)),
     selectedCompanyId: authorizedCompany,
