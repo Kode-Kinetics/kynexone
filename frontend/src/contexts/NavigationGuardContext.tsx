@@ -35,6 +35,28 @@ interface BrowserNavigation extends EventTarget {
   traverseTo(key: string): { finished: Promise<unknown> };
 }
 
+type PopstateRelay = { handler: ((event: PopStateEvent) => void) | null };
+
+/**
+ * One document-lifetime popstate listener, registered when this module is first
+ * evaluated. Window listeners run in registration order (capture included), and
+ * React commits a popstate transition synchronously inside Next's listener, so a
+ * listener added by the provider (which mounts only after authentication) would
+ * see a Back/Forward only after the dirty editor had already unmounted. Loading
+ * this module with the initial page registers the relay ahead of Next's router.
+ */
+function popstateRelay(): PopstateRelay | null {
+  if (typeof window === 'undefined') return null;
+  const host = window as Window & { __kynexNavigationPopstate?: PopstateRelay };
+  if (!host.__kynexNavigationPopstate) {
+    const relay: PopstateRelay = { handler: null };
+    host.__kynexNavigationPopstate = relay;
+    window.addEventListener('popstate', (event) => relay.handler?.(event));
+  }
+  return host.__kynexNavigationPopstate;
+}
+popstateRelay();
+
 function isPlainLeftClick(event: MouseEvent) {
   return event.button === 0 && !event.defaultPrevented && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 }
@@ -155,7 +177,13 @@ export function NavigationGuardProvider({ children }: { children: React.ReactNod
       originalPush({ ...state, [HISTORY_POSITION]: position }, unused, url);
     };
     history.replaceState = (state, unused, url) => {
-      originalReplace({ ...state, [HISTORY_POSITION]: position }, unused, url);
+      // Replacing never moves to another entry, so the entry keeps the position it was
+      // stamped with. Next can replace the entry reached by a traversal inside its own
+      // popstate listener, before this guard's listener has updated `position`; stamping
+      // the stale counter there gives two entries the same position and lets a later
+      // dirty Back/Forward between them pass unguarded.
+      const current = history.state?.[HISTORY_POSITION];
+      originalReplace({ ...state, [HISTORY_POSITION]: typeof current === 'number' ? current : position }, unused, url);
     };
 
     const navigation = (window as Window & { navigation?: BrowserNavigation }).navigation;
@@ -175,6 +203,8 @@ export function NavigationGuardProvider({ children }: { children: React.ReactNod
       const nextPosition = typeof event.state?.[HISTORY_POSITION] === 'number' ? event.state[HISTORY_POSITION] : null;
       if (nextPosition === null) return;
       if (restoringTo === nextPosition) {
+        // The router never saw the blocked traversal, so it must not see the restore either.
+        event.stopImmediatePropagation();
         restoringTo = null;
         position = nextPosition;
         const pending = restoredIntent;
@@ -199,20 +229,23 @@ export function NavigationGuardProvider({ children }: { children: React.ReactNod
         return;
       }
 
+      // Without the Navigation API the traversal has already happened. Keep it from the
+      // router (whose listener follows the relay) so the dirty editor is not unmounted
+      // and its unsaved values survive, then restore the previous entry.
+      event.stopImmediatePropagation();
       const destination = window.location.href;
       restoringTo = position;
       restoredIntent = { destination, delta };
-      // Next may replace the newly reached entry while handling this same popstate.
-      // Stamp that entry with its own position, then restore the previous one.
       position = nextPosition;
       history.go(-delta);
     };
 
     navigation?.addEventListener('navigate', beforeTraverse);
-    window.addEventListener('popstate', pop);
+    const relay = popstateRelay();
+    if (relay) relay.handler = pop;
     return () => {
       navigation?.removeEventListener('navigate', beforeTraverse);
-      window.removeEventListener('popstate', pop);
+      if (relay?.handler === pop) relay.handler = null;
       history.pushState = originalPush;
       history.replaceState = originalReplace;
     };
