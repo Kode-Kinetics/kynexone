@@ -2569,7 +2569,7 @@ export function SetupPage() {
               setEditorDirty(true);
               const target = event.target;
               if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               confirmLeave={confirmLeave}
