@@ -84,6 +84,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
 
   const scopeLabel = (destination: SetupDestination) => {
     if (destination.effectiveTargetScope === 'tenant') return 'Applies to all companies';
+    if (destination.effectiveTargetScope === 'group') return 'Group company register';
     if (destination.effectiveTargetScope === 'company') {
       return companyName ? t('Applies to {company}', { company: companyName }) : 'Requires a selected company';
     }

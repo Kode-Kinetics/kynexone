@@ -18,7 +18,7 @@ export interface SetupDestination {
   businessGroup: { id: string; label: string };
   groupOrder: number;
   destinationOrder: number;
-  effectiveTargetScope: 'company' | 'tenant' | 'recordDependent';
+  effectiveTargetScope: 'company' | 'tenant' | 'group' | 'recordDependent';
 }
 
 export interface SetupAreaDefinition {
@@ -30,6 +30,7 @@ export interface SetupAreaDefinition {
 
 type DestinationInput = Omit<SetupDestination, 'requiredPermissions' | 'requiredFeatureKey' | 'assistance' | 'effectiveTargetScope'> & {
   assistance?: SetupDestination['assistance'];
+  effectiveTargetScope?: SetupDestination['effectiveTargetScope'];
 };
 
 type DestinationNavigation = Pick<SetupDestination, 'businessGroup' | 'groupOrder' | 'destinationOrder'>;
@@ -60,14 +61,14 @@ function destination(input: DestinationInput): SetupDestination {
   return {
     ...input,
     assistance: input.assistance ?? 'not-connected',
-    effectiveTargetScope: input.scope === 'mixed' ? 'recordDependent' : input.scope,
+    effectiveTargetScope: input.effectiveTargetScope ?? (input.scope === 'mixed' ? 'recordDependent' : input.scope),
     requiredPermissions: pathname === '/setup' ? setupTabPermissions(input.id) : route.requiredPermissions ?? [],
     requiredFeatureKey: route.requiredFeatureKey,
   };
 }
 
-function setting(areaId: SetupAreaId, id: string, label: string, scope: SetupDestination['scope'], nav: DestinationNavigation): SetupDestination {
-  return destination({ id, areaId, label, path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded', ...nav });
+function setting(areaId: SetupAreaId, id: string, label: string, scope: SetupDestination['scope'], nav: DestinationNavigation, effectiveTargetScope?: SetupDestination['effectiveTargetScope']): SetupDestination {
+  return destination({ id, areaId, label, path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded', effectiveTargetScope, ...nav });
 }
 
 function route(areaId: SetupAreaId, id: string, label: string, path: string, kind: SetupDestination['kind'], scope: SetupDestination['scope'], nav: DestinationNavigation): SetupDestination {
@@ -80,7 +81,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'organization', label: 'Organization and core HR',
     description: 'Company structure, shared reference data, employment records and contracts.',
     destinations: [
-      setting('organization', 'companies', 'Companies', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 0)),
+      setting('organization', 'companies', 'Companies', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 0), 'group'),
       setting('organization', 'branches', 'Branches', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 1)),
       setting('organization', 'departments', 'Departments', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 2)),
       setting('organization', 'designations', 'Designations', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 3)),

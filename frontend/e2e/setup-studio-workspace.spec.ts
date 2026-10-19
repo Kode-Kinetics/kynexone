@@ -1430,6 +1430,9 @@ test('whole_destination_row_is_action', async ({ page }) => {
   const destination = page.getByRole('button', { name: 'Companies', exact: true });
 
   await expect(destination).toBeVisible();
+  await expect(destination).toContainText('Group company register');
+  await expect(destination).not.toContainText('Requires a selected company');
+  await expect(destination).not.toContainText('Applies to Workspace Fixture LLC');
   await expect(page.getByRole('button', { name: 'Open settings', exact: true })).toHaveCount(0);
   await destination.click();
 

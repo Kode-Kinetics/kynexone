@@ -43,7 +43,9 @@ The first TypeScript invocation ran concurrently with `next build` and saw `.nex
 
 ## Index-only proof
 
-A fresh `git checkout-index` export passed 27/27 units, 14/16 Task 5 cases, and the production build. Both index-only Task 5 failures were the Guided contract's missing `Save for later` control, demonstrating the already documented dependency on user-owned, unstaged Guided toolbar work. Index-only TypeScript reached the unrelated existing `unit/employeeAccess.spec.ts` import of missing `workEmailDomainProblem`. No user-owned hunk was staged to hide either baseline gap.
+A final fresh `git checkout-index` export passed 32/32 setup and draft-lifecycle units. Its combined desktop/mobile acceptance run passed 22/22: all 16 Task 5 cases, both Guided path-switch cases, and the Companies group-register scope contract. The approved Guided toolbar and browser-scoped draft lifecycle are now committed without changing the five-step layout. The Companies destination now carries explicit `group` target metadata and says `Group company register`, rather than implying that the register belongs to the currently selected company.
+
+The clean-export TypeScript check reaches only the unrelated existing `unit/employeeAccess.spec.ts` import of missing `workEmailDomainProblem`; no Setup Studio type error remains.
 
 ## Responsive, RTL, keyboard, and accessibility evidence
 
@@ -70,7 +72,6 @@ Frontend build info reports commit `unknown`. Backend `/health/live` is HTTP 200
 
 ## Remaining gates
 
-- Reconcile the user-owned unstaged Guided toolbar/integration into a separately reviewed commit so a clean checkout can pass the full Guided acceptance contract.
 - Update or retire the 48 stale dirty workspace expectations and the 9 untracked prefill workspace-entry expectations under their owning workstream.
 - Resolve the unrelated employee-access test/source export mismatch in the committed baseline.
 - This task does not authorize deployment or claim production acceptance, exhaustive server authorization, or a new live persistence write.

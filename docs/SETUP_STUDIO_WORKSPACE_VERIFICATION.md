@@ -51,7 +51,7 @@ The broad dirty-worktree suites are not all green and are not reported as Task 5
 - Setup experience: **61 passed, 3 intentional mobile skips, 2 failed**. Both failures are pre-existing owner-protected Guided desktop compactness expectations (`Upload and review` and `Continue` fully in viewport). Task 5 did not restyle Guided.
 - Policy form prefill: **13 passed, 9 failed**. All nine failures are untracked workspace tests that still enter `/setup?tab=aiSetup&area=onboarding&setting=onboarding` without the Configuration path and expect the old area heading. The retained direct form contracts pass.
 
-An index-only export independently passed **27/27** units and **14/16** Task 5 cases. Its two Guided failures show a known repository-baseline dependency: the committed index lacks the user-owned, unstaged Guided toolbar integration containing `Save for later`; the same tests pass in the preserved working tree. Index-only TypeScript reaches the known unrelated `unit/employeeAccess.spec.ts` / `workEmailDomainProblem` export mismatch, while the index-only production build succeeds. No unrelated user hunks were staged to hide those gaps.
+A final index-only export independently passed **32/32** setup and draft-lifecycle units. Its combined desktop/mobile acceptance run passed **22/22**: all **16/16** Task 5 cases, both Guided path-switch cases, and the Companies group-register wording contract. The committed package now contains the approved `Save for later`, `Policy library / updates`, and `Cancel setup` controls plus company/user-scoped browser draft recovery; the five-step Guided layout was not restyled. Companies now uses explicit `group` target metadata and the truthful label `Group company register`, not selected-company copy. Index-only TypeScript reaches only the known unrelated `unit/employeeAccess.spec.ts` / `workEmailDomainProblem` export mismatch.
 
 ## Authenticated shadow-tenant read-only check
 
@@ -80,7 +80,6 @@ This gate used the authenticated tenant and actual Chrome zoom controls, not onl
 
 ## Task 5 remaining gates and nonclaims
 
-- The clean commit cannot reconstruct the full accepted working tree until the user-owned Guided and related dirty integration is separately reconciled.
 - The 48 broad workspace failures, 2 Guided compactness failures, and 9 legacy prefill-entry failures remain outside this bounded Configuration-only fix and require separate baseline ownership.
 - Browser automation supplies repeatable focus, RTL, 320/390, and reflow regression evidence; native Chrome separately verifies actual 200%/400% zoom and keyboard behavior. Authenticated shadow-tenant validation remained read-only by design.
 - No backend, schema, database, authentication, deployment, feature-flag, or production mutation was made by Task 5.

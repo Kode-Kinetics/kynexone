@@ -188,9 +188,14 @@ test('employee_reference_lists_is_the_only_renamed_label', () => {
 test('tenant_shared_destinations_have_tenant_effective_scope', () => {
   for (const item of destinations()) {
     expect(item.effectiveTargetScope, item.id).toBe(
-      item.scope === 'mixed' ? 'recordDependent' : item.scope,
+      item.id === 'companies' ? 'group' : item.scope === 'mixed' ? 'recordDependent' : item.scope,
     );
   }
+});
+
+test('companies_is_an_explicit_group_scope_register', () => {
+  expect(destination('companies').effectiveTargetScope).toBe('group');
+  expect(destination('companies').scope).toBe('company');
 });
 
 test('operations_remain_external_routes', () => {
