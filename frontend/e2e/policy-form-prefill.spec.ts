@@ -56,7 +56,11 @@ async function boot(page: Page, options: { group?: boolean; workspace?: boolean;
   });
   if (options.workspace) {
     await page.goto('/setup?tab=aiSetup&area=onboarding&setting=onboarding');
-    await expect(page.getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
+    // A deep link to one setting opens the focused editor: the area is its context line and the
+    // setting itself is the heading.
+    const focused = page.getByRole('region', { name: 'Onboarding checklists', exact: true });
+    await expect(focused.getByRole('heading', { name: 'Onboarding checklists', exact: true })).toBeVisible();
+    await expect(focused.getByText('Onboarding and confirmation', { exact: true })).toBeVisible();
     return { writes, savedTasks, errors, identity, releaseCompanies, get templateReads() { return templateReads; } };
   }
   await page.goto(options.group ? `/setup?tab=aiSetup&mode=starter&companyId=${companyId}` : '/setup?tab=aiSetup&mode=starter');
