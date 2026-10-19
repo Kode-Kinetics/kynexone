@@ -649,7 +649,8 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-step-rail { padding: 0.75rem !important; }
   .setup-step-rail nav button { padding-block: 0.4rem; }
   .setup-control-note { display: none !important; }
-  .setup-studio-content { padding: 0.75rem; }
+  .setup-draft-toolbar { padding-block: 0.25rem; }
+  .setup-studio-content { padding: 0.5rem 0.75rem; }
   .setup-studio-heading { margin-bottom: 0.5rem; }
   .setup-company-grid { row-gap: 0.5rem; }
   .setup-company-grid > label > span:first-child { margin-bottom: 0.25rem; }
@@ -662,7 +663,7 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-work-area p { line-height: 1rem; }
   .setup-work-area details { padding: 0.7rem; }
   .setup-work-area > section { padding-top: 0.5rem; }
-  .setup-step-footer { margin-top: 0.5rem; padding-top: 0.5rem; }
+  .setup-step-footer { margin-top: 0.25rem; padding-top: 0.25rem; }
 }
 
 /* Employee Workspace keeps the application shell as the only viewport scroller. The record rail

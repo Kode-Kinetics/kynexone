@@ -7,7 +7,7 @@ import { useCompany } from '../../contexts/CompanyContext';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 
 function ReadField({ label, value, help }: { label: string; value?: string; help: string }) {
-  return <div><dt className="mb-1.5 text-sm font-bold text-slate-800 dark:text-slate-100">{label}</dt><dd className="min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-medium text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-white">{value || 'Not provided'}</dd><p className="mt-1 text-xs text-slate-500">{help}</p></div>;
+  return <div><dt className="mb-1.5 text-sm font-bold text-slate-800 dark:text-slate-100">{label}</dt><dd><span className="block min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-medium text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-white">{value || 'Not provided'}</span><span className="mt-1 block text-xs font-normal text-slate-500">{help}</span></dd></div>;
 }
 
 export function EmployeeEmploymentSection({ employee, panel, canWrite, returnTo }: { employee: EmployeeDetail; panel?: string; canWrite: boolean; returnTo: string }) {

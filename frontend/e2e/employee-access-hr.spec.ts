@@ -49,7 +49,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean; theme?: 'light' | 'dark' } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean; theme?: 'light' | 'dark'; noDomain?: boolean; previewConflict?: boolean } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -147,6 +147,11 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
         });
       }
       if (pathname === '/api/employees/derive-work-email') {
+        const address = (body as { workEmail?: string }).workEmail;
+        if (address) {
+          const conflict = opts.previewConflict && address === 'taken@external.test';
+          return json({ domain: address.split('@')[1], pattern: 'first.last', localPart: address.split('@')[0], workEmail: address, unique: !conflict, suggestion: conflict ? 'taken2' : address.split('@')[0], status: conflict ? 'conflict' : 'derived', suggestedWorkEmail: conflict ? 'taken2@external.test' : address });
+        }
         const local = (body as { localPart?: string }).localPart;
         const lp = local ?? 'mona.kamal';
         return json({ domain: 'evostel.com', pattern: 'first.last', localPart: lp, workEmail: `${lp}@evostel.com`, unique: true, suggestion: lp, status: 'derived', suggestedWorkEmail: `${lp}@evostel.com` });
@@ -218,8 +223,9 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
       return p ? json(detail(p)) : json({}, 404);
     }
     if (/\/readiness$/.test(pathname) || pathname === '/api/employees/field-catalog') return json({ message: 'not here' }, 404);
-    if (pathname === '/api/companies') return json({ items: [COMPANY], total: 1, page: 1, pageSize: 100 });
+    if (pathname === '/api/companies') return json({ items: [{ ...COMPANY, ...(opts.noDomain ? { emailDomain: '' } : {}) }], total: 1, page: 1, pageSize: 100 });
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', currencyCode: 'SAR', countryCode: 'SA' });
+    if (pathname === '/api/admin/master-data/values') return json([]);
     if (pathname === '/api/features/disabled-keys' || pathname === '/api/features/modules' || pathname === '/api/notifications' || pathname.includes('help-text')) return json([]);
     return json({ items: [], total: 0, page: 1, pageSize: 100 });
   });
@@ -227,14 +233,15 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
   await page.goto(opts.path ?? '/people');
   if (!opts.path) {
     await expect(page.getByRole('heading', { name: 'Employee Management' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Open profile for Noah Williams' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Noah Williams', exact: true })).toBeVisible();
   }
   return { writes, listQueries, errors, requested };
 }
 
 async function openProfile(page: Page, name: string): Promise<Locator> {
-  await page.getByRole('button', { name: `Open profile for ${name}` }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Open full profile', exact: true }).click();
+  const employee = PEOPLE.find((person) => person.name === name);
+  if (!employee) throw new Error(`Unknown employee fixture: ${name}`);
+  await page.goto(`/people/${employee.id}?section=access-onboarding`);
   const card = page.getByTestId('employee-access-card');
   await expect(card).toBeVisible();
   await expect(card.getByText('Checking self-service…')).toHaveCount(0);
@@ -261,6 +268,68 @@ async function expectNoCodeStored(page: Page, codes: string[]) {
     expect(stored).not.toContain(`${code.slice(0, 4)} ${code.slice(4)}`);
   }
 }
+
+test('email regression: single entry uses a complete address and accepts suggestions only through Use', async ({ page }, info) => {
+  const { writes, errors } = await openPeople(page);
+  await expect(page).toHaveURL(/\/people(?:\?|$)/);
+  await expect(page).not.toHaveTitle('');
+  const card = await openProfile(page, 'Sara Ali');
+  await card.getByRole('button', { name: 'Add work email', exact: true }).click();
+  await expect(page).toHaveURL(/\/people\/45\/edit\?.*section=access-onboarding/);
+  const panel = page.getByTestId('work-email-field');
+  const input = panel.getByRole('textbox', { name: 'Work email', exact: true });
+  await expect(input).toHaveAttribute('type', 'email');
+  const use = panel.getByRole('button', { name: 'Use', exact: true });
+  await expect(use).toBeVisible();
+  await input.focus();
+  await input.press('Tab');
+  await expect(input).toHaveValue('');
+  await use.click();
+  await expect(input).toHaveValue('mona.kamal@evostel.com');
+  await input.fill('sara.it-issued@external.test');
+  await expect(input).toHaveValue('sara.it-issued@external.test');
+  await panel.screenshot({ path: info.outputPath('full-work-email.png') });
+  await page.getByRole('button', { name: 'Step 6: Review', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page).toHaveURL(/\/people\/45\?/);
+  expect(writes.find(w => w.path === '/api/employees/45')?.body).toMatchObject({ changes: { workEmail: 'sara.it-issued@external.test' } });
+  expect(errors).toEqual([]);
+});
+
+test('email regression: no company domain still checks the exact typed address and keeps conflicts unchanged', async ({ page }) => {
+  const { writes, errors } = await openPeople(page, { noDomain: true, previewConflict: true });
+  const card = await openProfile(page, 'Sara Ali');
+  await card.getByRole('button', { name: 'Add work email', exact: true }).click();
+  const panel = page.getByTestId('work-email-field');
+  const input = panel.getByRole('textbox', { name: 'Work email', exact: true });
+  await input.fill('taken@external.test');
+  await expect(panel.getByText('This email is already used by another employee.', { exact: true })).toBeVisible();
+  await expect(input).toHaveValue('taken@external.test');
+  await input.press('Tab');
+  await expect(input).toHaveValue('taken@external.test');
+  expect(writes.find(w => w.path === '/api/employees/derive-work-email')?.body).toMatchObject({ workEmail: 'taken@external.test', excludeEmployeeId: 45 });
+  await panel.getByRole('button', { name: 'Use taken2@external.test', exact: true }).click();
+  await expect(input).toHaveValue('taken2@external.test');
+  await expect(panel.getByText('This email is already used by another employee.', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Step 6: Review', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page).toHaveURL(/\/people\/45\?/);
+  expect(writes.find(w => w.path === '/api/employees/45')?.body).toMatchObject({ changes: { workEmail: 'taken2@external.test' } });
+  expect(errors).toEqual([]);
+});
+
+test('email regression: bulk entry keeps full addresses from different domains in the submitted list', async ({ page }) => {
+  const { writes, errors } = await openPeople(page, { noDomain: true });
+  await page.getByTestId('access-filter').getByRole('button', { name: 'Waiting for work email' }).click();
+  await page.getByRole('button', { name: 'Add work emails' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add work emails', exact: true });
+  await dialog.getByTestId('work-emails-paste').fill('EMP-0045\tsara@external.test\nEMP-0049\trana@another.test');
+  await dialog.getByRole('button', { name: 'Check the list', exact: true }).click();
+  await expect(dialog.getByTestId('work-emails-preview')).toBeVisible();
+  const preview = writes.find(w => w.path === '/api/employee-access/work-emails');
+  expect(preview?.body).toMatchObject({ dryRun: true, rows: [{ employeeCode: 'EMP-0045', workEmail: 'sara@external.test' }, { employeeCode: 'EMP-0049', workEmail: 'rana@another.test' }] });
+  expect(errors).toEqual([]);
+});
 
 test('the Self-service card shows one status and one button per state', async ({ page }, testInfo) => {
   const { errors } = await openPeople(page);
@@ -403,8 +472,8 @@ test('bulk print skips anyone already using KynexOne and says why', async ({ pag
 test('the Self-service chips filter the list on the server', async ({ page }) => {
   const { listQueries } = await openPeople(page);
   await page.getByTestId('access-filter').getByRole('button', { name: 'No access yet' }).click();
-  await expect(page.getByRole('button', { name: 'Open profile for Layla Haddad' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Open profile for Noah Williams' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Layla Haddad', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Noah Williams', exact: true })).toBeVisible();
   expect(listQueries.some((q) => new URLSearchParams(q).get('access') === 'not_started')).toBe(true);
 });
 
@@ -429,6 +498,8 @@ test('Add Employee: a blank work email remains optional and is not saved', async
   await expect(dialog.getByRole('button', { name: 'Print sign-in slip' })).toHaveCount(0);
   expect(await dialog.innerText()).not.toMatch(JARGON);
   await dialog.getByRole('button', { name: 'Later' }).click();
+  await expect(page).toHaveURL(/\/people\/50\?section=overview/);
+  await page.getByRole('link', { name: 'Access & Onboarding', exact: true }).click();
   await expect(page.getByTestId('employee-access-card')).toBeVisible();
 });
 
@@ -608,7 +679,7 @@ test('Add work emails flags rows the server would refuse before checking', async
   expect(writes.filter((w) => w.path === '/api/employee-access/work-emails')).toHaveLength(0);
 });
 
-test('a different domain is refused, never quietly changed to the company one', async ({ page }) => {
+test('a complete IT-issued address from another domain is retained exactly', async ({ page }) => {
   const { writes } = await openPeople(page);
   await page.getByRole('button', { name: 'Add Employee' }).first().click();
   const dialog = page.getByRole('dialog');
@@ -618,13 +689,10 @@ test('a different domain is refused, never quietly changed to the company one', 
   await workEmail.fill('noah@gmail.com');
   await expect(workEmail).toHaveValue('noah@gmail.com');
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
-  await expect(dialog.getByRole('heading', { name: 'Place them in the organization', exact: true })).toBeVisible();
-  await expect(dialog.getByRole('alert')).toHaveText('Work email must end in @evostel.com.');
-  expect(writes.filter((w) => w.path === '/api/employees')).toHaveLength(0);
-  await workEmail.fill('noah@evostel.com');
-  await expect(workEmail).toHaveValue('noah@evostel.com');
-  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await expect(dialog.getByRole('heading', { name: 'Review employee details', exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await expect(dialog.getByTestId('employee-added')).toContainText('Noah Gmail has been added.');
+  expect((writes.find((write) => write.path === '/api/employees')?.body as { workEmail?: string }).workEmail).toBe('noah@gmail.com');
 });
 
 test('without the reset permission, a bulk skip never points at Reset sign-in', async ({ page }) => {
@@ -656,8 +724,9 @@ test('someone who cannot give access sees the state only, without reasons or but
 
 test('the Access stopped filter lists leavers with the stopped card and no action', async ({ page }) => {
   const { listQueries } = await openPeople(page);
-  await expect(page.getByRole('button', { name: 'Open profile for Ali Former' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Ali Former', exact: true })).toHaveCount(0);
   await page.getByTestId('access-filter').getByRole('button', { name: /Access stopped/ }).click();
+  await expect(page.getByRole('link', { name: 'Ali Former', exact: true })).toBeVisible();
   const card = await openProfile(page, 'Ali Former');
   await expect(card.getByText('Access stopped', { exact: true })).toBeVisible();
   await expect(card.getByTestId('access-detail')).toHaveText('Access stopped because the employee has left the company.');

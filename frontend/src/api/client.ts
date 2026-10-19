@@ -94,7 +94,9 @@ client.interceptors.response.use(
     // subscription is inactive the tenant-admin page's own calls also 402, so a
     // self-redirect would loop infinitely. (Platform routes are already excluded
     // by the guard above.)
-    if (err.response?.status === 402 && typeof window !== 'undefined') {
+    const responseError = err.response?.data?.error;
+    const isCompanyLimitRefusal = responseError === 'company_limit_reached';
+    if (err.response?.status === 402 && !isCompanyLimitRefusal && typeof window !== 'undefined') {
       if (!window.location.pathname.startsWith('/tenant-admin')) {
         window.location.href = '/tenant-admin?alert=subscription';
       }

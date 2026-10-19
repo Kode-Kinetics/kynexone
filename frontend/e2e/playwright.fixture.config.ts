@@ -12,6 +12,7 @@ import { defineConfig, devices } from '@playwright/test';
  * returns that payload — that is the stack-backed suite's job.
  */
 const PORT = Number(process.env.FIXTURE_PORT ?? 5180);
+const EXTERNAL_BASE_URL = process.env.FIXTURE_BASE_URL;
 
 export default defineConfig({
   testDir: '.',
@@ -22,10 +23,10 @@ export default defineConfig({
   reporter: 'list',
   timeout: 60_000,
   use: {
-    baseURL: `http://localhost:${PORT}`,
+    baseURL: EXTERNAL_BASE_URL || `http://localhost:${PORT}`,
     trace: 'retain-on-failure',
   },
-  webServer: {
+  webServer: EXTERNAL_BASE_URL ? undefined : {
     command: `npx next dev -p ${PORT}`,
     url: `http://localhost:${PORT}/dashboard`,
     cwd: path.resolve(__dirname, '..'),

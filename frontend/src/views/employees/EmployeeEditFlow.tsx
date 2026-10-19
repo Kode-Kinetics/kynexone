@@ -2,11 +2,28 @@
 
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, Check, Loader2, RotateCcw } from 'lucide-react';
-import type { EmployeeDetail } from '../../api/employees';
+import { useEffect, useMemo, useState } from 'react';
+import { employeesApi, type EmployeeDetail, type EmployeeListItem } from '../../api/employees';
+import {
+  companiesApi,
+  costCentersApi,
+  DEFAULT_WORK_EMAIL_PATTERN,
+  departmentsApi,
+  designationsApi,
+  gradesApi,
+  type CompanyDto,
+  type CostCenterDto,
+  type DepartmentDto,
+  type DesignationDto,
+  type GradeDto,
+} from '../../api/organization';
+import { masterDataApi, type MasterDataValue } from '../../api/setup';
+import { CONTRACT_TYPE_OPTIONS, EMPLOYMENT_TYPE_OPTIONS } from '../../api/employeeFieldCatalog';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRoutes';
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
+import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
 import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
@@ -14,6 +31,20 @@ function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'pay-benefits') return panel === 'salary' || panel === 'package' ? 3 : 2;
   if (section === 'compliance-documents') return 4;
   return 0;
+}
+
+function activeMasterOptions(values: MasterDataValue[], fallback: string[]) {
+  const options = values
+    .filter((value) => value.isActive !== false)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((value) => value.valueEn.trim())
+    .filter(Boolean);
+  return options.length ? [...new Set(options)] : fallback;
+}
+
+function retainCurrentOption(options: string[], current?: string) {
+  const value = current?.trim();
+  return value && !options.includes(value) ? [value, ...options] : options;
 }
 
 export function EmployeeEditFlow({
@@ -33,8 +64,80 @@ export function EmployeeEditFlow({
   const { t } = useLocale();
   const canWrite = hasPermission('employees.write');
   const canSeeSensitive = hasPermission('employees.sensitive');
+  const [company, setCompany] = useState<CompanyDto | null>(null);
+  const [departments, setDepartments] = useState<DepartmentDto[]>([]);
+  const [designations, setDesignations] = useState<DesignationDto[]>([]);
+  const [grades, setGrades] = useState<GradeDto[]>([]);
+  const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
+  const [employmentTypeOptions, setEmploymentTypeOptions] = useState(EMPLOYMENT_TYPE_OPTIONS);
+  const [contractTypeOptions, setContractTypeOptions] = useState(CONTRACT_TYPE_OPTIONS);
   const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved });
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.allSettled([
+      companiesApi.listAll(),
+      departmentsApi.listAll(),
+      designationsApi.listAll(),
+      gradesApi.listAll(),
+      costCentersApi.listAll(employee.companyId),
+      employeesApi.listAll(),
+      masterDataApi.listValuesByCode('EmploymentType', true),
+      masterDataApi.listValuesByCode('ContractType', true),
+    ]).then((results) => {
+      if (cancelled) return;
+      const [companyResult, departmentResult, designationResult, gradeResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
+      setCompany(companyResult.status === 'fulfilled' ? companyResult.value.find((item) => item.id === employee.companyId) ?? null : null);
+      setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive) : []);
+      setDesignations(designationResult.status === 'fulfilled' ? designationResult.value.filter((item) => item.isActive) : []);
+      setGrades(gradeResult.status === 'fulfilled' ? gradeResult.value.filter((item) => item.isActive) : []);
+      setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => item.isActive) : []);
+      setEmployees(employeeResult.status === 'fulfilled' ? employeeResult.value : []);
+      setEmploymentTypeOptions(employmentTypeResult.status === 'fulfilled' ? activeMasterOptions(employmentTypeResult.value, EMPLOYMENT_TYPE_OPTIONS) : EMPLOYMENT_TYPE_OPTIONS);
+      setContractTypeOptions(contractTypeResult.status === 'fulfilled' ? activeMasterOptions(contractTypeResult.value, CONTRACT_TYPE_OPTIONS) : CONTRACT_TYPE_OPTIONS);
+    });
+    return () => { cancelled = true; };
+  }, [employee.companyId]);
+
+  const selectedDepartment = useMemo(() => departments.find((item) => item.nameEn === draft.form.department || item.code === draft.form.department), [departments, draft.form.department]);
+  const departmentDesignations = useMemo(
+    () => selectedDepartment ? designations.filter((item) => item.departmentId === selectedDepartment.id) : designations,
+    [designations, selectedDepartment],
+  );
+  const selectedDesignation = useMemo(
+    () => departmentDesignations.find((item) => item.titleEn === draft.form.designation || item.code === draft.form.designation),
+    [departmentDesignations, draft.form.designation],
+  );
+  const availableGrades = useMemo(() => {
+    if (!selectedDesignation?.gradeId) return grades;
+    const grade = grades.find((item) => item.id === selectedDesignation.gradeId);
+    return grade ? [grade] : grades;
+  }, [grades, selectedDesignation]);
+  const managerCandidates = useMemo(
+    () => employees.filter((item) => item.id !== employee.id && item.status === 'Active' && (!selectedDepartment || item.department === selectedDepartment.nameEn)),
+    [employee.id, employees, selectedDepartment],
+  );
+
+  const changeDepartment = (value: string) => {
+    draft.setField('department', value);
+    const department = departments.find((item) => item.nameEn === value || item.code === value);
+    const designation = department ? designations.find((item) => item.departmentId === department.id) : undefined;
+    const grade = designation?.gradeId ? grades.find((item) => item.id === designation.gradeId) : undefined;
+    const costCenter = department?.costCenterId ? costCenters.find((item) => item.id === department.costCenterId) : undefined;
+    draft.setField('designation', designation?.titleEn ?? '');
+    draft.setField('grade', grade?.code ?? designation?.jobGrade ?? '');
+    draft.setField('costCenter', costCenter?.code ?? '');
+    draft.setField('managerEmployeeId', department?.managerEmployeeId?.toString() ?? '');
+  };
+
+  const changeDesignation = (value: string) => {
+    draft.setField('designation', value);
+    const designation = designations.find((item) => item.titleEn === value || item.code === value);
+    const grade = designation?.gradeId ? grades.find((item) => item.id === designation.gradeId) : undefined;
+    draft.setField('grade', grade?.code ?? designation?.jobGrade ?? '');
+  };
 
   return (
     <main data-testid="employee-edit-flow" className="employee-workspace min-h-full bg-slate-50/80 px-4 py-5 dark:bg-slate-950/30 lg:px-6" aria-labelledby="employee-edit-heading">
@@ -60,16 +163,75 @@ export function EmployeeEditFlow({
               <EmployeeCreatePanel key={stepLabel.label} steps={EMPLOYEE_EDIT_STEPS} step={index} activeStep={draft.step}>
                 {draft.fields.some(field => employeeEditStep(field) === index && field.sensitive) && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>}
                 <fieldset disabled={!canWrite || draft.saving} className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
-                  {draft.fields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => (
-                    <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  {draft.fields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => {
+                    if (field.key === 'workEmail') return <WorkEmailField
+                      key={field.key}
+                      label={t(field.label)}
+                      value={draft.form[field.key] ?? ''}
+                      onChange={(value) => draft.setField(field.key, value)}
+                      englishName={draft.form.englishName ?? employee.englishName ?? employee.fullName}
+                      arabicName={draft.form.arabicName ?? employee.arabicName}
+                      companyId={employee.companyId}
+                      domain={company?.emailDomain ?? ''}
+                      pattern={company?.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN}
+                      excludeEmployeeId={employee.id}
+                      originalValue={employee.workEmail ?? ''}
+                      suggest={!employee.workEmail}
+                    />;
+                    if (field.key === 'employmentType' || field.key === 'contractType') {
+                      const options = retainCurrentOption(
+                        field.key === 'employmentType' ? employmentTypeOptions : contractTypeOptions,
+                        draft.form[field.key],
+                      );
+                      return <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        <span>{t(field.label)}</span>
+                        <select id={`edit-field-${field.key}`} value={draft.form[field.key] ?? ''} onChange={event => draft.setField(field.key, event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                      </label>;
+                    }
+                    if (field.key === 'department') {
+                      const options = retainCurrentOption(departments.map((item) => item.nameEn), draft.form.department);
+                      return <label key={field.key} htmlFor="edit-field-department" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        <span>{t('Department')}</span>
+                        <select id="edit-field-department" value={draft.form.department ?? ''} onChange={event => changeDepartment(event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                      </label>;
+                    }
+                    if (field.key === 'designation') {
+                      const options = retainCurrentOption(departmentDesignations.map((item) => item.titleEn), draft.form.designation);
+                      return <label key={field.key} htmlFor="edit-field-designation" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        <span>{t('Designation')}</span>
+                        <select id="edit-field-designation" value={draft.form.designation ?? ''} onChange={event => changeDesignation(event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                      </label>;
+                    }
+                    if (field.key === 'grade') {
+                      const options = retainCurrentOption(availableGrades.map((item) => item.code), draft.form.grade);
+                      return <label key={field.key} htmlFor="edit-field-grade" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        <span>{t('Grade')}</span>
+                        <select id="edit-field-grade" value={draft.form.grade ?? ''} onChange={event => draft.setField('grade', event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                      </label>;
+                    }
+                    if (field.key === 'costCenter') return <label key={field.key} htmlFor="edit-field-costCenter" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                      <span>{t('Cost center')}</span>
+                      <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />
+                    </label>;
+                    if (field.key === 'managerEmployeeId') {
+                      const current = draft.form.managerEmployeeId ?? '';
+                      const options = managerCandidates.some((item) => String(item.id) === current)
+                        ? managerCandidates
+                        : employees.filter((item) => String(item.id) === current).concat(managerCandidates);
+                      return <label key={field.key} htmlFor="edit-field-managerEmployeeId" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                        <span>{t('Line manager')}</span>
+                        <select id="edit-field-managerEmployeeId" value={current} onChange={event => draft.setField('managerEmployeeId', event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option.id} value={option.id}>{option.fullName} ({option.employeeCode})</option>)}</select>
+                      </label>;
+                    }
+                    return <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                       <span className="flex items-center gap-1.5">{t(field.label)}{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</span>
                       {field.type === 'select' && field.options?.length ? (
                         <select id={`edit-field-${field.key}`} value={draft.form[field.key] ?? ''} onChange={event => draft.setField(field.key, event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{field.options.map(option => <option key={option} value={option}>{option}</option>)}</select>
                       ) : (
                         <input id={`edit-field-${field.key}`} type={field.type && field.type !== 'toggle' ? field.type : 'text'} step={field.type === 'number' ? 'any' : undefined} value={draft.form[field.key] ?? ''} onChange={event => draft.setField(field.key, event.target.value)} className="input mt-1.5 w-full" />
                       )}
-                    </label>
-                  ))}
+                    </label>;
+                  })}
                 </fieldset>
               </EmployeeCreatePanel>
             ))}

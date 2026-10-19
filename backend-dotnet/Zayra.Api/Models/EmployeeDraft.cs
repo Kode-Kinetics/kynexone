@@ -34,6 +34,16 @@ public class EmployeeDraft : ITenantOwned
     public DateOnly? ProbationEndDate { get; set; }
     public string PayrollProfileCode { get; set; } = string.Empty;
     public decimal? Salary { get; set; }
+    // Immutable acceptance witness; null JSON explicitly means no retained legacy snapshot.
+    public Guid? AcceptedOfferId { get; set; }
+    public Guid? AcceptedOfferCompanyId { get; set; }
+    public Guid? OfferCompensationPlacementCompanyId { get; set; }
+    public string? AcceptedOfferCompensationJson { get; set; }
+    public long OfferCompensationVersion { get; set; }
+    public string? OfferCompensationDispositionsJson { get; set; }
+    public string? OfferCompensationConfirmedFingerprint { get; set; }
+    public DateTime? OfferCompensationConfirmedAtUtc { get; set; }
+    public Guid? OfferCompensationConfirmedByUserId { get; set; }
     public string BankName { get; set; } = string.Empty;
     public string BankIban { get; set; } = string.Empty;
     public string WpsBankDetails { get; set; } = string.Empty;

@@ -133,7 +133,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         {
             if (configuration.PolicyDocumentId is { } sourceId && configuration.PolicySourceHash is { } sourceHash)
                 draft = draft with { PolicySource = new(sourceId, sourceHash) };
-            draft = draft with { PolicyFieldSources = configuration.PolicyFieldSources };
+            draft = draft with { PolicyFieldSources = configuration.PolicyFieldSources, PolicySources = configuration.PolicySources };
             if (profile.Sections.Org && configuration.Grades is not null)
                 draft = draft with { Grades = configuration.Grades };
             if (profile.Sections.LeavePolicies && configuration.LeavePolicies is not null)
@@ -407,8 +407,11 @@ public sealed class SetupAssistantService : ISetupAssistantService
             errors.Add("Choose either a saved policy document or pasted policy text as the active source, not both.");
         if (c.PolicyDocumentId.HasValue != !string.IsNullOrWhiteSpace(c.PolicySourceHash))
             errors.Add("A policy document reference requires both its identifier and content fingerprint.");
-        if ((c.PolicyFieldSources?.Count ?? 0) > 30)
-            errors.Add("A setup draft may reference at most 30 extracted fields.");
+        if ((c.PolicyFieldSources?.Count ?? 0) > 500)
+            errors.Add("A setup draft may reference at most 500 source excerpts.");
+        if (c.PolicySources is { } sources && (sources.Count > 50 || sources.Any(s => s is null)
+            || sources.Select(s => s.DocumentId).Distinct().Count() != sources.Count))
+            errors.Add("A policy binder may contain at most 50 distinct documents.");
         if ((c.PolicySourceText?.Length ?? 0) > 12000)
             errors.Add("Company policy source must be at most 12,000 characters.");
         void Choices(List<string>? values, string label, params string[] allowed)

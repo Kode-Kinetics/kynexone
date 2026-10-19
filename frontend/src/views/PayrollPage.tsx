@@ -38,6 +38,7 @@ import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
@@ -335,7 +336,7 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
                       {e.blocking.length === 1 && e.blocking[0] === 'MISSING_SALARY_STRUCTURE' ? (
                         <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">Assign salary</button>
                       ) : (
-                        <Link href={`/people?employeeId=${e.employeeId}`} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">
+                        <Link href={employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">
                           Open {e.employeeCode}
                         </Link>
                       )}

@@ -142,10 +142,7 @@ for (const lang of ['en', 'ar'] as const) {
         if (p === `/api/employees/${employeeId}/readiness` || p === '/api/employees/field-catalog') return NOT_FOUND;
         return undefined;
       });
-      await page.goto(`/people?employeeId=${employeeId}`);
-      // The tab strip scrolls sideways; on a phone in RTL Playwright cannot scroll the tab into its viewport, so it is
-      // clicked by its DOM event (a person swipes the strip).
-      await page.getByRole('button', { name: lang === 'ar' ? 'الاستقطاعات' : 'Deductions', exact: true }).dispatchEvent('click');
+      await page.goto(`/people/${employeeId}?section=pay-benefits&panel=deductions`);
       const panel = page.getByTestId('employee-deductions-panel');
       await expect(panel.getByTestId('balance')).toHaveCount(2);
       await expect(panel.getByTestId('deduction-statement')).toBeVisible();

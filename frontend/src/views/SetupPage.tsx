@@ -2,15 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import dynamic from 'next/dynamic';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { InfoTip } from '../components/InfoTip';
+import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
+import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
+import dynamic from 'next/dynamic';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
@@ -77,11 +80,12 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
 import { resolveSetupArea } from '../lib/setupAreas';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
+import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
 
-// Load canonical leave forms only when their Configuration Center setting is focused.
+// Load the existing module only when its settings are opened in the workspace.
 const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
 const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
 const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
@@ -107,7 +111,7 @@ const tabs: { id: SettingsTab; label: string; description: string; icon: React.E
   { id: 'glMapping', label: msg('GL & rates'), description: msg('Payroll posting accounts, company rates and statutory rates.'), icon: Landmark, category: 'peoplePay' },
   { id: 'gccSettings', label: msg('GCC Settings'), description: msg('Country-specific employment and statutory defaults.'), icon: Globe, category: 'peoplePay' },
   { id: 'statutoryRules', label: msg('Statutory Rules'), description: msg('Tenant-wide effective-dated rules used by payroll and compliance.'), icon: ShieldCheck, category: 'peoplePay' },
-  { id: 'masterData', label: msg('Master Data'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
+  { id: 'masterData', label: msg('Employee Reference Lists'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
   { id: 'numberingRules', label: msg('Numbering'), description: msg('Prefixes and sequences for generated record numbers.'), icon: Hash, category: 'system' },
   { id: 'systemSettings', label: msg('System Settings'), description: msg('Workspace-wide operational defaults.'), icon: Settings, category: 'system' },
   { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), icon: Bell, category: 'system' },
@@ -138,7 +142,7 @@ function CompaniesTab() {
   const t = useT();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
-  const { isGroupScope, setSelectedCompany } = useCompany();
+  const { accountType, isGroupScope, setSelectedCompany } = useCompany();
   const router = useRouter();
   // Company mutations require organization write access. organization.read-only viewers
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
@@ -152,6 +156,7 @@ function CompaniesTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CompanyDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<CompanyRequest>(emptyCompany());
   const [saving, setSaving] = useState(false);
   const [availablePacks, setAvailablePacks] = useState<CountryPackOption[]>([]);
@@ -181,7 +186,12 @@ function CompaniesTab() {
     finally { setSummaryLoading(false); }
   };
 
-  const openNew = () => { setEditing(null); setForm(emptyCompany()); setError(''); setModalOpen(true); };
+  const openNew = () => {
+    setEditing(null);
+    setForm({ ...emptyCompany(), defaultCurrency: currencyCode });
+    setError('');
+    setModalOpen(true);
+  };
   const openEdit = (c: CompanyDto) => {
     setEditing(c);
     setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive, erpCompanyCode: c.erpCompanyCode ?? '' });
@@ -195,6 +205,8 @@ function CompaniesTab() {
   // Surfaced here, where the fix is, and NEVER guessed: a country inferred from the currency or the
   // tenant slug would seed the wrong labour law in silence.
   const missingCountry = items.filter((c) => !(c.countryCode ?? '').trim());
+  const selectedCountryPack = availablePacks.find(p => setupCountryCode(p.countryCode) === setupCountryCode(form.countryCode));
+  const jurisdictions = selectedCountryPack?.jurisdictions ?? [];
 
   const handleSave = async () => {
     if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
@@ -204,6 +216,7 @@ function CompaniesTab() {
       setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
       return;
     }
+    if (!(form.defaultCurrency ?? '').trim()) { setError('Default currency is required'); return; }
     // Advisory client-side domain-format check mirroring the server regex (server stays authoritative).
     // Blank is allowed — employees then fall back to manual work-email entry.
     if (!isValidEmailDomain(form.emailDomain ?? '')) {
@@ -230,11 +243,11 @@ function CompaniesTab() {
       // controlled). Only meaningful on create; edit paths never emit these codes.
       const resp = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data;
       if (resp?.error === 'account_type_single_company')
-        setError('This account is a single-company account. Ask your platform administrator to enable the Group account type.');
+        setError(resp.message ?? 'This account is a single-company account. Ask your platform administrator to enable the Group account type.');
       else if (resp?.error === 'company_limit_reached')
-        setError('Your plan’s company limit is reached. Contact your account manager to upgrade.');
+        setError(resp.message ?? 'Your plan’s company limit is reached. Contact your account manager to upgrade.');
       else if (resp?.error === 'company_creation_platform_controlled')
-        setError('Company creation for this account is managed by the platform. Contact your account manager.');
+        setError(resp.message ?? 'Company creation for this account is managed by the platform. Contact your account manager.');
       else setError(resp?.message ?? 'Failed to save. Please try again.');
     }
     finally { setSaving(false); }
@@ -286,7 +299,7 @@ function CompaniesTab() {
       )}
       <TableShell
         columns={['Legal Name', 'Trade Name', 'Country', 'Currency', 'Status']}
-        onAdd={canWrite && isGroupScope ? openNew : undefined}
+        onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openNew : undefined}
         addLabel="Add Company"
         loading={loading}
         empty={items.length === 0}
@@ -324,21 +337,12 @@ function CompaniesTab() {
                 <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
               )}
             </td>
-            <td className="px-4 py-3">
-              {canWrite && (
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                  <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                  {c.approvalStatus !== 'Draft' && (
-                    <button type="button" onClick={() => toggleStatus(c)} disabled={toggling === c.id} className="btn-secondary h-7 px-2 text-xs">
-                      {c.isActive ? 'Suspend' : 'Reactivate'}
-                    </button>
-                  )}
-                  <button type="button" onClick={() => loadStatutorySummary(c.id)} className="btn-secondary h-7 px-2 text-xs" title="View statutory pack profile"><Globe className="h-3 w-3" /></button>
-                  <button type="button" onClick={() => deleteCompany(c.id)} disabled={deleting === c.id} aria-label="Delete company" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
+            <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
+              {canWrite && <CompanyRowActions companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
+                { label: 'View statutory profile', onSelect: () => { void loadStatutorySummary(c.id); } },
+                ...(c.approvalStatus !== 'Draft' ? [{ label: c.isActive ? 'Suspend' : 'Reactivate', disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
+                { label: 'Delete company', destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
+              ]} />}
             </td>
           </tr>
         ))}
@@ -400,31 +404,25 @@ function CompaniesTab() {
             <input type="text" value={form.tradeName ?? ''} onChange={(e) => f('tradeName', e.target.value)} className="input w-full" />
           </FormField>
           <FormField label="Country" required>
-            <select
-              value={form.countryCode}
-              onChange={(e) => {
-                const cc = e.target.value;
-                f('countryCode', cc);
-                const pack = availablePacks.find((p) => p.countryCode === cc);
-                f('jurisdiction', pack?.jurisdictions[0]?.code ?? '');
+            <CountrySelect
+              value={setupCountryCode(form.countryCode)}
+              onChange={(cc) => {
+                const pack = availablePacks.find(p => setupCountryCode(p.countryCode) === cc);
+                setForm(current => ({ ...current, countryCode: cc, jurisdiction: pack?.jurisdictions[0]?.code ?? '' }));
               }}
-              className="select w-full"
-            >
-              <option value="">Select country…</option>
-              {availablePacks.map((p) => (
-                <option key={p.countryCode} value={p.countryCode}>{p.nameEn}</option>
-              ))}
-            </select>
+            />
+            <p className="mt-1 text-xs text-slate-500">{t('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')}</p>
           </FormField>
-          <FormField label="Jurisdiction">
+          <FormField label={t('Jurisdiction (optional)')} info={t('A special legal regime within the selected country, such as a free zone. Choose only when applicable.')}>
             <select
               value={form.jurisdiction ?? ''}
               onChange={(e) => f('jurisdiction', e.target.value)}
               className="select w-full"
-              disabled={!form.countryCode}
+              disabled={!form.countryCode || (!jurisdictions.length && !form.jurisdiction)}
             >
-              <option value="">Select jurisdiction…</option>
-              {(availablePacks.find((p) => p.countryCode === form.countryCode)?.jurisdictions ?? []).map((j) => (
+              <option value="">{t('No special jurisdiction selected')}</option>
+              {form.jurisdiction && !jurisdictions.some(j => j.code === form.jurisdiction) && <option value={form.jurisdiction}>{form.jurisdiction}</option>}
+              {jurisdictions.map((j) => (
                 <option key={j.code} value={j.code}>{j.label}</option>
               ))}
             </select>
@@ -458,11 +456,12 @@ function CompaniesTab() {
             <p className="mt-1 text-xs text-slate-400">{t('The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.')}</p>
             {!canSetErpCode && <p className="mt-1 text-xs text-slate-500">{t('Only a finance user who manages the general ledger can change this code.')}</p>}
           </FormField>
-          <FormField label="Work Email Domain">
+          <FormField label={t('Work Email Domain (optional)')} info={t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}>
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">
               <span className="grid place-items-center bg-slate-50 px-2.5 text-sm font-medium text-slate-400 dark:bg-white/[0.04] dark:text-slate-500">@</span>
               <input
                 type="text"
+                aria-label={t('Work Email Domain (optional)')}
                 value={form.emailDomain ?? ''}
                 onChange={(e) => f('emailDomain', e.target.value.trim().toLowerCase())}
                 className="w-full border-0 bg-transparent px-2.5 py-2 text-sm outline-none focus:ring-0"
@@ -475,16 +474,23 @@ function CompaniesTab() {
             <p className={`mt-1 text-xs ${form.emailDomain && !isValidEmailDomain(form.emailDomain) ? 'text-rose-500' : 'text-slate-400'}`}>
               {form.emailDomain && !isValidEmailDomain(form.emailDomain)
                 ? 'Enter a bare domain like "acme.sa" — no "@", scheme, or path.'
-                : 'New employees get {name}@this-domain automatically. Leave blank to enter work emails manually.'}
+                : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}
             </p>
           </FormField>
-          <FormField label="Work Email Pattern">
-            <select value={form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN} onChange={(e) => f('workEmailPattern', e.target.value)} className="select w-full" disabled={!form.emailDomain}>
+          <FormField label={t('Work Email Pattern (optional)')} info={t('Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.')}>
+            <select aria-label={t('Work Email Pattern (optional)')} value={form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN} onChange={(e) => f('workEmailPattern', e.target.value)} className="select w-full">
               {WORK_EMAIL_PATTERNS.map((p) => (
                 <option key={p} value={p}>{WORK_EMAIL_PATTERN_LABELS[p]}</option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-slate-400">How each employee&apos;s name becomes the local-part before the @.</p>
+            <p className="mt-1 text-xs text-slate-500" data-testid="work-email-pattern-preview">
+              {t('Example for John Smith:')} <span dir="ltr">{form.emailDomain && isValidEmailDomain(form.emailDomain)
+                ? assembleWorkEmail(deriveWorkEmailLocalPart('John Smith', form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN), form.emailDomain)
+                : deriveWorkEmailLocalPart('John Smith', form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN)}</span>.
+              {' '}{form.emailDomain && isValidEmailDomain(form.emailDomain)
+                ? t('Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.')
+                : t('Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.')}
+            </p>
           </FormField>
         </div>
       </Modal>
@@ -500,6 +506,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const [filterCompany, setFilterCompany] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<BranchDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<BranchRequest>(emptyBranch(companies[0]?.id ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -616,7 +623,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <FormField label="Name (AR)">
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} />
+              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
             </div>
           </FormField>
           <FormField label="Country" required>
@@ -651,6 +658,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<DepartmentDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<DepartmentRequest>(emptyDept());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -747,7 +755,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
           <FormField label="Name (AR)">
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} />
+              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
             </div>
           </FormField>
           <FormField label="Cost Center">
@@ -775,6 +783,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<DesignationDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<DesignationRequest>(emptyDesig());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -918,6 +927,7 @@ function GradesTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<GradeDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<GradeRequest>(emptyGrade());
   const [payScale, setPayScale] = useState<GradePayScaleComponentRequest[]>([]);
   const [saving, setSaving] = useState(false);
@@ -1075,6 +1085,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CostCenterDto | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<CostCenterRequest>(emptyCostCenter());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1167,6 +1178,7 @@ function MasterDataTab() {
   const [valueModal, setValueModal] = useState(false);
   const [editingType, setEditingType] = useState<MasterDataType | null>(null);
   const [editingValue, setEditingValue] = useState<MasterDataValue | null>(null);
+  useSetupEditorState(typeModal || valueModal);
   const [typeForm, setTypeForm] = useState({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true });
   const [valueForm, setValueForm] = useState({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false });
   const [saving, setSaving] = useState(false);
@@ -1373,6 +1385,7 @@ function NumberingRulesTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<NumberingRule | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState({ entityType: '', prefix: '', suffix: '', paddingLength: 5, separator: '-', includeYear: true, includeMonth: false, resetYearly: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1479,6 +1492,7 @@ function SystemSettingsTab() {
   const [filterCat, setFilterCat] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<SystemSetting | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState({ category: '', settingKey: '', settingValue: '', dataType: 'string', description: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1558,6 +1572,7 @@ function GCCSettingsTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<GCCComplianceSetting | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState<Partial<GCCComplianceSetting> & { countryCode: string }>({
     countryCode: 'US', wpsEnabled: false, wpsAgentId: '', wpsMolCode: '', sifEnabled: false,
     eosbEnabled: true, eosbYears1To5Rate: 0.5, eosbYearsAbove5Rate: 1.0, eosbMinYears: 1,
@@ -1664,6 +1679,7 @@ function FiscalYearsTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ year: new Date().getFullYear(), startDate: '', endDate: '' });
+  useSetupEditorState(modalOpen);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [closing, setClosing] = useState<string | null>(null);
@@ -1746,6 +1762,7 @@ function LocationsTab() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<AdminLocation | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1845,6 +1862,7 @@ function NotificationTemplatesTab() {
   const [filterChannel, setFilterChannel] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<NotificationTemplate | null>(null);
+  useSetupEditorState(modalOpen);
   const [form, setForm] = useState({ code: '', eventType: '', channel: 'Email', subjectEn: '', subjectAr: '', bodyEn: '', bodyAr: '', variables: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -2029,6 +2047,8 @@ function EmailConfigTab() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [savedConfig, setSavedConfig] = useState(() => JSON.stringify(cfg));
+  useSetupEditorState(JSON.stringify(cfg) !== savedConfig);
 
   useEffect(() => {
     systemSettingsApi.list('Email').then((settings) => {
@@ -2037,6 +2057,7 @@ function EmailConfigTab() {
         if (KEYS.includes(s.settingKey as SmtpKey)) merged[s.settingKey as SmtpKey] = s.settingValue;
       }
       setCfg(merged);
+      setSavedConfig(JSON.stringify(merged));
     }).catch(() => {}).finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2047,6 +2068,7 @@ function EmailConfigTab() {
       for (const key of KEYS) {
         await systemSettingsApi.upsert({ category: 'Email', settingKey: key, settingValue: cfg[key], dataType: 'string', description: key });
       }
+      setSavedConfig(JSON.stringify(cfg));
       setSaved(true); setTimeout(() => setSaved(false), 3000);
     } catch { /**/ } finally { setSaving(false); }
   };
@@ -2059,6 +2081,7 @@ function EmailConfigTab() {
         await systemSettingsApi.upsert({ category: 'Email', settingKey: key, settingValue: cfg[key], dataType: 'string', description: key });
       }
       // …then send a real test email through the configured SMTP server.
+      setSavedConfig(JSON.stringify(cfg));
       const result = await systemSettingsApi.testSmtp();
       setTestResult(result);
     } catch { setTestResult({ ok: false, message: 'Failed to save settings or reach the server.' }); } finally { setTesting(false); }
@@ -2242,11 +2265,12 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
-function FormField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function FormField({ label, required, children, info }: { label: string; required?: boolean; children: React.ReactNode; info?: string }) {
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
         {label} {required && <span className="text-red-500">*</span>}
+        {info && <InfoTip text={info} className="ms-1" />}
       </label>
       {children}
     </div>
@@ -2303,7 +2327,7 @@ export function SetupPage() {
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole, authorizationRefreshStatus, retryAuthorization } = useAuth();
-  const { accountType, isGroupScope, companies: authorizedCompanies, setSelectedCompany } = useCompany();
+  const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, setSelectedCompany } = useCompany();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
@@ -2346,26 +2370,41 @@ export function SetupPage() {
   }, [requestedTab]);
 
   useEffect(() => {
-    const refreshCompanies = () => { if (canReadCompanies) companiesApi.listAll().then(setCompanies).catch(() => {}); };
     if (configurationScopeUnavailable) {
       setCompanies([]);
       setGrades([]);
       setCostCenters([]);
       return;
     }
+    let active = true;
+    let companiesRequest = 0;
+    setCompanies([]);
+    setGrades([]);
+    setCostCenters([]);
+    const refreshCompanies = () => {
+      if (!canReadCompanies) return;
+      const request = ++companiesRequest;
+      companiesApi.listAll()
+        .then(rows => { if (active && request === companiesRequest) setCompanies(rows); })
+        .catch(() => { if (active && request === companiesRequest) setCompanies([]); });
+    };
     refreshCompanies();
     window.addEventListener('kynexone:companies-changed', refreshCompanies);
     if (canWrite) {
-      gradesApi.listAll().then(setGrades).catch(() => {});
-      costCentersApi.listAll().then(setCostCenters).catch(() => {});
+      gradesApi.listAll().then(rows => { if (active) setGrades(rows); }).catch(() => { if (active) setGrades([]); });
+      costCentersApi.listAll().then(rows => { if (active) setCostCenters(rows); }).catch(() => { if (active) setCostCenters([]); });
     }
-    return () => window.removeEventListener('kynexone:companies-changed', refreshCompanies);
-  }, [canReadCompanies, canWrite, configurationScopeUnavailable]);
+    return () => { active = false; window.removeEventListener('kynexone:companies-changed', refreshCompanies); };
+  }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable]);
 
   const selectTab = (tab: Tab) => {
+    if (tab === activeTab) return;
+    if (!confirmLeave()) return;
     setActiveTab(tab);
     const params = new URLSearchParams(searchParams?.toString());
     params.set('tab', tab);
+    params.set('area', resolveSetupArea(params.get('area')));
+    if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
     router.push(`/setup?${params.toString()}`, { scroll: false });
   };
 
@@ -2529,7 +2568,7 @@ export function SetupPage() {
 
       {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
 
-      {!isWorkspace && !configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10 lg:flex-wrap lg:overflow-visible">
+      {!configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex flex-nowrap gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
             const selected = selectedTab === id;
             return (
@@ -2576,6 +2615,8 @@ export function SetupPage() {
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {
                 if (isSettingsTab(id)) return renderExistingSettings(id);
+                // Catalogue checks route, feature, scope and editor access before calling this.
+                // Retain the mutation role intersection here as a second composition boundary.
                 if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
                 if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingChecklistSettings configurationOnly onDirtyChange={onDirtyChange} />;
                 if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
@@ -2602,7 +2643,7 @@ export function SetupPage() {
         </>
       )}
 
-      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager /></section>}
+      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager onOpenSetup={canWrite ? () => selectTab('aiSetup') : undefined} /></section>}
 
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
@@ -2614,29 +2655,12 @@ export function SetupPage() {
             </div>
           </div>
 
-          <div className="min-w-0">
-            {selectedTab === 'establishment' && <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />}
-            {selectedTab === 'companies' && <CompaniesTab />}
-            {selectedTab === 'branches' && <BranchesTab companies={companies} />}
-            {selectedTab === 'departments' && <DepartmentsTab costCenters={costCenters} />}
-            {selectedTab === 'designations' && <DesignationsTab grades={grades} />}
-            {selectedTab === 'grades' && <GradesTab />}
-            {selectedTab === 'costCenters' && <CostCentersTab companies={companies} />}
-            {selectedTab === 'masterData' && <MasterDataTab />}
-            {selectedTab === 'numberingRules' && <NumberingRulesTab />}
-            {selectedTab === 'systemSettings' && <SystemSettingsTab />}
-            {selectedTab === 'gccSettings' && <GCCSettingsTab />}
-            {selectedTab === 'statutoryRules' && <StatutoryRulesPanel />}
-            {selectedTab === 'fiscalYears' && <FiscalYearsTab />}
-            {selectedTab === 'locations' && <LocationsTab />}
-            {selectedTab === 'glMapping' && <GlSetupPanel companies={companies} costCenters={costCenters} />}
-            {selectedTab === 'notificationTemplates' && <NotificationTemplatesTab />}
-            {selectedTab === 'emailConfig' && <EmailConfigTab />}
-            {selectedTab === 'adminAuditLogs' && <AdminAuditLogsTab />}
+          <div className="min-w-0" key={companyVersion}>
+            {isSettingsTab(selectedTab) && renderExistingSettings(selectedTab)}
           </div>
         </section>
       )}
-    </div>
+      </div>
       </div>
     </>
   );

@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { benefitsApi, benefitsErrorMessage, type GradeBenefitDefault } from '../api/benefits';
-import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
+import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
@@ -34,6 +34,7 @@ import { EmployeeCompletionHandoff } from '../components/EmployeeCompletionHando
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
+import { WorkEmailField } from '../components/employeeAccess/WorkEmailField';
 import { Ltr } from '../components/employeeAccess/fill';
 
 const employeesImportExport = {
@@ -488,6 +489,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const canIssueAccess = hasPermission('employees.access.issue');
   const canResetAccess = hasPermission('employees.access.reset');
   const [accessRefresh, setAccessRefresh] = useState(0);
+  const [welcomeReturnEmployeeId, setWelcomeReturnEmployeeId] = useState<number | null>(null);
   const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
   // Code given → bulk print confirms first (their old codes stop working).
   const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[]; delivery: 'print' | 'email' } | null>(null);
@@ -792,8 +794,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
   const welcome = useWelcomeCodes(useCallback(() => {
     setAccessRefresh((n) => n + 1);
+    if (createOnly && welcomeReturnEmployeeId) {
+      window.location.assign(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
+      return;
+    }
     void load();
-  }, [load]));
+  }, [createOnly, load, welcomeReturnEmployeeId]));
 
   /** Every employee matching the current filter, page by page (for "all matching" selections). */
   const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
@@ -1687,6 +1693,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const issueCreatedCode = async (delivery?: 'email' | 'print') => {
     if (!createdEmployee) return;
     const { id, name, access } = createdEmployee;
+    if (createOnly) {
+      setWelcomeReturnEmployeeId(id);
+      setCreatedEmployee(null);
+      setFormOpen(false);
+      setFormError('');
+      await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
+      return;
+    }
     finishCreated();
     await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
@@ -1993,8 +2007,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const activationBlockers = readiness?.blocking.length ?? 0;
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
-  const showLegacyEmployeeAside = false;
-
   return (
     <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
       {subscriptionBanner && (
@@ -2352,326 +2364,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           </div>
         </section>
 
-        {showLegacyEmployeeAside && <aside className={`surface min-h-[560px] overflow-hidden ${selectedId && activeTab === 'benefits' ? 'order-first xl:order-none' : ''}`}>
-          {!selectedId && (
-            <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
-              <Users className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
-              <p className="font-semibold text-slate-900 dark:text-white">Select an employee</p>
-              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Open a live profile with payroll, compliance, documents, history, and transfers.</p>
-            </div>
-          )}
-
-          {selectedId && detailLoading && <div className="p-6 text-sm text-slate-500">Loading profile from API...</div>}
-
-          {selectedEmployee && !detailLoading && (
-            <div>
-              <div className="border-b border-slate-100 p-4 dark:border-white/[0.07]">
-                <div className="flex items-center gap-3">
-                  <Avatar name={selectedEmployee.fullName} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-bold text-slate-900 dark:text-white">{selectedEmployee.fullName}</p>
-                    <p className="text-xs text-slate-500">{selectedEmployee.employeeCode} · {selectedEmployee.status}</p>
-                  </div>
-                  {canEditEmployees && <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
-                    <Pencil className="h-3.5 w-3.5" />
-                    Edit
-                  </button>}
-                  <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10" aria-label="Close employee profile" title="Close profile">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="mt-4 flex gap-1 overflow-x-auto">
-                  {visibleTabs.map((tab) => (
-                    <button key={tab.id} ref={tab.id === 'benefits' ? benefitsTabRef : undefined} type="button" data-testid={tab.id === 'development' ? 'suc-dev-tab' : undefined} onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
-                      {t(tab.label)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-4 p-4">
-                {!releaseA && canReadBenefits && activeTab === 'benefits' && <EmployeeBenefitsPanel key={detail!.id}
-                  employeeId={detail!.id} employeeName={detail!.fullName} companyId={detail!.companyId ?? null} gradeId={detail!.gradeId} />}
-                {activeTab !== 'benefits' && <>
-                {/* Activation readiness — the 422 block and the live checklist share the SAME
-                    server-authoritative component; fast-fix closes gaps in place (§8.3/§8.4). */}
-                {blockedPanel ? (
-                  <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-3 dark:border-rose-500/40 dark:bg-rose-500/[0.06]">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="flex items-center gap-1.5 text-sm font-bold text-rose-700 dark:text-rose-300">
-                        <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                        Cannot activate yet — {blockedPanel.blocking.length} required {blockedPanel.blocking.length === 1 ? 'detail' : 'details'} missing
-                      </p>
-                      <button type="button" onClick={() => setBlockedPanel(null)} className="shrink-0 text-xs font-semibold text-slate-500 underline">Dismiss</button>
-                    </div>
-                    <ReadinessChecklist
-                      readiness={blockedPanel}
-                      onFixField={handleFixField}
-                      onFixDocument={handleFixDocument}
-                      fieldFixMode={readinessFixMode}
-                    />
-                  </div>
-                ) : readiness ? (
-                  <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                    <p className="mb-2 text-xs font-bold uppercase text-slate-400">Activation checklist</p>
-                    <ReadinessChecklist
-                      readiness={readiness}
-                      onFixField={handleFixField}
-                      onFixDocument={handleFixDocument}
-                      fieldFixMode={readinessFixMode}
-                      showPresent
-                    />
-                  </div>
-                ) : null}
-
-                {canEditEmployees && <EmployeeCompletionHandoff employeeId={selectedEmployee.id} onChanged={() => { void openDetail(selectedEmployee.id, true); void load(); }} />}
-
-                <EmployeeAccessCard
-                  key={selectedEmployee.id}
-                  employeeId={selectedEmployee.id}
-                  employeeName={selectedEmployee.fullName}
-                  refreshKey={accessRefresh}
-                  canIssue={canIssueAccess}
-                  canReset={canResetAccess}
-                  isSelf={user?.employeeId != null && user.employeeId === selectedEmployee.id}
-                  issuing={welcome.busy}
-                  onIssue={welcome.issue}
-                  onAddWorkEmail={() => {
-                    setSingleWorkEmail('');
-                    setSingleWorkEmailError('');
-                    setWorkEmailFor({ id: selectedEmployee.id, name: selectedEmployee.fullName, englishName: selectedEmployee.englishName ?? selectedEmployee.fullName, arabicName: selectedEmployee.arabicName, companyId: selectedEmployee.companyId });
-                  }}
-                />
-                </>}
-
-                {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
-                    operator confirms it is a distinct person (clears the flag, audited) or merges it
-                    into an existing record. Merge is offered only for STRONG (ID) matches. */}
-                {dupFlag && (
-                  <div className="rounded-lg border border-fuchsia-300 bg-fuchsia-50/60 p-3 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/[0.06]">
-                    <p className="flex items-center gap-1.5 text-sm font-bold text-fuchsia-700 dark:text-fuchsia-300">
-                      <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      {dupFlag.label || 'Possible duplicate'}
-                    </p>
-                    <p className="mt-1 text-xs text-fuchsia-700/90 dark:text-fuchsia-300/90">
-                      {dupFlag.reason || 'This record may be the same person as an existing employee. Confirm they are distinct, or merge this into the existing record.'}
-                    </p>
-                    {dupMatches.length > 0 && (
-                      <ul className="mt-2 space-y-1.5">
-                        {dupMatches.map((m) => (
-                          <li key={m.employeeId} className="rounded-lg border border-fuchsia-200/70 bg-white/60 px-2.5 py-2 text-xs dark:border-fuchsia-500/20 dark:bg-white/[0.03]">
-                            {m.canView ? (
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="font-semibold text-slate-800 dark:text-slate-100">
-                                    {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
-                                    {m.matchType === 'strong'
-                                      ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                                      : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
-                                  </p>
-                                  <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
-                                </div>
-                                <div className="flex shrink-0 gap-1.5">
-                                  <button type="button" onClick={() => openDetail(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View</button>
-                                  {m.matchType === 'strong' && (
-                                    <button type="button" disabled={dupResolving} onClick={() => mergeInto(m.employeeId, `${m.fullName} (${m.employeeCode})`)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">Merge into this</button>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="text-slate-500 dark:text-slate-400">A matching record exists in another company. Contact a group administrator.</p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="mt-2.5 space-y-1.5">
-                      <input
-                        value={dupReason}
-                        onChange={(e) => setDupReason(e.target.value)}
-                        placeholder="Reason (required to confirm distinct)"
-                        className="input w-full text-xs"
-                      />
-                      {dupNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{dupNotice}</p>}
-                      <div className="flex justify-end">
-                        <button type="button" disabled={dupResolving} onClick={confirmDistinct} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
-                          {dupResolving ? 'Saving…' : 'Confirm distinct person'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Imported bank details nobody has checked yet. A second person confirms them with the
-                    employee; until then every payroll run that pays this person by bank warns before Lock. */}
-                {bankFlag && (
-                  <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-500/40 dark:bg-amber-500/[0.06]">
-                    <p className="text-sm font-bold text-amber-800 dark:text-amber-300">{bankFlag.label ? t(bankFlag.label) : t('Imported bank details not yet verified')}</p>
-                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-300/90">
-                      {t('These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.')}
-                    </p>
-                    <div className="mt-2.5 space-y-1.5">
-                      <input
-                        value={bankNote}
-                        onChange={(e) => setBankNote(e.target.value)}
-                        placeholder={t('How you checked them (required)')}
-                        className="input w-full text-xs"
-                      />
-                      {bankNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{bankNotice}</p>}
-                      <div className="flex justify-end">
-                        <button type="button" disabled={bankConfirming} onClick={confirmBankDetails} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
-                          {bankConfirming ? t('Saving…') : t('Confirm bank details')}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'personal' && (
-                  <DetailGrid rows={[
-                    ['English name', selectedEmployee.englishName],
-                    ['Arabic name', selectedEmployee.arabicName],
-                    ['Preferred name', selectedEmployee.preferredName],
-                    ['Gender', selectedEmployee.gender],
-                    ['Nationality', selectedEmployee.nationality],
-                    ['Personal email', selectedEmployee.personalEmail],
-                    ['Work email', selectedEmployee.workEmail],
-                    ['Mobile', selectedEmployee.phone],
-                  ]} />
-                )}
-                {activeTab === 'employment' && (
-                  <DetailGrid rows={[
-                    ['Company', nameById(companies, selectedEmployee.companyId, 'legalNameEn')],
-                    ['Branch', selectedEmployee.branch],
-                    ['Department', selectedEmployee.department],
-                    ['Designation', selectedEmployee.designation],
-                    ['Grade', selectedEmployee.grade],
-                    ['Job title', selectedEmployee.jobTitle],
-                    ['Employment type', selectedEmployee.employmentType],
-                    ['Contract type', selectedEmployee.contractType],
-                    ['Joining date', dateLabel(selectedEmployee.joiningDate)],
-                    ['Work location', selectedEmployee.workLocation],
-                  ]} />
-                )}
-                {activeTab === 'payroll' && (
-                  <>
-                    <DetailGrid rows={[
-                      ['Bank', detail!.payrollProfile?.bankName],
-                      ['IBAN', detail!.payrollProfile?.iban],
-                      ['Account', detail!.payrollProfile?.accountNumber],
-                      ['Payment method', detail!.payrollProfile?.paymentMethod],
-                      ['Currency', detail!.payrollProfile?.salaryCurrency],
-                      ['Payroll group', detail!.payrollProfile?.payrollGroup],
-                      ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
-                      ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
-                    ]} />
-                    {/* F02 — the statutory fact the Saudi GOSI schedule is keyed on (approval-gated). */}
-                    <GosiCohortPanel key={detail!.id} employee={detail!} />
-                  </>
-                )}
-                {releaseA && activeTab === 'package' && <EmployeePackagePanel key={detail!.id} employee={detail!} />}
-                {releaseA && activeTab === 'deductions' && <EmployeeDeductionsPanel key={detail!.id} employee={detail!} />}
-                {canSeeDevelopment && activeTab === 'development' && <DevelopmentPlanPanel key={detail!.id} employeeId={detail!.id} access={successionAccess} />}
-                {activeTab === 'compliance' && (
-                  <div className="space-y-2">
-                    {detail!.complianceRecords.length === 0 && <SmallEmpty label="No compliance records saved" />}
-                    {detail!.complianceRecords.map((record) => (
-                      <div key={`${record.countryCode}-${record.fieldKey}`} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{record.fieldLabel}</p>
-                        <p className="mt-1 text-xs text-slate-500">{record.countryCode} · {record.fieldValue || '-'} · Expires {dateLabel(record.expiryDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {activeTab === 'documents' && (
-                  <div className="space-y-3">
-                    <div className="grid gap-2">
-                      <select value={documentType} disabled={documentUploading} onChange={(e) => { setDocumentType(e.target.value); setDocumentUploadNotice(''); setDocumentUploadError(''); }} className="select w-full" aria-label="Document type">
-                        {selectedDocumentTypes.map((item) => <option key={item}>{item}</option>)}
-                      </select>
-                      <input type="date" value={documentExpiry} disabled={documentUploading} onChange={(e) => setDocumentExpiry(e.target.value)} className="input w-full" aria-label="Document expiry" />
-                      <input type="file" disabled={documentUploading} onChange={(e) => { setDocumentFile(e.target.files?.[0] ?? null); setDocumentUploadNotice(''); setDocumentUploadError(''); }} className="input w-full" aria-label="Upload document file" />
-                      {documentUploadNotice && <p role="status" className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">{documentUploadNotice}</p>}
-                      {documentUploadError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{documentUploadError}</p>}
-                      <button type="button" onClick={uploadDocument} disabled={!documentFile || documentUploading} className="btn-primary justify-center disabled:opacity-50">
-                        <FileUp className="h-4 w-4" />
-                        {documentUploading ? 'Uploading…' : `Upload ${documentType}`}
-                      </button>
-                    </div>
-                    {detail!.documents.map((doc) => (
-                      <div key={doc.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{doc.documentType}</p>
-                        <p className="text-xs text-slate-500">{doc.fileName} · {doc.approvalStatus} · Expires {dateLabel(doc.expiryDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {activeTab === 'history' && (
-                  <Timeline items={detail!.history.map((item) => ({ id: item.id, title: item.eventType, body: `${item.oldValue || '-'} -> ${item.newValue || '-'} · ${item.reason || 'No reason'}`, date: item.createdAtUtc }))} />
-                )}
-                {activeTab === 'transfers' && (
-                  <div className="space-y-3">
-                    <select id="transfer-department-select" value={transferDepartment} onChange={(e) => setTransferDepartment(e.target.value)} className="select w-full" aria-label="Transfer to department">
-                      <option value="">New department</option>
-                      {departments.map((dept) => <option key={dept.id} value={dept.id}>{dept.nameEn}</option>)}
-                    </select>
-                    <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="input w-full" placeholder="Transfer reason" />
-                    <button type="button" onClick={requestTransfer} className="btn-primary justify-center">
-                      <Send className="h-4 w-4" />
-                      Request Transfer
-                    </button>
-                    {detail!.transfers.map((transfer) => (
-                      <div key={transfer.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{transfer.newDepartment || 'Transfer request'}</p>
-                        <p className="text-xs text-slate-500">{transfer.status} · Effective {dateLabel(transfer.effectiveDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                  <p className="mb-2 text-xs font-bold uppercase text-slate-400">Status change</p>
-                  <div className="grid gap-2">
-                    <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as StatusFilter)} className="select w-full" aria-label="New employee status">
-                      {statusOptions.filter(Boolean).map((item) => <option key={item} value={item}>{item}</option>)}
-                    </select>
-                    <input value={statusReason} onChange={(e) => setStatusReason(e.target.value)} className="input w-full" placeholder="Required reason" />
-                    {selectedEmployee.status !== 'Active' && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={activateEmployee}
-                          disabled={statusSaving || activateGateBlocked}
-                          title={activateGateBlocked ? `${activationBlockers} required detail${activationBlockers === 1 ? '' : 's'} missing` : undefined}
-                          className="btn-primary justify-center disabled:opacity-50"
-                        >
-                          <UserRound className="h-4 w-4" />
-                          {statusSaving ? 'Activating...' : 'Activate employee'}
-                        </button>
-                        {activateGateBlocked && (
-                          <p className="text-center text-[11px] text-slate-400">
-                            {activationBlockers} required detail{activationBlockers === 1 ? '' : 's'} missing — complete the checklist above.
-                          </p>
-                        )}
-                      </>
-                    )}
-                    <button type="button" onClick={changeStatus} disabled={!statusReason.trim() || statusSaving} className="btn-secondary justify-center disabled:opacity-40">
-                      <History className="h-4 w-4" />
-                      {statusSaving ? 'Saving...' : 'Save status history'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-red-200 p-3 dark:border-red-500/30">
-                  <p className="mb-2 text-xs font-bold uppercase text-red-400">Danger zone</p>
-                  <button type="button" onClick={deleteEmployee} className="w-full justify-center rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-500/10">
-                    Delete employee record
-                  </button>
-                  <p className="mt-1.5 text-[11px] text-slate-400">Hides the record from all lists and reports. History is kept for audit purposes — this is not a permanent erase.</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>}
       </div>
       )}
 
@@ -2704,10 +2396,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         }}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3 text-sm dark:border-white/10">
             <span className="text-slate-500">{selectedEmployee?.employeeCode}</span>
-            <div className="flex flex-wrap items-center gap-3">
-              {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
-              <button type="button" onClick={() => void openFullProfile()} disabled={editSaving} className="text-sm font-semibold text-sapphire underline disabled:opacity-40">{t('Open full profile')}</button>
-            </div>
+            {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
           </div>
           {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {unavailableEditKeys.length > 0 && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{unavailableEditNotice}</p>}
@@ -3377,142 +3066,6 @@ function Section({ title, children, wide = false }: { title: string; children: R
   );
 }
 
-/** Full IT-issued address. Suggestions and duplicate checks never change the entered value. */
-function WorkEmailField({
-  label, value, onChange, englishName, arabicName, companyId, domain, pattern,
-  suggest = false, excludeEmployeeId, originalValue, info, infoKey,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  englishName: string;
-  arabicName?: string;
-  companyId?: string;
-  domain: string;
-  pattern: string;
-  /**
-   * Offer a full address while empty. Only the explicit Use button accepts it.
-   */
-  suggest?: boolean;
-  excludeEmployeeId?: number;
-  originalValue?: string;
-  info?: string;
-  infoKey?: string;
-}) {
-  const { t } = useLocale();
-  const cleanDomain = (domain ?? '').trim().toLowerCase();
-  const inputId = useId();
-  const [preview, setPreview] = useState<DeriveWorkEmailResponse | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [ghost, setGhost] = useState('');
-
-  // Debounced, server-authoritative with a local fallback, advisory only: a suggestion while the
-  // field is empty, a uniqueness check once something is typed.
-  useEffect(() => {
-    setPreview(null);
-    setGhost('');
-    setChecking(false);
-    const wantSuggestion = suggest && !value.trim() && !!cleanDomain && !!englishName.trim();
-    if (!wantSuggestion && (!value.trim() || workEmailLocalProblem(value))) return;
-    let cancelled = false;
-    setChecking(true);
-    const handle = setTimeout(async () => {
-      let res: DeriveWorkEmailResponse;
-      try {
-        res = await employeesApi.deriveWorkEmail({
-          englishName, arabicName, companyId,
-          workEmail: wantSuggestion ? undefined : value.trim(),
-          excludeEmployeeId,
-        });
-      } catch {
-        // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
-        if (!cancelled) {
-          setChecking(false);
-          if (wantSuggestion) setGhost(assembleWorkEmail(deriveWorkEmailLocalPart(englishName, pattern), cleanDomain));
-        }
-        return;
-      }
-      if (cancelled) return;
-      setChecking(false);
-      if (wantSuggestion) {
-        setGhost(res.suggestedWorkEmail || res.workEmail || '');
-        setPreview(res.status === 'manual-arabic-only' ? res : null);
-      } else {
-        setPreview(res);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(handle); };
-  }, [englishName, arabicName, companyId, cleanDomain, pattern, value, suggest, excludeEmployeeId]);
-
-  const showGhost = suggest && !value && !!ghost;
-
-  const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const typedProblem = workEmailProblemKey(workEmailLocalProblem(value));
-  const conflict = preview?.workEmail === value.trim() && (preview.status === 'conflict' || preview.unique === false);
-  const conflictSuggestion = conflict ? preview?.suggestedWorkEmail : null;
-
-  return (
-    <div className="col-span-full block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">
-        <label htmlFor={inputId}>{label} <span className="font-normal text-slate-500">({t('Optional')})</span></label>
-        <InfoTip text={info || t('Enter the complete work email address issued by IT, for example name@company.com.')} fieldKey={infoKey} className="ms-1" />
-        {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
-      </span>
-
-          <input
-            id={inputId}
-            type="email"
-            aria-label={label}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder="name@company.com"
-            className="input mt-1.5 w-full"
-            spellCheck={false}
-            autoCapitalize="none"
-            dir="ltr"
-          />
-            {showGhost && (
-              <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span dir="ltr">{ghost}</span>
-              <button
-                type="button"
-                onClick={() => onChange(ghost)}
-                className="flex min-h-11 items-center px-2.5 text-xs font-semibold text-sapphire hover:underline"
-                aria-label={t('Use')}
-              >
-                {t('Use')}
-              </button>
-              </p>
-            )}
-
-          {conflict ? (
-            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
-              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-              <span>{t('This email is already used by another employee.')}</span>
-              {conflictSuggestion && conflictSuggestion !== value.trim() && (
-                <button
-                  type="button"
-                  onClick={() => onChange(conflictSuggestion)}
-                  className="font-semibold text-sapphire underline underline-offset-2"
-                >
-                  {t('Use')} <span dir="ltr">{conflictSuggestion}</span>
-                </button>
-              )}
-            </p>
-          ) : checking ? (
-            <p className="mt-1 text-xs text-slate-400">{t('Checking…')}</p>
-          ) : null}
-      {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
-      {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
-
-      {changedFromOriginal && originalValue && (
-        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          This address is also the self-service (ESS) sign-in identity. Changing it updates the HR record only — it does not rename an existing mailbox or login automatically.
-        </p>
-      )}
-    </div>
-  );
-}
 
 // `ltr` marks a field whose CONTENT is an identifier, not prose — an IBAN, an account or
 // routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed

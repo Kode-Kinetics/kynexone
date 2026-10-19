@@ -15,6 +15,8 @@ import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
+import { policyBinder } from './policyBinder';
+import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
 import { employeeWorkspace } from './employeeWorkspace';
@@ -35,6 +37,8 @@ type Dict = Record<string, string>;
 const en: Dict = {
   ...employeeWorkspace.en,
   ...setupStudio.en,
+  ...policyBinder.en,
+  ...policyForms.en,
   ...gradeBenefitDefaults.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
@@ -1419,6 +1423,8 @@ const en: Dict = {
 const ar: Dict = {
   ...employeeWorkspace.ar,
   ...setupStudio.ar,
+  ...policyBinder.ar,
+  ...policyForms.ar,
   ...gradeBenefitDefaults.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",

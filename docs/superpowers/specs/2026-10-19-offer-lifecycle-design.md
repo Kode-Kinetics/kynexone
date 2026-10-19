@@ -2,7 +2,7 @@
 
 Date: 2026-10-19
 
-Status: proposed implementation design; feature scope approved in chat, written design awaiting user review. This document does not claim implementation or deployment.
+Status: approved by the user on 2026-10-19 together with the reviewed implementation plan. Execution in progress; this document does not claim implementation or deployment.
 
 ## Intent and scope
 

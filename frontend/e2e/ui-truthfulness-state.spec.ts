@@ -176,7 +176,9 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(login).toContain('const busy = loading');
     expect(login).toContain('aria-busy={busy}');
     expect(login).toContain('aria-pressed={showPw}');
-    expect(people).toContain('aria-label={`Open profile for ${employee.fullName}`}');
+    expect(people).toContain('href={employeeWorkspaceHref(employee.id, {');
+    expect(people).toContain('returnTo: buildPeopleReturnTo({ ...directoryQuery.state');
+    expect(people).not.toContain('Open profile for');
     expect(people).toContain('Clear filters');
     expect(approvals).toContain('aria-pressed={queueFilter === key}');
     expect(approvals).not.toContain("alert('Please add a clear rejection reason");
@@ -340,8 +342,11 @@ test.describe('browserless employee search race and payroll currency contracts',
 
   test('the People page seeds search from the URL without keying that effect on the typed value', () => {
     const people = read('src/views/EmployeesPage.tsx');
-    expect(people).toContain("const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');");
-    expect(people).toMatch(/const seeded = searchSeed\.take\(searchParams\?\.get\('search'\) \?\? null\);\n\s+if \(seeded !== undefined\) setSearch\(seeded\);\n\s+\}, \[searchParams, searchSeed\]\);/);
+    const directoryQuery = read('src/hooks/usePeopleDirectoryQuery.ts');
+    expect(people).toContain("const search = directoryQuery.state.search ?? '';");
+    expect(people).toContain('directoryQuery.update({ search: value || undefined, page: undefined, anchor: undefined });');
+    expect(directoryQuery).toContain('parsePeopleDirectoryState(new URLSearchParams(serialized))');
+    expect(directoryQuery).toContain('[serialized]');
     expect(people).not.toContain('searchFromUrl !== search');
     // #128's gate still decides which employee load may write the table.
     expect(people).toContain('await runLatest(employeeLoadGate, () => employeesApi.list({');
@@ -565,7 +570,7 @@ test.describe('browserless payroll payment-readiness contracts', () => {
     expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf('<KpiCard label="Gross Payroll"'));
     expect(payroll).toContain('>Blocks payment</p>');
     expect(payroll).toContain('>Recommended — does not block approval</p>');
-    expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
+    expect(payroll).toContain("employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })");
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
   });
 });

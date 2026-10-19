@@ -72,6 +72,7 @@ export interface Candidate {
 }
 
 export interface JobApplication {
+  version: number;
   id: string;
   jobOpeningId: string;
   jobTitle: string;
@@ -117,6 +118,7 @@ export interface InterviewSchedule {
 }
 
 export interface OfferLetter {
+  version: number;
   id: string;
   applicationId: string;
   candidateName: string;
@@ -447,27 +449,18 @@ export const offersApi = {
   approverOptions: (id: string) =>
     client.get<OfferApproverOption[]>(`/api/recruitment/offers/${id}/approver-options`).then(r => r.data),
 
-  requestApproval: (id: string, body: { approverUserId: string; approverName: string; approverRole?: string }) =>
+  requestApproval: (id: string, body: { expectedVersion: number; approverUserId: string; approverName: string; approverRole?: string }) =>
     client.post<OfferApproval>(`/api/recruitment/offers/${id}/approvals`, body).then(r => r.data),
 
-  decideApproval: (id: string, approvalId: string, body: { decision: 'Approved' | 'Rejected'; comments?: string }) =>
+  decideApproval: (id: string, approvalId: string, body: { expectedVersion: number; decision: 'Approved' | 'Rejected'; comments?: string }) =>
     client.patch<OfferApproval>(`/api/recruitment/offers/${id}/approvals/${approvalId}/decide`, body).then(r => r.data),
 
-  create: (body: { applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string; departmentId?: string; designationId?: string }) =>
+  create: (body: { expectedApplicationVersion: number; applicationId: string; offeredJobTitle: string; offeredDepartment?: string; startDate: string; basicSalary: number; housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number; contentHtml?: string; responseDeadline?: string; departmentId?: string; designationId?: string; templateId?: string }) =>
     client.post<OfferLetter>('/api/recruitment/offers', body).then(r => r.data),
 
   /** The active departments and designations an offer can name: the records activation matches. */
   placementOptions: () =>
     client.get<OfferPlacementOptions>('/api/recruitment/offers/placement-options').then(r => r.data),
-
-  send: (id: string) =>
-    client.patch<OfferLetter>(`/api/recruitment/offers/${id}/send`, {}).then(r => r.data),
-
-  accept: (id: string) =>
-    client.patch<OfferLetter>(`/api/recruitment/offers/${id}/accept`, {}).then(r => r.data),
-
-  decline: (id: string, reason: string) =>
-    client.patch<OfferLetter>(`/api/recruitment/offers/${id}/decline`, { reason }).then(r => r.data),
 
   // Authenticated offer document download (bearer token attached by the axios client).
   // Replaces the bearer-less, XSS-prone `applications/offers/{id}/html` anchor.
@@ -538,11 +531,11 @@ export const applicationsApi = {
   apply: (jobOpeningId: string, candidateId: string, notes?: string) =>
     client.post<JobApplication>('/api/recruitment/applications', { jobOpeningId, candidateId, notes }).then(r => r.data),
 
-  advance: (id: string, notes?: string) =>
-    client.post<JobApplication>(`/api/recruitment/applications/${id}/advance`, { notes }).then(r => r.data),
+  advance: (id: string, expectedVersion: number, notes?: string) =>
+    client.post<JobApplication>(`/api/recruitment/applications/${id}/advance`, { expectedVersion, notes }).then(r => r.data),
 
-  reject: (id: string, reason: string) =>
-    client.post<JobApplication>(`/api/recruitment/applications/${id}/reject`, { reason }).then(r => r.data),
+  reject: (id: string, expectedVersion: number, reason: string) =>
+    client.post<JobApplication>(`/api/recruitment/applications/${id}/reject`, { expectedVersion, reason }).then(r => r.data),
 
   addNote: (id: string, notes: string) =>
     client.post(`/api/recruitment/applications/${id}/notes`, { notes }).then(r => r.data),
@@ -557,18 +550,11 @@ export const applicationsApi = {
 
   /** Department and designation default to the job opening's when left out; an id wins over a name. */
   generateOffer: (id: string, body: {
-    department?: string; departmentId?: string; designationId?: string; startDate: string; basicSalary: number;
+    expectedApplicationVersion: number; responseDeadline?: string;
+    department?: string; departmentId?: string; designationId?: string; templateId?: string; startDate: string; basicSalary: number;
     housingAllowance: number; transportAllowance: number; otherAllowances: number; probationMonths: number;
   }) => client.post<OfferLetter>(`/api/recruitment/applications/${id}/offer`, body).then(r => r.data),
 
-  sendOffer: (offerId: string) =>
-    client.post<OfferLetter>(`/api/recruitment/applications/offers/${offerId}/send`).then(r => r.data),
-
-  acceptOffer: (offerId: string) =>
-    client.post(`/api/recruitment/applications/offers/${offerId}/accept`).then(r => r.data),
-
-  declineOffer: (offerId: string, reason: string) =>
-    client.post(`/api/recruitment/applications/offers/${offerId}/decline`, { reason }).then(r => r.data),
 };
 
 // ── AI recruitment helpers (opt-in, advisory) ─────────────────────────────────

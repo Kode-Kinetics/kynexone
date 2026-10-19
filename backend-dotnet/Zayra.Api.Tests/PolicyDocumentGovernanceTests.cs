@@ -50,6 +50,16 @@ public sealed class PolicyDocumentGovernanceTests
     }
 
     [Fact]
+    public void ParserAcceptsCompleteBinderBeyondFormerTwoHundredThousandCharacterLimit()
+    {
+        var text = string.Concat(Enumerable.Repeat("HR handbook section.\n", 25_000));
+        using var input = new MemoryStream(Encoding.UTF8.GetBytes(text));
+        var parsed = PolicyTextParser.Extract(input, "unified-handbook.txt", "text/plain");
+        parsed.Text.Should().Be(text.Trim());
+        parsed.Text.Length.Should().BeGreaterThan(200_000);
+    }
+
+    [Fact]
     public void ParserReadsWordParagraphsWithoutLosingWordBoundaries()
     {
         using var input = new MemoryStream();

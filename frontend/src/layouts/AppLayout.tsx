@@ -23,6 +23,7 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
+import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -252,7 +253,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const openEmployeeResult = (id: number) => {
-    const path = `/people?employeeId=${id}`;
+    const path = employeeWorkspaceHref(id, { section: 'overview' });
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     navigationGuard.push(path, commandTriggerRef.current);

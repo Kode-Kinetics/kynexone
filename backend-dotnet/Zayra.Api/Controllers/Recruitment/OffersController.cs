@@ -20,7 +20,18 @@ public class OffersController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
     private readonly IRecruitmentService _svc;
-    public OffersController(ZayraDbContext db, ILetterService letters, IRecruitmentService svc) { _db = db; _letters = letters; _svc = svc; }
+    private readonly OfferLifecycleService _lifecycle;
+    private readonly OfferArtifactService? _artifacts;
+    public OffersController(ZayraDbContext db, ILetterService letters, IRecruitmentService svc,
+        OfferLifecycleService? lifecycle = null, OfferArtifactService? artifacts = null)
+    { _db = db; _letters = letters; _svc = svc; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build()); _artifacts = artifacts; }
+
+    private OfferActor Actor(OfferLetter offer) => new(offer.TenantId, offer.CompanyId, GetUserId() ?? Guid.Empty, GetUserName());
+    private IActionResult LifecycleFailure(OfferLifecycleException e)
+    {
+        var body = new { error = e.Code, message = e.Message };
+        return e.Status switch { 409 => Conflict(body), 404 => NotFound(body), 422 => UnprocessableEntity(body), 400 => BadRequest(body), _ => StatusCode(e.Status, body) };
+    }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -98,16 +109,13 @@ public class OffersController : ControllerBase
         // What the caller can do next, from the same rules the actions enforce, so the screen
         // shows one clear action instead of a button that will be refused.
         var me = GetUserId();
-        var author = await OfferRules.AuthorAsync(_db, tid, id, ct);
-        var sendVerdict = await OfferRules.EvaluateSendAsync(_db, offer, me, ct);
+        var writers = await OfferRules.TermsWritersAsync(_db, tid, id, ct);
         var approval = new
         {
             required = await OfferRules.IsApprovalRequiredAsync(_db, offer, ct),
-            isAuthor = me.HasValue && author == me,
-            canSend = sendVerdict == OfferSendVerdict.Sendable,
-            sendBlockedReason = sendVerdict is OfferSendVerdict.Sendable or OfferSendVerdict.InvalidState
-                ? null
-                : OfferRules.SendRefusal(sendVerdict).Message,
+            isAuthor = me.HasValue && writers.Contains(me.Value),
+            canSend = false,
+            sendBlockedReason = "Open the offer workspace and choose explicit email delivery or record confirmed external sending.",
             myPendingStepId = approvals
                 .Where(a => a.Status == "Pending" && me.HasValue && a.ApproverUserId == me && offer.Status == "PendingApproval")
                 .Select(a => (Guid?)a.Id).FirstOrDefault(),
@@ -125,9 +133,9 @@ public class OffersController : ControllerBase
     {
         var tid = GetTenantId();
         if (!await _db.OfferLetters.AnyAsync(x => x.Id == id && x.TenantId == tid, ct)) return NotFound();
-        var author = await OfferRules.AuthorAsync(_db, tid, id, ct);
+        var writers = await OfferRules.TermsWritersAsync(_db, tid, id, ct);
         var options = await OfferRules.EligibleApprovers(_db, tid)
-            .Where(u => author == null || u.Id != author)
+            .Where(u => !writers.Contains(u.Id))
             .OrderBy(u => u.FullName)
             .Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email))
             .ToListAsync(ct);
@@ -159,63 +167,24 @@ public class OffersController : ControllerBase
     // POST /api/recruitment/offers
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager,Recruiter")]
+    [OfferAudience(OfferAudienceRequirement.Author)]
     public async Task<IActionResult> Create([FromBody] CreateOfferRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
 
         var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == req.ApplicationId && x.TenantId == tid, ct);
         if (app == null) return BadRequest("Application not found.");
+        if (req.Components is not null && !_lifecycle.Enabled) return Conflict(new { error = "managed_offer_lifecycle_disabled", message = "Managed component offers are not enabled for this deployment." });
 
-        // The offer's department and designation must be records activation can match, or the
-        // accepted offer's draft is refused at approval. Resolved (and re-spelled) here instead.
-        var placement = await OfferPlacement.ResolveAsync(_db, tid,
-            req.DepartmentId, req.OfferedDepartment, req.DesignationId, req.OfferedJobTitle, ct, companyId: app.CompanyId);
-        if (!placement.IsResolved)
-            return UnprocessableEntity(new { error = placement.Error, field = placement.Field, message = placement.Message });
-
-        var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
-
-        var offer = new OfferLetter
+        try
         {
-            TenantId = tid,
-            CompanyId = app.CompanyId, // inherit legal entity from parent application
-            ApplicationId = req.ApplicationId,
-            CandidateName = app.CandidateName,
-            OfferedJobTitle = placement.Designation,
-            OfferedDepartment = placement.Department,
-            StartDate = req.StartDate,
-            BasicSalary = req.BasicSalary,
-            HousingAllowance = req.HousingAllowance,
-            TransportAllowance = req.TransportAllowance,
-            OtherAllowances = req.OtherAllowances,
-            GrossSalary = gross,
-            ProbationMonths = req.ProbationMonths,
-            // Encode-on-write: the caller-supplied HTML is an arbitrary-HTML sink stored verbatim
-            // and later served as text/html. HTML-encoding here guarantees stored content can never
-            // execute (stored-XSS defense over localStorage JWTs). Zero-dependency safe default;
-            // swap for an allowlist sanitizer only if rich offer formatting is later required.
-            ContentHtml = HtmlEncoder.Default.Encode(req.ContentHtml ?? string.Empty),
-            ResponseDeadline = req.ResponseDeadline,
-        };
-
-        _db.OfferLetters.Add(offer);
-
-        _db.ApplicationEvents.Add(new ApplicationEvent
-        {
-            TenantId = tid, ApplicationId = req.ApplicationId, EventType = "OfferGenerated",
-            Stage = "Offer", Notes = $"Offer generated — Gross {gross:N0}",
-            PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-        });
-
-        _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
-        {
-            TenantId = tid, EntityType = "Offer", EntityId = offer.Id.ToString(),
-            Action = "Created", PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { offer.GrossSalary, offer.StartDate }),
-        });
-
-        await _db.SaveChangesAsync(ct);
-        return CreatedAtAction(nameof(Get), new { id = offer.Id }, offer);
+            var offer = await _lifecycle.CreateAsync(new(tid, app.CompanyId, GetUserId() ?? Guid.Empty, GetUserName()), app.Id,
+                new(req.StartDate, req.ProbationMonths, req.OfferedJobTitle, req.OfferedDepartment, req.DepartmentId, req.DesignationId,
+                    req.ResponseDeadline, req.TemplateId, req.Components, req.BasicSalary, req.HousingAllowance, req.TransportAllowance,
+                    req.OtherAllowances, req.ContentHtml, req.ExpectedApplicationVersion), ct);
+            return CreatedAtAction(nameof(Get), new { id = offer.Id }, offer);
+        }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
     }
 
     // PATCH /api/recruitment/offers/{id}/send
@@ -226,79 +195,46 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        var verdict = await OfferRules.EvaluateSendAsync(_db, offer, GetUserId(), ct);
-        if (verdict == OfferSendVerdict.InvalidState)
-            return BadRequest("Offer must be in Draft or Approved state to send.");
-        if (verdict != OfferSendVerdict.Sendable)
-        {
-            var (error, message) = OfferRules.SendRefusal(verdict);
-            return Conflict(new { error, message });
-        }
-
-        offer.Status = "Sent";
-        offer.SentAtUtc = DateTime.UtcNow;
-        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, offer.Id, OfferRules.SentAction, GetUserId(), GetUserName()));
-
-        _db.ApplicationEvents.Add(new ApplicationEvent
-        {
-            TenantId = tid, ApplicationId = offer.ApplicationId, EventType = "OfferSent",
-            Stage = "Offer", Notes = "Offer letter sent to candidate",
-            PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-        });
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(offer);
+        return Conflict(new { error = "explicit_delivery_required", message = "This endpoint no longer records delivery. Review a frozen managed revision and use /email or /external-sends. Existing sent offers remain readable." });
     }
 
     // PATCH /api/recruitment/offers/{id}/accept
     [HttpPatch("{id:guid}/accept")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Accept(Guid id, CancellationToken ct)
+    [OfferAudience(OfferAudienceRequirement.Manager)]
+    public async Task<IActionResult> Accept(Guid id, CancellationToken ct,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] OfferResponseRequest? request = null)
     {
         var tid = GetTenantId();
-        var acceptance = await _svc.AcceptOfferAsync(tid, id, GetUserId() ?? Guid.Empty, GetUserName(), ct);
-        if (acceptance.Outcome == OfferAcceptanceOutcome.NotFound) return NotFound();
-        if (!acceptance.IsSuccess)
-            return Conflict(new { message = acceptance.Message, outcome = acceptance.Outcome.ToString() });
-
         var offer = await _db.OfferLetters.AsNoTracking()
-            .FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
+            .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (offer is null) return NotFound();
+        if (request is null || request.Decision != "Accepted") return Conflict(new { error = "explicit_response_required", message = "Submit expectedVersion, decision Accepted, source StaffRecorded, occurredAtUtc and reason, or use /responses." });
+        OfferResponseDto acceptance;
+        try { acceptance = await _lifecycle.RespondAsync(Actor(offer), id, request, ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
+        offer = await _db.OfferLetters.AsNoTracking().SingleAsync(x => x.Id == id && x.TenantId == tid, ct);
         return Ok(new
         {
             offer,
             onboardingDraftId = acceptance.OnboardingDraftId,
-            alreadyAccepted = !acceptance.WasAcceptedNow,
+            alreadyAccepted = acceptance.AlreadyRecorded,
         });
     }
 
     // PATCH /api/recruitment/offers/{id}/decline
     [HttpPatch("{id:guid}/decline")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [OfferAudience(OfferAudienceRequirement.Manager)]
     public async Task<IActionResult> Decline(Guid id, [FromBody] DeclineOfferRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        if (!OfferRules.CanDecline(offer))
-            return Conflict(new
-            {
-                error = "invalid_offer_state",
-                message = $"{OfferRules.DeclineStateMessage} (current: {offer.Status})"
-            });
-
-        offer.Status = "Declined";
-        offer.DeclinedAtUtc = DateTime.UtcNow;
-        offer.DeclineReason = req.Reason ?? string.Empty;
-
-        _db.ApplicationEvents.Add(new ApplicationEvent
-        {
-            TenantId = tid, ApplicationId = offer.ApplicationId, EventType = "OfferDeclined",
-            Stage = "Offer", Notes = $"Offer declined — {req.Reason}",
-            PerformedByUserId = GetUserId(), PerformedByName = GetUserName(),
-        });
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(offer);
+        if (req.Response() is not { } response) return Conflict(new { error = "explicit_response_required", message = "Submit expectedVersion, decision Declined, source StaffRecorded, occurredAtUtc and reason, or use /responses." });
+        try { await _lifecycle.RespondAsync(Actor(offer), id, response, ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
+        return Ok(await _db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == id && o.TenantId == tid, ct));
     }
 
     // GET /api/recruitment/offers/{id}/download — Download offer letter as PDF
@@ -309,6 +245,23 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
+        if (offer.SeriesId is not null || offer.ArtifactId is not null)
+        {
+            try
+            {
+                if (_artifacts is null) throw new OfferLifecycleException("offer_storage_unavailable", "Original document verification is unavailable.");
+                var bytes = await _artifacts.OriginalAsync(Actor(offer), id, ct);
+                Response.Headers["X-Offer-Provenance"] = "FrozenOriginal";
+                return File(bytes, "application/pdf", $"offer-original-{id}.pdf");
+            }
+            catch (OfferLifecycleException e) { return LifecycleFailure(e); }
+        }
+        Response.Headers["X-Offer-Provenance"] = "LegacyReconstructed";
+        if (offer.DesignSnapshotJson is { Length: > 0 } snapshotJson)
+        {
+            var snapshot = System.Text.Json.JsonSerializer.Deserialize<OfferDesignSnapshot>(snapshotJson, OfferLetterDesign.Json)!;
+            return File(OfferLetterDesign.Render(snapshot), "application/pdf", $"offer-letter-{offer.Id}.pdf");
+        }
         var tenant = await _db.Tenants.AsNoTracking().Select(t => new { t.Id, t.Name }).FirstOrDefaultAsync(t => t.Id == tid, ct);
         var offerCurrency = await OfferRules.ResolveCurrencyAsync(_db, tid, offer.CompanyId, ct);
         var data = new OfferLetterData(
@@ -329,145 +282,63 @@ public class OffersController : ControllerBase
     // POST /api/recruitment/offers/{id}/approvals — Add approval step
     [HttpPost("{id:guid}/approvals")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [OfferAudience(OfferAudienceRequirement.Manager)]
     public async Task<IActionResult> AddApproval(Guid id, [FromBody] AddOfferApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (offer == null) return NotFound();
-        if (offer.Status is not ("Draft" or "PendingApproval"))
-            return Conflict(new
-            {
-                error = "invalid_offer_state",
-                message = $"Approval steps can only be configured while an offer is Draft or PendingApproval (current: {offer.Status})."
-            });
-        if (await OfferRules.HasRejectedApprovalAsync(_db, tid, id, ct))
-            return Conflict(new { error = "offer_approval_rejected", message = OfferRules.ApprovalRejectedMessage });
-
-        // Maker-checker: the step names one eligible person, who is not the offer's author.
-        var approverVerdict = await OfferRules.EvaluateApproverAsync(_db, tid, id, req.ApproverUserId, ct);
-        if (approverVerdict != OfferApproverVerdict.Eligible)
+        if (req.ExpectedVersion is not { } version) return Conflict(new { error = "offer_version_required", message = "Reload the offer and submit its expectedVersion." });
+        try
         {
-            var (error, message) = OfferRules.ApproverRefusal(approverVerdict);
-            return approverVerdict switch
+            // Storage preparation/finalization occurs before submission; a failed upload cannot
+            // leave PendingApproval pointing at an unfinished or reconstructed document.
+            if (offer.SeriesId is not null && offer.FrozenAtUtc is null)
             {
-                OfferApproverVerdict.NoApproverNamed => BadRequest(new { error, message }),
-                OfferApproverVerdict.ApproverIsAuthor => StatusCode(StatusCodes.Status403Forbidden, new { error, message }),
-                OfferApproverVerdict.AuthorUnknown => Conflict(new { error, message }),
-                _ => UnprocessableEntity(new { error, message }),
-            };
+                if (_artifacts is null) throw new OfferLifecycleException("offer_storage_unavailable", "Original document verification is unavailable.");
+                version = (await _artifacts.FreezeAsync(Actor(offer), id, version, ct)).OfferVersion;
+            }
+            return Ok(await _lifecycle.AddApprovalAsync(Actor(offer), id, version, req.ApproverUserId, req.ApproverName, req.ApproverRole, ct));
         }
-        if (await _db.OfferApprovals.AnyAsync(a => a.TenantId == tid && a.OfferLetterId == id
-                && a.ApproverUserId == req.ApproverUserId && (a.Status == "Pending" || a.Status == "Approved"), ct))
-            // Approved too: someone who approved a step cannot decide a later one, so naming them again
-            // would add a step nobody can ever decide.
-            return Conflict(new { error = "offer_approver_already_named", message = "This person is already an approver on this offer." });
-
-        var approverName = string.IsNullOrWhiteSpace(req.ApproverName)
-            ? await _db.Users.AsNoTracking().Where(u => u.Id == req.ApproverUserId).Select(u => u.FullName).FirstOrDefaultAsync(ct) ?? string.Empty
-            : req.ApproverName;
-        var nextStep = (await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).CountAsync(ct)) + 1;
-
-        var approval = new OfferApproval
-        {
-            TenantId = tid, OfferLetterId = id, ApplicationId = offer.ApplicationId,
-            StepOrder = nextStep, ApproverName = approverName,
-            ApproverUserId = req.ApproverUserId, ApproverRole = req.ApproverRole ?? string.Empty,
-        };
-
-        _db.OfferApprovals.Add(approval);
-        offer.Status = "PendingApproval";
-        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, id, "ApprovalRequested", GetUserId(), GetUserName(),
-            new { approval.StepOrder, approval.ApproverUserId, approval.ApproverName }));
-        await _db.SaveChangesAsync(ct);
-        return Ok(approval);
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
     }
 
     // PATCH /api/recruitment/offers/{id}/approvals/{approvalId}/decide
     [HttpPatch("{id:guid}/approvals/{approvalId:guid}/decide")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [OfferAudience(OfferAudienceRequirement.Approver)]
     public async Task<IActionResult> DecideApproval(Guid id, Guid approvalId, [FromBody] DecideApprovalRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
 
-        // Shared checklist — see ApprovalDecisionGuard. Both records are resolved first so the
-        // checklist runs in one place; the order of refusals and every response body are unchanged.
-        var approval = await _db.OfferApprovals
-            .FirstOrDefaultAsync(x => x.Id == approvalId && x.TenantId == tid && x.OfferLetterId == id, ct);
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        var decider = GetUserId();
-        var author = offer is null ? null : await OfferRules.AuthorAsync(_db, tid, id, ct);
-        var approvedEarlierStep = approval is not null && decider.HasValue && await _db.OfferApprovals.AnyAsync(a =>
-            a.TenantId == tid && a.OfferLetterId == id && a.Id != approvalId && a.Status == "Approved" && a.ApproverUserId == decider, ct);
-
-        var verdict = ApprovalDecisionGuard.Evaluate(new ApprovalDecisionSpec
-        {
-            Decision = req.Decision,
-            AllowedDecisions = ApprovalDecisionGuard.ApprovedOrRejected,
-            Step = new ApprovalStepState(approval is not null, approval?.Status ?? string.Empty),
-            ParentLabel = "offer",
-            ParentExists = offer is not null,
-            ParentStatus = offer?.Status ?? string.Empty,
-            ParentStatusesAllowingDecision = new[] { "PendingApproval" },
-            Lock = ApprovalLock.None,                 // DECLARED ABSENCE: an offer has no payroll lock.
-            // The maker is the offer's author, read from its Created audit row (OfferLetter has no
-            // creator column). Approval only: an author may still reject, i.e. withdraw, their offer.
-            MakerChecker = new MakerCheckerRule(
-                author is { } maker && decider.HasValue && maker == decider,
-                new[] { "Approved" },
-                "The person who wrote the offer cannot approve it."),
-            // DECLARED ABSENCE: an offer's subject is a candidate, and a Candidate row carries no user
-            // or employee link to compare the decider with. Matching on e-mail would be a guess.
-            SubjectSeparation = SubjectSeparationRule.None,
-            // A rejected step ends the offer's approval for good (a new offer is generated), so every
-            // approved step on this offer belongs to the same chain.
-            EarlierStepSeparation = new EarlierStepRule(
-                approvedEarlierStep,
-                "You approved an earlier step of this offer, so a different person must approve this one."),
-        });
-        if (!verdict.Passed) return OfferDecisionRefusal(verdict, approval?.Status, offer?.Status);
-
-        // Guard postcondition: a passing verdict means both records were found.
-        ArgumentNullException.ThrowIfNull(approval);
-        ArgumentNullException.ThrowIfNull(offer);
-
-        // A step is decided by the person it names, and nobody else.
-        if (approval.ApproverUserId is null || decider is null || approval.ApproverUserId != decider)
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                error = "not_the_named_approver",
-                message = approval.ApproverUserId is null
-                    ? "This approval step names no approver, so no one can decide it. Generate a new offer and request approval from a named person."
-                    : $"Only {(string.IsNullOrWhiteSpace(approval.ApproverName) ? "the named approver" : approval.ApproverName)} can decide this approval step."
-            });
-
-        approval.Status = req.Decision;
-        approval.Comments = req.Comments ?? string.Empty;
-        approval.DecidedAtUtc = DateTime.UtcNow;
-
-        // If all approvals are done, mark offer as Approved
-        var allApprovals = await _db.OfferApprovals.Where(a => a.TenantId == tid && a.OfferLetterId == id).ToListAsync(ct);
-        if (allApprovals.All(a => a.Status == "Approved")) offer.Status = "Approved";
-        else if (req.Decision == "Rejected") offer.Status = "Draft";
-        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tid, id, OfferRules.ApprovalDecidedAction, decider, GetUserName(),
-            new { approvalId, approval.StepOrder, decision = req.Decision, offerStatus = offer.Status }));
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(approval);
+        if (offer is null) return NotFound();
+        if (req.Decision is not ("Approved" or "Rejected"))
+            return BadRequest(new { error = "invalid_decision", message = "Decision must be Approved or Rejected." });
+        try { return Ok(await _lifecycle.DecideApprovalAsync(Actor(offer), id, approvalId, req.ExpectedVersion, req.Decision, req.Comments, ct)); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
     }
 }
 
 /// <summary>The job title and department are resolved against the organisation's designation and
 /// department records (<see cref="OfferPlacement"/>); an id, when given, wins over the text.</summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public record CreateOfferRequest(
     Guid ApplicationId, string OfferedJobTitle, string? OfferedDepartment,
-    DateOnly StartDate, decimal BasicSalary, decimal HousingAllowance,
-    decimal TransportAllowance, decimal OtherAllowances, int ProbationMonths,
+    DateOnly StartDate, decimal? BasicSalary, decimal? HousingAllowance,
+    decimal? TransportAllowance, decimal? OtherAllowances, int ProbationMonths,
     string? ContentHtml, DateTime? ResponseDeadline,
-    Guid? DepartmentId = null, Guid? DesignationId = null);
+    Guid? DepartmentId = null, Guid? DesignationId = null, Guid? TemplateId = null,
+    IReadOnlyList<OfferComponentInput>? Components = null, long? ExpectedApplicationVersion = null);
 
-public record DeclineOfferRequest(string? Reason);
+public record DeclineOfferRequest(string? Reason, long? ExpectedVersion = null, string? Decision = null,
+    string? Source = null, DateTime? OccurredAtUtc = null, string? EvidenceReference = null)
+{
+    public OfferResponseRequest? Response() => ExpectedVersion is { } version && Decision == "Declined" && Source is not null && OccurredAtUtc is { } at
+        ? new(version, Decision, Source, at, Reason ?? string.Empty, EvidenceReference) : null;
+}
 public record OfferPlacementOption(Guid Id, string Name, string Code);
 public record OfferPlacementOptions(IReadOnlyList<OfferPlacementOption> Departments, IReadOnlyList<OfferPlacementOption> Designations);
-public record AddOfferApprovalRequest(string ApproverName, Guid? ApproverUserId, string? ApproverRole);
+public record AddOfferApprovalRequest(string ApproverName, Guid? ApproverUserId, string? ApproverRole, long? ExpectedVersion = null);
 public record OfferApproverOption(Guid UserId, string Name, string Email);
-public record DecideApprovalRequest(string Decision, string? Comments);
+public record DecideApprovalRequest(string Decision, string? Comments, long? ExpectedVersion = null);

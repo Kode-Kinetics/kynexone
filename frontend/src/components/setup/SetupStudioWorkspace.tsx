@@ -12,7 +12,9 @@ import { useT } from '../../hooks/useT';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaBlueprint, type SetupBlueprintDestination } from './SetupAreaBlueprint';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
+import { SetupAreaRail } from './SetupAreaRail';
 import { SetupFocusedWorkspace } from './SetupFocusedWorkspace';
+import { SetupNextActionsRail } from './SetupNextActionsRail';
 
 interface ReturnOrigin {
   destinationId: string;
@@ -146,6 +148,17 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
     returnOrigin.current = { destinationId: destination.id, scrollY: window.scrollY };
     navigate(destination.areaId, destination.id);
   };
+  const activateDestination = (destination: SetupDestination) => {
+    if (destination.presentation === 'embedded') {
+      openDestination(destination);
+      return;
+    }
+    const href = destinationHref(destination);
+    confirmLeave(href, () => {
+      onDirtyChange(false);
+      router.push(href, { scroll: false });
+    });
+  };
   const backToArea = () => navigate(activeArea, undefined, () => { restoreOrigin.current = true; });
   const moveTo = (destination: SetupDestination) => {
     if (returnOrigin.current) returnOrigin.current = { ...returnOrigin.current, destinationId: destination.id };
@@ -176,64 +189,74 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
         </div>
       </div>
 
-      {selectedDestination && area ? (
-        <div className="space-y-4">
-          <div className="flex justify-end">
-            <SetupAreaNavigator activeArea={activeArea} onSelect={chooseArea} />
-          </div>
-          <SetupFocusedWorkspace
-            destination={selectedDestination}
-            areaLabel={area.label}
-            scopeLabel={scopeLabel(selectedDestination)}
-            onBack={backToArea}
-            previousDestination={previousDestination}
-            nextDestination={nextDestination}
-            onPrevious={previousDestination ? () => moveTo(previousDestination) : undefined}
-            onNext={nextDestination ? () => moveTo(nextDestination) : undefined}
-          >
-            <div key={`${selectedDestination.id}:${companyVersion}`}>
-              {renderSettings(selectedDestination.id, onDirtyChange)}
-            </div>
-          </SetupFocusedWorkspace>
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_16rem]">
+        <div className="hidden min-w-0 xl:block">
+          <SetupAreaRail activeArea={activeArea} onSelect={areaId => chooseArea(areaId, () => {})} />
         </div>
-      ) : (
-        <section data-testid="setup-area-content" className="min-w-0 rounded-xl border border-slate-200 bg-white px-4 py-5 dark:border-white/10 dark:bg-slate-900 sm:px-6" aria-labelledby="setup-area-title">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <h2 ref={areaHeading} tabIndex={-1} id="setup-area-title" className="scroll-mt-4 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{t(area?.label ?? 'Workspace overview')}</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{t(area?.description ?? 'Choose an area to review settings, templates and related operations. You can start anywhere.')}</p>
+
+        <div className="min-w-0">
+          {selectedDestination && area ? (
+            <div className="space-y-4">
+              <div className="flex justify-end">
+                <SetupAreaNavigator activeArea={activeArea} onSelect={chooseArea} />
+              </div>
+              <SetupFocusedWorkspace
+                destination={selectedDestination}
+                areaLabel={area.label}
+                scopeLabel={scopeLabel(selectedDestination)}
+                onBack={backToArea}
+                previousDestination={previousDestination}
+                nextDestination={nextDestination}
+                onPrevious={previousDestination ? () => moveTo(previousDestination) : undefined}
+                onNext={nextDestination ? () => moveTo(nextDestination) : undefined}
+              >
+                <div key={`${selectedDestination.id}:${companyVersion}`}>
+                  {renderSettings(selectedDestination.id, onDirtyChange)}
+                </div>
+              </SetupFocusedWorkspace>
             </div>
-            <SetupAreaNavigator activeArea={activeArea} onSelect={chooseArea} />
-          </div>
-          {!area ? (
-            <>
-              <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('Configuration status is not assessed here. Open an area to review its saved settings.')}</p>
-              <ul className="mt-3 divide-y divide-slate-200 dark:divide-white/10">
-                {SETUP_AREAS.map(item => (
-                  <li key={item.id}>
-                    <button type="button" onClick={() => navigate(item.id, undefined, () => { focusSelectedArea.current = true; })} className="flex w-full items-center justify-between gap-3 py-3 text-start text-sm hover:text-sapphire dark:hover:text-cyanAccent">
-                      <span className="font-medium text-slate-900 dark:text-white">{t(item.label)}</span>
-                      <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 rtl:rotate-180" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </>
           ) : (
-            <>
-              <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">{t(area.id === 'onboarding'
-                ? 'Onboarding task suggestions can be prepared in the starter policy guide, then reviewed in the existing onboarding form. Templates are tenant-wide; nothing is saved automatically.'
-                : 'Document filling is not connected for this area. Edit its existing settings manually; the starter guide does not apply changes only to this area.')}</p>
-              {selectedItem && selectedItem.availability !== 'available' && (
-                <p role="status" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
-                  {t(selectedItem.availability === 'restricted' ? 'Your role does not have access' : selectedItem.availability === 'unavailable' ? 'Not enabled for this tenant' : selectedItem.availability === 'checking' ? 'Checking availability…' : 'Availability could not be checked')}
-                </p>
+            <section data-testid="setup-area-content" className="min-w-0 rounded-xl border border-slate-200 bg-white px-4 py-5 dark:border-white/10 dark:bg-slate-900 sm:px-6" aria-labelledby="setup-area-title">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <h2 ref={areaHeading} tabIndex={-1} id="setup-area-title" className="scroll-mt-4 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{t(area?.label ?? 'Workspace overview')}</h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{t(area?.description ?? 'Choose an area to review settings, templates and related operations. You can start anywhere.')}</p>
+                </div>
+                <SetupAreaNavigator activeArea={activeArea} onSelect={chooseArea} />
+              </div>
+              {!area ? (
+                <>
+                  <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('Configuration status is not assessed here. Open an area to review its saved settings.')}</p>
+                  <ul className="mt-3 divide-y divide-slate-200 dark:divide-white/10">
+                    {SETUP_AREAS.map(item => (
+                      <li key={item.id}>
+                        <button type="button" onClick={() => navigate(item.id, undefined, () => { focusSelectedArea.current = true; })} className="flex w-full items-center justify-between gap-3 py-3 text-start text-sm hover:text-sapphire dark:hover:text-cyanAccent">
+                          <span className="font-medium text-slate-900 dark:text-white">{t(item.label)}</span>
+                          <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 rtl:rotate-180" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">{t('Enter and maintain this area manually. Nothing is saved until you use the selected form’s Save action.')}</p>
+                  {selectedItem && selectedItem.availability !== 'available' && (
+                    <p role="status" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                      {t(selectedItem.availability === 'restricted' ? 'Your role does not have access' : selectedItem.availability === 'unavailable' ? 'Not enabled for this tenant' : selectedItem.availability === 'checking' ? 'Checking availability…' : 'Availability could not be checked')}
+                    </p>
+                  )}
+                  <SetupAreaBlueprint area={area} destinations={destinations} onOpenDestination={openDestination} />
+                </>
               )}
-              <SetupAreaBlueprint area={area} destinations={destinations} onOpenDestination={openDestination} />
-            </>
+            </section>
           )}
-        </section>
-      )}
+        </div>
+
+        <div className="hidden min-w-0 xl:block">
+          <SetupNextActionsRail area={area} destinations={destinations} selectedDestination={selectedDestination} onOpenDestination={activateDestination} />
+        </div>
+      </div>
     </div>
   );
 }

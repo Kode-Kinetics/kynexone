@@ -138,6 +138,51 @@ public class PersonNameTransliterationTests
     }
 
     [Theory]
+    [InlineData("Jeddah Office", "مكتب جدة")]
+    [InlineData("Riyadh Branch", "فرع الرياض")]
+    [InlineData("Riyadh Head Office", "المكتب الرئيسي في الرياض")]
+    [InlineData("Jeddah Operations", "عمليات جدة")]
+    [InlineData("Engineering", "الهندسة")]
+    [InlineData("Human Resources", "الموارد البشرية")]
+    [InlineData("HR", "الموارد البشرية")]
+    [InlineData("Finance", "المالية")]
+    [InlineData("Information Technology", "تقنية المعلومات")]
+    [InlineData("IT", "تقنية المعلومات")]
+    [InlineData("Sales", "المبيعات")]
+    [InlineData("Marketing", "التسويق")]
+    [InlineData("Procurement", "المشتريات")]
+    [InlineData("Legal", "الشؤون القانونية")]
+    [InlineData("Accounting", "المحاسبة")]
+    [InlineData("Payroll", "الرواتب")]
+    [InlineData("Customer Service", "خدمة العملاء")]
+    [InlineData("Administration", "الإدارة")]
+    [InlineData("Quality Assurance", "ضمان الجودة")]
+    [InlineData("Research and Development", "البحث والتطوير")]
+    [InlineData("  JEDDAH\tOFFICE  ", "مكتب جدة")]
+    public void OrganizationLabelModeUsesCuratedArabicWording(string source, string expected)
+    {
+        var controller = Controller();
+        var result = controller.Transliterate(new TransliterateRequest(source, "ar", "organization-label"))
+            .Should().BeOfType<OkObjectResult>().Subject;
+        var body = JsonSerializer.SerializeToElement(result.Value);
+        body.GetProperty("suggestion").GetString().Should().Be(expected);
+        body.GetProperty("requiresManualEntry").GetBoolean().Should().BeFalse();
+        controller.Response.Headers.CacheControl.ToString().Should().Be("no-store");
+    }
+
+    [Fact]
+    public void UnsupportedOrganizationLabelRequiresManualEntryInsteadOfPhoneticGuessing()
+    {
+        var controller = Controller();
+        var result = controller.Transliterate(new TransliterateRequest("Western Region Office", "ar", "organization-label"))
+            .Should().BeOfType<OkObjectResult>().Subject;
+        var body = JsonSerializer.SerializeToElement(result.Value);
+        body.GetProperty("suggestion").GetString().Should().BeEmpty();
+        body.GetProperty("requiresManualEntry").GetBoolean().Should().BeTrue();
+        controller.Response.Headers.CacheControl.ToString().Should().Be("no-store");
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("generic")]
     public void GenericCallersRetainTheirBehaviorAndExistingLengthBound(string? kind)

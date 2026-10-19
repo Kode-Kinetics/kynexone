@@ -25,7 +25,7 @@ test.afterEach(async ({ page }) => {
 });
 
 // API interception is deliberate: these are browser navigation contracts, never tenant writes.
-async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; officer?: boolean; authDelay?: number; finance?: boolean; statutory?: boolean; beforeSetup?: boolean; readOnly?: boolean; intercept?: (route: Route) => Promise<boolean> } = {}) {
+async function boot(page: Page, options: { disabled?: boolean; restricted?: boolean; flagError?: boolean; area?: string; setting?: string; arabic?: boolean; group?: boolean; singleCompany?: boolean; officer?: boolean; authDelay?: number; finance?: boolean; statutory?: boolean; beforeSetup?: boolean; readOnly?: boolean; intercept?: (route: Route) => Promise<boolean> } = {}) {
   const writes: string[] = [];
   const reads: string[] = [];
   await page.addInitScript(({ arabic }) => {
@@ -41,7 +41,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (await options.intercept?.(route)) return;
     const company = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
     const companies = options.group ? [company, { ...company, id: 'second-company', legalNameEn: 'Second Fixture LLC' }] : [company];
-    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.readOnly ? 'Auditor' : options.officer ? 'HR Officer' : 'Admin'], permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.finance ? ['finance.gl.manage'] : []), ...(options.statutory ? ['payroll.rates.statutory_override'] : []), ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
+    if (path === '/api/auth/me') return reply({ id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: [options.readOnly ? 'Auditor' : options.officer ? 'HR Officer' : 'Admin'], permissions: options.readOnly ? ['organization.read'] : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', ...(options.finance ? ['finance.gl.manage'] : []), ...(options.statutory ? ['payroll.rates.statutory_override'] : []), ...(options.restricted ? [] : ['learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'])], accountType: options.singleCompany ? 'SingleCompany' : 'Group', isGroupScope: true, companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })) });
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR' });
     if (path === '/api/country-packs/available') return reply([]);
@@ -82,6 +82,91 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
   else await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   return { writes, reads };
 }
+
+test('company_actions_edit_is_visible_without_hover_and_opens_existing_record', async ({ page }, info) => {
+  const { writes } = await boot(page, { area: 'organization', setting: 'companies' });
+  const row = page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' });
+  const edit = row.getByRole('button', { name: 'Edit', exact: true });
+  await page.mouse.move(0, 0);
+  await expect(edit).toBeVisible();
+  expect(await edit.evaluate(element => {
+    for (let node: Element | null = element; node; node = node.parentElement) {
+      if (Number(getComputedStyle(node).opacity) === 0) return false;
+    }
+    return true;
+  }), 'Edit is painted without hover or focus').toBe(true);
+  await edit.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Edit Company', exact: true })).toBeVisible();
+  await expect(page.locator('input[placeholder="Acme Corp LLC"]')).toHaveValue('Workspace Fixture LLC');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Edit Company', exact: true })).toHaveCount(0);
+  expect(writes).toEqual([]);
+  await edit.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `/tmp/company-actions-${info.project.name}.png`, fullPage: false });
+});
+
+test('company_actions_menu_keyboard_escape_and_confirmations_preserve_records', async ({ page }, info) => {
+  const { writes } = await boot(page, { area: 'organization', setting: 'companies' });
+  const row = page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' });
+  const trigger = row.getByRole('button', { name: /More actions/ });
+  await trigger.focus();
+  await page.keyboard.press('Tab');
+  const nextTabTarget = await page.locator(':focus').elementHandle();
+  expect(nextTabTarget).not.toBeNull();
+  await trigger.focus();
+  await page.keyboard.press('ArrowDown');
+  const menu = page.getByRole('menu', { name: /Workspace Fixture LLC/ });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Delete company', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await page.keyboard.press('ArrowUp');
+  await expect(menu.getByRole('menuitem').last()).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press('ArrowUp');
+  await expect(menu.getByRole('menuitem').last()).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(menu).toHaveCount(0);
+  await expect(row.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  const prompts: string[] = [];
+  page.on('dialog', async dialog => { prompts.push(dialog.message()); await dialog.dismiss(); });
+  for (const action of ['Suspend', 'Delete company']) {
+    if (info.project.use.isMobile) await trigger.tap(); else await trigger.click();
+    const item = menu.getByRole('menuitem', { name: action, exact: true });
+    if (info.project.use.isMobile) await item.tap(); else await item.click();
+    await expect(menu).toHaveCount(0);
+  }
+  expect(prompts).toEqual(['Suspend Workspace Fixture LLC?', 'Delete this company? This cannot be undone.']);
+  expect(writes).toEqual([]);
+  await trigger.click();
+  const box = await menu.boundingBox();
+  expect(box).not.toBeNull();
+  const viewport = page.viewportSize()!;
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+  const accessibility = await new AxeBuilder({ page }).include('[role="menu"]').analyze();
+  expect(accessibility.violations.filter(v => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
+  await page.screenshot({ path: `/tmp/company-actions-menu-${info.project.name}.png`, fullPage: false });
+  await page.keyboard.press('Tab');
+  await expect(menu).toHaveCount(0);
+  expect(await nextTabTarget!.evaluate(element => element === document.activeElement)).toBe(true);
+});
+
+test('company_actions_read_only_has_no_mutation_controls', async ({ page }) => {
+  const { writes } = await boot(page, { readOnly: true, area: 'organization', setting: 'companies' });
+  await expect(page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^(Edit|More actions|Add Company)/ })).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
 
 test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
   const { writes } = await boot(page, { area: 'leave', setting: 'leavePolicies' });
@@ -322,6 +407,80 @@ test('existing_setup_deep_links_still_work', async ({ page }) => {
   await expect(page.getByRole('button', { name: /Add Company/ })).toBeVisible();
 });
 
+test('single_company_with_an_existing_legal_entity_does_not_offer_an_impossible_add_action', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'organization', setting: 'companies', singleCompany: true });
+
+  await expect(page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('branch_arabic_suggestion_uses_organization_wording_instead_of_phonetic_guessing', async ({ page }) => {
+  let requestBody: Record<string, unknown> | undefined;
+  await boot(page, { area: 'organization', setting: 'branches', intercept: async route => {
+    const request = route.request();
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/api/localization/transliterate') return false;
+    requestBody = request.postDataJSON();
+    await route.fulfill({ json: { suggestion: 'مكتب جدة', requiresManualEntry: false } });
+    return true;
+  } });
+
+  await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Branch', exact: true });
+  await dialog.getByPlaceholder('Dubai Head Office', { exact: true }).fill('Jeddah Office');
+  await dialog.getByRole('button', { name: 'Suggest (AR)', exact: true }).click();
+
+  await expect(dialog.locator('input[dir="rtl"]')).toHaveValue('مكتب جدة');
+  expect(requestBody).toEqual({ text: 'Jeddah Office', target: 'ar', kind: 'organization-label' });
+});
+
+test('department_arabic_suggestion_uses_organization_wording_instead_of_phonetic_guessing', async ({ page }) => {
+  let requestBody: Record<string, unknown> | undefined;
+  await boot(page, { area: 'organization', setting: 'departments', intercept: async route => {
+    const request = route.request();
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/api/localization/transliterate') return false;
+    requestBody = request.postDataJSON();
+    await route.fulfill({ json: { suggestion: 'عمليات جدة', requiresManualEntry: false } });
+    return true;
+  } });
+
+  await page.getByRole('button', { name: 'Add Department', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Department', exact: true });
+  await dialog.getByPlaceholder('Engineering', { exact: true }).fill('Jeddah Operations');
+  await dialog.getByRole('button', { name: 'Suggest (AR)', exact: true }).click();
+
+  await expect(dialog.locator('input[dir="rtl"]')).toHaveValue('عمليات جدة');
+  expect(requestBody).toEqual({ text: 'Jeddah Operations', target: 'ar', kind: 'organization-label' });
+});
+
+test('company_limit_refusal_stays_in_the_form_and_shows_the_server_reason', async ({ page }) => {
+  const refusal = 'Your plan allows up to 1 legal company. Upgrade your plan to add more.';
+  let submitted: Record<string, unknown> | undefined;
+  await boot(page, { area: 'organization', setting: 'companies', intercept: async route => {
+    const request = route.request();
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/api/companies') return false;
+    submitted = request.postDataJSON();
+    await route.fulfill({ status: 402, json: {
+      error: 'company_limit_reached', currentCount: 1, maxAllowed: 1,
+      message: refusal, upgradeRequired: true,
+    } });
+    return true;
+  } });
+
+  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
+  await dialog.getByPlaceholder('Acme Corp LLC', { exact: true }).fill('Second Fixture LLC');
+  await dialog.getByRole('combobox', { name: 'Country', exact: true }).selectOption('SA');
+  await dialog.locator('label').filter({ hasText: /^Registration Number/ }).locator('..').getByRole('textbox').fill('SECOND-001');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(refusal, { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Failed to save. Please try again.', { exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/area=organization&setting=companies/);
+  expect(submitted?.defaultCurrency).toBe('SAR');
+});
+
 test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshes_scope', async ({ page }) => {
   const { writes } = await boot(page, { group: true });
   await page.goto('/setup?tab=branches');
@@ -412,7 +571,7 @@ async function clickDashboard(page: Page) {
 
 test('return_from_library_preserves_area_and_company', async ({ page }) => {
   const { writes } = await boot(page, { group: true, area: 'leave' });
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click();
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
@@ -447,12 +606,12 @@ test('cancel_return_keeps_dirty_edits_on_back_forward_and_sidebar', async ({ pag
   await expect(page).toHaveURL(originalUrl);
 });
 
-test('unsupported_area_does_not_claim_prefill', async ({ page }) => {
+test('manual_areas_do_not_claim_document_prefill', async ({ page }) => {
   const { writes } = await boot(page, { area: 'leave' });
-  await expect(page.getByTestId('setup-area-content')).toContainText('Document filling is not connected for this area');
+  await expect(page.getByTestId('setup-area-content')).toContainText('Enter and maintain this area manually');
   await expect(page.getByRole('button', { name: 'Fill from document', exact: true })).toHaveCount(0);
   await selectArea(page, 'Onboarding and confirmation');
-  await expect(page.getByTestId('setup-area-content')).toContainText('Onboarding task suggestions can be prepared');
+  await expect(page.getByTestId('setup-area-content')).toContainText('Enter and maintain this area manually');
   expect(writes).toEqual([]);
 });
 
@@ -501,7 +660,7 @@ test('administration_access_and_filters_do_not_create_unsaved_edits', async ({ p
   await boot(page);
   await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
-  await page.getByRole('button', { name: 'Branches', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Branches', exact: true }).click();
   let prompts = 0;
   page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
   await page.getByRole('button', { name: 'Audit Logs', exact: true }).click();
@@ -1384,6 +1543,36 @@ test('overview_does_not_claim_configuration_complete', async ({ page }) => {
   expect(writes).toEqual([]);
 });
 
+test('desktop_configuration_keeps_approved_top_left_and_right_navigation', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop');
+  await boot(page, { area: 'organization' });
+
+  await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
+
+  const areaRail = page.getByRole('navigation', { name: 'Setup areas' });
+  await expect(areaRail).toBeVisible();
+  await expect(areaRail.getByRole('button')).toHaveCount(12);
+  for (const [, label] of areas) {
+    await expect(areaRail.getByRole('button', { name: label, exact: true })).toBeVisible();
+  }
+
+  const nextActions = page.getByRole('complementary', { name: 'Next actions' });
+  await expect(nextActions).toBeVisible();
+  await expect(nextActions.getByRole('button', { name: 'Continue next action', exact: true })).toBeVisible();
+  await expect(nextActions).toContainText('Companies');
+  await expect(page.getByText(/proposed changes|blockers|applied records/i)).toHaveCount(0);
+  await page.screenshot({ path: task5Evidence('approved-three-column-overview.png'), fullPage: false });
+
+  await areaRail.getByRole('button', { name: 'Leave and absence', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Leave and absence', exact: true })).toBeFocused();
+  await expect(nextActions).toContainText('Leave types');
+  await nextActions.getByRole('button', { name: 'Continue next action', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Leave types', exact: true })).toBeFocused();
+  await expect(areaRail).toBeVisible();
+  await expect(nextActions).toBeVisible();
+  await page.screenshot({ path: task5Evidence('approved-three-column-configuration.png'), fullPage: false });
+});
+
 test('keyboard_and_mobile_area_navigation', async ({ page }, testInfo) => {
   await boot(page);
   const disclosure = page.getByRole('button', { name: 'Browse all areas', exact: true });
@@ -1402,6 +1591,10 @@ test('arabic_rtl_keeps_named_areas_and_scope_readable', async ({ page }, testInf
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await expect(page.getByTestId('setup-area-content').getByRole('heading', { level: 2, name: 'تهيئة الموظفين والتثبيت', exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-area-content').getByText('ينطبق على جميع الشركات', { exact: true })).toBeVisible();
+  if (testInfo.project.name === 'desktop') {
+    await expect(page.getByRole('complementary', { name: 'الإجراءات التالية' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'متابعة الإجراء التالي', exact: true })).toBeVisible();
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: `/tmp/setup-studio-${testInfo.project.name}-ar.png`, fullPage: true });
 });
@@ -1447,7 +1640,7 @@ test('history_back_to_absent_company_restores_all_companies_scope', async ({ pag
 
 test('whole_destination_row_is_action', async ({ page }) => {
   const { writes } = await boot(page, { area: 'organization' });
-  const destination = page.getByRole('button', { name: 'Companies', exact: true });
+  const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Companies', exact: true });
 
   await expect(destination).toBeVisible();
   await expect(destination).toContainText('Group company register');
@@ -1472,7 +1665,7 @@ test('single_company_companies_destination_uses_company_register_scope', async (
     } });
     return true;
   } });
-  const destination = page.getByRole('button', { name: 'Companies', exact: true });
+  const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Companies', exact: true });
 
   await expect(destination).toContainText('Company register');
   await expect(destination).not.toContainText('Group company register');
@@ -1492,7 +1685,7 @@ test('focused_form_replaces_area_canvas', async ({ page }) => {
 
 test('focused_form_opens_at_heading_without_manual_scroll', async ({ page }) => {
   await boot(page, { area: 'organization' });
-  const destination = page.getByRole('button', { name: 'Employee Reference Lists', exact: true });
+  const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Employee Reference Lists', exact: true });
   await destination.scrollIntoViewIfNeeded();
   await destination.click();
 
@@ -1506,7 +1699,7 @@ test('focused_form_opens_at_heading_without_manual_scroll', async ({ page }) => 
 
 test('back_restores_origin_focus_and_scroll', async ({ page }) => {
   await boot(page, { area: 'organization' });
-  const destination = page.getByRole('button', { name: 'Employee Reference Lists', exact: true });
+  const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Employee Reference Lists', exact: true });
   await destination.evaluate((element: HTMLButtonElement) => {
     element.focus();
     window.scrollTo({ top: 480 });
@@ -1526,7 +1719,7 @@ test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll
     { control: 'Previous: Branches', destination: 'Branches' },
     { control: 'Next: Designations', destination: 'Designations' },
   ]) {
-    const departments = page.getByRole('button', { name: 'Departments', exact: true });
+    const departments = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true });
     const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
       window.scrollTo({ top: 420, behavior: 'auto' });
       const scrollY = window.scrollY;
@@ -1545,7 +1738,7 @@ test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll
 
 test('browser_back_forward_restores_matching_row_focus_and_scroll', async ({ page }) => {
   await boot(page, { area: 'organization' });
-  const departments = page.getByRole('button', { name: 'Departments', exact: true });
+  const departments = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true });
   const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
     window.scrollTo({ top: 420, behavior: 'auto' });
     const scrollY = window.scrollY;
@@ -1558,7 +1751,7 @@ test('browser_back_forward_restores_matching_row_focus_and_scroll', async ({ pag
   await page.goBack();
   await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
   await page.goBack();
-  await expect(page.getByRole('button', { name: 'Departments', exact: true })).toBeFocused();
+  await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true })).toBeFocused();
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
 
   await page.goForward();

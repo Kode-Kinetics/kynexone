@@ -12,6 +12,7 @@ export interface EmployeeWorkspaceFixtureControl {
   listCalls: number;
   mutationCalls: string[];
   mutations: Array<{ method: string; path: string; body: unknown }>;
+  readinessBody: Map<number, unknown>;
 }
 
 interface EmployeeWorkspaceFixtureOptions {
@@ -45,6 +46,7 @@ const employees = {
     designation: 'QA Finance Manager',
     branch: 'Jeddah Office',
     workLocation: 'Jeddah',
+    managerEmployeeId: 901,
     status: 'Draft',
     joiningDate: '2026-10-17',
     contractType: 'Unlimited Term',
@@ -73,6 +75,7 @@ const employees = {
     workPermitNumber: '',
     civilId: '',
     residencyNumber: '',
+    idNumber: '1000000000',
     profileCompletenessScore: 60,
     complianceRecords: [],
     documents: [],
@@ -104,6 +107,7 @@ const employees = {
     designation: 'QA Operations Lead',
     branch: 'Riyadh Office',
     workLocation: 'Riyadh',
+    managerEmployeeId: 902,
     status: 'Active',
     joiningDate: '2026-10-18',
     contractType: 'Limited Term',
@@ -132,6 +136,7 @@ const employees = {
     workPermitNumber: '',
     civilId: '',
     residencyNumber: '',
+    idNumber: '',
     profileCompletenessScore: 100,
     complianceRecords: [],
     documents: [],
@@ -211,6 +216,7 @@ export async function bootEmployeeWorkspaceFixture(
     listCalls: 0,
     mutationCalls: [],
     mutations: [],
+    readinessBody: new Map(),
   };
 
   await page.addInitScript(() => {
@@ -237,7 +243,39 @@ export async function bootEmployeeWorkspaceFixture(
     if (path.includes('/features/')) return reply([]);
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/admin/system-settings' || path === '/api/country-packs/available') return reply([]);
-    if (path === '/api/admin/master-data/values') return reply([]);
+    if (path === '/api/admin/master-data/values') {
+      const typeCode = url.searchParams.get('typeCode');
+      const values = typeCode === 'EmploymentType'
+        ? ['Full-Time', 'Seasonal']
+        : typeCode === 'ContractType'
+          ? ['Unlimited', 'Unlimited Term']
+          : [];
+      return reply(values.map((valueEn, index) => ({ id: `${typeCode}-${index}`, valueEn, valueAr: '', sortOrder: index, isDefault: false, isActive: true })));
+    }
+    if (path === '/api/companies') return reply({ items: [{ id: 'fixture-company', legalNameEn: 'Evostel', tradeName: 'Evostel', countryCode: 'SAU', emailDomain: 'evostel.test', workEmailPattern: 'first.last', isActive: true, approvalStatus: 'Active' }], total: 1, page: 1, pageSize: 100 });
+    if (path === '/api/departments') return reply({ items: [
+      { id: 'qa-finance', branchId: 'jeddah-office', costCenterId: 'qa-fin-cc-17', code: 'QA-FIN', nameEn: 'QA Finance', nameAr: '', managerEmployeeId: 901, isActive: true },
+      { id: 'qa-operations', branchId: 'riyadh-office', costCenterId: 'qa-ops-cc-18', code: 'QA-OPS', nameEn: 'QA Operations', nameAr: '', managerEmployeeId: 902, isActive: true },
+    ], total: 2, page: 1, pageSize: 100 });
+    if (path === '/api/designations') return reply({ items: [
+      { id: 'qa-finance-manager', departmentId: 'qa-finance', code: 'QA-FIN-MGR', titleEn: 'QA Finance Manager', titleAr: '', gradeId: 'm2', isActive: true },
+      { id: 'qa-operations-lead', departmentId: 'qa-operations', code: 'QA-OPS-LEAD', titleEn: 'QA Operations Lead', titleAr: '', gradeId: 'm1', isActive: true },
+    ], total: 2, page: 1, pageSize: 100 });
+    if (path === '/api/grades') return reply({ items: [
+      { id: 'm1', code: 'M1', name: 'M1', band: 'M1', level: 1, minSalary: 10000, midSalary: 15000, maxSalary: 20000, currency: 'SAR', isActive: true },
+      { id: 'm2', code: 'M2', name: 'M2', band: 'M2', level: 2, minSalary: 18000, midSalary: 24000, maxSalary: 30000, currency: 'SAR', isActive: true },
+    ], total: 2, page: 1, pageSize: 100 });
+    if (path === '/api/organization/cost-centers' || path === '/api/cost-centers') return reply({ items: [
+      { id: 'qa-fin-cc-17', code: 'QA-FIN-CC-17', name: 'QA Finance Cost Center', isActive: true },
+      { id: 'qa-ops-cc-18', code: 'QA-OPS-CC-18', name: 'QA Operations Cost Center', isActive: true },
+    ], total: 2, page: 1, pageSize: 100 });
+    if (path === '/api/employees/field-catalog') return reply({ fields: [
+      { key: 'passportNumber', complianceFieldKey: 'passport_number', label: 'Passport number', section: 'compliance', inputType: 'text', entityKey: 'passportNumber', countries: ['SA'], visible: true },
+      { key: 'gosiReference', complianceFieldKey: 'gosi_reference', label: 'GOSI reference', section: 'compliance', inputType: 'text', entityKey: 'gosiReference', countries: ['SA'], visible: true },
+      { key: 'idNumber', complianceFieldKey: 'id_number', label: 'National ID (Hawiyya)', section: 'compliance', inputType: 'text', entityKey: 'idNumber', countries: ['SA'], visible: true },
+    ] });
+    if (/^\/api\/employee-access\/\d+$/.test(path)) return reply({ employeeId: 901, employeeName: employees[901].fullName, employeeCode: employees[901].employeeCode, workEmail: employees[901].workEmail, state: 'not_started', canIssue: true, emailDelivery: false });
+    if (/^\/api\/employee-completion\/\d+$/.test(path)) return reply({ requested: false, status: 'NotRequested', selfServiceAvailable: true });
 
     const readinessMatch = path.match(/^\/api\/employees\/(\d+)\/readiness$/);
     if (readinessMatch) {
@@ -247,7 +285,7 @@ export async function bootEmployeeWorkspaceFixture(
       return fulfillMode(
         route,
         control.readinessMode.get(employeeId) ?? 'success',
-        readiness[employeeId as keyof typeof readiness] ?? readiness[901],
+        control.readinessBody.get(employeeId) ?? readiness[employeeId as keyof typeof readiness] ?? readiness[901],
       );
     }
 
@@ -288,6 +326,7 @@ export async function bootEmployeeWorkspaceFixture(
           department: employee.department,
           designation: employee.designation,
           branch: employee.branch,
+          managerEmployeeId: employee.managerEmployeeId,
           status: employee.status,
           profileCompletenessScore: employee.profileCompletenessScore,
           iqamaNumber: employee.iqamaNumber,

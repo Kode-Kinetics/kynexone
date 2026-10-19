@@ -1,5 +1,37 @@
 import { devices, expect, test, type Browser, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import fs from 'node:fs';
+import path from 'node:path';
 import { bootEmployeeWorkspaceFixture } from './employee-workspace.fixture';
+
+const RESPONSIVE_CERTIFICATION_TITLES = new Set([
+  'known employee link producers use canonical workspace URLs',
+  'workspace has no serious accessibility violations or document overflow at every certified viewport',
+  'Arabic workspace keeps RTL direction, logical navigation, and focus',
+]);
+
+test.beforeEach(async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'desktop') {
+    test.skip(!RESPONSIVE_CERTIFICATION_TITLES.has(testInfo.title), 'Desktop interaction contract is covered by the desktop project; responsive projects run the dedicated geometry, reduced-motion, RTL, and axe certifications.');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+  }
+});
+
+function readinessForTest() {
+  return {
+    employeeId: 901,
+    state: 'NeedsAttention',
+    score: 60,
+    progress: { present: 3, requiredTotal: 5 },
+    policy: { countryCode: 'SAU', tier: 'Activation', sources: ['Fixture policy'] },
+    blocking: [],
+    payBlocking: [],
+    recommended: [],
+    present: [],
+    expiringSoon: [],
+    disclaimer: 'Fixture readiness data.',
+  };
+}
 
 async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'; forcePopstate?: boolean } = {}) {
   await page.addInitScript(({ locale, forcePopstate }) => {
@@ -462,6 +494,53 @@ test('workspace overview distinguishes blockers from recommendations and present
   await expect(page.getByText('Blocks payroll', { exact: true })).toBeVisible();
 });
 
+test('route-owned employment editing preserves tenant values and follows organization master data', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901/edit?section=employment');
+
+  await expect(page.getByRole('heading', { name: 'Review employment details' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Employment type' })).toHaveValue('Seasonal');
+  await expect(page.getByRole('combobox', { name: 'Contract type' })).toHaveValue('Unlimited Term');
+  await expect(page.getByRole('combobox', { name: 'Department' })).toHaveValue('QA Finance');
+
+  await page.getByRole('combobox', { name: 'Department' }).selectOption({ label: 'QA Operations' });
+  await expect(page.getByRole('combobox', { name: 'Designation' })).toHaveValue('QA Operations Lead');
+  await expect(page.getByRole('combobox', { name: 'Grade' })).toHaveValue('M1');
+  await expect(page.getByLabel('Cost center')).toHaveValue('QA-OPS-CC-18');
+  await expect(page.getByRole('combobox', { name: 'Line manager' })).toHaveValue('902');
+  await expect(page.getByRole('combobox', { name: 'Line manager' }).locator('option')).toHaveText(['Select', 'Second Route Employee (EMP-SA-QA-OPS-18-2026-0002)']);
+});
+
+test('compliance view uses the nationality-resolved identity catalogue', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=compliance-documents');
+
+  await expect(page.getByRole('heading', { name: 'Compliance & Documents' })).toBeVisible();
+  await expect(page.getByText('National ID (Hawiyya)', { exact: true })).toBeVisible();
+  await expect(page.getByText('1000000000', { exact: true })).toBeVisible();
+  await expect(page.getByText('Iqama number', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Visa number', { exact: true })).toHaveCount(0);
+});
+
+test('onboarding readiness distinguishes recommendations from activation blockers', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  fixture.readinessBody.set(901, {
+    ...readinessForTest(),
+    blocking: [],
+    payBlocking: [],
+    recommended: [
+      { key: 'contract', label: 'Contract document', category: 'document', reason: 'recommended' },
+      { key: 'iban', label: 'IBAN (WPS)', category: 'payroll', reason: 'recommended' },
+    ],
+  });
+  await page.goto('/people/901?section=access-onboarding');
+
+  await expect(page.getByText('3 of 5 readiness checks are complete.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No activation blockers. 2 recommendations remain.', { exact: true })).toBeVisible();
+  await expect(page.getByText(/required items are complete/i)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Activate employee' })).toBeEnabled();
+});
+
 test('workspace permission persona never renders sensitive values or unauthorized mutation controls', async ({ page }) => {
   const fixture = await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read', 'dashboard.read'] });
   await page.goto('/people/901?section=pay-benefits');
@@ -504,4 +583,51 @@ test('route-owned employee editing reaches Review before sending changed fields'
     path: '/api/employees/901',
     body: { effectiveDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), changes: { preferredName: 'QA Master Updated' } },
   }]);
+});
+
+test('known employee link producers use canonical workspace URLs', async () => {
+  const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), 'utf8');
+  const producers = [
+    'src/layouts/AppLayout.tsx',
+    'src/views/NewHiresPage.tsx',
+    'src/views/PayrollPage.tsx',
+    'src/views/CompliancePage.tsx',
+    'src/components/succession/KpiTiles.tsx',
+  ];
+  for (const producer of producers) {
+    const source = read(producer);
+    expect(source, producer).not.toContain('/people?employeeId=');
+    expect(source, producer).toContain('employeeWorkspaceHref');
+  }
+});
+
+test('workspace has no serious accessibility violations or document overflow at every certified viewport', async ({ page }, testInfo) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=employment&panel=details');
+  await expect(page.getByRole('heading', { name: 'Employment details' })).toBeVisible();
+
+  const geometry = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+    scrollers: document.querySelectorAll('[data-employee-workspace-scroll]').length,
+    reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+  }));
+  expect(geometry.documentWidth - geometry.viewportWidth).toBeLessThanOrEqual(1);
+  expect(geometry.scrollers).toBe(1);
+  if (testInfo.project.name !== 'desktop') expect(geometry.reducedMotion).toBe(true);
+
+  const violations = (await new AxeBuilder({ page }).analyze()).violations
+    .filter(violation => violation.impact === 'serious' || violation.impact === 'critical');
+  expect(violations).toEqual([]);
+});
+
+test('Arabic workspace keeps RTL direction, logical navigation, and focus', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.addInitScript(() => localStorage.setItem('kynexone-locale-choice-v2', 'ar'));
+  await page.goto('/people/901?section=employment');
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  const employment = page.getByRole('navigation', { name: /Employee record sections|أقسام/ }).getByRole('link', { name: /Employment|التوظيف/ });
+  await employment.focus();
+  await expect(employment).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });

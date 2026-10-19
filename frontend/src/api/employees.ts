@@ -374,6 +374,7 @@ export interface EmployeeEntity {
   civilIdExpiryDate?: string;
   residencyNumber: string;
   residencyIssueDate?: string;
+  idNumber: string;
   profileCompletenessScore: number;
 }
 

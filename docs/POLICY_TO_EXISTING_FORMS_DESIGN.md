@@ -1,6 +1,6 @@
 # Policy to existing forms: corrected implementation design
 
-Status: proposed cross-module integration; requires owner review before implementation.
+Status: narrowed by owner clarification on 2026-10-13. The approved implementation is existing-form prefill plus existing Save APIs, with a small extraction-response extension only. The broader save-envelope, server provenance, concurrency and audit proposals below are deferred, not implementation requirements or delivered guarantees. No persistence API, table or migration changes belong to this slice.
 Scope: local Evostel shadow only. No deployment, production writes, new tables, replacement forms, or automatic employee task generation.
 
 ## Agreed outcome

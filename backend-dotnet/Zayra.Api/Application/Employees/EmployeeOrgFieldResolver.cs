@@ -82,12 +82,32 @@ public static class EmployeeOrgFieldResolver
 
         if (fields.Contains("department"))
         {
-            if (string.IsNullOrWhiteSpace(employee.Department)) employee.DepartmentId = null;
+            if (string.IsNullOrWhiteSpace(employee.Department))
+            {
+                employee.DepartmentId = null;
+                employee.CostCenterId = null;
+                employee.CostCenter = string.Empty;
+                if (!fields.Contains("managerEmployeeId")) employee.ManagerEmployeeId = null;
+            }
             else
             {
                 var (id, nameEn) = await ResolveDepartmentAsync(db, tenantId, employee.Department, ct);
                 employee.DepartmentId = id;
                 employee.Department = nameEn;
+
+                var departmentDefaults = await db.Departments.IgnoreQueryFilters().AsNoTracking()
+                    .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive && d.Id == id)
+                    .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
+                    .SingleAsync(ct);
+                employee.CostCenterId = departmentDefaults.CostCenterId;
+                employee.CostCenter = departmentDefaults.CostCenterId is Guid costCenterId
+                    ? await db.CostCenters.IgnoreQueryFilters().AsNoTracking()
+                        .Where(c => c.TenantId == tenantId && !c.IsDeleted && c.IsActive && c.Id == costCenterId)
+                        .Select(c => c.Code)
+                        .SingleOrDefaultAsync(ct) ?? string.Empty
+                    : string.Empty;
+                if (!fields.Contains("managerEmployeeId"))
+                    employee.ManagerEmployeeId = departmentDefaults.ManagerEmployeeId;
             }
         }
 
