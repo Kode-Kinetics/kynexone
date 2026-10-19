@@ -131,10 +131,8 @@ export function useEmployeeEditDraft({
       if (field.key === 'englishName' && !value) { setNotice('Enter the employee’s English full name to continue.'); return false; }
       if (field.key === 'salary' && !value) { setNotice('Salary cannot be empty. Enter an amount before continuing.'); return false; }
       if (field.key === 'joiningDate' && !value) { setNotice('Joining date cannot be empty. Choose a date before continuing.'); return false; }
-      if (field.key === 'workEmail') {
-        const problem = workEmailProblemKey(workEmailLocalProblem(value));
-        if (problem) { setNotice(problem); return false; }
-      }
+      // WorkEmailField already shows this exact reason as its own alert; repeating it here announced it twice.
+      if (field.key === 'workEmail' && workEmailProblemKey(workEmailLocalProblem(value))) { setNotice(''); return false; }
       if (field.type === 'number' && value && !Number.isFinite(Number(value))) { setNotice(`${field.label} must be a valid number.`); return false; }
     }
     if (targetStep === 3 && changedKeys.some(key => key.startsWith('salaryBreakdown.'))) {

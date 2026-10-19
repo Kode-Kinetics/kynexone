@@ -222,7 +222,13 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
       const p = people.find((x) => x.id === id);
       return p ? json(detail(p)) : json({}, 404);
     }
-    if (/\/readiness$/.test(pathname) || pathname === '/api/employees/field-catalog') return json({ message: 'not here' }, 404);
+    // The record window only offers Activate once readiness has loaded with no blockers; these people are Ready.
+    if (/^\/api\/employees\/\d+\/readiness$/.test(pathname)) return json({
+      employeeId: Number(pathname.split('/')[3]), state: 'Ready', score: 100, progress: { present: 5, requiredTotal: 5 },
+      policy: { countryCode: 'SAU', tier: 'Activation', sources: ['Fixture policy'] },
+      blocking: [], payBlocking: [], recommended: [], present: [], expiringSoon: [], disclaimer: 'Fixture readiness data.',
+    });
+    if (pathname === '/api/employees/field-catalog') return json({ message: 'not here' }, 404);
     if (pathname === '/api/companies') return json({ items: [{ ...COMPANY, ...(opts.noDomain ? { emailDomain: '' } : {}) }], total: 1, page: 1, pageSize: 100 });
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', currencyCode: 'SAR', countryCode: 'SA' });
     if (pathname === '/api/admin/master-data/values') return json([]);

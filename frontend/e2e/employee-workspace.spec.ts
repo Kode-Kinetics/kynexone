@@ -67,6 +67,9 @@ async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'
   });
   await page.goto('/setup?tab=aiSetup&companyId=fixture-company&source=retained&area=onboarding&setting=onboarding');
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
+  // Setup canonicalises its URL (serializeSetupPath adds path=) after first render. Wait for that replace,
+  // or a history entry a test pushes in the meantime is overwritten by it and the guard assertions race.
+  await expect(page).toHaveURL(/[?&]path=configuration(&|$)/);
 }
 
 async function makeDirty(page: Page, value = 'Retain navigation draft') {
