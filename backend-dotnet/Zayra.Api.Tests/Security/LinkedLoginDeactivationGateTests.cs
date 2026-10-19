@@ -306,6 +306,8 @@ public sealed class LinkedLoginDeactivationGateTests
                 {
                     new Claim("tenant_id", w.TenantId.ToString()),
                     new Claim(ClaimTypes.NameIdentifier, actor.ToString()),
+                    // Real HR bundles pair delete with write; write is what grants the org-wide DataScope.
+                    new Claim("permission", "employees.write"),
                     new Claim("permission", "employees.delete"),
                     new Claim("is_group_scope", "true"),
                 }, "test")),

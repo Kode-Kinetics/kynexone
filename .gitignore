@@ -41,3 +41,7 @@ database/DANGER_*
 
 # Local document storage written by a running API (e2e / acceptance stacks); never committed
 backend-dotnet/Zayra.Api/storage/
+
+# Brainstorm companion runtime state (ports, PIDs, session tokens): local only
+.superpowers/brainstorm/.last-*
+.superpowers/brainstorm/*/state/

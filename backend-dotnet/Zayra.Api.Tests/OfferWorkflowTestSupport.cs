@@ -18,6 +18,33 @@ internal static class OfferWorkflowTestSupport
     internal static async Task<OfferResponseRequest> ResponseAsync(ZayraDbContext db, Guid id) =>
         new(await VersionAsync(db, id), "Accepted", "StaffRecorded", DateTime.UtcNow, "Synthetic candidate confirmed", "test/case");
 
+    /// <summary>
+    /// Seeds <paramref name="offer"/> as a managed revision whose original is already frozen and finalized,
+    /// for tests whose subject is a later rule (approval separation of duties), not freezing itself. The
+    /// stored bytes match the artifact's hash and size, so the real integrity check still runs.
+    /// Call before SaveChanges; the offer and application must not be saved yet.
+    /// </summary>
+    internal static void SeedFrozenManaged(ZayraDbContext db, OfferLetter offer, JobApplication application)
+    {
+        var company = new Company { TenantId = offer.TenantId, CountryCode = "SA", Jurisdiction = "KSA-mainland", DefaultCurrency = "SAR" };
+        db.Companies.Add(company);
+        offer.CompanyId = company.Id; application.CompanyId = company.Id;
+        var series = new OfferSeries { TenantId = offer.TenantId, CompanyId = company.Id, ApplicationId = application.Id };
+        db.OfferSeries.Add(series);
+        offer.SeriesId = series.Id; offer.RevisionNumber = 1;
+        var bytes = System.Text.Encoding.UTF8.GetBytes($"%PDF-1.4 synthetic frozen original {offer.Id:N}");
+        var key = $"{offer.TenantId:N}/offers/{offer.Id:N}.pdf";
+        Storage.Bytes[key] = bytes;
+        var artifact = new OfferArtifact
+        {
+            TenantId = offer.TenantId, CompanyId = company.Id, OfferId = offer.Id, ApplicationId = application.Id,
+            StorageKey = key, SizeBytes = bytes.LongLength, State = "Finalized", FinalizedAtUtc = DateTime.UtcNow,
+            Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+        };
+        db.OfferArtifacts.Add(artifact);
+        offer.ArtifactId = artifact.Id; offer.FrozenAtUtc = DateTime.UtcNow;
+    }
+
     internal static async Task PrepareAsync(ZayraDbContext db, Guid offerId, Guid author)
     {
         var offer = await db.OfferLetters.SingleAsync(o => o.Id == offerId);

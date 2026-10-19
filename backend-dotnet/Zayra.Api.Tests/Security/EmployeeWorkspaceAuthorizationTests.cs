@@ -510,6 +510,32 @@ public sealed class EmployeeWorkspaceAuthorizationTests
     }
 
     [Theory]
+    [InlineData(nameof(EmployeesController.ChangeStatus))]
+    [InlineData(nameof(EmployeesController.Delete))]
+    public async Task RestrictedScope_AbsentEmployee_IsNotFound_NotForbidden(string action)
+    {
+        // A company-scoped DataScope is a materialised id set that never contains a missing id. Checking it
+        // before existence made the Chrome role matrix read every company HR's 404 as a permission refusal.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var companyId = Guid.NewGuid();
+        var inScope = SeedEmployee(db, tenantId, companyId);
+        var caller = Caller(["employees.write", "employees.delete"], tenantId, companyIds: [companyId]);
+        var controller = Controller(db, caller, new FixedScope([inScope.Id]));
+        var absentId = inScope.Id + 10_000;
+        var status = new EmployeeStatusChangeRequest("Inactive", DateOnly.FromDateTime(DateTime.UtcNow), "Scope test");
+
+        IActionResult result = action switch
+        {
+            nameof(EmployeesController.ChangeStatus) => (await controller.ChangeStatus(absentId, status, CreateService(db), default)).Result!,
+            nameof(EmployeesController.Delete) => await controller.Delete(absentId, default),
+            _ => throw new ArgumentOutOfRangeException(nameof(action)),
+        };
+
+        result.Should().BeAssignableTo<NotFoundResult>();
+    }
+
+    [Theory]
     [InlineData("current")]
     [InlineData("new")]
     [InlineData("hr")]

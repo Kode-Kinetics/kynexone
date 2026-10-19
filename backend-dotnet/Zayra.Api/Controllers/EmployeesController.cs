@@ -6330,16 +6330,18 @@ public class EmployeesController : ControllerBase
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-        if (!scope.CanAccessEmployee(employeeId)) return false;
-
         var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
                 "Employee authorization must resolve the target company before the ambient company filter can hide it.")
             .AsNoTracking()
             .Where(x => x.Id == employeeId)
             .Select(x => new { x.CompanyId })
             .SingleOrDefaultAsync(cancellationToken);
-        return employee is null || this.GetEntityScope().CanAccessCompany(employee.CompanyId);
+        // An absent record is the action's own 404, not a scope refusal: a company-scoped DataScope is a
+        // materialised id set, so checking it first turned every missing id into a 403.
+        if (employee is null) return true;
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return scope.CanAccessEmployee(employeeId) && this.GetEntityScope().CanAccessCompany(employee.CompanyId);
     }
 
     private async Task<IReadOnlyCollection<int>?> ResolveVisibleEmployeeIdsAsync(CancellationToken cancellationToken)

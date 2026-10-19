@@ -8,10 +8,12 @@ namespace Zayra.Api.Infrastructure.Recruitment;
 public static class OfferCompensation
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    // Typed so an Employee can never be persisted as an offer compensation snapshot.
+    public static string SerializeSnapshot(OfferCompensationSnapshot snapshot) => JsonSerializer.Serialize(snapshot, Json);
 
     public static void ApplySnapshot(OfferLetter offer, OfferCompensationSnapshot snapshot)
     {
-        offer.CompensationSnapshotJson = JsonSerializer.Serialize(snapshot, Json);
+        offer.CompensationSnapshotJson = SerializeSnapshot(snapshot);
         offer.CompensationCurrency = snapshot.Currency;
         offer.CompensationPrecision = snapshot.Precision;
         offer.OfferPolicyVersion = snapshot.PolicyVersion;

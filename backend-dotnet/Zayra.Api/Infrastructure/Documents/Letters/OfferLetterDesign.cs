@@ -83,6 +83,8 @@ public sealed record OfferDesignSnapshot(OfferDesign Design, Dictionary<string, 
 public static class OfferLetterDesign
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    // Typed so an Employee can never be persisted as an offer design snapshot.
+    public static string SerializeSnapshot(OfferDesignSnapshot snapshot) => JsonSerializer.Serialize(snapshot, Json);
     public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "offer_reference"];
     private static readonly Regex TokenPattern = new(@"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", RegexOptions.Compiled);
     private static readonly object FontGate = new();
@@ -210,7 +212,7 @@ public static class OfferLetterDesign
         var design = JsonSerializer.Deserialize<OfferDesign>(template.DesignJson, Json) ?? throw new ArgumentException("Invalid template.");
         var snapshot = await SnapshotAsync(db, offer, design, template.Id, template.Version, ct);
         Render(snapshot); // Reject non-renderable layouts before persisting an offer.
-        offer.DesignSnapshotJson = JsonSerializer.Serialize(snapshot, Json);
+        offer.DesignSnapshotJson = SerializeSnapshot(snapshot);
     }
 
     public static byte[] Render(OfferDesignSnapshot snapshot)

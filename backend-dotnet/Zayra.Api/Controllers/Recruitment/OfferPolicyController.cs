@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Scope;
 using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
@@ -28,6 +29,7 @@ public class OfferPolicyController(ZayraDbContext db, IRequestEntityScopeResolve
 
     [HttpGet("policy")]
     [Authorize(Roles = "Admin")]
+    [HasPermission("recruitment.read")]
     public async Task<IActionResult> Get(CancellationToken ct)
     {
         if (Scope(true) is not { } scope) return Forbid();
@@ -36,6 +38,7 @@ public class OfferPolicyController(ZayraDbContext db, IRequestEntityScopeResolve
     }
 
     [HttpGet("component-options")]
+    [HasPermission("recruitment.read")]
     public async Task<IActionResult> Options([FromQuery] DateOnly? startDate, CancellationToken ct)
     {
         if (Scope(false) is not { } scope) return Forbid();
@@ -52,6 +55,7 @@ public class OfferPolicyController(ZayraDbContext db, IRequestEntityScopeResolve
 
     [HttpPut("policy")]
     [Authorize(Roles = "Admin")]
+    [HasPermission("recruitment.approve")]
     public async Task<IActionResult> Put(OfferPolicyUpdate request, CancellationToken ct)
     {
         if (Scope(true) is not { } scope) return Forbid();

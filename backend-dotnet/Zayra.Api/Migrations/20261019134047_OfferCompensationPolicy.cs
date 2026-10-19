@@ -6,6 +6,9 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Zayra.Api.Migrations
 {
     /// <inheritdoc />
+    // Widening only: numeric(12,2) -> numeric(19,3) on the offer money columns (offer_letters, job_applications).
+    // Every value an older instance reads or writes still fits, so nothing has to stop using the old shape first.
+    [Zayra.Api.Infrastructure.Data.ContractPhase("Widening only: no release stops using these columns; numeric(12,2) values remain valid in numeric(19,3)")]
     public partial class OfferCompensationPolicy : Migration
     {
         /// <inheritdoc />

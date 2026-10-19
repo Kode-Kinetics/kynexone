@@ -82,7 +82,7 @@ public sealed partial class OfferLifecycleService
                     var snapshot = await OfferLetterDesign.SnapshotAsync(db, offer, design,
                         input.DesignJson is null ? existing?.TemplateId : null,
                         input.DesignJson is null ? existing?.TemplateVersion : null, ct);
-                    offer.DesignSnapshotJson = JsonSerializer.Serialize(snapshot, OfferLetterDesign.Json);
+                    offer.DesignSnapshotJson = OfferLetterDesign.SerializeSnapshot(snapshot);
                 }
             }
             catch (Exception e) when (e is ArgumentException or JsonException)

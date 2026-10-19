@@ -56,8 +56,8 @@ public sealed partial class OfferLifecycleService
             {
                 await OfferLetterDesign.ApplyTemplateAsync(db, offer, input.TemplateId, ct);
                 if (Enabled && input.TemplateId is null)
-                    offer.DesignSnapshotJson = System.Text.Json.JsonSerializer.Serialize(
-                        await OfferLetterDesign.SnapshotAsync(db, offer, OfferLetterDesign.DynamicDefault(), null, null, ct), OfferLetterDesign.Json);
+                    offer.DesignSnapshotJson = OfferLetterDesign.SerializeSnapshot(
+                        await OfferLetterDesign.SnapshotAsync(db, offer, OfferLetterDesign.DynamicDefault(), null, null, ct));
             }
             catch (ArgumentException e) { throw new OfferLifecycleException("offer_design_invalid", e.Message, 422); }
             if (Enabled)

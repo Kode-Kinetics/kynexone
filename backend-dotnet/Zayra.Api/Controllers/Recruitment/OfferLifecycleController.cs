@@ -116,8 +116,12 @@ public sealed class OfferLifecycleController(ZayraDbContext db, OfferLifecycleSe
 
     [HasPermission("recruitment.read")]
     [HttpGet("{id:guid}/events")]
-    public Task<IActionResult> Events(Guid id, CancellationToken ct, [FromQuery] int page = 1, [FromQuery] int pageSize = 20) =>
-        ForOffer(id, async actor => Ok(await history.EventsAsync(actor, id, page, pageSize, ct)), ct);
+    public Task<IActionResult> Events(Guid id, CancellationToken ct, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        return ForOffer(id, async actor => Ok(await history.EventsAsync(actor, id, page, pageSize, ct)), ct);
+    }
 
     [HasPermission("recruitment.read")]
     [HttpGet("{id:guid}/original")]

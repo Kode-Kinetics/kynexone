@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Employees;
@@ -95,14 +96,18 @@ public static class EmployeeOrgFieldResolver
                 employee.DepartmentId = id;
                 employee.Department = nameEn;
 
-                var departmentDefaults = await db.Departments.IgnoreQueryFilters().AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive && d.Id == id)
+                var departmentDefaults = await ScopedBypass.TenantWide(db.Departments, tenantId,
+                        "Department defaults follow the department just resolved by name, which is tenant master data independent of the caller's company scope.")
+                    .AsNoTracking()
+                    .Where(d => !d.IsDeleted && d.IsActive && d.Id == id)
                     .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
                     .SingleAsync(ct);
                 employee.CostCenterId = departmentDefaults.CostCenterId;
                 employee.CostCenter = departmentDefaults.CostCenterId is Guid costCenterId
-                    ? await db.CostCenters.IgnoreQueryFilters().AsNoTracking()
-                        .Where(c => c.TenantId == tenantId && !c.IsDeleted && c.IsActive && c.Id == costCenterId)
+                    ? await ScopedBypass.TenantWide(db.CostCenters, tenantId,
+                            "The department's default cost centre is copied by id; its company is the department's choice, not the caller's selected company.")
+                        .AsNoTracking()
+                        .Where(c => !c.IsDeleted && c.IsActive && c.Id == costCenterId)
                         .Select(c => c.Code)
                         .SingleOrDefaultAsync(ct) ?? string.Empty
                     : string.Empty;
