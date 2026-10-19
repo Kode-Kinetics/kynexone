@@ -79,7 +79,7 @@ export const offerLetterArabic: Record<string, string> = {
   'Imported locally. Save to add it to your template library.': 'تم الاستيراد محليًا. احفظه لإضافته إلى مكتبة القوالب.',
   'Letter template': 'قالب الخطاب', 'Standard letter': 'خطاب قياسي',
   'Create branded designs in Offers → Letter designer. The selected design is copied into this offer.': 'أنشئ تصاميم بهوية شركتك من العروض ← مصمم الخطابات. يُنسخ التصميم المحدد إلى هذا العرض.',
-  'Templates could not load:': 'تعذر تحميل القوالب:', 'Standard letter remains available.': 'يبقى الخطاب القياسي متاحًا.',
+  'Templates could not load': 'تعذر تحميل القوالب', 'Standard letter remains available.': 'يبقى الخطاب القياسي متاحًا.',
   'Use a PNG or JPEG image smaller than 500 KB.': 'استخدم صورة PNG أو JPEG أصغر من 500 كيلوبايت.',
   'The image could not be read.': 'تعذر قراءة الصورة.',
   'PNG or JPEG · max 500 KB · max 4000 px / 8 MP. Use transparent PNG for logos.': 'PNG أو JPEG · بحد أقصى 500 كيلوبايت و4000 بكسل / 8 ميغابكسل. استخدم PNG شفافًا للشعارات.',

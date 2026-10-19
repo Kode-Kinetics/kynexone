@@ -484,7 +484,7 @@ function CompaniesTab() {
               ))}
             </select>
             <p className="mt-1 text-xs text-slate-500" data-testid="work-email-pattern-preview">
-              {t('Example for John Smith:')} <span dir="ltr">{form.emailDomain && isValidEmailDomain(form.emailDomain)
+              {t('Example employee email')}: <span dir="ltr">{form.emailDomain && isValidEmailDomain(form.emailDomain)
                 ? assembleWorkEmail(deriveWorkEmailLocalPart('John Smith', form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN), form.emailDomain)
                 : deriveWorkEmailLocalPart('John Smith', form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN)}</span>.
               {' '}{form.emailDomain && isValidEmailDomain(form.emailDomain)

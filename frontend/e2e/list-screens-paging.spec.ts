@@ -197,7 +197,7 @@ test.describe('recruitment lists page with the server total', () => {
     expect(calls.every((c) => c.params.page === 2 && c.params.pageSize === 100)).toBe(true);
   });
 
-  test('requisitions, candidates, interviews, assessments, offers, onboarding tasks and plans show Load more', () => {
+  test('requisitions, candidates, interviews, assessments, onboarding tasks and plans show Load more; offers use their paged history register', () => {
     const rec = read('src/views/RecruitmentPage.tsx');
     for (const call of [
       'requisitionsApi.list({ status: statusFilter || undefined, page, pageSize })',
@@ -205,12 +205,16 @@ test.describe('recruitment lists page with the server total', () => {
       'workforcePlanningApi.list(undefined, undefined, page, pageSize)',
       'interviewsApi.list(undefined, statusFilter || undefined, page, pageSize)',
       'assessmentsApi.list(undefined, statusFilter || undefined, page, pageSize)',
-      'offersApi.list(undefined, statusFilter || undefined, page, pageSize)',
       'onboardingApi.listTasks({ status: statusFilter || undefined, page, pageSize })',
     ]) expect(rec).toContain(call);
-    for (const noun of ['requisitions', 'candidates', 'plans', 'interviews', 'assessments', 'offers', 'tasks']) {
+    for (const noun of ['requisitions', 'candidates', 'plans', 'interviews', 'assessments', 'tasks']) {
       expect(rec).toContain(`total={list.total} noun="${noun}"`);
     }
+    expect(rec).toContain('<OfferHistoryRegister key={companyVersion} />');
+    const history = read('src/components/recruitment/OfferHistoryRegister.tsx');
+    expect(history).toContain('offerLifecycleApi.history({ applicationId, search: search || undefined, status: status || undefined, communicationOutcome: outcome || undefined, page, pageSize: 20 })');
+    expect(history).toContain('data?.total');
+    expect(history).toContain('page * 20');
     // The overview asks for the five openings it previews.
     expect(rec).toContain("openingsApi.list({ status: 'Open', pageSize: 5 })");
   });

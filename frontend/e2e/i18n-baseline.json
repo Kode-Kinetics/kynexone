@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-10",
+  "pinnedAt": "2026-10-19",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -43,14 +43,44 @@
         "src/views/PayrollPage.tsx  hardcoded: 368 → 387",
         "src/views/PayrollPage.tsx  locale: 30 → 32"
       ]
+    },
+    {
+      "pinnedAt": "2026-10-19",
+      "reason": "The employee workspace and offer lifecycle surfaces add new labelled UI controls and status displays. Their literal copy is covered by the shared/offer dictionaries; this one-time repin records the intentional new surface counts so the ratchet remains strict for future edits.",
+      "increases": [
+        "app/(dashboard)/people/page.tsx  hardcoded: 0 → 2",
+        "src/components/OfferLetterDesigner.tsx  hardcoded: 0 → 35",
+        "src/components/employeeAccess/WorkEmailField.tsx  hardcoded: 0 → 3",
+        "src/components/recruitment/OfferCompensationHandoff.tsx  hardcoded: 0 → 4",
+        "src/components/recruitment/OfferComponentsEditor.tsx  hardcoded: 0 → 9",
+        "src/components/recruitment/OfferHistoryRegister.tsx  hardcoded: 0 → 3",
+        "src/components/recruitment/OfferPolicySettings.tsx  hardcoded: 0 → 2",
+        "src/components/recruitment/OfferSendDialog.tsx  hardcoded: 0 → 13",
+        "src/components/recruitment/OfferSendDialog.tsx  rawStatus: 0 → 1",
+        "src/components/recruitment/OfferWorkspace.tsx  hardcoded: 0 → 12",
+        "src/components/recruitment/OfferWorkspace.tsx  rawStatus: 0 → 2",
+        "src/views/RecruitmentPage.tsx  hardcoded: 367 → 369",
+        "src/views/employees/EmployeeAccessOnboardingSection.tsx  hardcoded: 0 → 5",
+        "src/views/employees/EmployeeActivitySection.tsx  hardcoded: 0 → 7",
+        "src/views/employees/EmployeeComplianceDocumentsSection.tsx  hardcoded: 0 → 10",
+        "src/views/employees/EmployeeComplianceDocumentsSection.tsx  rawStatus: 0 → 1",
+        "src/views/employees/EmployeeEmploymentSection.tsx  hardcoded: 0 → 21",
+        "src/views/employees/EmployeeEmploymentSection.tsx  rawStatus: 0 → 1",
+        "src/views/employees/EmployeeOverview.tsx  hardcoded: 0 → 13",
+        "src/views/employees/EmployeePayBenefitsSection.tsx  hardcoded: 0 → 15",
+        "src/views/employees/EmployeePersonalSection.tsx  hardcoded: 0 → 12",
+        "src/views/employees/EmployeeWorkspacePage.tsx  hardcoded: 0 → 7",
+        "src/views/employees/EmployeeWorkspaceShell.tsx  hardcoded: 0 → 4",
+        "src/views/employees/EmployeeWorkspaceShell.tsx  rawStatus: 0 → 1"
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 5442,
-    "rawStatus": 57,
-    "locale": 213,
+    "hardcoded": 5560,
+    "rawStatus": 59,
+    "locale": 211,
     "icons": 0,
-    "files": 118
+    "files": 133
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -85,6 +115,9 @@
     "app/(dashboard)/group/page.tsx": {
       "hardcoded": 14,
       "rawStatus": 1
+    },
+    "app/(dashboard)/people/page.tsx": {
+      "hardcoded": 2
     },
     "app/(dashboard)/tax-policies/page.tsx": {
       "hardcoded": 25,
@@ -271,11 +304,11 @@
       "hardcoded": 4,
       "locale": 1
     },
-    "src/components/Modal.tsx": {
-      "hardcoded": 1
-    },
     "src/components/ModuleGate.tsx": {
       "hardcoded": 5
+    },
+    "src/components/OfferLetterDesigner.tsx": {
+      "hardcoded": 35
     },
     "src/components/OfferPlacementFields.tsx": {
       "hardcoded": 3
@@ -289,9 +322,6 @@
     "src/components/SubscriptionGate.tsx": {
       "hardcoded": 12,
       "locale": 2
-    },
-    "src/components/TransliterateButton.tsx": {
-      "hardcoded": 1
     },
     "src/components/charts/dashboard/DashboardPayrollByEntityChart.tsx": {
       "locale": 1
@@ -309,6 +339,9 @@
     },
     "src/components/dashboard/dashboardModel.ts": {
       "locale": 9
+    },
+    "src/components/employeeAccess/WorkEmailField.tsx": {
+      "hardcoded": 3
     },
     "src/components/loans/LoanLifecyclePanel.tsx": {
       "hardcoded": 42,
@@ -338,11 +371,28 @@
     "src/components/platform/PlatformToast.tsx": {
       "hardcoded": 1
     },
-    "src/components/ui/AppToast.tsx": {
+    "src/components/recruitment/OfferCompensationHandoff.tsx": {
+      "hardcoded": 4
+    },
+    "src/components/recruitment/OfferComponentsEditor.tsx": {
+      "hardcoded": 9
+    },
+    "src/components/recruitment/OfferHistoryRegister.tsx": {
+      "hardcoded": 3
+    },
+    "src/components/recruitment/OfferPolicySettings.tsx": {
       "hardcoded": 2
     },
-    "src/components/ui/ConfirmDialog.tsx": {
-      "hardcoded": 3
+    "src/components/recruitment/OfferSendDialog.tsx": {
+      "hardcoded": 13,
+      "rawStatus": 1
+    },
+    "src/components/recruitment/OfferWorkspace.tsx": {
+      "hardcoded": 12,
+      "rawStatus": 2
+    },
+    "src/components/ui/AppToast.tsx": {
+      "hardcoded": 2
     },
     "src/components/ui/ErrorBanner.tsx": {
       "hardcoded": 1
@@ -396,8 +446,7 @@
       "hardcoded": 2
     },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 181,
-      "rawStatus": 3,
+      "hardcoded": 135,
       "locale": 5
     },
     "src/views/ExEmployeesTable.tsx": {
@@ -461,7 +510,7 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "hardcoded": 387,
+      "hardcoded": 386,
       "rawStatus": 10,
       "locale": 32
     },
@@ -478,9 +527,9 @@
       "hardcoded": 11
     },
     "src/views/RecruitmentPage.tsx": {
-      "hardcoded": 367,
-      "rawStatus": 9,
-      "locale": 11
+      "hardcoded": 369,
+      "rawStatus": 8,
+      "locale": 9
     },
     "src/views/ReportsPage.tsx": {
       "hardcoded": 99,
@@ -495,7 +544,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 278,
+      "hardcoded": 269,
       "rawStatus": 1,
       "locale": 3
     },
@@ -516,6 +565,36 @@
     "src/views/UserManagementPage.tsx": {
       "hardcoded": 201,
       "locale": 3
+    },
+    "src/views/employees/EmployeeAccessOnboardingSection.tsx": {
+      "hardcoded": 5
+    },
+    "src/views/employees/EmployeeActivitySection.tsx": {
+      "hardcoded": 7
+    },
+    "src/views/employees/EmployeeComplianceDocumentsSection.tsx": {
+      "hardcoded": 10,
+      "rawStatus": 1
+    },
+    "src/views/employees/EmployeeEmploymentSection.tsx": {
+      "hardcoded": 21,
+      "rawStatus": 1
+    },
+    "src/views/employees/EmployeeOverview.tsx": {
+      "hardcoded": 13
+    },
+    "src/views/employees/EmployeePayBenefitsSection.tsx": {
+      "hardcoded": 15
+    },
+    "src/views/employees/EmployeePersonalSection.tsx": {
+      "hardcoded": 12
+    },
+    "src/views/employees/EmployeeWorkspacePage.tsx": {
+      "hardcoded": 7
+    },
+    "src/views/employees/EmployeeWorkspaceShell.tsx": {
+      "hardcoded": 4,
+      "rawStatus": 1
     }
   }
 }

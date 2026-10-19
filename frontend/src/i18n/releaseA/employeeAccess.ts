@@ -15,7 +15,7 @@ const en: Record<string, string> = {
   'Work Email Pattern (optional)': 'Work Email Pattern (optional)',
   'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.': 'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.',
   'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.': 'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.',
-  'Example for John Smith:': 'Example for John Smith:',
+  'Example employee email': 'Example employee email',
   'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.': 'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.',
   'Enter the complete work email address issued by IT, for example name@company.com.': 'Enter the complete work email address issued by IT, for example name@company.com.',
   // States (pill + filter chips)
@@ -144,7 +144,7 @@ const ar: Record<string, string> = {
   'Work Email Pattern (optional)': 'نمط البريد الإلكتروني الوظيفي (اختياري)',
   'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.': 'تفضيل اختياري لاقتراحات البريد الإلكتروني. لا يقيّد عناوين الموظفين الصادرة من تقنية المعلومات. ويمكنه أيضًا المساعدة في تحديد مساحة العمل عند تسجيل الدخول.',
   'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.': 'اختر شكل الاسم في الاقتراح الاختياري. هذا لا ينشئ صندوق بريد ولا يعيّن بريدًا للموظف.',
-  'Example for John Smith:': 'مثال لاسم John Smith:',
+  'Example employee email': 'مثال على البريد الإلكتروني الوظيفي',
   'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.': 'أضف نطاقًا لمعاينة عنوان مقترح كامل. يمكن إدخال عناوين البريد الوظيفي الكاملة يدويًا.',
   'Enter the complete work email address issued by IT, for example name@company.com.': 'أدخل عنوان البريد الإلكتروني الوظيفي الكامل الصادر من تقنية المعلومات، مثل name@company.com.',
   'Waiting for work email': 'بانتظار البريد الوظيفي',

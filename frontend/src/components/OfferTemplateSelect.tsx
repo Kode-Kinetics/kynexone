@@ -26,6 +26,6 @@ export function OfferTemplateSelect({ value, onChange }: { value: string; onChan
       {templates.map(template => <option key={template.id} value={template.id}>{template.name} · v{template.version}</option>)}
     </select>
     <p className="text-xs text-slate-500">{t("Create branded designs in Offers → Letter designer. The selected design is copied into this offer.")}</p>
-    {error && <p role="alert" className="text-xs text-rose-600">{t("Templates could not load:")}{' '}{t(error)}{' '}{t("Standard letter remains available.")}</p>}
+    {error && <p role="alert" className="text-xs text-rose-600">{t("Templates could not load")}{' '}{t(error)}{' '}{t("Standard letter remains available.")}</p>}
   </div>;
 }

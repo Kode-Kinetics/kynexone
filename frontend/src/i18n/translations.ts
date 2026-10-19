@@ -36,6 +36,9 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   ...employeeWorkspace.en,
+  "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
+  "Cost center": "Cost center",
+  "Line manager": "Line manager",
   ...setupStudio.en,
   ...policyBinder.en,
   ...policyForms.en,
@@ -1422,6 +1425,9 @@ const en: Dict = {
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
   ...employeeWorkspace.ar,
+  "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
+  "Cost center": "مركز التكلفة",
+  "Line manager": "المدير المباشر",
   ...setupStudio.ar,
   ...policyBinder.ar,
   ...policyForms.ar,
