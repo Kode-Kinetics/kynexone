@@ -20,8 +20,11 @@ test.beforeEach(async ({ page }) => {
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error' && !message.text().includes('Failed to load resource')) errors.push(message.text()); });
 });
+// The sign-in page's shader reports a handled fallback to its 2D painter when the
+// headless GPU hands back no shader log. It is not a Setup runtime error.
+const handledFallbacks = [/^\[LoginAuroraScene\] falling back to the 2D painter:/];
 test.afterEach(async ({ page }) => {
-  expect(browserErrors.get(page), 'No application runtime errors').toEqual([]);
+  expect(browserErrors.get(page)?.filter(error => !handledFallbacks.some(pattern => pattern.test(error))), 'No application runtime errors').toEqual([]);
 });
 
 // API interception is deliberate: these are browser navigation contracts, never tenant writes.
@@ -74,13 +77,48 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     });
     await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Administration', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
     await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Setup', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
-    await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
+    // A bare /setup entry opens Guided Setup by default (see ai_setup_defaults_to_guided);
+    // the fixture then replaces that entry with the Configuration Center destination.
+    await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible({ timeout: 30_000 });
     await page.evaluate(url => history.replaceState({ fixtureMarker: 'preserved' }, '', url), setupUrl);
     await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toBeVisible();
   } else await page.goto(setupUrl);
   if (options.readOnly) await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible({ timeout: 30_000 });
   else await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   return { writes, reads };
+}
+
+// Unsaved Setup work is protected by the application's in-app leave guard
+// (NavigationGuardContext), not by native window.confirm. Native dialogs remain
+// only for destructive record actions, so any native prompt during a guarded
+// departure is itself a regression.
+function leaveGuard(page: Page) {
+  return page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+}
+
+function trackLeaveGuard(page: Page) {
+  const native: string[] = [];
+  page.on('dialog', async dialog => { native.push(dialog.message()); await dialog.dismiss(); });
+  let shown = 0;
+  const answer = async (choice: 'stay' | 'leave') => {
+    const dialog = leaveGuard(page);
+    await expect(dialog).toHaveCount(1);
+    shown++;
+    await dialog.getByRole('button', { name: choice === 'stay' ? 'Cancel' : 'Discard and leave', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  };
+  return {
+    /** Keep the unsaved work: the guard appears once and Cancel closes it. */
+    stay: () => answer('stay'),
+    /** Discard and continue: the guard appears once and the departure proceeds. */
+    leave: () => answer('leave'),
+    /** No guard is open, exactly `count` were answered, and no native prompt appeared. */
+    expectShown: async (count: number) => {
+      await expect(leaveGuard(page)).toHaveCount(0);
+      expect(shown).toBe(count);
+      expect(native, 'Unsaved-work departures never fall back to native prompts').toEqual([]);
+    },
+  };
 }
 
 test('company_actions_edit_is_visible_without_hover_and_opens_existing_record', async ({ page }, info) => {
@@ -243,7 +281,7 @@ test('forged_area_or_return_path_is_ignored', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
   await selectArea(page, 'Leave and absence');
   await page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave policies and holidays', exact: true }).click();
-  await expect(page).toHaveURL(/127\.0\.0\.1:5197\/leave\?/);
+  await expect(page).toHaveURL(/^https?:\/\/[^/]+\/leave\?/);
   expect(writes).toEqual([]);
 });
 
@@ -493,22 +531,21 @@ test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshe
     await page.getByTestId('company-switcher').getByRole('button').dispatchEvent('click');
     await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).dispatchEvent('click');
   };
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await switchCompany();
+  await guard.stay();
   await expect(page.getByPlaceholder('DXB-01', { exact: true })).toHaveValue('DRAFT-BRANCH');
   await expect(page.getByPlaceholder('Dubai Head Office', { exact: true })).toHaveValue('Keep this branch');
   await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('fixture-company');
-  expect(prompts).toBe(1);
+  await guard.expectShown(1);
   const retainedRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/companies');
   await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
   expect((await retainedRequest).headers()['x-company-id']).toBe('fixture-company');
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
   const refreshed = page.waitForRequest(request => new URL(request.url()).pathname === '/api/branches' && request.headers()['x-company-id'] === 'second-company');
   await switchCompany();
+  await guard.leave();
   await refreshed;
+  await guard.expectShown(2);
   await expect(page.getByRole('dialog', { name: 'Add Branch', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('second-company');
   expect(writes).toEqual([]);
@@ -517,15 +554,21 @@ test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshe
 test('unsaved_template_blocks_area_and_company_switch_when_declined', async ({ page }) => {
   await boot(page, { group: true, area: 'onboarding', setting: 'onboarding' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep this draft');
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   await selectArea(page, 'Payroll');
+  await guard.stay();
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep this draft');
+  // Cancelling the guard keeps the user where they were: in the still-open area navigator.
+  const navigator = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true });
+  await expect(navigator).toBeVisible();
+  await navigator.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(navigator).toHaveCount(0);
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await guard.stay();
   await expect(page).toHaveURL(/companyId=fixture-company/);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep this draft');
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
 });
 
 test('transitional_route_has_supported_return_to_selected_area', async ({ page }) => {
@@ -587,21 +630,21 @@ test('cancel_return_keeps_dirty_edits_on_back_forward_and_sidebar', async ({ pag
   await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep history draft');
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   const originalUrl = page.url();
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep history draft');
   await clickDashboard(page);
-  await expect.poll(() => prompts).toBe(2);
+  await guard.stay();
   await expect(page).toHaveURL(originalUrl);
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
+  // Chromium ignores a second traversal issued in the same task as the restoring traversal.
+  await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
+  await guard.leave();
   await expect(page).not.toHaveURL(originalUrl);
+  await guard.expectShown(3);
   await page.evaluate(() => history.forward());
   await expect(page).toHaveURL(originalUrl);
 });
@@ -623,12 +666,12 @@ for (const fallback of [false, true]) test(`${fallback ? 'fallback_' : ''}declin
   await page.evaluate(() => history.back());
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep forward draft');
   const originalUrl = page.url();
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.forward());
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep forward draft');
+  await guard.expectShown(1);
 });
 
 test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
@@ -639,17 +682,15 @@ test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep fallback draft');
   const originalUrl = page.url();
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep fallback draft');
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
   await clickDashboard(page);
+  await guard.leave();
   await expect(page).toHaveURL(/\/dashboard$/);
+  await guard.expectShown(2);
   await page.evaluate(() => history.pushState(history.state, '', '/dashboard?history-check=1'));
   await expect(page).toHaveURL(/history-check=1/);
   await page.evaluate(() => history.back());
@@ -661,13 +702,12 @@ test('administration_access_and_filters_do_not_create_unsaved_edits', async ({ p
   await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
   await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Branches', exact: true }).click();
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
-  await page.getByRole('button', { name: 'Audit Logs', exact: true }).click();
+  const guard = trackLeaveGuard(page);
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Audit Logs', exact: true }).click();
   await page.getByPlaceholder('e.g. MasterDataType').fill('filtered');
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Setup Studio', exact: true }).click();
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
-  expect(prompts).toBe(0);
+  await guard.expectShown(0);
 });
 
 for (const action of ['override', 'rejection'] as const) test(`statutory_${action}_retains_edits_and_resets_after_save`, async ({ page }) => {
@@ -679,12 +719,10 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   const openRules = () => page.getByTestId('setup-area-content').getByRole('button', { name: 'Statutory rules', exact: true }).click();
   await openRules();
   await page.getByRole('textbox', { name: 'Search statutory rules' }).fill('custom');
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.back());
   await expect(page).not.toHaveURL(/setting=/);
-  expect(prompts).toBe(0);
+  await guard.expectShown(0);
   await openRules();
   if (action === 'override') {
     await page.getByRole('button', { name: 'New override', exact: true }).click();
@@ -697,7 +735,7 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   }
   const before = page.url();
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await expect(page.getByRole('dialog').getByRole('textbox').last()).toHaveValue(action === 'override' ? 'Preserve approved source' : 'Preserve rejection reason');
   const endpoint = action === 'override' ? '**/api/statutory-rules' : '**/api/finance/rates/statutory/override/pending-1/reject';
@@ -705,15 +743,18 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   const save = page.getByRole('dialog').getByRole('button', { name: action === 'override' ? 'Send for approval' : 'Reject', exact: true });
   await save.click();
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Fixture write failed');
+  // Chromium ignores a second traversal issued in the same task as the restoring traversal.
+  await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(2);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await page.route(endpoint, route => route.request().method() === 'GET' ? route.fallback() : route.fulfill({ status: 204 }));
   await save.click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
   await expect(page).not.toHaveURL(/setting=/);
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
 });
 
 test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ page }) => {
@@ -721,12 +762,12 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
   await page.route('**/api/admin/system-settings**', route => route.fulfill({ status: 500, json: { message: 'Fixture settings unavailable' } }));
   await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
   await page.getByRole('button', { name: 'Email / SMTP', exact: true }).click();
+  await expect(page).toHaveURL(/[?&]tab=emailConfig(&|$)/);
   await page.getByPlaceholder('smtp.example.com', { exact: true }).fill('smtp.retained.example');
   const before = page.url();
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await expect(page.getByPlaceholder('smtp.example.com', { exact: true })).toHaveValue('smtp.retained.example');
   const failed = page.waitForResponse(response => response.request().method() !== 'GET' && response.url().includes('/api/admin/system-settings'));
@@ -734,14 +775,14 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
   await failed;
   await expect(page.getByRole('button', { name: 'Save Settings', exact: true })).toBeEnabled();
   await page.evaluate(() => history.back());
-  await expect.poll(() => prompts).toBe(2);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await page.route('**/api/admin/system-settings**', route => route.fulfill({ json: route.request().method() === 'GET' ? [] : {} }));
   await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
   await expect(page.getByText('Settings saved successfully.', { exact: true })).toBeVisible();
   await page.evaluate(() => history.back());
   await expect(page).not.toHaveURL(before);
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
 });
 
 test('fallback_multiple_pre_setup_entries_restore_exact_url_and_history', async ({ page }) => {
@@ -749,28 +790,27 @@ test('fallback_multiple_pre_setup_entries_restore_exact_url_and_history', async 
   await boot(page, { beforeSetup: true, area: 'onboarding', setting: 'onboarding' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep multi-entry draft');
   const before = page.url();
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.go(-2));
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep multi-entry draft');
   expect(await page.evaluate(() => history.state.fixtureMarker)).toBe('preserved');
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
+  // Chromium ignores a second traversal issued in the same task as the restoring traversal.
+  await page.waitForTimeout(100);
   await page.evaluate(() => history.go(-2));
+  await guard.leave();
   await expect(page).toHaveURL(/dashboard\?before=1$/);
   await page.evaluate(() => history.forward());
   await expect(page).toHaveURL(/dashboard\?before=2$/);
   await page.evaluate(() => history.forward());
   await expect(page).toHaveURL(before);
   await page.getByPlaceholder('Task title', { exact: true }).fill('Guard after remount');
-  page.on('dialog', decline);
   await page.evaluate(() => history.go(-3));
-  await expect.poll(() => prompts).toBe(2);
+  await guard.stay();
   await expect(page).toHaveURL(before);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Guard after remount');
+  await guard.expectShown(3);
 });
 
 // Owner-approved Guided Setup characterization. These tests intentionally use
@@ -1192,21 +1232,27 @@ test('document_navigation_does_not_publish_and_retains_only_current_company_file
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.getByRole('button', { name: 'Upload document', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'unsent-policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Arrange onboarding access.') });
+  const fileName = () => page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name);
+  // Leaving the starter with a selected, unuploaded file asks first (see the guided
+  // pending-file tests); cancelling keeps the user, the file and the draft in place.
+  const guard = trackLeaveGuard(page);
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
-  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('unsent-policy.txt');
+  await guard.stay();
+  await expect(page).toHaveURL(/mode=starter/);
+  expect(await fileName()).toBe('unsent-policy.txt');
   await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
-  await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
-  expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('unsent-policy.txt');
-  await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  await guard.stay();
+  await expect(page).toHaveURL(/mode=starter/);
+  expect(await fileName()).toBe('unsent-policy.txt');
   await page.getByTestId('company-switcher').getByRole('button').click();
-  page.once('dialog', dialog => dialog.accept());
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await guard.leave();
+  await expect(page).toHaveURL(/companyId=second-company/);
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.getByRole('button', { name: 'Upload document', exact: true }).click();
   expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(0);
+  await guard.expectShown(3);
   expect(writes).toEqual([]);
 });
 
@@ -1215,34 +1261,36 @@ test('pending_file_departure_decline_retains_file_and_accept_leaves', async ({ p
   await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'pending.txt', mimeType: 'text/plain', buffer: Buffer.from('Pending policy') });
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await clickDashboard(page);
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(/mode=starter/);
   expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('pending.txt');
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
   await clickDashboard(page);
+  await guard.leave();
   await expect(page).toHaveURL(/\/dashboard$/);
+  await guard.expectShown(2);
 });
 
 test('history_company_change_confirms_pending_files_once', async ({ page }) => {
   await boot(page, { group: true });
   await page.getByRole('button', { name: 'Starter configuration draft', exact: true }).click();
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
+  // Let each navigation land before the next one; an in-flight Setup URL that still
+  // names the previous company re-selects it when it commits.
+  await expect(page).toHaveURL(/tab=policyLibrary/);
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
+  await expect(page).toHaveURL(/companyId=second-company/);
   await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('Second company policy') });
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.accept(); });
+  const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.go(-2));
+  await guard.leave();
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Workspace Fixture LLC');
-  expect(prompts).toBe(1);
+  await guard.expectShown(1);
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.length)).toBe(0);
 });
@@ -1255,22 +1303,19 @@ test('starter_change_company_decline_keeps_url_and_file', async ({ page }) => {
   await page.locator('input[type=file]').setInputFiles({ name: 'retained.txt', mimeType: 'text/plain', buffer: Buffer.from('Retained policy') });
   const original = page.url();
   const originalHistory = await page.evaluate(() => history.state);
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
+  const guard = trackLeaveGuard(page);
   await page.getByRole('button', { name: 'Change company', exact: true }).click();
-  await expect.poll(() => prompts).toBe(1);
+  await guard.stay();
   await expect(page).toHaveURL(original);
   expect(await page.evaluate(() => history.state)).toEqual(originalHistory);
   expect(await page.locator('input[type=file]').evaluate(input => (input as HTMLInputElement).files?.[0]?.name)).toBe('retained.txt');
-  page.off('dialog', decline);
-  page.once('dialog', async dialog => { prompts++; await dialog.accept(); });
   await page.getByRole('button', { name: 'Change company', exact: true }).click();
+  await guard.leave();
   await expect(page).not.toHaveURL(/companyId=/);
   await expect(page).toHaveURL(/mode=starter/);
   await expect(page.locator('input[type=file]')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Choose a company to configure', exact: true })).toBeVisible();
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
   await page.getByRole('button', { name: /Workspace Fixture LLC/ }).click();
   await expect(page).toHaveURL(/companyId=fixture-company/);
   await expect(page).toHaveURL(/mode=starter/);
@@ -1286,11 +1331,10 @@ test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
   await page.getByPlaceholder('Dubai Head Office', { exact: true }).fill('Saved branch');
   await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   await selectArea(page, 'Payroll');
   await expect(page).toHaveURL(/area=payroll/);
-  expect(prompts).toBe(0);
+  await guard.expectShown(0);
 });
 
 for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) test(`shell_${destination}_protects_authored_values`, async ({ page }) => {
@@ -1299,34 +1343,38 @@ for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) 
   await boot(page, { area: 'onboarding', setting: 'onboarding' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Retain shell draft');
   const originalUrl = page.url();
-  let prompts = 0; let accept = false;
-  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
-  if (destination === 'palette') {
-    await page.keyboard.press('Control+k');
-    await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
-  } else if (destination !== 'sidebar_signout') await page.getByRole('button', { name: 'Open user menu' }).click();
+  const guard = trackLeaveGuard(page);
   const target = destination === 'palette'
     ? page.getByRole('button', { name: /Dashboard.*\/dashboard/ })
     : destination === 'sidebar_signout' ? page.getByRole('button', { name: 'Sign out', exact: true })
     : page.locator('header').getByRole('button', { name: destination === 'profile' ? 'My Profile' : 'Sign out', exact: true });
-  await target.click();
-  expect(prompts).toBe(1);
+  // The palette and user menu close once an entry is chosen; reopen them for each attempt.
+  const choose = async () => {
+    if (destination === 'palette') {
+      await page.keyboard.press('Control+k');
+      await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
+    } else if (destination !== 'sidebar_signout' && !await target.isVisible()) await page.getByRole('button', { name: 'Open user menu' }).click();
+    await target.click();
+  };
+  await choose();
+  await guard.stay();
   await expect(page).toHaveURL(originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Retain shell draft');
-  accept = true;
-  await target.click();
+  await choose();
+  await guard.leave();
   // This fixture has no ess.read: accepted profile navigation must preserve
   // the incumbent access-denied redirect, not briefly assert the pending URL.
   await expect(page).toHaveURL(destination === 'palette' || destination === 'profile' ? /\/dashboard$/ : /\/login$/);
-  if (destination === 'profile') await expect(page.getByText('Access Denied', { exact: true })).toBeVisible();
-  expect(prompts).toBe(2);
+  // Development Strict Mode replays PermissionGate's mount effect, so a dev server can show the toast twice.
+  if (destination === 'profile') await expect(page.getByText('Access Denied', { exact: true }).first()).toBeVisible();
+  await guard.expectShown(2);
   if (destination === 'palette') {
     // The same seam is inert after Setup unmounts.
     await page.getByRole('button', { name: 'Open command search' }).click();
     await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
     await page.getByRole('button', { name: /Dashboard.*\/dashboard/ }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
-    expect(prompts).toBe(2);
+    await guard.expectShown(2);
   }
 });
 
@@ -1337,22 +1385,20 @@ for (const direct of [true] as const) test(`${direct ? 'direct' : 'embedded'}_sa
   const field = page.getByPlaceholder(direct ? 'Account name' : 'Task title', { exact: true });
   await field.fill('Retain same destination draft');
   const originalUrl = page.url();
-  let prompts = 0; let accept = true;
-  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   const same = page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'GL & rates', exact: true });
   await same.click();
-  expect(prompts).toBe(0);
   await expect(page).toHaveURL(originalUrl);
   await expect(field).toHaveValue('Retain same destination draft');
-  accept = false;
-  const depart = () => direct ? page.getByRole('button', { name: 'Policy library', exact: true }).click() : selectArea(page, 'Payroll');
+  await guard.expectShown(0);
+  const depart = () => direct ? page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click() : selectArea(page, 'Payroll');
   await depart();
-  expect(prompts).toBe(1);
+  await guard.stay();
   await expect(field).toHaveValue('Retain same destination draft');
-  accept = true;
   await depart();
+  await guard.leave();
   await expect(page).toHaveURL(direct ? /tab=policyLibrary/ : /area=payroll/);
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
 });
 
 test('gl_internal_scope_and_subtabs_protect_authored_values', async ({ page }) => {
@@ -1362,24 +1408,23 @@ test('gl_internal_scope_and_subtabs_protect_authored_values', async ({ page }) =
   const name = page.getByPlaceholder('Account name', { exact: true });
   await page.getByPlaceholder('5006', { exact: true }).fill('5010');
   await name.fill('Group authored account');
-  let prompts = 0; let accept = false;
-  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   await scope.selectOption('');
   await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).click();
-  expect(prompts).toBe(0);
+  await guard.expectShown(0);
   await scope.selectOption('fixture-company');
-  expect(prompts).toBe(1);
+  await guard.stay();
   await expect(scope).toHaveValue('');
   await expect(name).toHaveValue('Group authored account');
   await page.getByRole('tab', { name: 'ERP API access', exact: true }).click();
-  expect(prompts).toBe(2);
+  await guard.stay();
   await expect(name).toHaveValue('Group authored account');
   await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).press('End');
-  expect(prompts).toBe(3);
+  await guard.stay();
   await expect(name).toHaveValue('Group authored account');
-  accept = true;
+  await guard.expectShown(3);
   await scope.selectOption('fixture-company');
-  expect(prompts).toBe(4);
+  await guard.leave();
   await expect(scope).toHaveValue('fixture-company');
   await expect(name).toHaveValue('');
   await page.getByPlaceholder('5006', { exact: true }).fill('5020');
@@ -1392,11 +1437,11 @@ test('gl_internal_scope_and_subtabs_protect_authored_values', async ({ page }) =
   await expect(name).toHaveValue('');
   await name.fill('Discard on tab change');
   await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).press('End');
-  expect(prompts).toBe(5);
+  await guard.leave();
   await expect(page.getByRole('tab', { name: 'ERP API access', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Accounts & Mapping', exact: true }).click();
   await expect(name).toHaveValue('');
-  expect(prompts).toBe(5);
+  await guard.expectShown(5);
 });
 
 test('gl_banner_navigation_guards_period_draft', async ({ page }) => {
@@ -1410,41 +1455,38 @@ test('gl_banner_navigation_guards_period_draft', async ({ page }) => {
   } });
   await page.getByRole('tab', { name: 'Accounting periods', exact: true }).click();
   await page.getByLabel('Note (optional)', { exact: true }).fill('Keep period explanation');
-  let prompts = 0; let accept = false;
-  page.on('dialog', async dialog => { prompts++; if (accept) await dialog.accept(); else await dialog.dismiss(); });
+  const guard = trackLeaveGuard(page);
   const banner = page.getByRole('button', { name: 'Control account 5000: Review balance', exact: true });
   await banner.click();
-  expect(prompts).toBe(1);
+  await guard.stay();
   await expect(page.getByLabel('Note (optional)', { exact: true })).toHaveValue('Keep period explanation');
-  accept = true;
   await banner.click();
-  expect(prompts).toBe(2);
+  await guard.leave();
   await expect(page.getByRole('tab', { name: 'Accounts & Mapping', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Accounting periods', exact: true }).click();
   await expect(page.getByLabel('Note (optional)', { exact: true })).toHaveValue('');
-  expect(prompts).toBe(2);
+  await guard.expectShown(2);
 });
 
 test('gl_authored_values_are_guarded_but_search_is_not', async ({ page }) => {
   await boot(page, { area: 'payroll', setting: 'glMapping', finance: true });
   await page.getByRole('searchbox', { name: 'Search accounts by code or name' }).fill('filter only');
   await page.getByRole('combobox', { name: 'Filter by account type' }).selectOption('Expense');
-  let prompts = 0;
-  const decline = async (dialog: import('@playwright/test').Dialog) => { prompts++; await dialog.dismiss(); };
-  page.on('dialog', decline);
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  const guard = trackLeaveGuard(page);
+  const library = page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true });
+  await library.click();
   await expect(page).toHaveURL(/tab=policyLibrary/);
-  expect(prompts).toBe(0);
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await guard.expectShown(0);
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Setup Studio', exact: true }).click();
   await page.getByPlaceholder('5006', { exact: true }).fill('5010');
   await page.getByPlaceholder('Account name', { exact: true }).fill('Retain authored GL account');
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
-  expect(prompts).toBe(1);
+  await library.click();
+  await guard.stay();
   await expect(page.getByPlaceholder('Account name', { exact: true })).toHaveValue('Retain authored GL account');
-  page.off('dialog', decline);
-  page.once('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await library.click();
+  await guard.leave();
   await expect(page).toHaveURL(/tab=policyLibrary/);
+  await guard.expectShown(2);
   // GL save callbacks are intentionally not part of this bounded integration:
   // the conservative guard may also prompt after a successful GL save.
 });
@@ -1463,11 +1505,10 @@ test('gl_group_statutory_country_browsing_is_not_authored_work', async ({ page }
   } });
   await page.getByRole('tab', { name: 'Statutory Rates', exact: true }).click();
   await page.getByLabel('Country', { exact: true }).selectOption('ARE');
-  let prompts = 0;
-  page.on('dialog', async dialog => { prompts++; await dialog.dismiss(); });
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  const guard = trackLeaveGuard(page);
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click();
   await expect(page).toHaveURL(/tab=policyLibrary/);
-  expect(prompts).toBe(0);
+  await guard.expectShown(0);
 });
 
 test('starter_return_stays_when_browser_draft_save_fails', async ({ page }) => {
@@ -1731,7 +1772,8 @@ test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll
     await expect(page.getByRole('heading', { level: 2, name: adjacent.destination, exact: true })).toBeFocused();
     await page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first().click();
 
-    await expect(page.getByRole('button', { name: adjacent.destination, exact: true })).toBeFocused();
+    // The persistent Setup sections nav also lists Branches; the restored row is the area blueprint's.
+    await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: adjacent.destination, exact: true })).toBeFocused();
     await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
   }
 });
@@ -2166,7 +2208,9 @@ test('area_selection_focuses_area_heading', async ({ page }) => {
 test('arabic_uses_employee_reference_lists_rename', async ({ page }) => {
   await boot(page, { arabic: true, area: 'organization' });
 
-  await expect(page.getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
+  // The persistent Setup sections nav also lists this setting; the area row is the destination under test.
+  await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'أقسام الإعداد' }).getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
   await expect(page.getByText('Employee Reference Lists', { exact: true })).toHaveCount(0);
 });
 
@@ -2210,7 +2254,7 @@ test('english_and_arabic_paths_have_no_serious_or_critical_axe_findings', async 
     await target.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=organization');
     await expect(target.getByTestId('setup-studio-workspace')).toBeVisible();
     await expect(target.locator('html')).toHaveAttribute('dir', direction);
-    await expect(target.getByRole('button', { name: referenceLists, exact: true })).toBeVisible();
+    await expect(target.getByTestId('setup-area-blueprint').getByRole('button', { name: referenceLists, exact: true })).toBeVisible();
     let result = await new AxeBuilder({ page: target }).include('[data-testid="setup-studio-workspace"]').analyze();
     expect(result.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
     if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await target.screenshot({ path: task5Evidence(`configuration-${locale}-desktop.png`), fullPage: true });
