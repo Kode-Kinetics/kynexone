@@ -26,6 +26,7 @@ using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Invoices;
 using Zayra.Api.Infrastructure.Subscriptions;
+using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -2298,6 +2299,14 @@ public class PlatformController : ControllerBase
                 message = "Selfie attendance is switched on one tenant at a time, with that tenant's DPIA sign-off and "
                           + "KSA data-residency confirmation. Use PUT /api/platform/tenants/{id}/features/selfie_attendance.",
             });
+        // An opt-in feature is a per-tenant rollout decision: never switched ON for every tenant at once. Switching
+        // it OFF everywhere stays possible (kill switch), and an explicit tenant list is a deliberate choice.
+        if (req.ApplyToAll && req.IsEnabled && OptInFeatures.IsOptIn(req.FeatureKey))
+            return UnprocessableEntity(new
+            {
+                code = "opt_in_bulk_enable_refused",
+                message = "Opt-in features are switched on per tenant. Choose the tenants, or use the tenant's Features tab.",
+            });
         if (req.FeatureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } bulkProblems)
             return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", bulkProblems), problems = bulkProblems });
 
@@ -4257,31 +4266,52 @@ public class PlatformController : ControllerBase
 
     [HttpGet("feature-flags")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin, PlatformRoles.Support)]
-    public IActionResult GetFeatureFlags()
+    public IActionResult GetFeatureFlags() => Ok(FeatureFlagCatalog);
+
+    public sealed record FeatureFlagDefinition(string Key, string Label, string Category)
     {
-        // Canonical list of feature flag keys and their display names.
-        // This is the single source of truth shared between backend and frontend.
-        var flags = new[]
-        {
-            new { key = "payroll",                   label = "Payroll",                   category = "Core" },
-            new { key = "recruitment",               label = "Recruitment",               category = "Core" },
-            new { key = "performance",               label = "Performance",               category = "Core" },
-            new { key = "compliance",                label = "Compliance",                category = "Core" },
-            new { key = "finance",                   label = "Finance & GL",              category = "Finance" },
-            new { key = "shifts",                    label = "Shifts & Rosters",          category = "Time" },
-            new { key = "overtime",                  label = "Overtime",                  category = "Time" },
-            new { key = "ai_assistant",              label = "AI Assistant",              category = "Intelligence" },
-            new { key = "resume_screening",          label = "AI Resume Screening",       category = "Intelligence" },
-            new { key = "payroll_ai_validation",     label = "AI Payroll Validation",     category = "Intelligence" },
-            new { key = "risk_scores",               label = "Employee Risk Scores",      category = "Intelligence" },
-            new { key = "wps_export",                label = "WPS Export",                category = "Compliance" },
-            new { key = "eosb_calc",                 label = "EOSB Calculation",          category = "Compliance" },
-            new { key = "qiwa_integration",          label = "Qiwa Integration",          category = "Compliance" },
-            new { key = "hijri_calendar",            label = "Hijri Calendar",            category = "Localisation" },
-            new { key = "mobile_app",                label = "Mobile App",                category = "Access" },
-        };
-        return Ok(flags);
+        /// <summary>What a tenant with no flag row gets: a module defaults ON, an opt-in feature OFF.</summary>
+        public bool DefaultEnabled => ModuleCatalog.TryGet(Key) is not null;
     }
+
+    /// <summary>
+    /// Canonical list of the switches the platform console shows on a tenant's Features tab — the single source
+    /// of truth shared between backend and frontend. Each entry is a ModuleCatalog module (absent row = ON) or an
+    /// opt-in feature (absent row = OFF); ModuleCatalog.NonModuleKeys are left out because no runtime path reads
+    /// them, so their switch did nothing (Hijri dates are the Localization tab's setting). Every OptInFeatures key must be here or in
+    /// <see cref="ApiOnlyOptInFeatures"/>: an opt-in that is in neither is OFF for every tenant with no way to
+    /// switch it on from the console (PlatformFeatureCatalogTests).
+    /// </summary>
+    public static readonly IReadOnlyList<FeatureFlagDefinition> FeatureFlagCatalog =
+    [
+        new("payroll",                   "Payroll",                   "Core"),
+        new("recruitment",               "Recruitment",               "Core"),
+        new("performance",               "Performance",               "Core"),
+        new("compliance",                "Compliance",                "Core"),
+        new("finance",                   "Finance & GL",              "Finance"),
+        new("shifts",                    "Shifts & Rosters",          "Time"),
+        new("overtime",                  "Overtime",                  "Time"),
+        new("ai_assistant",              "AI Assistant",              "Intelligence"),
+        new("qiwa_integration",          "Qiwa Integration",          "Compliance"),
+        new("mobile_app",                "Mobile App",                "Access"),
+        // Opt-in features: OFF for a tenant until switched on here (an absent row means off).
+        new(FeatureKeys.Learning,                      "Learning",                              "Rollout (opt-in)"),
+        new(FeatureKeys.Succession,                    "Succession & development",              "Rollout (opt-in)"),
+        new(FeatureKeys.SuccessionCandidateVisibility, "Succession: employees see their pools", "Rollout (opt-in)"),
+        new(FeatureKeys.Engagement,                    "Engagement surveys",                    "Rollout (opt-in)"),
+        new(FeatureKeys.Compensation,                  "Merit planning & pay equity",           "Rollout (opt-in)"),
+        new(FeatureKeys.ReleaseA,                      "Release A: entitlements & renewals",    "Rollout (opt-in)"),
+    ];
+
+    /// <summary>
+    /// Opt-in features deliberately left off the console, with why. Each needs more than an on/off switch, so it
+    /// is enabled through PUT /api/platform/tenants/{id}/features/{key} with its configuration.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> ApiOnlyOptInFeatures = new Dictionary<string, string>
+    {
+        [FeatureKeys.SelfieAttendance] = "Enabling needs the recorded DPIA sign-off and KSA data-residency confirmation in ConfigJson.",
+        [FeatureKeys.PunchGeofence] = "Enabling needs a geofence configuration (PunchGeofenceConfig) in ConfigJson.",
+    };
 
     // ── Platform Settings ─────────────────────────────────────────────────────
 

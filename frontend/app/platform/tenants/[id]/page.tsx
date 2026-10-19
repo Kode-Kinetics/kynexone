@@ -35,6 +35,13 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   qiwa_integration:     'Saudi Arabia Qiwa platform sync',
   hijri_calendar:       'Show Hijri dates alongside Gregorian',
   mobile_app:           'Enable mobile API endpoints',
+  // Opt-in rollout features: OFF for this tenant until switched on here.
+  learning:             'Courses, assignments, assessments and certificates (HR and Self-Service)',
+  succession:           'Critical positions, talent pools, 9-box review, slates and development plans. Requires Performance.',
+  succession_candidate_visibility: 'Lets employees see the talent pools and nominations they belong to. Requires Succession.',
+  engagement:           'Engagement surveys with privacy-preserving results and actions. Requires Performance.',
+  compensation:         'Merit cycles, manager worksheets, pay benchmarks and pay equity. Requires Payroll.',
+  release_a:            'Grade entitlements, employee package, deductions and contract renewals',
 };
 
 const PLAN_BADGE: Record<string, string> = {
@@ -389,7 +396,16 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
 
 // ── Features Tab ──────────────────────────────────────────────────────────────
 
-type FeatureFlagDef = { key: string; label: string; category: string };
+type FeatureFlagDef = { key: string; label: string; category: string; defaultEnabled?: boolean };
+
+function rolloutConfirmation(label: string, key: string, enabling: boolean): string {
+  const consequence = key === 'release_a'
+    ? (enabling
+      ? ' The older Benefits editors hand over to Benefits by grade, loans apply the Article 92 consent check, and contract renewal cases start being scheduled.'
+      : ' Grade entitlements, packages, deductions and renewal cases are hidden; existing records are kept.')
+    : (enabling ? ' Its menus and screens appear for this tenant\'s users who hold its permissions.' : ' Its menus and screens are hidden; existing records are kept.');
+  return `${enabling ? 'Switch on' : 'Switch off'} ${label} for this tenant?${consequence}`;
+}
 
 function FeaturesTab({ tenant, onRefresh, featureFlags }: {
   tenant: PlatformTenantDetail;
@@ -401,10 +417,13 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
   const flagMap = Object.fromEntries(tenant.featureFlags.map(f => [f.featureKey, f.isEnabled]));
 
   async function toggle(key: string, current: boolean) {
+    const flag = featureFlags.find(f => f.key === key);
+    // A rollout feature changes what this live tenant's people see (and Release A changes how pay records are
+    // written), so it is never flipped by a stray click.
+    if (flag?.defaultEnabled === false && !window.confirm(rolloutConfirmation(flag.label, key, !current))) return;
     setToggling(key);
     try {
       await platformApi.setFeature(tenant.id, key, !current);
-      const flag = featureFlags.find(f => f.key === key);
       setMsg({ text: `${flag?.label ?? key} ${!current ? 'enabled' : 'disabled'}.`, ok: true });
       onRefresh();
     } catch { setMsg({ text: `Failed to update ${key}.`, ok: false }); }
@@ -434,7 +453,8 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">{cat}</p>
           <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
             {featureFlags.filter(f => f.category === cat).map(f => {
-              const enabled = flagMap[f.key] ?? false;
+              // No row means the default: modules are on, opt-in rollout features are off.
+              const enabled = flagMap[f.key] ?? f.defaultEnabled ?? false;
               const description = FLAG_DESCRIPTIONS[f.key];
               return (
                 <div key={f.key} className="flex items-center gap-4 px-5 py-3.5">
@@ -774,6 +794,11 @@ export default function TenantDetailPage() {
   const [tenant, setTenant] = useState<PlatformTenantDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('overview');
+  // Honour ?tab= (the old /platform/tenants/[id]/features route redirects to ?tab=features).
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    if (TABS.some(t => t.id === requested)) setTab(requested as Tab);
+  }, []);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState('');
