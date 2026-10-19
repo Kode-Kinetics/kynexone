@@ -719,10 +719,7 @@ test.describe('path switch', () => {
 
   test('guided_return_to_configuration_preserves_saved_draft', async ({ page }) => {
     const { writes } = await openGuidedSetup(page);
-    await page.evaluate(() => localStorage.setItem(
-      'kynexone-setup-draft:v1:tenant:reviewer:fixture-company',
-      JSON.stringify({ profile: { industry: 'Saved return-path services' } }),
-    ));
+    await page.getByLabel(/^Industry/).fill('Saved return-path services');
     await page.getByRole('button', { name: 'Return to workspace', exact: true }).click();
     await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
     await expect(page).toHaveURL(/path=configuration/);
@@ -919,6 +916,29 @@ test('guided_setup_apply_remains_explicit', async ({ page }) => {
   await page.getByRole('button', { name: 'Apply 1 item(s) to Workspace Fixture LLC', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Setup Applied', exact: true })).toBeVisible();
   expect(writes).toEqual(['/api/setup-assistant/preview', '/api/setup-assistant/apply']);
+});
+
+test('guided_saved_preview_requires_explicit_recovery_after_reload', async ({ page }) => {
+  const { writes } = await openGuidedSetup(page, { intercept: async route => {
+    if (new URL(route.request().url()).pathname === '/api/setup-assistant/preview' && route.request().method() === 'POST') {
+      await route.fulfill({ json: guidedPreview });
+      return true;
+    }
+    return false;
+  } });
+  await page.getByLabel(/^Industry/).fill('Preview recovery services');
+  for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Apply 1 item(s) to Workspace Fixture LLC', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Save for later', exact: true }).click();
+
+  await page.reload();
+
+  await expect(page.getByRole('button', { name: 'Review saved preview', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Apply .*item/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Review saved preview', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Apply 1 item(s) to Workspace Fixture LLC', exact: true })).toBeVisible();
+  expect(writes).toEqual(['/api/setup-assistant/preview']);
 });
 
 test('guided_policy_library_cancel_preserves_values_and_focus', async ({ page }) => {
@@ -1438,6 +1458,25 @@ test('whole_destination_row_is_action', async ({ page }) => {
 
   await expect(page).toHaveURL(/area=organization&setting=companies/);
   await expect(page.getByRole('heading', { level: 2, name: 'Companies', exact: true })).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test('single_company_companies_destination_uses_company_register_scope', async ({ page }) => {
+  const { writes } = await boot(page, { area: 'organization', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
+    await route.fulfill({ json: {
+      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: ['Admin'],
+      permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'learning.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'performance.read'],
+      accountType: 'SingleCompany', isGroupScope: true,
+      companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+    } });
+    return true;
+  } });
+  const destination = page.getByRole('button', { name: 'Companies', exact: true });
+
+  await expect(destination).toContainText('Company register');
+  await expect(destination).not.toContainText('Group company register');
+  await expect(destination).not.toContainText('Applies to Workspace Fixture LLC');
   expect(writes).toEqual([]);
 });
 

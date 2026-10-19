@@ -23,7 +23,22 @@ const profile: CompanyProfile = {
   currencyCode: 'SAR',
   industry: 'Services',
   companySize: '51-200',
-  sections: { entity: true },
+  strictEntityScope: true,
+  requireCostCenterForPayroll: true,
+  requireGradeForApprovalPolicy: true,
+  sections: {
+    org: true,
+    leave: true,
+    shifts: true,
+    payroll: true,
+    entity: true,
+    governance: true,
+    leavePolicies: true,
+    holidays: true,
+    attendance: true,
+    localization: true,
+    benefits: true,
+  },
   configuration: { attendanceMethods: ['Manual'], overtimeModes: ['PaidOvertime'] },
 };
 

@@ -43,9 +43,11 @@ The first TypeScript invocation ran concurrently with `next build` and saw `.nex
 
 ## Index-only proof
 
-A final fresh `git checkout-index` export passed 32/32 setup and draft-lifecycle units. Its combined desktop/mobile acceptance run passed 22/22: all 16 Task 5 cases, both Guided path-switch cases, and the Companies group-register scope contract. The approved Guided toolbar and browser-scoped draft lifecycle are now committed without changing the five-step layout. The Companies destination now carries explicit `group` target metadata and says `Group company register`, rather than implying that the register belongs to the currently selected company.
+A final fresh `git checkout-index` export passed 32/32 setup and draft-lifecycle units. Its combined desktop/mobile acceptance run passed 36/36: all 16 Task 5 cases; Guided toolbar Return, storage-failure, explicit preview-recovery, path-switch and pending-file protection; and both Group and SingleCompany Companies-register copy. The approved Guided toolbar and browser-scoped draft lifecycle are now committed without changing the five-step layout. The Companies destination retains explicit `group` target metadata while its copy truthfully says `Group company register` for Group accounts and `Company register` for SingleCompany accounts.
 
-The clean-export TypeScript check reaches only the unrelated existing `unit/employeeAccess.spec.ts` import of missing `workEmailDomainProblem`; no Setup Studio type error remains.
+These later commits are package reconciliation, not Task 5 runtime changes: `8e17f270` separately captures the owner-approved Guided baseline and its draft lifecycle, while `c22b79bc` corrects the Task 3 destination metadata/scope copy. The final follow-up further distinguishes the Companies register copy by account type and adds committed preview-recovery coverage. They are included in the clean-package proof so the accepted package is reconstructable, but they do not expand Task 5's Configuration-only implementation scope.
+
+The complete draft-retention unit fixture now supplies every required `SetupSections` and policy field. The clean-export TypeScript check reaches only the unrelated existing `unit/employeeAccess.spec.ts` import of missing `workEmailDomainProblem`; no Setup Studio or draft-lifecycle type error remains.
 
 ## Responsive, RTL, keyboard, and accessibility evidence
 

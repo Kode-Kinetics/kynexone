@@ -48,6 +48,7 @@ const ar: Record<string, string> = {
   "Scope varies by record": "يختلف النطاق حسب السجل",
   "Applies to all companies": "ينطبق على جميع الشركات",
   "Group company register": "سجل شركات المجموعة",
+  "Company register": "سجل الشركة",
   "Applies to {company}": "ينطبق على {company}",
   "Requires a selected company": "يتطلب تحديد شركة",
   "Scope depends on the selected record": "يعتمد النطاق على السجل المحدد",
