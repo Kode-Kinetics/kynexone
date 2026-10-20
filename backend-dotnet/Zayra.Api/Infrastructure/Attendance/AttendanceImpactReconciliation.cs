@@ -62,18 +62,39 @@ public static class AttendanceImpactReconciliation
 
     /// <summary>The stale days among <paramref name="employeeIds"/> in [<paramref name="from"/>, <paramref name="to"/>].</summary>
     /// <param name="runId">The run being processed: its own (Draft) slips never make a day paid.</param>
+    /// <param name="employeesPerChunk">How many employees are judged per round of queries: a large run is read a
+    /// chunk at a time, so no single query or in-memory set grows with the whole population.</param>
     public static async Task<IReadOnlyList<StaleAttendanceDay>> FindStaleDaysAsync(ZayraDbContext db, Guid tenantId,
-        IReadOnlyCollection<int> employeeIds, DateOnly from, DateOnly to, Guid? runId, CancellationToken ct)
+        IReadOnlyCollection<int> employeeIds, DateOnly from, DateOnly to, Guid? runId, CancellationToken ct, int employeesPerChunk = 200)
     {
         if (employeeIds.Count == 0 || to < from) return [];
-        var ids = employeeIds.Distinct().ToList();
+        var stale = new List<StaleAttendanceDay>();
+        foreach (var chunk in employeeIds.Distinct().Order().Chunk(Math.Max(1, employeesPerChunk)))
+            stale.AddRange(await FindStaleChunkAsync(db, tenantId, chunk, from, to, runId, ct));
+        return stale;
+    }
 
+    private static async Task<List<StaleAttendanceDay>> FindStaleChunkAsync(ZayraDbContext db, Guid tenantId,
+        IReadOnlyCollection<int> ids, DateOnly from, DateOnly to, Guid? runId, CancellationToken ct)
+    {
+        // Only the columns the judgement reads.
         var records = await db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.WorkDate >= from && x.WorkDate <= to)
+            .Select(x => new AttendanceDailyRecord
+            {
+                TenantId = x.TenantId, EmployeeId = x.EmployeeId, WorkDate = x.WorkDate, FirstInUtc = x.FirstInUtc,
+                LastOutUtc = x.LastOutUtc, MissingPunch = x.MissingPunch, Status = x.Status, LateMinutes = x.LateMinutes,
+                EarlyExitMinutes = x.EarlyExitMinutes, OvertimeMinutes = x.OvertimeMinutes,
+            })
             .ToListAsync(ct);
         var recordByDay = records.GroupBy(x => (x.EmployeeId, x.WorkDate)).ToDictionary(g => g.Key, g => g.First());
         var impacts = await db.AttendancePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.WorkDate >= from && x.WorkDate <= to)
+            .Select(x => new AttendancePayrollImpact
+            {
+                TenantId = x.TenantId, EmployeeId = x.EmployeeId, WorkDate = x.WorkDate, ImpactType = x.ImpactType,
+                Minutes = x.Minutes, Status = x.Status,
+            })
             .ToListAsync(ct);
         var impactsByDay = impacts.ToLookup(x => (x.EmployeeId, x.WorkDate));
 

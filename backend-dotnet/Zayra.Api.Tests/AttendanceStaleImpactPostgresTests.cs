@@ -100,6 +100,49 @@ public sealed class AttendanceStaleImpactPostgresTests
     }
 
     [Fact]
+    public async Task ThePopulationIsJudgedAChunkAtATime_WithTheSameAnswer()
+    {
+        var k = await CreateAsync(_fx.CreateDb);
+        var outAt = Utc(Day, 17, 0);
+        await k.PunchAsync(outAt, "Out");
+        await k.SeedDayAsync(Day, outAt, outAt, "Absent", missingPunch: false, pendingImpacts: (AttendanceImpactTypes.AbsenceDeduction, 480));
+        int second;
+        await using (var db = k.NewContext())
+        {
+            var other = new Zayra.Api.Models.Employee
+            {
+                TenantId = k.TenantId, CompanyId = k.Company.Id, EmployeeCode = $"ATT-{Guid.NewGuid():N}"[..16], FullName = "Second",
+                Status = "Active", JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            };
+            db.Employees.Add(other);
+            await db.SaveChangesAsync();
+            second = other.Id;
+            db.AttendanceDailyRecords.Add(new Zayra.Api.Models.AttendanceDailyRecord
+            {
+                TenantId = k.TenantId, EmployeeId = second, WorkDate = Day, FirstInUtc = Utc(Day, 9, 40), MissingPunch = true,
+                LateMinutes = 30, Status = "Present",
+            });
+            db.AttendancePayrollImpacts.Add(new Zayra.Api.Models.AttendancePayrollImpact
+            {
+                TenantId = k.TenantId, EmployeeId = second, WorkDate = Day, ImpactType = AttendanceImpactTypes.LateDeduction, Minutes = 30,
+            });
+            db.AttendanceRawEvents.Add(new Zayra.Api.Models.AttendanceRawEvent
+            {
+                TenantId = k.TenantId, EmployeeId = second, PunchDirection = "In", PunchTimestampUtc = Utc(Day, 9, 40), IsProcessed = true,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using var check = k.NewContext();
+        var whole = await AttendanceImpactReconciliation.FindStaleDaysAsync(check, k.TenantId, [k.Employee.Id, second],
+            new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31), k.Run.Id, default);
+        var chunked = await AttendanceImpactReconciliation.FindStaleDaysAsync(check, k.TenantId, [second, k.Employee.Id],
+            new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31), k.Run.Id, default, employeesPerChunk: 1);
+        whole.Select(d => d.EmployeeId).Should().BeEquivalentTo([k.Employee.Id, second]);
+        chunked.Should().BeEquivalentTo(whole);
+    }
+
+    [Fact]
     public async Task ACleanMonth_IsNotStale_AndProcesses()
     {
         var k = await CreateAsync(_fx.CreateDb);
