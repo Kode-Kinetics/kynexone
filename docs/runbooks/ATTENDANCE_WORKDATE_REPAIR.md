@@ -132,20 +132,31 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
 1. **Deploy the fix first.** If you reprocess before it is live, the old code rebuilds the same split.
 2. **The payroll lock does not protect you.** `attendance_lock_periods` is never written by the application, so
    `IsLocked` is always false, and `attendance_daily_records.is_payroll_locked` is never set either. Reprocessing
-   would therefore happily rewrite a paid period. Worse, `AttendanceDerivedArtifacts.UpsertImpacts`
-   (`AttendanceDerivedArtifacts.cs:92-93`) **deletes every impact for the employee-day, including `Processed`
-   ones**, and recreates them as `PendingPayroll`. A paid deduction would be removed from its history and could be
-   taken again by the next run, while the `payroll_run_consumptions` row would point at an impact that no longer
-   exists.
+   will therefore recompute a paid period's days.
+   - **Before this fix**, `AttendanceDerivedArtifacts.UpsertImpacts` **deleted every impact for the employee-day,
+     including `Processed` ones**, and recreated them as `PendingPayroll`. A paid deduction was removed from its
+     history and could be taken again by an off-cycle run, and the `payroll_run_consumptions` row pointed at an
+     impact that no longer existed.
+   - **With the fix**, `UpsertImpactsAsync` leaves `Processed` impacts exactly as paid. It raises no new deduction
+     on a paid day, and records any difference as a High `PaidAttendanceChanged` attendance exception.
+   - **Never run this repair before the fix is deployed.**
 3. **Paid periods** (impact status `Processed`, or the work date falls in a payroll run that is approved or paid):
    **do not reprocess.** Correct each employee's pay with a payroll adjustment in the next open run, refunding the
    wrongly deducted minutes. Record the impact ids and `payroll_run_id` from section A as the evidence.
+   - **If a paid day was reprocessed anyway**, open the unresolved `PaidAttendanceChanged` exceptions for those
+     days. Each lists every impact type with what was paid and what the day now says. Make each listed difference a
+     payroll adjustment, then resolve the exception.
+   - **If the run is later voided or reopened**, the restore hands the paid impacts back as `PendingPayroll` with the
+     amounts that were **paid**, not the recomputed ones. Reprocess those days before the replacement run.
 4. **Unpaid periods** (every affected impact is still `PendingPayroll` and no payroll run covers the dates yet):
    repair with a **range run over D..D+1 for the one employee**. Use `POST /api/attendance/process` (or
    `process/async`) with body `{ "fromDate": "<D>", "toDate": "<D+1>", "employeeId": <id> }`.
    - **Do not use a regularization for this.** Approving a regularization recomputes D only, so D+1 keeps its
      Out-only record and its early-exit impact.
    - Under the fix, D's window takes the early-morning clock-out and D+1 no longer counts it.
+   - **Processing covers Active employees only**, whether through `ProcessAsync` or the processing job. For an
+     employee who has since been offboarded (Inactive, Suspended or otherwise not Active), the range run does
+     nothing. Correct their final pay with a payroll adjustment instead.
 5. **Check for absences the repair itself created. Do this after every repair.** Rest days come from the tenant's
    calendar work week, not from the roster. If D+1 was a night worker's rostered day off but the work week treats it
    as a working day, the reprocess leaves D+1 with no punch and **raises a new 480-minute `Absence deduction`**.
@@ -177,6 +188,22 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
    recalculated after the repair and the step 5 check.
 7. **Afterwards**, re-run sections A and B, plus the step 5 check, and keep the before/after counts with the change
    record.
+
+## Known behaviours
+
+These are intended results of the one-boundary model. They are not defects, but HR should recognise them.
+
+- **Touching shifts.** Take a 22:00–06:00 night followed by a 06:00–14:00 day. The boundary between the two days is
+  06:01, one minute after the night ends. A clock-in for the day shift before 06:01 (for example at 05:50) goes to
+  the night's day. The day shift's own record then lacks its first-in, so it is raised as a missing punch, and HR
+  corrects it.
+- **An unrostered early day after a night shift.** Take a 22:00–06:00 night with nothing rostered the next day. The
+  night keeps its full 2-hour tolerance, so the boundary is 08:00. If the employee does work an unrostered early day:
+  - a clock-in at 07:30 counts on the night's day (as a second In; the night's first-in is unchanged);
+  - that day's later clock-out lands on the next day as an Out-only day, with a High missing-punch exception for
+    review.
+
+  Roster the early day, and the boundary moves to 2 hours before its start.
 
 ## Known limitations
 
