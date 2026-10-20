@@ -23,23 +23,30 @@ public sealed class TenantClock : ITenantClock
         _time = time;
     }
 
-    public async Task<DateOnly> TodayAsync(Guid tenantId, CancellationToken ct)
+    public async Task<DateOnly> TodayAsync(Guid tenantId, CancellationToken ct) =>
+        TenantTimeZone.LocalDate(await ZoneAsync(_db, tenantId, ct), _time.GetUtcNow().UtcDateTime);
+
+    /// <summary>
+    /// The tenant's time zone by THE rule: what <see cref="TodayAsync"/> uses, and what attendance dates punches by
+    /// (<c>AttendanceWorkDate.TenantTimeZoneAsync</c> delegates here). One rule, so a Saudi tenant whose
+    /// <c>default_timezone</c> is blank is not on Riyadh time for "today" and on UTC for its punches.
+    /// </summary>
+    public static async Task<TimeZoneInfo> ZoneAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
-        var setting = await _db.TenantLocalizationSettings.AsNoTracking()
+        var setting = await db.TenantLocalizationSettings.AsNoTracking()
             .Where(l => l.TenantId == tenantId)
             .Select(l => new { l.DefaultTimezone, l.CountryCode })
             .FirstOrDefaultAsync(ct);
-        return LocalDate(setting?.CountryCode, setting?.DefaultTimezone, _time.GetUtcNow().UtcDateTime);
+        return Zone(setting?.CountryCode, setting?.DefaultTimezone);
     }
 
+    /// <summary>The pure rule: Saudi tenants on Riyadh time, everyone else on their stored zone (UTC when unset or unknown).</summary>
+    public static TimeZoneInfo Zone(string? countryCode, string? timeZoneId) =>
+        IsSaudi(countryCode) ? TenantTimeZone.FromId(RiyadhTimeZoneId) : TenantTimeZone.FromId(timeZoneId);
+
     /// <summary>The pure rule, exposed for tests: Saudi tenants on Riyadh time, everyone else on their stored zone.</summary>
-    public static DateOnly LocalDate(string? countryCode, string? timeZoneId, DateTime utcNow)
-    {
-        var zone = IsSaudi(countryCode)
-            ? TenantTimeZone.FromId(RiyadhTimeZoneId)
-            : TenantTimeZone.FromId(timeZoneId);
-        return TenantTimeZone.LocalDate(zone, utcNow);
-    }
+    public static DateOnly LocalDate(string? countryCode, string? timeZoneId, DateTime utcNow) =>
+        TenantTimeZone.LocalDate(Zone(countryCode, timeZoneId), utcNow);
 
     private static bool IsSaudi(string? countryCode) =>
         countryCode is not null

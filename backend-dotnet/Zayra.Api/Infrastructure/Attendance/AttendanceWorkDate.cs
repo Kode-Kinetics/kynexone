@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Infrastructure.Attendance;
@@ -68,15 +69,14 @@ public static class AttendanceWorkDate
         "calling path (or resolved from the authenticated device's tenant on the anonymous webhook); no shift data is " +
         "returned, and the answer must not depend on the caller's company scope.";
 
-    /// <summary>The tenant's attendance time zone: its stored default, failing open to UTC (see <see cref="TenantTimeZone"/>).</summary>
-    public static async Task<TimeZoneInfo> TenantTimeZoneAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
-    {
-        var tzId = await db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId)
-            .Select(l => l.DefaultTimezone)
-            .FirstOrDefaultAsync(ct);
-        return TenantTimeZone.FromId(tzId);
-    }
+    /// <summary>
+    /// The tenant's attendance time zone: <see cref="TenantClock.ZoneAsync"/>, the rule the app's "today" uses. A Saudi
+    /// tenant is on Asia/Riyadh; anyone else on their stored default, failing open to UTC. Attendance used to read the
+    /// stored default alone, so a Saudi tenant with a blank <c>default_timezone</c> had Riyadh's "today" but UTC work
+    /// dates: a 01:00 Riyadh punch was dated the previous day.
+    /// </summary>
+    public static Task<TimeZoneInfo> TenantTimeZoneAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) =>
+        TenantClock.ZoneAsync(db, tenantId, ct);
 
     // ── the pure definition ───────────────────────────────────────────────────────────────────────────────────
 
