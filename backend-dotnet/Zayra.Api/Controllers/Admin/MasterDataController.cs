@@ -49,8 +49,8 @@ public class MasterDataController : ControllerBase
             IsActive = true, CreatedBy = uid,
         };
         _db.MasterDataTypes.Add(t);
+        AddAdminAuditLog(tid, uid, "MasterDataType", t.Id.ToString(), "Created", null, Json(new { t.Code, t.NameEn }));
         await _db.SaveChangesAsync(ct);
-        await WriteAdminAuditLog(tid, uid, "MasterDataType", t.Id.ToString(), "Created", null, System.Text.Json.JsonSerializer.Serialize(new { t.Code, t.NameEn }), ct);
         return Ok(t);
     }
 
@@ -67,13 +67,13 @@ public class MasterDataController : ControllerBase
         // built-in forms, so — like delete — it cannot be retired.
         if (req.IsActive == false && t.IsSystemDefined && t.IsActive)
             return BadRequest("System-defined types cannot be deactivated.");
-        var old = System.Text.Json.JsonSerializer.Serialize(new { t.NameEn, t.IsActive });
+        var old = Json(new { t.NameEn, t.IsActive });
         t.NameEn = req.NameEn; t.NameAr = req.NameAr ?? string.Empty;
         t.Description = req.Description ?? string.Empty; t.AllowCustomValues = req.AllowCustomValues;
         if (req.IsActive is bool typeActive) t.IsActive = typeActive;
         t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = uid;
+        AddAdminAuditLog(tid, uid, "MasterDataType", id.ToString(), "Updated", old, Json(new { t.NameEn, t.IsActive }));
         await _db.SaveChangesAsync(ct);
-        await WriteAdminAuditLog(tid, uid, "MasterDataType", id.ToString(), "Updated", old, System.Text.Json.JsonSerializer.Serialize(new { t.NameEn, t.IsActive }), ct);
         return Ok(t);
     }
 
@@ -86,7 +86,9 @@ public class MasterDataController : ControllerBase
         var t = await _db.MasterDataTypes.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (t == null) return NotFound();
         if (t.IsSystemDefined) return BadRequest("System-defined types cannot be deleted.");
-        t.IsDeleted = true; t.UpdatedAtUtc = DateTime.UtcNow;
+        var uid = GetUserId();
+        t.IsDeleted = true; t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = uid;
+        AddAdminAuditLog(tid, uid, "MasterDataType", id.ToString(), "Deleted", Json(new { t.Code, t.NameEn }), Json(new { t.IsDeleted }));
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -132,6 +134,8 @@ public class MasterDataController : ControllerBase
             SortOrder = req.SortOrder, IsDefault = req.IsDefault, IsActive = true, CreatedBy = uid,
         };
         _db.MasterDataValues.Add(v);
+        if (v.IsDefault) await ClearOtherDefaults(tid, typeId, v.Id, uid, ct);
+        AddAdminAuditLog(tid, uid, "MasterDataValue", v.Id.ToString(), "Created", null, ValueSnapshot(v));
         await _db.SaveChangesAsync(ct);
         return Ok(v);
     }
@@ -145,7 +149,7 @@ public class MasterDataController : ControllerBase
         var uid = GetUserId();
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
-        var old = System.Text.Json.JsonSerializer.Serialize(new { v.ValueEn, v.IsActive });
+        var old = ValueSnapshot(v);
         v.ValueEn = req.ValueEn; v.ValueAr = req.ValueAr ?? string.Empty;
         // Absent means "keep" for the two fields the edit form does not carry: an unrelated rename used to
         // reactivate a retired value (IsActive defaulted to true) and wipe its ExtraJson metadata.
@@ -154,8 +158,9 @@ public class MasterDataController : ControllerBase
         v.IsDefault = req.IsDefault;
         if (req.IsActive is bool valueActive) v.IsActive = valueActive;
         v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
+        if (v.IsDefault) await ClearOtherDefaults(tid, v.TypeId, v.Id, uid, ct);
+        AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Updated", old, ValueSnapshot(v));
         await _db.SaveChangesAsync(ct);
-        await WriteAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Updated", old, System.Text.Json.JsonSerializer.Serialize(new { v.ValueEn, v.IsActive }), ct);
         return Ok(v);
     }
 
@@ -168,21 +173,44 @@ public class MasterDataController : ControllerBase
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
         if (v.IsSystemDefined) return BadRequest("System-defined values cannot be deleted.");
-        v.IsDeleted = true; v.UpdatedAtUtc = DateTime.UtcNow;
+        var uid = GetUserId();
+        var old = ValueSnapshot(v);
+        v.IsDeleted = true; v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
+        AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Deleted", old, Json(new { v.IsDeleted }));
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
 
-    private async Task WriteAdminAuditLog(Guid tid, Guid? uid, string entity, string entityId, string action, string? oldVal, string newVal, CancellationToken ct)
+    /// <summary>
+    /// Employee forms prefill the first value flagged default, so a second flag would leave the old
+    /// default winning silently. Making a value the default therefore clears the flag on its siblings,
+    /// in the same save as the change itself.
+    /// </summary>
+    private async Task ClearOtherDefaults(Guid tid, Guid typeId, Guid keepId, Guid? uid, CancellationToken ct)
     {
+        var others = await _db.MasterDataValues
+            .Where(x => x.TenantId == tid && x.TypeId == typeId && x.Id != keepId && x.IsDefault && !x.IsDeleted)
+            .ToListAsync(ct);
+        foreach (var other in others)
+        {
+            other.IsDefault = false; other.UpdatedAtUtc = DateTime.UtcNow; other.UpdatedBy = uid;
+            AddAdminAuditLog(tid, uid, "MasterDataValue", other.Id.ToString(), "DefaultCleared", Json(new { IsDefault = true }), Json(new { IsDefault = false }));
+        }
+    }
+
+    private static string ValueSnapshot(MasterDataValue v) =>
+        Json(new { v.Code, v.ValueEn, v.ValueAr, v.SortOrder, v.IsDefault, v.IsActive });
+
+    private static string Json(object value) => System.Text.Json.JsonSerializer.Serialize(value);
+
+    /// <summary>Stages the audit row so it commits in the same SaveChanges as the change it records.</summary>
+    private void AddAdminAuditLog(Guid tid, Guid? uid, string entity, string entityId, string action, string? oldVal, string newVal) =>
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId = tid, EntityType = entity, EntityId = entityId, Action = action,
             OldValuesJson = oldVal ?? string.Empty, NewValuesJson = newVal,
             PerformedBy = uid, CreatedAtUtc = DateTime.UtcNow,
         });
-        await _db.SaveChangesAsync(ct);
-    }
 }
 
 /// <summary><c>IsActive</c> is ignored on create (new types start active); on update, null keeps the current status.</summary>
