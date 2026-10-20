@@ -45,12 +45,9 @@ public static class EmployeeSalaryBreakdownWriter
         var structureCode = Clean(request?.SalaryStructureCode);
         if (string.IsNullOrWhiteSpace(structureCode))
             structureCode = DefaultStructureCode(grade);
-        var structure = await FindStructureAsync(db, employee, structureCode, cancellationToken);
-        // Refuse rather than guess, BEFORE anything is staged: an explicitly named structure that does not exist is a
-        // typo or a structure from another company, not a request to invent one. Only the blank → DIRECT / GRADE-x
-        // default may be created here (that is the "no structure chosen" path, and it has always been safe).
-        if (structure is null && !IsDefaultStructureCode(structureCode, grade))
-            throw new UnknownSalaryStructureException(structureCode);
+        // Refuse rather than guess, BEFORE anything is staged (see ResolveStructureAsync). null = the default
+        // structure does not exist yet and is created below.
+        var structure = await ResolveStructureAsync(db, employee, grade, structureCode, cancellationToken);
 
         var replaced = await db.EmployeeSalaryStructures
             .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
@@ -133,30 +130,62 @@ public static class EmployeeSalaryBreakdownWriter
 
     /// <summary>
     /// The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import
-    /// uses, so company B's new hire is never attached to company A's structure lines. Inactive (superseded) versions
-    /// still match, so an employee already on one can keep it; the forms only OFFER active structures.
+    /// uses, so company B's new hire is never attached to company A's structure lines. An active row wins over an
+    /// inactive one with the same code.
     /// </summary>
     public static Task<SalaryStructure?> FindStructureAsync(ZayraDbContext db, Employee employee, string code, CancellationToken cancellationToken) =>
         db.SalaryStructures
             .Where(x => x.TenantId == employee.TenantId && x.Code == code && !x.IsDeleted
                 && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
-            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
+            .OrderByDescending(x => x.IsActive)
+            .ThenByDescending(x => x.CompanyId == employee.CompanyId)
             .FirstOrDefaultAsync(cancellationToken);
 
     /// <summary>
-    /// Refuses an explicitly named structure that does not exist for the employee's company (or group-wide). Blank, or
-    /// the employee's own default code, is always accepted: the writer creates that one.
+    /// The ONE rule for which structure a salary may be put on — create, draft activation, approved changes, merit and
+    /// the change-request pre-check all use it, so they refuse the same things with the same error:
+    /// <list type="bullet">
+    /// <item>a named code that matches no structure of the employee's company or group-wide → <see cref="UnknownSalaryStructureException"/>;</item>
+    /// <item>a named code whose structure is inactive (retired, or superseded when it was edited while in use) →
+    /// <see cref="InactiveSalaryStructureException"/>;</item>
+    /// <item>blank, or the employee's own default code (DIRECT / GRADE-x): the active default, following a superseded
+    /// default to its active successor version; null when no default exists yet (the writer creates it); refused as
+    /// inactive only when every version of it is inactive.</item>
+    /// </list>
     /// </summary>
-    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, string? requestedCode, CancellationToken cancellationToken)
+    public static async Task<SalaryStructure?> ResolveStructureAsync(ZayraDbContext db, Employee employee, Grade? grade, string? requestedCode, CancellationToken cancellationToken)
     {
         var code = Clean(requestedCode);
-        if (code.Length == 0 || employee.TenantId is null) return;
+        if (code.Length == 0) code = DefaultStructureCode(grade);
+        var isDefault = IsDefaultStructureCode(code, grade);
+        var structure = await FindStructureAsync(db, employee, code, cancellationToken);
+        if (structure is null)
+            return isDefault ? null : throw new UnknownSalaryStructureException(code);
+        if (structure.IsActive) return structure;
+        if (isDefault)
+        {
+            var seen = new HashSet<Guid> { structure.Id };
+            var current = structure;
+            while (await db.SalaryStructures
+                       .Where(x => x.TenantId == employee.TenantId && x.PreviousVersionId == current.Id && !x.IsDeleted)
+                       .OrderByDescending(x => x.VersionNumber)
+                       .FirstOrDefaultAsync(cancellationToken) is { } next && seen.Add(next.Id))
+            {
+                if (next.IsActive) return next;
+                current = next;
+            }
+        }
+        throw new InactiveSalaryStructureException(code);
+    }
+
+    /// <summary>Pre-save check for the create path: <see cref="ResolveStructureAsync"/> with the employee's resolved grade.</summary>
+    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, string? requestedCode, CancellationToken cancellationToken)
+    {
+        if (employee.TenantId is null) return;
         var grade = employee.GradeId is null
             ? null
             : await db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-        if (IsDefaultStructureCode(code, grade)) return;
-        if (await FindStructureAsync(db, employee, code, cancellationToken) is null)
-            throw new UnknownSalaryStructureException(code);
+        await ResolveStructureAsync(db, employee, grade, requestedCode, cancellationToken);
     }
 
     /// <summary>
@@ -216,10 +245,29 @@ public static class EmployeeSalaryBreakdownWriter
         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
 }
 
-/// <summary>An explicitly named salary structure that does not exist for the employee's company or group-wide → 422.</summary>
-public sealed class UnknownSalaryStructureException(string code)
-    : InvalidOperationException($"Salary structure '{code}' does not exist for this employee's company. Choose one of the company's salary structures, or leave it blank to use the default.")
+/// <summary>
+/// A salary structure the salary may not be put on. Every employee salary path answers 422 with
+/// <c>{ error, code, salaryStructureCode, message }</c>, where <c>error</c> is <see cref="ErrorCode"/>:
+/// <c>unknown_salary_structure</c> (no such structure for the employee's company or group-wide) or
+/// <c>inactive_salary_structure</c> (it exists but is retired or superseded). The client's fix is the same — choose
+/// another structure or leave it on the default — but the message says which.
+/// </summary>
+public abstract class SalaryStructureRefusedException(string code, string message) : InvalidOperationException(message)
 {
-    public const string ErrorCode = "unknown_salary_structure";
+    public abstract string ErrorCode { get; }
     public string StructureCode { get; } = code;
+}
+
+public sealed class UnknownSalaryStructureException(string code)
+    : SalaryStructureRefusedException(code, $"Salary structure '{code}' does not exist for this employee's company. Choose one of the company's salary structures, or leave it blank to use the default.")
+{
+    public const string Code = "unknown_salary_structure";
+    public override string ErrorCode => Code;
+}
+
+public sealed class InactiveSalaryStructureException(string code)
+    : SalaryStructureRefusedException(code, $"Salary structure '{code}' is no longer active. Choose one of the company's active salary structures, or leave it blank to use the default.")
+{
+    public const string Code = "inactive_salary_structure";
+    public override string ErrorCode => Code;
 }

@@ -1707,9 +1707,6 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken)
     {
-        // Pre-save, like the rest of this method: a named salary structure that does not exist is refused (422)
-        // before anything is staged. The writer re-checks as the backstop for its other callers.
-        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary?.SalaryStructureCode, cancellationToken);
         if (employee.PositionId is not null)
         {
             var position = await _db.Positions.AsNoTracking()
@@ -1751,6 +1748,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 throw new InvalidOperationException($"Designation '{designation.TitleEn}' is eligible only for its configured grade.");
             employee.GradeId ??= designation.GradeId;
         }
+
+        // Pre-save, like the rest of this method, and AFTER the grade is resolved (a designation can supply it), so
+        // the default structure is the grade's and not DIRECT: an unknown or inactive named salary structure is
+        // refused (422) before anything is staged. The writer re-checks as the backstop for its other callers.
+        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary?.SalaryStructureCode, cancellationToken);
 
         if (employee.GradeId is null) return;
 

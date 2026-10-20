@@ -105,6 +105,37 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
     }
 
     [Fact]
+    public async Task AnInactiveStructure_IsRefusedWithTheSameShapeOnCreateAndOnAChange()
+    {
+        var id = await CreateAsync();
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            if (!await db.SalaryStructures.AnyAsync(s => s.TenantId == _fx.TenantId && s.Code == "RETIRED-HTTP"))
+            {
+                db.SalaryStructures.Add(new Zayra.Api.Models.SalaryStructure { TenantId = _fx.TenantId, Code = "RETIRED-HTTP", Name = "Retired", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false });
+                await db.SaveChangesAsync();
+            }
+        }
+        using var create = await _fx.SendAsync(HttpMethod.Post, "/api/employees", new
+        {
+            englishName = $"Retired structure {Guid.NewGuid():N}", salaryBreakdown = Salary(structure: "RETIRED-HTTP"),
+            payrollProfile = new { salaryCurrency = "SAR", paymentMethod = "Cash" },
+        });
+        using var change = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new
+        {
+            effectiveDate = "2026-01-01", changes = new { salaryBreakdown = Salary(5000, structure: "RETIRED-HTTP") },
+        });
+        foreach (var response in new[] { create, change })
+        {
+            response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await response.Content.ReadAsStringAsync());
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("error").GetString().Should().Be("inactive_salary_structure");
+            body.GetProperty("salaryStructureCode").GetString().Should().Be("RETIRED-HTTP");
+        }
+    }
+
+    [Fact]
     public async Task SalaryAndPayrollRequireSensitivePermissionAndSalaryProjectionIsMasked()
     {
         var id = await CreateAsync();

@@ -168,6 +168,67 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
         (await db.SalaryStructures.CountAsync(x => x.TenantId == tenantId)).Should().Be(1, "company B's hire must not clone company A's structure");
     }
 
+    /// <summary>
+    /// The pre-save structure check used to run before the designation filled in the grade, so for a hire whose grade
+    /// comes from the designation the "default" was computed as DIRECT and the grade's own default code was refused.
+    /// </summary>
+    [Fact]
+    public async Task ADesignationSuppliedGrade_DecidesTheDefaultStructure()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = new Grade { TenantId = tenantId, Code = "G7", Name = "Grade 7", Level = 7, MinSalary = 1_000m, MidSalary = 10_000m, MaxSalary = 50_000m, Currency = "SAR", IsActive = true };
+        db.Grades.Add(grade);
+        await db.SaveChangesAsync();
+        var designation = new Designation { TenantId = tenantId, Code = "ANALYST", TitleEn = "Analyst", GradeId = grade.Id, IsActive = true };
+        db.Designations.Add(designation);
+        await db.SaveChangesAsync();
+
+        var created = await Service(db).CreateAsync(tenantId,
+            Request("Designation Grade", Breakdown(6_000m, 1_000m) with { SalaryStructureCode = "GRADE-G7" }) with { DesignationId = designation.Id },
+            Ctx(tenantId), default);
+
+        var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive);
+        (await db.SalaryStructures.AsNoTracking().SingleAsync(x => x.Id == assignment.SalaryStructureId)).Code.Should().Be("GRADE-G7");
+    }
+
+    [Fact]
+    public async Task AnInactiveNamedStructure_IsRefusedOnCreate_LikeOnAChangeRequest()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        db.SalaryStructures.Add(new SalaryStructure { TenantId = tenantId, Code = "RETIRED-BAND", Name = "Retired band", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false });
+        await db.SaveChangesAsync();
+        var name = $"Retired band hire {Guid.NewGuid():N}";
+
+        var act = () => Service(db).CreateAsync(tenantId, Request(name, Breakdown(5_000m, 1_000m) with { SalaryStructureCode = "RETIRED-BAND" }), Ctx(tenantId), default);
+
+        (await act.Should().ThrowAsync<InactiveSalaryStructureException>()).Which.ErrorCode.Should().Be("inactive_salary_structure");
+        await using var verify = _fx.CreateDb();
+        (await verify.Employees.CountAsync(x => x.TenantId == tenantId && x.EnglishName == name)).Should().Be(0);
+        (await verify.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tenantId)).Should().Be(0);
+    }
+
+    /// <summary>Editing a structure that employees are on supersedes it (old row inactive, new version "DIRECT-V2").
+    /// The blank default follows that chain to the active version instead of refusing every gradeless hire.</summary>
+    [Fact]
+    public async Task TheBlankDefault_FollowsASupersededDefaultToItsActiveVersion()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var old = new SalaryStructure { TenantId = tenantId, Code = "DIRECT", Name = "Direct", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false };
+        db.SalaryStructures.Add(old);
+        await db.SaveChangesAsync();
+        var current = new SalaryStructure { TenantId = tenantId, Code = "DIRECT-V2", Name = "Direct v2", Currency = "SAR", EffectiveDate = new DateOnly(2026, 1, 1), VersionNumber = 2, PreviousVersionId = old.Id, IsActive = true };
+        db.SalaryStructures.Add(current);
+        await db.SaveChangesAsync();
+
+        var created = await Service(db).CreateAsync(tenantId, Request("Superseded Default", Breakdown(5_000m, 1_000m)), Ctx(tenantId), default);
+
+        (await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive)).SalaryStructureId.Should().Be(current.Id);
+        (await db.SalaryStructures.CountAsync(x => x.TenantId == tenantId)).Should().Be(2, "no third DIRECT structure is invented");
+    }
+
     /// <summary>The writer is also reached from approvals, draft activation and merit: it refuses on its own,
     /// before deactivating the salary row it would have replaced.</summary>
     [Fact]
