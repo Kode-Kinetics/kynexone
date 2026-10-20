@@ -34,6 +34,8 @@ public sealed class PolicyDocumentGovernanceHttpTests
             var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
             await db.Database.EnsureCreatedAsync();
             db.Tenants.Add(new Tenant { Id = tenantId, Name = "Policy HTTP", Slug = $"policy-{tenantId:N}", IsActive = true });
+            // Policy intake is opt-in and off by default (owner decision 2026-10-20); this suite covers it switched on.
+            db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.PolicyIntake, IsEnabled = true });
             db.Companies.Add(new Company { Id = companyId, TenantId = tenantId, LegalNameEn = "Policy Company", CountryCode = "SA", IsActive = true });
             db.Companies.Add(new Company { Id = otherCompanyId, TenantId = tenantId, LegalNameEn = "Another Company", CountryCode = "SA", IsActive = true });
             var hr = User("hr"); var employee = User("employee"); var denied = User("denied");

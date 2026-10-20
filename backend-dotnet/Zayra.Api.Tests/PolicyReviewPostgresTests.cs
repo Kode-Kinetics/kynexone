@@ -62,7 +62,7 @@ public sealed class PolicyReviewPostgresTests(PostgresFixture fixture)
         {
             await using var db = fixture.CreateDb();
             var documents = new PolicyDocumentService(db, new NoLlm(), new("none", "", "", "", "", "", 4096, true, false),
-                new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+                new Recorder(), NullLogger<PolicyDocumentService>.Instance, PolicyContentNeverLeaves.Instance);
             var claims = new[] { new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
                 new Claim(ClaimTypes.Role, "HR Director"), new Claim("permission", "organization.write"),
                 new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyId } })) };

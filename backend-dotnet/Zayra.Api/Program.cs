@@ -447,6 +447,8 @@ builder.Services.AddScoped<IAiAdvisoryService, AiAdvisoryService>();
 builder.Services.AddScoped<Zayra.Api.Application.Shifts.IRosterPlannerService, Zayra.Api.Infrastructure.Shifts.RosterPlannerService>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupStatutoryDefaults, Zayra.Api.Infrastructure.Setup.SetupStatutoryDefaults>();
 builder.Services.AddScoped<Zayra.Api.Application.Setup.ISetupAssistantService, Zayra.Api.Infrastructure.Setup.SetupAssistantService>();
+// Owner decision (2026-10-20): company policy content never reaches a model, for any provider. The only gate.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.AI.IPolicyContentModelGate>(Zayra.Api.Infrastructure.AI.PolicyContentNeverLeaves.Instance);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Setup.PolicyExtractionService>();
 builder.Services.AddScoped<Zayra.Api.Application.Recruitment.IRecruitmentAiService, Zayra.Api.Infrastructure.Recruitment.RecruitmentAiService>();
 builder.Services.AddScoped<IPolicyDocumentService, PolicyDocumentService>();

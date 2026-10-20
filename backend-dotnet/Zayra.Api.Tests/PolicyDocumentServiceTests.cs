@@ -113,12 +113,12 @@ public class PolicyDocumentServiceTests
     }
 
     private static (PolicyDocumentService Service, CapturingAudit Audit) Service(
-        ZayraDbContext db, ILlmClient llm, AiOptions? options = null)
+        ZayraDbContext db, ILlmClient llm, AiOptions? options = null, IPolicyContentModelGate? gate = null)
     {
         var opts = options ?? Options();
         var audit = new CapturingAudit();
         var recorder = new AiCallRecorder(audit, new AiRedactionService(), opts, NullLogger<AiCallRecorder>.Instance);
-        return (new PolicyDocumentService(db, llm, opts, recorder, NullLogger<PolicyDocumentService>.Instance), audit);
+        return (new PolicyDocumentService(db, llm, opts, recorder, NullLogger<PolicyDocumentService>.Instance, gate ?? OpenPolicyContentGateForTests.Instance), audit);
     }
 
     private static Task<PolicyAskResponse> Ask(PolicyDocumentService service, string question = Question)
@@ -369,7 +369,7 @@ public class PolicyDocumentServiceTests
         using var db = await SeededDb();
         var opts = Options();
         var service = new PolicyDocumentService(db, AnsweringLlm(), opts, new ThrowingRecorder(),
-            NullLogger<PolicyDocumentService>.Instance);
+            NullLogger<PolicyDocumentService>.Instance, OpenPolicyContentGateForTests.Instance);
 
         var result = await Ask(service);
 

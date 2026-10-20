@@ -285,7 +285,7 @@ public sealed class PolicyExtractionTests
         }
     }
     private static Task<PolicyExtractionResult> ExtractRecovery(ILlmClient model, Recorder recorder, string source, CancellationToken ct = default)
-        => new PolicyExtractionService(model, Options(), recorder).ExtractAsync(new(Guid.NewGuid(), Guid.NewGuid(), "Admin"),
+        => new PolicyExtractionService(model, Options(), recorder, OpenPolicyContentGateForTests.Instance).ExtractAsync(new(Guid.NewGuid(), Guid.NewGuid(), "Admin"),
             Guid.NewGuid(), "hash", RecoveryHeading + source, SetupConfigurationTests.Profile(), ct);
 
     [Fact]
@@ -868,7 +868,7 @@ public sealed class PolicyExtractionTests
     {
         var recorder = new Recorder();
         var model = new Model(output);
-        var service = new PolicyExtractionService(model, Options(), recorder);
+        var service = new PolicyExtractionService(model, Options(), recorder, OpenPolicyContentGateForTests.Instance);
         var result = await service.ExtractAsync(new(Guid.NewGuid(), Guid.NewGuid(), "Admin"), Guid.NewGuid(), "hash", Source,
             SetupConfigurationTests.Profile(), CancellationToken.None);
         result.Proposals.Should().BeEmpty();
@@ -883,7 +883,7 @@ public sealed class PolicyExtractionTests
     public async Task DisabledOllama_DoesNotFallBackToAnotherVendorsKey()
     {
         var model = new Model("{}");
-        var result = await new PolicyExtractionService(model, Options(""), new Recorder()).ExtractAsync(
+        var result = await new PolicyExtractionService(model, Options(""), new Recorder(), OpenPolicyContentGateForTests.Instance).ExtractAsync(
             new(Guid.NewGuid(), Guid.NewGuid(), "Admin"), Guid.NewGuid(), "hash", Source, SetupConfigurationTests.Profile(), CancellationToken.None);
         model.Calls.Should().BeEmpty();
         result.Provider.Should().Be("fallback");
@@ -893,7 +893,7 @@ public sealed class PolicyExtractionTests
     public async Task LargeHandbook_IsProcessedInBoundedResumableSections()
     {
         var model = new Model("{}");
-        var service = new PolicyExtractionService(model, Options(), new Recorder());
+        var service = new PolicyExtractionService(model, Options(), new Recorder(), OpenPolicyContentGateForTests.Instance);
         var source = new string('a', 250_000);
         var coveredThrough = 0;
         var index = 0;
@@ -922,7 +922,7 @@ public sealed class PolicyExtractionTests
             new { target = "configuration", field = "attendanceMethods", value = new[] { "WebCheckIn" }, sourceQuote = Source }
         } }));
         var source = new string('a', 6000) + Source;
-        var service = new PolicyExtractionService(model, Options(), new Recorder());
+        var service = new PolicyExtractionService(model, Options(), new Recorder(), OpenPolicyContentGateForTests.Instance);
         var result = await service.ExtractAsync(new(Guid.NewGuid(), Guid.NewGuid(), "Admin"), Guid.NewGuid(), "hash",
             source, SetupConfigurationTests.Profile(), CancellationToken.None, 1);
         result.Proposals.Should().ContainSingle().Which.SourceStart.Should().Be(6000);
@@ -981,7 +981,7 @@ public sealed class PolicyExtractionTests
         var model = new Model("{}");
         using var canceled = new CancellationTokenSource();
         canceled.Cancel();
-        var act = () => new PolicyExtractionService(model, Options(), new Recorder()).ExtractAsync(
+        var act = () => new PolicyExtractionService(model, Options(), new Recorder(), OpenPolicyContentGateForTests.Instance).ExtractAsync(
             new(Guid.NewGuid(), Guid.NewGuid(), "Admin"), Guid.NewGuid(), "hash", Source,
             SetupConfigurationTests.Profile(), canceled.Token);
         await act.Should().ThrowAsync<OperationCanceledException>();
@@ -992,7 +992,7 @@ public sealed class PolicyExtractionTests
     public async Task TransportFailure_LeavesSourceAndRecordsDegradation()
     {
         var recorder = new Recorder();
-        var result = await new PolicyExtractionService(new Model("", true), Options(), recorder).ExtractAsync(
+        var result = await new PolicyExtractionService(new Model("", true), Options(), recorder, OpenPolicyContentGateForTests.Instance).ExtractAsync(
             new(Guid.NewGuid(), Guid.NewGuid(), "Admin"), Guid.NewGuid(), "hash", Source, SetupConfigurationTests.Profile(), CancellationToken.None);
         result.Proposals.Should().BeEmpty();
         result.Progress!.NextChunkIndex.Should().Be(0);
