@@ -357,7 +357,8 @@ function BulkFeatureModal({ selectedCount, totalCount, onClose, onApply }: {
 
   useEffect(() => {
     platformApi.getFeatureFlags()
-      .then(fs => { setFeatures(fs); if (fs.length) setFeatureKey(fs[0].key); })
+      // Modules only: an opt-in rollout feature (defaultEnabled false) is switched on per tenant, never in bulk.
+      .then(all => { const fs = all.filter(f => f.defaultEnabled !== false); setFeatures(fs); if (fs.length) setFeatureKey(fs[0].key); })
       .catch(() => setFeatures([]));
   }, []);
 
