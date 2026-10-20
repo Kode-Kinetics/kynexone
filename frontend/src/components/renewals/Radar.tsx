@@ -5,8 +5,8 @@ import type { RenewalCaseItem, RenewalRadar, RenewalUnopened } from '../../api/r
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import {
-  actionKeys, badgeText, blockText, closedStateKeys, companyName, fill, formatDay, nextLine, personName, stageKeys, toggleAll, toggleSelection,
-  unopenedReasonKeys,
+  actionKeys, badgeText, blockText, closedStateKeys, companyName, fill, formatDay, nextLine, personName, selectionEnabled, stageKeys, toggleAll,
+  toggleSelection, unopenedReasonKeys,
   type RadarFilter,
 } from '../../lib/renewalRadar';
 import { StatusChip } from '../StatusChip';
@@ -40,6 +40,8 @@ export interface RadarProps {
   selected: ReadonlySet<string>;
   onSelected: (next: Set<string>) => void;
   canManage: boolean;
+  /** True only when the page offers batch actions for a selection; without them no row is selectable. */
+  hasBatchActions?: boolean;
   onOpenChain: (contractId: string) => void;
   onHold: (item: RenewalCaseItem) => void;
   onRelease: (item: RenewalCaseItem) => void;
@@ -49,6 +51,7 @@ export interface RadarProps {
 /** The renewal dashboard body: bucket tiles, exception tiles, the due-without-a-review list and the case list. */
 export function Radar(props: RadarProps) {
   const { radar, filter, onFilter, rows, selected, onSelected, canManage } = props;
+  const selectable = selectionEnabled(canManage, props.hasBatchActions ?? false);
   const { t, locale } = useLocale();
   const f = useFormat();
   const isActive = (kind: string, key: string) => filter.kind === kind && 'key' in filter && filter.key === key;
@@ -185,13 +188,13 @@ export function Radar(props: RadarProps) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
-                  <th className="w-10 p-3 text-start">
-                    {canManage && (
+                  {selectable && (
+                    <th className="w-10 p-3 text-start">
                       <input type="checkbox" aria-label={t('Select every review that can renew on current terms')}
                         checked={allEligibleSelected} disabled={eligibleInView.length === 0}
                         onChange={() => onSelected(toggleAll(selected, rows))} />
-                    )}
-                  </th>
+                    </th>
+                  )}
                   <th className="p-3 text-start">{t('Employee')}</th>
                   <th className="p-3 text-start">{t('Contract ends')}</th>
                   <th className="p-3 text-start">{t('Stage')}</th>
@@ -205,14 +208,14 @@ export function Radar(props: RadarProps) {
                   const busy = props.busyCaseId === item.caseId;
                   return (
                     <tr key={item.caseId} className="align-top hover:bg-slate-50 dark:hover:bg-white/[0.02]">
-                      <td className="p-3">
-                        {canManage && (
+                      {selectable && (
+                        <td className="p-3">
                           <input type="checkbox" checked={selected.has(item.caseId)} disabled={!item.fastLaneEligible}
                             aria-label={fill(t('Select {name} for renewal on current terms'), { name: item.employee.name })}
                             title={item.fastLaneEligible ? undefined : t('Only reviews that can renew on current terms, with nothing blocking them, can be selected.')}
                             onChange={() => onSelected(toggleSelection(selected, item))} />
-                        )}
-                      </td>
+                        </td>
+                      )}
                       <td className="p-3">
                         <span className="font-medium text-slate-800 dark:text-slate-100">
                           {personName(item.employee, locale)}
@@ -349,10 +352,10 @@ function ContractList({ rows, label, empty, reason, detail, onOpenChain, today }
   );
 }
 
-/** The bar shown while rows are selected. R5 passes its batch action in `children` (fast lane). */
+/** The bar shown while rows are selected. R5 passes its batch action in `children` (fast lane); with none it never shows. */
 export function SelectionBar({ count, onClear, children }: { count: number; onClear: () => void; children?: ReactNode }) {
   const { t } = useLocale();
-  if (count === 0) return null;
+  if (count === 0 || children == null || children === false) return null;
   return (
     <div role="region" aria-label={t('Selected reviews')}
       className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg dark:bg-slate-800">

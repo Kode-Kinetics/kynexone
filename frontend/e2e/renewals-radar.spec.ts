@@ -35,7 +35,7 @@ async function boot(page: Page, locale: 'en' | 'ar') {
   return errors;
 }
 
-test('the radar shows buckets that add up, the storyline badge and Next line, drill-downs and fast-lane selection (English)', async ({ page }) => {
+test('the radar shows buckets that add up, the storyline badge and Next line, drill-downs, and no selection without a batch action (English)', async ({ page }) => {
   const errors = await boot(page, 'en');
   await expect(page.getByRole('heading', { name: 'Contract renewals' })).toBeVisible();
   await expect(page.getByText('Every contract ending in the next 120 days, what is due next, and what happens if it is missed.')).toBeVisible();
@@ -46,12 +46,12 @@ test('the radar shows buckets that add up, the storyline badge and Next line, dr
   await expect(page.getByText('Next: send offer by 16 Oct — if missed: renews on current terms (Art. 74(2))')).toBeVisible();
   await expect(page.getByText('Expired — holdover pending').first()).toBeVisible();
 
-  // Only the fast-lane-eligible row can be selected; changing the filter starts a new selection.
-  await page.getByRole('checkbox', { name: 'Select Ramon Dela Cruz for renewal on current terms' }).check();
-  await expect(page.getByRole('region', { name: 'Selected reviews' })).toContainText('1 selected to renew on current terms');
-  await expect(page.getByRole('checkbox', { name: 'Select Faisal Al-Qahtani for renewal on current terms' })).toBeDisabled();
-  await page.getByRole('button', { name: /In 31–60 days/ }).click();
+  // The route offers no batch action yet, so even a manager sees no selection checkboxes and no selection bar
+  // (a bar whose only button is "Clear selection" would promise an action that does not exist).
+  await expect(page.getByRole('region', { name: 'Renewal reviews' }).getByRole('row', { name: /Ramon Dela Cruz/ })).toBeVisible();
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Selected reviews' })).toHaveCount(0);
+  await page.getByRole('button', { name: /In 31–60 days/ }).click();
   await expect(page.getByText('Showing 1 of 3 reviews.')).toBeVisible();
 
   // Every reconciliation number drills down to its records.

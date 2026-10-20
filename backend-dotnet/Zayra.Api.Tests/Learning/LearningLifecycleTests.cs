@@ -355,6 +355,59 @@ public sealed class LearningLifecycleTests(PostgresFixture fx)
         versions[1].PublishedAtUtc.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task ASubmitWhoseCommitLandsButTheConnectionDrops_StillRecordsItsAuditRowsExactlyOnce()
+    {
+        await using var w = await CreateAsync(fx);
+        var (pathId, _) = await w.PublishedPathAsync("LOSTAUDIT", [Lesson("LA1", LearningCompletionRules.Assessment, validityMonths: 12)]);
+        await w.AssignAsync(pathId, [w.Ops1]);
+        var enrollment = await w.EnrollmentAsync(w.Ops1, pathId, 1);
+        Guid attemptId;
+        var (start, me) = w.Employee(w.Ops1);
+        await using (start)
+            attemptId = (await Get<LearningProgressService>(start).StartAttemptAsync(me, w.Ops1, enrollment.Id, default)).Id;
+
+        // The COMMIT reaches the server and succeeds; the client then loses the connection, so the execution strategy
+        // runs the delegate again — which finds the attempt already scored and takes the stored-result path.
+        var fault = new CommittedThenDisconnectFault();
+        w.ExtraInterceptors = [fault];
+        var (scope, actor) = w.Employee(w.Ops1);
+        var progress = Get<LearningProgressService>(scope);
+        w.ExtraInterceptors = [];
+        AttemptResultDto result;
+        await using (scope)
+            result = await progress.SubmitAttemptAsync(actor, w.Ops1, attemptId, new SubmitAttemptInput(Correct()), default);
+        fault.Faults.Should().BeGreaterThan(0, "the first COMMIT landed and then the connection dropped");
+        result.Status.Should().Be(LearningAttemptStatuses.Passed);
+        result.CredentialId.Should().NotBeNull();
+
+        // A second, client-side retry of the same submit changes nothing and adds no audit rows.
+        var (again, actorAgain) = w.Employee(w.Ops1);
+        await using (again)
+            (await Get<LearningProgressService>(again).SubmitAttemptAsync(actorAgain, w.Ops1, attemptId, new SubmitAttemptInput(Correct()), default))
+                .CredentialId.Should().Be(result.CredentialId);
+
+        await using var db = w.Db();
+        int Count(string action, Guid id) => db.AuditLogs.AsNoTracking().Count(a => a.TenantId == w.TenantA && a.Action == action && a.EntityId == id.ToString());
+        Count("learning.attempt.passed", attemptId).Should().Be(1);
+        Count("learning.enrollment.completed", enrollment.Id).Should().Be(1);
+        Count("learning.credential.issued", result.CredentialId!.Value).Should().Be(1);
+        Count("learning.assignment.completed", enrollment.AssignmentId).Should().Be(1);
+    }
+
+    /// <summary>The first COMMIT succeeds on the server, then the client sees a transient connection loss.</summary>
+    private sealed class CommittedThenDisconnectFault : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        public int Faults;
+        public override Task TransactionCommittedAsync(System.Data.Common.DbTransaction transaction,
+            Microsoft.EntityFrameworkCore.Diagnostics.TransactionEndEventData eventData, CancellationToken ct = default)
+        {
+            if (Interlocked.Increment(ref Faults) == 1)
+                throw new Npgsql.NpgsqlException("Simulated connection loss after COMMIT", new System.IO.IOException("connection reset by peer"));
+            return base.TransactionCommittedAsync(transaction, eventData, ct);
+        }
+    }
+
     /// <summary>A transient connection loss on the first COMMIT (before it reaches the server); later commits go through.</summary>
     private sealed class TransientCommitFault : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
     {
