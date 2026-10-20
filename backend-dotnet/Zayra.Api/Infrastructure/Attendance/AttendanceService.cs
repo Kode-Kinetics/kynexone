@@ -1202,7 +1202,7 @@ public class AttendanceService : IAttendanceService
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = daily.FirstInUtc is not null && daily.LastOutUtc is not null ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
-        var startLocalTime = shift?.StartTime ?? new TimeOnly(9, 0);
+        var startLocalTime = shift?.StartTime ?? AttendanceWorkDate.DefaultShiftStart;
         // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
         var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
         var shiftStart = TimeZoneInfo.ConvertTimeToUtc(startLocal, tz);
@@ -1298,28 +1298,20 @@ public class AttendanceService : IAttendanceService
     public sealed record WorkDayWindow(DateTime StartUtc, DateTime EndUtc, TimeZoneInfo TimeZone, WorkShift? Shift);
 
     /// <summary>
-    /// The punches that belong to <paramref name="date"/>: the local calendar day [00:00, next 00:00), or for an overnight
-    /// shift [shift start on the date, shift end the next day), converted to UTC in the tenant's time zone. The one
-    /// definition shared by the day's recompute (<c>ProcessEmployeeDay</c>) and the correction validation, so a corrected
-    /// punch can only ever be accepted for the day whose recompute will count it.
+    /// The punches that belong to <paramref name="date"/>: <see cref="AttendanceWorkDate"/>'s window — the local calendar
+    /// day when no shift is near it, widened by the shift tolerance around a shift and handed over at ONE boundary
+    /// between consecutive days. The one definition shared by the day's recompute (<c>ProcessEmployeeDay</c>), the
+    /// correction validation and the work-date rule, so a punch is only ever dated (and locked) to the day that counts it.
     /// <para>Previously the recompute hardcoded 09:00 *UTC* and ignored the assigned shift entirely — for a GCC tenant
     /// (Asia/Riyadh) 09:00 UTC = noon local, so every employee showed bogus late/early minutes.</para>
     /// </summary>
     public async Task<WorkDayWindow> WorkDayWindowAsync(Guid tenantId, int employeeId, DateOnly date, CancellationToken ct)
     {
         var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        // Read tenant-wide, as the work-date rule reads it: on the anonymous device webhook the company-filtered read
-        // saw no shift at all (strict scope), so an overnight shift's window collapsed to the calendar day there.
-        var row = await AttendanceWorkDate.ShiftOnAsync(_db, tenantId, employeeId, date, ct);
-        var shift = row is null ? null : new WorkShift(row.Value.StartTime, row.Value.EndTime);
-        var isOvernightShift = shift is not null && shift.EndTime <= shift.StartTime;
-        var startLocalBoundary = isOvernightShift
-            ? DateTime.SpecifyKind(date.ToDateTime(shift!.StartTime), DateTimeKind.Unspecified)
-            : DateTime.SpecifyKind(date.ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
-        var endLocalBoundary = isOvernightShift
-            ? DateTime.SpecifyKind(date.AddDays(1).ToDateTime(shift!.EndTime), DateTimeKind.Unspecified)
-            : DateTime.SpecifyKind(date.AddDays(1).ToDateTime(TimeOnly.MinValue), DateTimeKind.Unspecified);
-        return new WorkDayWindow(TimeZoneInfo.ConvertTimeToUtc(startLocalBoundary, tz), TimeZoneInfo.ConvertTimeToUtc(endLocalBoundary, tz), tz, shift);
+        // THE definition the work-date rule uses too (AttendanceWorkDate): consecutive days partition time, so a punch
+        // dated D is always one D's recompute counts, and no punch is counted on two days.
+        var (startUtc, endUtc, shift) = await AttendanceWorkDate.WindowAsync(_db, tenantId, employeeId, date, tz, ct);
+        return new WorkDayWindow(startUtc, endUtc, tz, shift is null ? null : new WorkShift(shift.StartTime, shift.EndTime));
     }
 
     /// <summary>

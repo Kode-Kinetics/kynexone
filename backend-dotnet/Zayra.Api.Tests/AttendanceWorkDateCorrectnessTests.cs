@@ -251,6 +251,103 @@ public class AttendanceWorkDateCorrectnessTests
         daily[0].LastOutUtc.Should().NotBeNull();
     }
 
+    // ── (4) one definition: the date a punch is given is the day whose window counts it ───────────────────
+
+    [Theory]
+    [InlineData(18, 45, 3, 5, 8 * 60 + 20)]  // In 21:45 local (15 min early), Out 06:05 local (5 min late)
+    [InlineData(19, 0, 3, 0, 8 * 60)]       // Out at EXACTLY the shift end, 06:00:00 local
+    public async Task ANightShiftPunchedJustOutsideItsExactSpan_IsOneCompleteDayOnTheShiftsDate(int inHourUtc, int inMinuteUtc, int outHourUtc, int outMinuteUtc, int spanMinutes)
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var shiftDate = new DateOnly(2026, 9, 15); // a Tuesday; the 16th has no shift
+        var code = await SeedNightWorkerWithDeviceAsync(store, tenantId, shiftDate);
+        var clockIn = new DateTime(2026, 9, 15, inHourUtc, inMinuteUtc, 0, DateTimeKind.Utc);
+        var clockOut = new DateTime(2026, 9, 16, outHourUtc, outMinuteUtc, 0, DateTimeKind.Utc);
+
+        foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
+        {
+            await using var db = StoreDb(store);
+            await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+                new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+        }
+
+        await using var check = StoreDb(store);
+        var daily = await check.AttendanceDailyRecords.ToListAsync();
+        daily.Select(d => d.WorkDate).Should().Equal([shiftDate], "both punches belong to the 15 Sep night shift");
+        daily[0].FirstInUtc.Should().Be(clockIn);
+        daily[0].LastOutUtc.Should().Be(clockOut);
+        daily[0].MissingPunch.Should().BeFalse();
+        daily[0].TotalWorkedMinutes.Should().Be(spanMinutes - 60);
+        daily[0].EarlyExitMinutes.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AFullRangeRun_AfterANightShift_DoesNotCountTheShiftsEarlyMorningPunchAgainOnTheNextDay()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var shiftDate = new DateOnly(2026, 9, 15);
+        var code = await SeedNightWorkerWithDeviceAsync(store, tenantId, shiftDate);
+        int employeeId;
+        foreach (var (at, direction) in new[] { (new DateTime(2026, 9, 15, 19, 0, 0, DateTimeKind.Utc), "In"), (new DateTime(2026, 9, 15, 23, 0, 0, DateTimeKind.Utc), "Out") })
+        {
+            await using var db = StoreDb(store);
+            await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+                new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+        }
+        await using (var db = StoreDb(store))
+        {
+            employeeId = (await db.Employees.SingleAsync()).Id;
+            await ProcessAsync(db, tenantId, employeeId, shiftDate, shiftDate.AddDays(1)); // HR's range run over both days
+        }
+
+        await using var check = StoreDb(store);
+        var night = await check.AttendanceDailyRecords.SingleAsync(d => d.WorkDate == shiftDate);
+        night.MissingPunch.Should().BeFalse();
+        var next = await check.AttendanceDailyRecords.SingleOrDefaultAsync(d => d.WorkDate == shiftDate.AddDays(1));
+        if (next is not null)
+        {
+            next.FirstInUtc.Should().BeNull("the 02:00 clock-out was counted on the 15th; it must not be counted again on the 16th");
+            next.LastOutUtc.Should().BeNull("the 02:00 clock-out was counted on the 15th; it must not be counted again on the 16th");
+            next.EarlyExitMinutes.Should().Be(0);
+        }
+    }
+
+    [Fact]
+    public async Task EveryInstant_IsDatedToTheOneDayWhoseWindowContainsIt()
+    {
+        // Night shifts on the 15th and 17th, nothing on the 16th: the date rule (which lock, which day to recompute) and
+        // the window (which punches that recompute counts) must agree at every instant, the exact boundaries included.
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        SeedRiyadh(db, tenantId);
+        SeedNightShift(db, tenantId, employee, new DateOnly(2026, 9, 15));
+        SeedNightShift(db, tenantId, employee, new DateOnly(2026, 9, 17));
+        await db.SaveChangesAsync();
+        var service = Service(db);
+        var tz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh");
+
+        var disagreements = new List<string>();
+        for (var t = new DateTime(2026, 9, 14, 21, 0, 0, DateTimeKind.Utc); t < new DateTime(2026, 9, 19, 0, 0, 0, DateTimeKind.Utc); t = t.AddMinutes(5))
+        {
+            var date = await AttendanceWorkDate.ResolveAsync(db, tenantId, employee.Id, t, tz, default);
+            var window = await service.WorkDayWindowAsync(tenantId, employee.Id, date, default);
+            if (t < window.StartUtc || t >= window.EndUtc)
+                disagreements.Add($"{TimeZoneInfo.ConvertTimeFromUtc(t, tz):yyyy-MM-dd HH:mm} local dated {date:yyyy-MM-dd} but outside its window");
+        }
+        disagreements.Should().BeEmpty();
+
+        // ...and the windows of consecutive days neither overlap nor leave a gap.
+        for (var d = new DateOnly(2026, 9, 14); d < new DateOnly(2026, 9, 18); d = d.AddDays(1))
+        {
+            var today = await service.WorkDayWindowAsync(tenantId, employee.Id, d, default);
+            var tomorrow = await service.WorkDayWindowAsync(tenantId, employee.Id, d.AddDays(1), default);
+            today.EndUtc.Should().Be(tomorrow.StartUtc, $"{d:yyyy-MM-dd} must end exactly where {d.AddDays(1):yyyy-MM-dd} begins");
+        }
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
 
     private static async Task<IActionResult> MobilePunchAsync(ZayraDbContext db, Guid tenantId, int employeeId, string direction, DateTime utcNow)
@@ -273,9 +370,24 @@ public class AttendanceWorkDateCorrectnessTests
         return await controller.Punch(new MobilePunchRequest(0, direction, null), default);
     }
 
-    private static Task ProcessAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly day) =>
-        Service(db).ProcessAsync(tenantId, new ProcessAttendanceRequest(day, day, employeeId),
+    private static Task ProcessAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly day, DateOnly? to = null) =>
+        Service(db).ProcessAsync(tenantId, new ProcessAttendanceRequest(day, to ?? day, employeeId),
             new RequestContext(null, null, Guid.NewGuid(), tenantId), CancellationToken.None);
+
+    private static async Task<string> SeedNightWorkerWithDeviceAsync(string store, Guid tenantId, DateOnly shiftDate)
+    {
+        await using var seed = StoreDb(store);
+        var employee = AddEmployee(seed, tenantId);
+        SeedRiyadh(seed, tenantId);
+        SeedNightShift(seed, tenantId, employee, shiftDate);
+        seed.AttendanceDevices.Add(new AttendanceDevice
+        {
+            TenantId = tenantId, DeviceName = "Gate", SerialNumber = $"SN-{Guid.NewGuid():N}", IsActive = true,
+            ApiKeyReference = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(DeviceKey))),
+        });
+        await seed.SaveChangesAsync();
+        return employee.EmployeeCode;
+    }
 
     private static void SeedRiyadh(ZayraDbContext db, Guid tenantId) =>
         db.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = tenantId, CountryCode = "SAU", DefaultTimezone = "Asia/Riyadh" });

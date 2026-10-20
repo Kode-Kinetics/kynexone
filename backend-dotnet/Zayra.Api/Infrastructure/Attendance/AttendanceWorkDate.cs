@@ -6,16 +6,28 @@ using Zayra.Api.Infrastructure.Data;
 namespace Zayra.Api.Infrastructure.Attendance;
 
 /// <summary>
-/// THE rule for which work date a punch belongs to, shared by every path that writes a daily record: the punch path
-/// (<c>AttendanceService.PunchAsync</c>), device ingest (<c>IngestByDeviceKeyAsync</c>) and the legacy mobile punch
-/// (<c>MobileController.Punch</c>). The work date is also the <see cref="AttendanceDailyRecordLock"/> key, so two paths
-/// that disagree about it recompute different days under different locks.
+/// THE definition of which work date an instant belongs to, shared by every path that writes a daily record: the punch
+/// path (<c>AttendanceService.PunchAsync</c>), device ingest (<c>IngestByDeviceKeyAsync</c>), the legacy mobile punch
+/// (<c>MobileController.Punch</c>) AND the window of punches a day's recompute counts (<c>WorkDayWindowAsync</c>). The
+/// work date is also the <see cref="AttendanceDailyRecordLock"/> key, so a punch dated D must be one D's recompute counts.
 ///
-/// <para>The rule: the tenant-local calendar date of the punch, except that a punch at or before the end of an
-/// OVERNIGHT shift (end &lt;= start) assigned to the employee on the previous local date belongs to that previous date
-/// — a night worker's 02:00 clock-out closes yesterday's shift, it does not open today.</para>
+/// <para><b>The model: consecutive work days partition time.</b> Day D's window is [B(D-1, D), B(D, D+1)), where the
+/// boundary B between two days is ONE instant used as the end of the first and the start of the second, so windows never
+/// overlap and never leave a gap, and a punch's date is simply the day whose window contains it. B(D, D+1) is:</para>
+/// <list type="number">
+///   <item>the local midnight starting D+1, or — when D has a shift — the later of that midnight and the end of D's shift
+///     plus <see cref="ShiftPunchToleranceMinutes"/> (an overnight shift ends on D+1, so its clock-out after midnight and
+///     a little after the shift end still closes D);</item>
+///   <item>pulled earlier to D+1's shift start (its assigned start, or <see cref="DefaultShiftStart"/> when it has none)
+///     minus the tolerance, when that comes first — so D's tolerance never swallows D+1's early clock-in — but never
+///     earlier than the end of D's own shift.</item>
+/// </list>
+/// <para>With no shifts at all every boundary is local midnight: the plain calendar day, exactly as before.</para>
 ///
-/// <para>Before this was shared, device ingest used the plain local date and the legacy mobile punch the UTC date.</para>
+/// <para>Before this, the date rule said "previous day if at or before the overnight shift's end" while the window was
+/// exactly [shift start, shift end): a clock-out at 06:05 (or a clock-in at 21:45) for a 22:00–06:00 shift fell in no
+/// window or on the next day as an out-only day, a clock-out at exactly 06:00 was dated D but not counted by D, and the
+/// next day's calendar window overlapped the shift, so a range run counted the 02:00 clock-out on both days.</para>
 ///
 /// <para>The shift assignment is read tenant-wide (<see cref="ScopedBypass.TenantWide{T}"/>): the employee has already
 /// been authorised by the calling path, nothing about the shift is returned to the caller, and which day a punch
@@ -25,6 +37,25 @@ namespace Zayra.Api.Infrastructure.Attendance;
 /// </summary>
 public static class AttendanceWorkDate
 {
+    /// <summary>
+    /// How far before its start and after its end a shift still claims a punch: 120 minutes. No tenant, policy or shift
+    /// setting exists for this (<c>AttendancePolicy.GraceMinutes</c> is a lateness allowance, not a punch window), so it
+    /// is a named constant: wide enough for an early clock-in and a normal overrun, and clipped by the next day's start
+    /// so it cannot take the next shift's clock-in. A punch outside it is a correction, as before.
+    /// </summary>
+    public const int ShiftPunchToleranceMinutes = 120;
+
+    /// <summary>The start assumed for a day with no assigned shift (also <c>ProcessEmployeeDay</c>'s late/early baseline).</summary>
+    public static readonly TimeOnly DefaultShiftStart = new(9, 0);
+
+    private static readonly TimeSpan Tolerance = TimeSpan.FromMinutes(ShiftPunchToleranceMinutes);
+
+    /// <summary>An employee's shift on one date, in local wall-clock times. End &lt;= Start means it ends the next day.</summary>
+    public sealed record DayShift(TimeOnly StartTime, TimeOnly EndTime)
+    {
+        public bool IsOvernight => EndTime <= StartTime;
+    }
+
     private const string ShiftReadJustification =
         "An employee's own roster decides which work date a punch belongs to. The employee is already authorised by the " +
         "calling path (or resolved from the authenticated device's tenant on the anonymous webhook); no shift data is " +
@@ -40,19 +71,69 @@ public static class AttendanceWorkDate
         return TenantTimeZone.FromId(tzId);
     }
 
-    /// <summary>The pure rule, given the end of the overnight shift assigned on the punch's previous local date (if any).</summary>
-    public static DateOnly Resolve(DateTime punchUtc, TimeZoneInfo timeZone, TimeOnly? previousDayOvernightShiftEnd)
+    // ── the pure definition ───────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The UTC instant a local wall-clock time on <paramref name="date"/> occurs (a DST gap steps forward).</summary>
+    private static DateTime LocalToUtc(DateOnly date, TimeOnly time, TimeZoneInfo timeZone)
     {
-        var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(punchUtc, DateTimeKind.Utc), timeZone);
-        var localDate = DateOnly.FromDateTime(local);
-        return previousDayOvernightShiftEnd is { } end && TimeOnly.FromDateTime(local) <= end
-            ? localDate.AddDays(-1)
-            : localDate;
+        var local = DateTime.SpecifyKind(date.ToDateTime(time), DateTimeKind.Unspecified);
+        while (timeZone.IsInvalidTime(local)) local = local.AddMinutes(30);
+        return DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(local, timeZone), DateTimeKind.Utc);
     }
 
-    /// <summary>The previous local date the rule looks up for <paramref name="punchUtc"/>.</summary>
-    private static DateOnly PreviousLocalDate(DateTime punchUtc, TimeZoneInfo timeZone) =>
-        TenantTimeZone.LocalDate(timeZone, punchUtc).AddDays(-1);
+    /// <summary>B(<paramref name="day"/>, day+1): where <paramref name="day"/> ends and the next day begins.</summary>
+    public static DateTime BoundaryUtc(DateOnly day, DayShift? shift, DayShift? nextShift, TimeZoneInfo timeZone)
+    {
+        var next = day.AddDays(1);
+        var boundary = TenantTimeZone.LocalDayStartUtc(timeZone, next);
+        var floor = TenantTimeZone.LocalDayStartUtc(timeZone, day);
+        if (shift is not null)
+        {
+            var shiftEnd = LocalToUtc(shift.IsOvernight ? next : day, shift.EndTime, timeZone);
+            if (shiftEnd + Tolerance > boundary) boundary = shiftEnd + Tolerance;
+            floor = shiftEnd;
+        }
+        var nextStart = LocalToUtc(next, nextShift?.StartTime ?? DefaultShiftStart, timeZone) - Tolerance;
+        if (nextStart < boundary) boundary = nextStart > floor ? nextStart : floor;
+        return boundary;
+    }
+
+    /// <summary><paramref name="day"/>'s window [StartUtc, EndUtc), given the shifts of the day before, the day, and the day after.</summary>
+    public static (DateTime StartUtc, DateTime EndUtc) WindowUtc(DateOnly day, DayShift? previous, DayShift? shift, DayShift? next, TimeZoneInfo timeZone)
+    {
+        var start = BoundaryUtc(day.AddDays(-1), previous, shift, timeZone);
+        var end = BoundaryUtc(day, shift, next, timeZone);
+        return (start, end < start ? start : end);
+    }
+
+    /// <summary>The work date of <paramref name="punchUtc"/>: the day whose window contains it.</summary>
+    public static DateOnly Resolve(DateTime punchUtc, TimeZoneInfo timeZone, Func<DateOnly, DayShift?> shiftOn)
+    {
+        var utc = DateTime.SpecifyKind(punchUtc, DateTimeKind.Utc);
+        var localDate = TenantTimeZone.LocalDate(timeZone, utc);
+        var previous = localDate.AddDays(-1);
+        if (utc < BoundaryUtc(previous, shiftOn(previous), shiftOn(localDate), timeZone)) return previous;
+        var next = localDate.AddDays(1);
+        if (utc >= BoundaryUtc(localDate, shiftOn(localDate), shiftOn(next), timeZone)) return next;
+        return localDate;
+    }
+
+    // ── the reads ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The shifts of the given employees on the given dates, in ONE query (tenant-wide, see the class summary).</summary>
+    private static async Task<Dictionary<(int EmployeeId, DateOnly Date), DayShift>> ShiftsAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<int> employeeIds, IReadOnlyCollection<DateOnly> dates, CancellationToken ct)
+    {
+        // Over-fetches the (employee x date) cross product, which is bounded by the batch.
+        var rows = await ScopedBypass.TenantWide(db.ShiftAssignments, tenantId, ShiftReadJustification).AsNoTracking()
+            .Where(a => employeeIds.Contains(a.EmployeeId) && dates.Contains(a.AssignedDate))
+            .Join(db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
+                a => a.ShiftDefinitionId, d => d.Id,
+                (a, d) => new { a.EmployeeId, a.AssignedDate, d.StartTime, d.EndTime })
+            .ToListAsync(ct);
+        return rows.GroupBy(r => (r.EmployeeId, r.AssignedDate))
+            .ToDictionary(g => g.Key, g => new DayShift(g.First().StartTime, g.First().EndTime));
+    }
 
     /// <summary>One punch's work date (one query).</summary>
     public static async Task<DateOnly> ResolveAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime punchUtc, TimeZoneInfo timeZone, CancellationToken ct)
@@ -61,43 +142,26 @@ public static class AttendanceWorkDate
         return dates[0];
     }
 
-    /// <summary>
-    /// Each punch's work date, in input order, with ONE shift query for the whole batch (device ingest sends many).
-    /// </summary>
+    /// <summary>Each punch's work date, in input order, with ONE shift query for the whole batch (device ingest sends many).</summary>
     public static async Task<IReadOnlyList<DateOnly>> ResolveManyAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyList<(int EmployeeId, DateTime PunchUtc)> punches, TimeZoneInfo timeZone, CancellationToken ct)
     {
         if (punches.Count == 0) return [];
         var employeeIds = punches.Select(p => p.EmployeeId).Distinct().ToList();
-        var previousDates = punches.Select(p => PreviousLocalDate(p.PunchUtc, timeZone)).Distinct().ToList();
-        // Over-fetches the (employee x date) cross product, which is bounded by the batch and filtered exactly below.
-        var overnight = await ScopedBypass.TenantWide(db.ShiftAssignments, tenantId, ShiftReadJustification).AsNoTracking()
-            .Where(a => employeeIds.Contains(a.EmployeeId) && previousDates.Contains(a.AssignedDate))
-            .Join(db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                a => a.ShiftDefinitionId, d => d.Id,
-                (a, d) => new { a.EmployeeId, a.AssignedDate, d.StartTime, d.EndTime })
-            .Where(s => s.EndTime <= s.StartTime)
-            .ToListAsync(ct);
-        var endByEmployeeDay = overnight
-            .GroupBy(s => (s.EmployeeId, s.AssignedDate))
-            .ToDictionary(g => g.Key, g => g.First().EndTime);
-
-        return punches.Select(p =>
-        {
-            var previous = PreviousLocalDate(p.PunchUtc, timeZone);
-            TimeOnly? end = endByEmployeeDay.TryGetValue((p.EmployeeId, previous), out var e) ? e : null;
-            return Resolve(p.PunchUtc, timeZone, end);
-        }).ToList();
+        var dates = punches.Select(p => TenantTimeZone.LocalDate(timeZone, p.PunchUtc))
+            .SelectMany(d => new[] { d.AddDays(-1), d, d.AddDays(1) }).Distinct().ToList();
+        var shifts = await ShiftsAsync(db, tenantId, employeeIds, dates, ct);
+        return punches.Select(p => Resolve(p.PunchUtc, timeZone,
+            d => shifts.TryGetValue((p.EmployeeId, d), out var s) ? s : null)).ToList();
     }
 
-    /// <summary>The employee's shift on <paramref name="date"/> (start/end local times), read tenant-wide as above.</summary>
-    public static async Task<(TimeOnly StartTime, TimeOnly EndTime)?> ShiftOnAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, CancellationToken ct)
+    /// <summary><paramref name="date"/>'s window and its own shift (one query).</summary>
+    public static async Task<(DateTime StartUtc, DateTime EndUtc, DayShift? Shift)> WindowAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, TimeZoneInfo timeZone, CancellationToken ct)
     {
-        var row = await ScopedBypass.TenantWide(db.ShiftAssignments, tenantId, ShiftReadJustification).AsNoTracking()
-            .Where(a => a.EmployeeId == employeeId && a.AssignedDate == date)
-            .Join(db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
-            .FirstOrDefaultAsync(ct);
-        return row is null ? null : (row.StartTime, row.EndTime);
+        var shifts = await ShiftsAsync(db, tenantId, [employeeId], [date.AddDays(-1), date, date.AddDays(1)], ct);
+        DayShift? On(DateOnly d) => shifts.TryGetValue((employeeId, d), out var s) ? s : null;
+        var (start, end) = WindowUtc(date, On(date.AddDays(-1)), On(date), On(date.AddDays(1)), timeZone);
+        return (start, end, On(date));
     }
 }
