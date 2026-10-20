@@ -98,8 +98,7 @@ public sealed class AttendanceExceptionsScreenPostgresTests
         var punchIn = await k.PunchAsync(Utc(Day, 9, 30), "In", processed: false);
         await k.PunchAsync(Utc(Day, 18, 0), "Out", processed: false);
         await RangeAsync(k);
-        await using (var db = k.NewContext())
-            await AttendancePaidImpactPreservationTests.AddPayrollRunCoveringAsync(db, k.TenantId, k.Employee.Id, "Processed");
+        await k.MarkRunPaidAsync();
         await using (var db = k.NewContext())
         {
             (await db.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.Id == punchIn.Id)).PunchTimestampUtc = Utc(Day, 9, 50);

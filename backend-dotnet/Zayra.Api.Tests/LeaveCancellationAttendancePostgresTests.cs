@@ -55,8 +55,7 @@ public sealed class LeaveCancellationAttendancePostgresTests
         var k = await CreateAsync(_fx.CreateDb);
         var leave = await SeedLeaveAsync(k, "Approved");
         await ProcessDayAsync(k);
-        await using (var db = k.NewContext())
-            await AttendancePaidImpactPreservationTests.AddPayrollRunCoveringAsync(db, k.TenantId, k.Employee.Id, "Processed");
+        await k.MarkRunPaidAsync();
         await RequestAndApproveCancellationAsync(k, leave);
 
         (await k.ImpactsAsync()).Should().BeEmpty("payroll already paid the day; an off-cycle run would deduct a new impact");
