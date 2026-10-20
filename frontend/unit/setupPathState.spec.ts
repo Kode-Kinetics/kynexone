@@ -40,6 +40,13 @@ test('setting_must_belong_to_area', () => {
   });
 });
 
+test('unknown_area_does_not_open_a_setting_from_another_area', () => {
+  expect(resolveSetupPath(new URLSearchParams('path=configuration&area=forged-area&setting=leavePolicies&companyId=fixture-company'), context)).toEqual({
+    path: 'configuration', area: 'overview', setting: null, companyId: 'fixture-company', needsReplace: true,
+    notice: 'setting-mismatch',
+  });
+});
+
 test('unauthorized_company_fails_closed', () => {
   expect(resolveSetupPath(new URLSearchParams('path=configuration&area=organization&companyId=unknown-company'), context)).toEqual({
     path: 'configuration', area: 'organization', setting: null, companyId: null, needsReplace: true,

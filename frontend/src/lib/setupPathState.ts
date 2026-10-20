@@ -56,12 +56,15 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   let area: SetupAreaId | 'overview' = requestedArea && areaIds.has(requestedArea as SetupAreaId)
     ? requestedArea as SetupAreaId
     : 'overview';
-  if (requestedArea && area === 'overview' && requestedArea !== 'overview') needsReplace = true;
+  const areaRejected = !!requestedArea && area === 'overview' && requestedArea !== 'overview';
+  if (areaRejected) needsReplace = true;
 
   let setting: string | null = null;
   if (requestedSetting) {
     const destination = destinationById.get(requestedSetting);
-    if (!destination || (area !== 'overview' && destination.areaId !== area)) {
+    // A setting only opens inside the area it belongs to. A link naming an unknown
+    // area is not allowed to borrow the setting's own area instead: it opens nothing.
+    if (!destination || areaRejected || (area !== 'overview' && destination.areaId !== area)) {
       notice ??= 'setting-mismatch';
       needsReplace = true;
     } else {

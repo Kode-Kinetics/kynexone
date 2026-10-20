@@ -599,7 +599,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
   }
 
   return (
-    <div className="setup-studio overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" onChangeCapture={() => { persistencePaused.current = false; }}>
+    <div className="setup-studio overflow-clip rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" onChangeCapture={() => { persistencePaused.current = false; }}>
       <ConfirmDialog state={confirmation} onCancel={() => setConfirmation(null)} />
       <div className="setup-draft-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3 dark:border-white/10">
         <div className="min-w-0 flex-1 text-xs text-slate-600 dark:text-slate-300">

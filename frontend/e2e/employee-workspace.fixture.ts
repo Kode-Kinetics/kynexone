@@ -337,6 +337,16 @@ export async function bootEmployeeWorkspaceFixture(
       return reply({ items, total: items.length, page: 1, pageSize: 100 });
     }
 
+    // POST, but a read: the work-email field previews the address and checks it is unique (the server writes
+    // nothing). Its debounced call can land before or after Save, so recording it as a mutation made the
+    // 'sends only the changed fields' assertions flaky.
+    if (path === '/api/employees/derive-work-email') {
+      const body = route.request().postDataJSON() ?? {};
+      const workEmail = typeof body.workEmail === 'string' ? body.workEmail : '';
+      const [localPart = '', domain = ''] = workEmail.split('@');
+      return reply({ domain, pattern: 'first.last', localPart, workEmail, unique: true, suggestion: null, status: 'user' });
+    }
+
     if (route.request().method() !== 'GET') {
       const method = route.request().method();
       const body = route.request().postDataJSON();
