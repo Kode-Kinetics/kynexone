@@ -126,7 +126,9 @@ public static class AttendanceDerivedArtifacts
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
     /// Ramadan day over-deducts by a third. See the call site for why the ordinary-day literal stays.</param>
-    public static async Task UpsertImpactsAsync(ZayraDbContext db, Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct)
+    /// <param name="coverage">A range run's memo of employee-months already found paid (<see cref="PayrollCoverageMemo"/>).</param>
+    public static async Task UpsertImpactsAsync(ZayraDbContext db, Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct,
+        PayrollCoverageMemo? coverage = null)
     {
         var existing = await db.AttendancePayrollImpacts
             .Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate)
@@ -137,7 +139,9 @@ public static class AttendanceDerivedArtifacts
         var recomputed = ImpliedImpacts(daily, absenceMinutes);
         var halfPair = IsHalfPair(daily);
 
-        var dayIsPaid = paid.Count > 0 || await IsCoveredByPayrollAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct);
+        var dayIsPaid = paid.Count > 0 || (coverage is not null
+            ? await coverage.IsCoveredAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct)
+            : await IsCoveredByPayrollAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct));
         bool Frozen(string type) => paid.Any(p => p.ImpactType == type) || (dayIsPaid && type != AttendanceImpactTypes.OvertimePayable);
         foreach (var (type, minutes) in recomputed.Where(r => !Frozen(r.Type)))
             db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact
@@ -318,6 +322,28 @@ public static class AttendanceDerivedArtifacts
         "Whether payroll already paid an employee's attendance day decides whether recomputing it may raise a new " +
         "deduction. The answer must not depend on the caller's company scope (the anonymous device webhook has none); " +
         "the employee is already authorised by the calling path and only a yes/no leaves this method.";
+
+    /// <summary>
+    /// A range run's memo of payroll coverage, so a month of days asks "has payroll paid this employee's month?" once
+    /// instead of once per day. Only a YES is remembered. A month found paid stays paid for the rest of the run (it can
+    /// only stop being paid through a void or reopen, and treating it as paid a little longer is the safe side: no
+    /// deduction is raised, a difference is flagged). A NO is asked again for every day, because a payroll run that
+    /// commits mid-range must protect the days processed after it — remembering a NO would let the range raise new
+    /// deductions on days that run has just paid.
+    /// </summary>
+    public sealed class PayrollCoverageMemo
+    {
+        private readonly HashSet<(int EmployeeId, int Year, int Month)> _paid = new();
+
+        public async Task<bool> IsCoveredAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly workDate, CancellationToken ct)
+        {
+            var key = (employeeId, workDate.Year, workDate.Month);
+            if (_paid.Contains(key)) return true;
+            var covered = await IsCoveredByPayrollAsync(db, tenantId, employeeId, workDate, ct);
+            if (covered) _paid.Add(key);
+            return covered;
+        }
+    }
 
     /// <summary>
     /// True when payroll has paid <paramref name="workDate"/> for the employee: a non-voided slip in a run for that

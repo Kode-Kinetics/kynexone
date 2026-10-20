@@ -769,6 +769,9 @@ public class AttendanceService : IAttendanceService
             JsonSerializer.Serialize(new { from = request.FromDate, to = request.ToDate, employees = employees.Count, employeeId = request.EmployeeId }), ct);
         await _db.SaveChangesAsync(ct);
         var processed = 0;
+        _rangeCoverage = new AttendanceDerivedArtifacts.PayrollCoverageMemo();
+        try
+        {
         // One employee-day per transaction under the punch's per-(tenant, employee, work date) lock, in the global order
         // (employee, then date), so a punch racing this run can neither 23505 nor lose its update, and no run ever holds
         // more than one of these locks at a time (no deadlock; no lock-table pressure on a 367-day run).
@@ -797,6 +800,8 @@ public class AttendanceService : IAttendanceService
             await AuditProcessedChunkAsync(tenantId, context, employee.Id, request.FromDate, request.ToDate, days, "process", ct);
             _db.ChangeTracker.Clear();
         }
+        }
+        finally { _rangeCoverage = null; }
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}", ct);
         await _db.SaveChangesAsync(ct);
         return processed;
@@ -846,6 +851,10 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Employee does not belong to the tenant being processed.");
         var policy = ResolveAttendancePolicy(employee, policies);
         var days = 0;
+        var outerCoverage = _rangeCoverage;
+        _rangeCoverage ??= new AttendanceDerivedArtifacts.PayrollCoverageMemo();
+        try
+        {
         // Dates ascending under the punch's per-(tenant, employee, work date) lock. Inside a caller's transaction (the
         // processing job's item) every lock taken is held until that transaction commits, so the job calls this for ONE
         // employee × calendar month per item: at most 31 locks per transaction, always taken in the global order
@@ -866,6 +875,8 @@ public class AttendanceService : IAttendanceService
             }, ct);
             if (done) days++;
         }
+        }
+        finally { _rangeCoverage = outerCoverage; }
         return days;
     }
 
@@ -1632,7 +1643,10 @@ public class AttendanceService : IAttendanceService
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
     /// Ramadan day over-deducts by a third. See the call site for why the ordinary-day literal stays.</param>
     private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct) =>
-        AttendanceDerivedArtifacts.UpsertImpactsAsync(_db, tenantId, daily, absenceMinutes, ct);
+        AttendanceDerivedArtifacts.UpsertImpactsAsync(_db, tenantId, daily, absenceMinutes, ct, _rangeCoverage);
+
+    /// <summary>Set only for the duration of a range run (ProcessAsync / ProcessEmployeeRangeAsync); see PayrollCoverageMemo.</summary>
+    private AttendanceDerivedArtifacts.PayrollCoverageMemo? _rangeCoverage;
 
     private async Task UpsertExceptions(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
     {
