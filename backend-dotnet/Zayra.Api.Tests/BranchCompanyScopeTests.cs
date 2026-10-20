@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
@@ -148,5 +149,142 @@ public class BranchCompanyScopeTests
         var file = (FileContentResult)await Branches(db, Caller(w.TenantId, null, w.A.Id)).Export(CancellationToken.None);
         var csv = Encoding.UTF8.GetString(file.FileContents);
         csv.Should().Contain("Alpha HQ").And.NotContain("Beta HQ").And.NotContain("Foreign HQ");
+    }
+
+    // ── Branch writes: scoped to the caller's companies ───────────────────────────────────────
+
+    private static BranchRequest Req(Guid companyId, string code, string name = "Branch") =>
+        new(companyId, code, name, null, "SA", "Riyadh", null, null, "Asia/Riyadh", null);
+
+    private static async Task<int> LiveBranches(ZayraDbContext db, Guid tenantId) =>
+        await db.Branches.CountAsync(b => b.TenantId == tenantId && !b.IsDeleted);
+
+    [Fact]
+    public async Task CompanyScopedCaller_CannotCreateUpdateOrDeleteAnotherCompanysBranch()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        DefaultHttpContext ScopedA(Guid? selected = null) => Caller(w.TenantId, selected, w.A.Id);
+
+        (await Branches(db, ScopedA()).Create(Req(w.B.Id, "B2"), CancellationToken.None)).Result
+            .Should().BeOfType<ForbidResult>("creating under a company outside the grant");
+        (await Branches(db, ScopedA()).Update(w.BranchA.Id, Req(w.B.Id, "A1", "Alpha HQ"), CancellationToken.None)).Result
+            .Should().BeOfType<ForbidResult>("moving an own branch INTO another company");
+        (await Branches(db, ScopedA()).Update(w.BranchB.Id, Req(w.A.Id, "B1", "Beta HQ"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>("moving another company's branch OUT of it");
+        (await Branches(db, ScopedA()).Update(w.BranchB.Id, Req(w.B.Id, "B1", "Renamed"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>("editing another company's branch in place");
+        (await Branches(db, ScopedA(w.A.Id)).Delete(w.BranchB.Id, CancellationToken.None))
+            .Should().BeOfType<NotFoundResult>();
+
+        db.ChangeTracker.Clear();
+        (await db.Branches.SingleAsync(b => b.Id == w.BranchA.Id)).CompanyId.Should().Be(w.A.Id);
+        var beta = await db.Branches.SingleAsync(b => b.Id == w.BranchB.Id);
+        beta.CompanyId.Should().Be(w.B.Id);
+        beta.NameEn.Should().Be("Beta HQ");
+        beta.IsDeleted.Should().BeFalse();
+        (await LiveBranches(db, w.TenantId)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CompanyScopedCaller_CanMaintainOwnCompanysBranches()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+
+        (await Branches(db, Caller(w.TenantId, null, w.A.Id)).Create(Req(w.A.Id, "A2", "Alpha East"), CancellationToken.None)).Result
+            .Should().BeOfType<CreatedAtActionResult>();
+        (await Branches(db, Caller(w.TenantId, null, w.A.Id)).Update(w.BranchA.Id, Req(w.A.Id, "A1", "Alpha Head Office"), CancellationToken.None)).Result
+            .Should().BeOfType<OkObjectResult>();
+        (await Branches(db, Caller(w.TenantId, null, w.A.Id)).Delete(w.BranchA.Id, CancellationToken.None))
+            .Should().BeOfType<NoContentResult>();
+    }
+
+    [Fact]
+    public async Task GroupCaller_WritesAnyCompanysBranches_WithOrWithoutCompanySelected()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+
+        foreach (var (selected, code) in new[] { ((Guid?)null, "B2"), (w.A.Id, "B3") })
+        {
+            (await Branches(db, Caller(w.TenantId, selected)).Create(Req(w.B.Id, code), CancellationToken.None)).Result
+                .Should().BeOfType<CreatedAtActionResult>();
+        }
+        (await Branches(db, Caller(w.TenantId, w.A.Id)).Update(w.BranchB.Id, Req(w.B.Id, "B1", "Beta Head Office"), CancellationToken.None)).Result
+            .Should().BeOfType<OkObjectResult>("the switcher narrows reads, not a group grant's writes");
+        (await Branches(db, Caller(w.TenantId, w.A.Id)).Delete(w.BranchB.Id, CancellationToken.None))
+            .Should().BeOfType<NoContentResult>();
+    }
+
+    [Fact]
+    public async Task AnotherTenantsBranch_IsNotFound_ForWrites()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+
+        (await Branches(db, Caller(w.TenantId)).Update(w.OtherTenantBranch.Id, Req(w.A.Id, "F1"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>();
+        (await Branches(db, Caller(w.TenantId)).Delete(w.OtherTenantBranch.Id, CancellationToken.None))
+            .Should().BeOfType<NotFoundResult>();
+        db.ChangeTracker.Clear();
+        var foreign = await db.Branches.SingleAsync(b => b.Id == w.OtherTenantBranch.Id);
+        foreign.IsDeleted.Should().BeFalse();
+        foreign.CompanyId.Should().NotBe(w.A.Id);
+    }
+
+    [Fact]
+    public async Task CompanyScopedImport_RefusesRowsForOtherCompanies_AndWritesNothingForThem()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var csv = string.Join("\n",
+            "CompanyLegalName,Code,NameEn,NameAr,CountryCode,City,AddressLine1,AddressLine2,TimeZoneId,LaborOfficeCode,IsHeadOffice,IsActive",
+            "Alpha Trading,A2,Alpha East,,SA,Riyadh,,,Asia/Riyadh,,false,true",
+            "Beta Contracting,B2,Beta East,,SA,Jeddah,,,Asia/Riyadh,,false,true",
+            "Beta Contracting,B1,Beta Renamed,,SA,Jeddah,,,Asia/Riyadh,,false,true");
+
+        var preview = (ImportPreviewResult)((OkObjectResult)await Branches(db, Caller(w.TenantId, null, w.A.Id))
+            .ImportPreview(new BranchImportRequest(csv), CancellationToken.None)).Value!;
+        preview.Rows.Where(r => r.Status == ImportRowStatus.Error).Select(r => r.EntityCode).Should().BeEquivalentTo(new[] { "B2", "B1" });
+
+        var result = (ImportCommitResult)((OkObjectResult)await Branches(db, Caller(w.TenantId, null, w.A.Id))
+            .Import(new BranchImportRequest(csv), CancellationToken.None)).Value!;
+        result.Created.Should().Be(1);
+        result.Updated.Should().Be(0);
+        result.Rows.Where(r => r.Status == ImportRowStatus.Error)
+            .Should().HaveCount(2).And.OnlyContain(r => r.Errors.Any(e => e.Contains("not one of the companies you can manage")));
+
+        db.ChangeTracker.Clear();
+        (await db.Branches.AnyAsync(b => b.TenantId == w.TenantId && b.Code == "B2")).Should().BeFalse();
+        (await db.Branches.SingleAsync(b => b.Id == w.BranchB.Id)).NameEn.Should().Be("Beta HQ");
+        (await db.Branches.AnyAsync(b => b.TenantId == w.TenantId && b.Code == "A2" && b.CompanyId == w.A.Id)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CompanyScopedImport_DoesNotNameTheCompanyThatOwnsACollidingCode()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var csv = "CompanyLegalName,Code,NameEn,CountryCode,City,TimeZoneId\nAlpha Trading,B1,Clash,SA,Riyadh,Asia/Riyadh";
+
+        var result = (ImportCommitResult)((OkObjectResult)await Branches(db, Caller(w.TenantId, null, w.A.Id))
+            .Import(new BranchImportRequest(csv), CancellationToken.None)).Value!;
+        var row = result.Rows.Single();
+        row.Status.Should().Be(ImportRowStatus.Error);
+        string.Join(" ", row.Errors).Should().Contain("another company").And.NotContain("Beta Contracting");
+    }
+
+    [Fact]
+    public async Task GroupImport_WithCompanySelected_StillImportsIntoEveryCompany()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var csv = "CompanyLegalName,Code,NameEn,CountryCode,City,TimeZoneId\nAlpha Trading,A2,Alpha East,SA,Riyadh,Asia/Riyadh\nBeta Contracting,B2,Beta East,SA,Jeddah,Asia/Riyadh";
+
+        var result = (ImportCommitResult)((OkObjectResult)await Branches(db, Caller(w.TenantId, w.A.Id))
+            .Import(new BranchImportRequest(csv), CancellationToken.None)).Value!;
+        result.Created.Should().Be(2);
+        result.Skipped.Should().Be(0);
     }
 }
