@@ -19,4 +19,10 @@ public interface ITransliterationService
     /// entire name if any part is unsupported or ambiguous. Suggestions require the user's review.
     /// </summary>
     string ToArabicPersonName(string text);
+
+    /// <summary>
+    /// Curated Arabic wording for supported organizational labels such as city offices and
+    /// branches. Returns "" rather than producing a phonetic guess when the label is unsupported.
+    /// </summary>
+    string ToArabicOrganizationLabel(string text);
 }

@@ -8,6 +8,24 @@ import type { CompanyProfile, MigrationImportBatchDto, OrgStructureImportRequest
  *   npx playwright test -c e2e/playwright.setup-experience.config.ts
  * This proves the setup UI contract, not server authorization or a live deployment.
  */
+test('email regression: company pattern can be chosen before an optional domain', async ({ page }, info) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
+  const pattern = dialog.locator('label').filter({ hasText: /^Work Email Pattern/ }).locator('..').getByRole('combobox');
+  await expect(pattern).toBeEnabled();
+  await pattern.selectOption('flast');
+  await expect(dialog.getByTestId('work-email-pattern-preview')).toContainText('jsmith');
+  await expect(dialog.getByTestId('work-email-pattern-preview')).toContainText('domain');
+  await dialog.locator('label').filter({ hasText: /^Work Email Domain/ }).locator('..').getByRole('textbox').fill('example.test');
+  await expect(dialog.getByTestId('work-email-pattern-preview')).toContainText('jsmith@example.test');
+  await pattern.selectOption('first_last');
+  await expect(dialog.getByTestId('work-email-pattern-preview')).toContainText('john_smith@example.test');
+  await dialog.getByTestId('work-email-pattern-preview').scrollIntoViewIfNeeded();
+  await dialog.screenshot({ path: info.outputPath('optional-email-pattern.png') });
+  expect(state.errors).toEqual([]);
+});
+
 const company = {
   id: 'setup-company', legalNameEn: 'Setup Fixture Company', legalNameAr: '', tradeName: 'Setup Fixture Company',
   countryCode: 'SA', jurisdiction: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active',
@@ -17,6 +35,38 @@ const groupCompany = {
   countryCode: 'AE', jurisdiction: 'UAE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active',
 };
 
+test('country regression: saved ISO country is selected and non-pack countries can be saved', async ({ page }, info) => {
+  const consoleErrors: string[] = [];
+  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  await expect(page).toHaveURL(/\/setup\?tab=companies$/);
+  await expect(page).toHaveTitle(/KynexOne/);
+  let saved: Record<string, unknown> | undefined;
+  await page.route('**/api/companies/setup-company', async route => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ json: { ...company, ...saved } });
+  });
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Company', exact: true });
+  const country = dialog.locator('label').filter({ hasText: /^Country/ }).locator('..').getByRole('combobox');
+  await expect(country).toHaveValue('SA');
+  for (const value of ['KW', 'BH', 'OM', 'IN', 'PK', 'GB', 'US']) await expect(country.locator(`option[value="${value}"]`)).toHaveCount(1);
+  await country.selectOption('AE');
+  const jurisdiction = dialog.locator('label').filter({ hasText: /^Jurisdiction/ }).locator('..').getByRole('combobox');
+  await expect(jurisdiction.locator('option[value="DIFC"]')).toHaveCount(1);
+  await country.selectOption('IN');
+  await expect(jurisdiction).toHaveValue('');
+  await expect(dialog.getByText('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')).toBeVisible();
+  await dialog.screenshot({ path: info.outputPath('company-countries.png') });
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(saved?.countryCode).toBe('IN');
+  expect(saved?.jurisdiction).toBe('');
+  expect(saved?.defaultCurrency).toBe('SAR');
+  expect(state.errors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
 const draft: SetupDraft = {
   branches: [{ code: 'HQ', nameEn: 'Head Office', city: 'Riyadh', isHeadOffice: true }],
   departments: [{ code: 'OPS', nameEn: 'Operations' }],
@@ -25,6 +75,30 @@ const draft: SetupDraft = {
   statutoryRules: [], leavePolicies: [], workingWeek: null, employeeIdRule: null, hrConfig: null,
   holidayCalendar: null, attendancePolicy: null, overtimePolicy: null, localization: null,
 };
+
+test('country regression: unrelated edits preserve legacy country and jurisdiction', async ({ page }) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  await page.route(/\/api\/companies(?:\?.*)?$/, route => route.fulfill({ json: {
+    items: [{ ...company, countryCode: 'SAU', jurisdiction: 'LEGACY-ZONE' }], total: 1, page: 1, pageSize: 100,
+  } }));
+  let saved: Record<string, unknown> | undefined;
+  await page.route('**/api/companies/setup-company', async route => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ json: { ...company, ...saved } });
+  });
+  await page.reload();
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Company', exact: true });
+  await expect(dialog.getByRole('combobox', { name: 'Country', exact: true })).toHaveValue('SA');
+  await expect(dialog.locator('label').filter({ hasText: /^Jurisdiction/ }).locator('..').getByRole('combobox')).toHaveValue('LEGACY-ZONE');
+  await dialog.locator('label').filter({ hasText: /^Legal Name \(EN\)/ }).locator('..').getByRole('textbox').fill('Renamed Fixture');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(saved?.legalNameEn).toBe('Renamed Fixture');
+  expect(saved?.countryCode).toBe('SAU');
+  expect(saved?.jurisdiction).toBe('LEGACY-ZONE');
+  expect(state.errors).toEqual([]);
+});
 
 interface ApplyRequest {
   draft: SetupDraft;
@@ -50,6 +124,7 @@ interface BootOptions {
   groupMode?: boolean;
 }
 
+let bootSequence = 0;
 async function boot(page: Page, options: BootOptions = {}) {
   let uploadCount = 0;
   const policyWrites: { path: string; body: unknown }[] = [];
@@ -59,10 +134,20 @@ async function boot(page: Page, options: BootOptions = {}) {
   const errors: string[] = [];
   const unexpectedWrites: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(({ locale }) => {
+  await page.addInitScript(({ locale, bootId }) => {
+    // Each boot is an independent synthetic scenario, including viewport-loop iterations.
+    // Clear only once per boot after the previous page's autosave/unmount has completed.
+    // Later navigations within this scenario retain drafts; lifecycle coverage has its own fixture.
+    const marker = `setup-experience-boot:${bootId}`;
+    if (!sessionStorage.getItem(marker)) {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('kynexone-setup-draft:') || key.startsWith('kynexone-company:')) localStorage.removeItem(key);
+      }
+      sessionStorage.setItem(marker, 'ready');
+      localStorage.setItem('kynexone-locale-choice-v2', locale);
+    }
     localStorage.setItem('zayra_access_token', 'setup-browser-fixture');
-    localStorage.setItem('kynexone-locale-choice-v2', locale);
-  }, { locale: options.locale ?? 'en' });
+  }, { locale: options.locale ?? 'en', bootId: ++bootSequence });
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -79,7 +164,8 @@ async function boot(page: Page, options: BootOptions = {}) {
     }
     if (options.policyIntelligence && path === '/api/setup-assistant/policy/extract') {
       policyWrites.push({ path, body: request.postDataJSON() });
-      return reply({ documentId: policyDocument.id, sourceHash: policyDocument.contentSha256, provider: 'Synthetic fixture', proposals: policyDocument.id === 'policy-benefits' ? [{ target: 'configuration', field: 'benefitPlans', value: [{ code: 'MED', name: 'Medical insurance', planType: 'Medical', currency: 'SAR', effectiveFrom: '2026-10-09', requiresEnrollment: true, gradeCodes: [] }], sourceQuote: 'Medical insurance applies to all employees.', sourceStart: 0, sourceLength: 42 }] : [{ target: 'profile', field: 'branchCity', value: 'Dammam', sourceQuote: 'Headquarters are in Dammam.', sourceStart: 40, sourceLength: 25 }, { target: 'configuration', field: 'attendanceMethods', value: ['WebCheckIn', 'BiometricDevice'], sourceQuote: 'Use web or biometric attendance.', sourceStart: 0, sourceLength: 32 }], issues: [{ section: 'Benefits', kind: 'missing', message: 'Confirm benefit eligibility with HR.' }], coverage: [{ section: 'Attendance policy', status: 'Review required' }], message: 'Review each extracted setting.' });
+      const sourceId = request.postDataJSON().documentId;
+      return reply({ documentId: sourceId, sourceHash: sourceId === 'policy-benefits' ? 'fedcba9876543210' : 'abcdef0123456789', provider: 'Synthetic fixture', proposals: sourceId === 'policy-benefits' ? [{ target: 'configuration', field: 'benefitPlans', value: [{ code: 'MED', name: 'Medical insurance', planType: 'Medical', currency: 'SAR', effectiveFrom: '2026-10-09', requiresEnrollment: true, gradeCodes: [] }], sourceQuote: 'Medical insurance applies to all employees.', sourceStart: 0, sourceLength: 42 }] : [{ target: 'profile', field: 'branchCity', value: 'Dammam', sourceQuote: 'Headquarters are in Dammam.', sourceStart: 40, sourceLength: 25 }, { target: 'configuration', field: 'attendanceMethods', value: ['WebCheckIn', 'BiometricDevice'], sourceQuote: 'Use web or biometric attendance.', sourceStart: 0, sourceLength: 32 }], issues: [{ section: 'Benefits', kind: 'missing', message: 'Confirm benefit eligibility with HR.' }], coverage: [{ section: 'Attendance policy', status: 'Review required' }], message: 'Review each extracted setting.' });
     }
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: options.mfaReminder ?? false, enforceFromUtc: '2026-10-20T00:00:00Z' });
     if (path === '/api/auth/me') return reply({
@@ -114,10 +200,22 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path.startsWith('/api/finance/gl/') || path.startsWith('/api/finance/rates/')) return reply([]);
     if (request.method() !== 'GET') unexpectedWrites.push(`${request.method()} ${path}`);
     // Keep every shell/settings request within this synthetic session as well.
+    if (path === '/api/reference/countries') return reply([
+      { code: 'SA', name: 'Saudi Arabia', currency: 'SAR' }, { code: 'AE', name: 'United Arab Emirates', currency: 'AED' },
+      { code: 'QA', name: 'Qatar', currency: 'QAR' }, { code: 'KW', name: 'Kuwait', currency: 'KWD' },
+      { code: 'BH', name: 'Bahrain', currency: 'BHD' }, { code: 'OM', name: 'Oman', currency: 'OMR' },
+      { code: 'IN', name: 'India', currency: 'INR' }, { code: 'PK', name: 'Pakistan', currency: 'PKR' },
+      { code: 'GB', name: 'United Kingdom', currency: 'GBP' }, { code: 'US', name: 'United States', currency: 'USD' },
+    ]);
+    if (path === '/api/country-packs/available') return reply([
+      { countryCode: 'SAU', nameEn: 'Saudi Arabia', nameAr: '', jurisdictions: [{ code: 'SA', label: 'KSA — Mainland' }] },
+      { countryCode: 'ARE', nameEn: 'United Arab Emirates', nameAr: '', jurisdictions: [{ code: 'UAE', label: 'UAE — Mainland' }, { code: 'DIFC', label: 'UAE — DIFC' }] },
+      { countryCode: 'QAT', nameEn: 'Qatar', nameAr: '', jurisdictions: [] },
+    ]);
     if (path.startsWith('/api/admin/') || path.includes('country-packs')) return reply([]);
     return reply(paged([]));
   });
-  await page.goto(options.route ?? '/setup');
+  await page.goto(options.route ?? '/setup?tab=aiSetup&mode=starter');
   await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'الإعداد والإدارة' : 'Setup & Administration', exact: true })).toBeVisible({ timeout: 60_000 });
   return { previews, applies, errors, unexpectedWrites, policyWrites };
 }
@@ -266,7 +364,7 @@ test('offers import separately from Setup Studio and preserves its organization 
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   const setupSections = page.getByRole('navigation', { name: 'Setup sections', exact: true });
-  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Master Data', 'Numbering', 'System Settings', 'GCC Settings', 'Statutory Rules', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
+  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Employee Reference Lists', 'Numbering', 'System Settings', 'GCC Settings', 'Statutory Rules', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
     await expect(setupSections.getByRole('button', { name: label, exact: true })).toBeVisible();
   }
   await setupSections.getByRole('button', { name: 'Companies', exact: true }).click();
@@ -278,13 +376,13 @@ test('offers import separately from Setup Studio and preserves its organization 
   await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
-  await setupSections.getByRole('button', { name: 'Master Data', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Master Data', exact: true })).toBeVisible();
+  await setupSections.getByRole('button', { name: 'Employee Reference Lists', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Employee Reference Lists', exact: true })).toBeVisible();
   await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'Master Data', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Employee Reference Lists', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=masterData/);
   await page.goForward();
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
@@ -330,7 +428,7 @@ test('a group administrator selects one company before opening its protected set
 });
 
 test('a resumed company setup URL restores its immutable company target', async ({ page }) => {
-  await boot(page, { groupMode: true, route: `/setup?tab=aiSetup&companyId=${groupCompany.id}` });
+  await boot(page, { groupMode: true, route: `/setup?tab=aiSetup&mode=starter&companyId=${groupCompany.id}` });
 
   await expect(page.getByText(/Protected company scope/)).toBeVisible();
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue(groupCompany.legalNameEn);
@@ -340,7 +438,7 @@ test('a resumed company setup URL restores its immutable company target', async 
 });
 
 test('an invalid company setup URL fails closed instead of selecting another company', async ({ page }) => {
-  const state = await boot(page, { groupMode: true, route: '/setup?tab=aiSetup&companyId=missing-company' });
+  const state = await boot(page, { groupMode: true, route: '/setup?tab=aiSetup&mode=starter&companyId=missing-company' });
 
   await expect(page.getByRole('alert').filter({ hasText: 'This company is not available for setup' })).toBeVisible();
   await expect(page.getByText(/No other company has been selected in its place/)).toBeVisible();
@@ -363,7 +461,7 @@ test('renders the setup shell and organization import path in Arabic RTL', async
 });
 
 test('a read-only organization viewer cannot enter Setup Studio through a write-tab deep link', async ({ page }) => {
-  const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup' });
+  const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup&mode=starter' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
@@ -557,14 +655,14 @@ for (const failure of ['blocked422', 'failed422', 'conflict409'] as const) {
 }
 
 test('collects scoped company policies, custom grades and benefits without activating them', async ({ page }, info) => {
-  const state = await boot(page);
+  const state = await boot(page, { policyIntelligence: true });
   await companyDetails(page);
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
   await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy: Professional grade receives 30 days annual leave.');
-  await page.getByRole('button', { name: 'Next: AI assistance', exact: true }).click();
-  await expect(page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft' })).not.toBeChecked();
-  await page.getByRole('button', { name: 'Next: review process', exact: true }).click();
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.' })).not.toBeChecked();
+  await page.getByRole('button', { name: 'How to review and save', exact: true }).click();
   await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
   await continueStep(page);
   await page.getByRole('checkbox', { name: 'Configure leave entitlements from company policy', exact: true }).check();
@@ -602,13 +700,18 @@ test('collects scoped company policies, custom grades and benefits without activ
   await page.getByLabel('Eligible grade codes', { exact: false }).pressSequentially('P1,P2');
   await page.getByLabel('Eligible grade codes', { exact: false }).fill('P1');
   await contained(page);
+  // Audit the hover state too: CI's pointer rested on this secondary button after the click above,
+  // and its hover colours (sapphire on a 4% sapphire tint) were the colour-contrast failure.
+  const addBenefit = page.getByRole('button', { name: 'Add benefit plan', exact: true });
+  await addBenefit.hover();
+  await addBenefit.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   await accessible(page, '#setup-aiSetup');
   await evidence(page, info, 'custom-grades-benefits');
   await continueStep(page);
   await generate(page);
   expect(state.previews[0].configuration?.usePolicySourceForAi).not.toBe(true);
   expect(state.previews[0].configuration).toMatchObject({
-    policySourceText: 'Approved policy: Professional grade receives 30 days annual leave.',
+    policyDocumentId: 'policy-fixture',
     overtimeModes: ['PaidOvertime'],
     leavePolicies: [{ name: 'Professional annual leave', annualEntitlementDays: 30, gradeCode: 'P1', proratePartialMonths: true }],
     grades: [{ code: 'P1', minSalary: 5000, midSalary: 7500, maxSalary: 10000, currency: 'SAR' }],
@@ -663,7 +766,7 @@ test('renders custom grade configuration in Arabic with an accessible mobile lay
 });
 
 test('surfaces policy setup before company fields and guides upload, AI consent and review', async ({ page }, info) => {
-  const state = await boot(page);
+  const state = await boot(page, { policyIntelligence: true });
   const entry = page.getByRole('button', { name: 'Add your HR policy', exact: true });
   await expect(entry).toBeInViewport({ ratio: 1 });
   const entryBox = await entry.boundingBox();
@@ -671,51 +774,52 @@ test('surfaces policy setup before company fields and guides upload, AI consent 
   expect(entryBox!.y).toBeLessThan(companyBox!.y);
   await evidence(page, info, 'policy-entry-first-screen');
   await page.getByRole('button', { name: 'How this works', exact: true }).click();
-  await expect(page.getByText('Uploading text does not configure your company.', { exact: false })).toBeVisible();
+  await expect(page.getByText('For onboarding tasks, choose Review prefilled forms, review each task in the existing form, then use its Save action. For setup settings, review your draft before choosing Apply.', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
   await expect(entry).toBeFocused();
   await entry.press('Enter');
-  await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Next: AI assistance', exact: true })).toBeDisabled();
-  const file = page.getByLabel('Load policy text (.txt, up to 12,000 characters)', { exact: true });
-  await file.setInputFiles({ name: 'policy.docx', mimeType: 'application/octet-stream', buffer: Buffer.from('unsupported') });
-  await expect(page.getByRole('alert').filter({ hasText: 'Choose a plain-text file' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Next: prepare form values', exact: true })).toBeDisabled();
+  const file = page.getByLabel('Upload a document for extraction', { exact: true });
+  await file.setInputFiles({ name: 'policy.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('unsupported') });
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Each file must be a PDF' })).toBeVisible();
   await file.setInputFiles({ name: 'policy.txt', mimeType: 'text/plain', buffer: Buffer.from('Approved annual leave policy: 30 days.') });
-  await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved annual leave policy: 30 days.');
-  await page.getByRole('button', { name: 'Next: AI assistance', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Choose AI assistance', exact: true })).toBeFocused();
-  const consent = page.getByRole('checkbox', { name: 'Use these excerpts with the configured AI provider when generating the draft', exact: true });
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await page.getByRole('button', { name: '2. Prepare form values', exact: true }).click();
+  const consent = page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true });
   await expect(consent).not.toBeChecked();
   await consent.check();
   await accessible(page, '#setup-aiSetup');
-  await page.getByRole('button', { name: 'Next: review process', exact: true }).click();
+  await page.getByRole('button', { name: 'How to review and save', exact: true }).click();
   await page.getByRole('button', { name: 'Continue company setup', exact: true }).click();
-  await expect(page.getByText('Policy text added', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 policy documents in this draft.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
-  await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved annual leave policy: 30 days.');
+  await expect(page.getByRole('list', { name: 'Policy binder documents' })).toContainText('Approved policy.pdf');
   await page.getByRole('button', { name: 'Close guide', exact: true }).click();
   expect(state.previews).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
   await companyDetails(page);
   await toReview(page);
   await generate(page);
-  expect(state.previews[0].configuration).toMatchObject({ policySourceText: 'Approved annual leave policy: 30 days.', usePolicySourceForAi: true });
+  expect(state.previews[0].configuration).toMatchObject({ policyDocumentId: 'policy-fixture', usePolicySourceForAi: true });
+  expect(state.policyWrites.filter(write => write.path.endsWith('/extract'))).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
   expect(state.errors).toEqual([]);
 });
 
 test('keeps the policy guide visible and usable in Arabic RTL', async ({ page }) => {
-  await boot(page, { locale: 'ar' });
+  await boot(page, { locale: 'ar', policyIntelligence: true });
   const entry = page.getByRole('button', { name: 'أضف سياسة الموارد البشرية', exact: true });
   await expect(entry).toBeInViewport({ ratio: 1 });
   await entry.click();
   await page.getByRole('button', { name: 'لصق نص السياسة', exact: true }).click();
   await page.getByLabel('مقتطفات السياسة', { exact: true }).fill('سياسة الإجازات السنوية المعتمدة');
-  await page.getByRole('button', { name: 'التالي: المساعدة بالذكاء الاصطناعي', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'اختيار المساعدة بالذكاء الاصطناعي', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'رفع ومراجعة', exact: true }).click();
+  await page.getByRole('button', { name: '2. تحضير قيم النماذج', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'استخراج من السياسة', exact: true })).toBeVisible();
   await accessible(page, '#setup-aiSetup');
   await contained(page);
-  await page.getByRole('button', { name: 'التالي: خطوات المراجعة', exact: true }).click();
+  await page.getByRole('button', { name: 'كيفية المراجعة والحفظ', exact: true }).click();
   await page.getByRole('button', { name: 'متابعة إعداد الشركة', exact: true }).click();
 });
 
@@ -724,7 +828,7 @@ test('fits company details and Continue together with the sign-in reminder on de
   test.skip(info.project.name !== 'desktop', 'Desktop density contract; mobile retains natural scrolling.');
   for (const viewport of [{ width: 1728, height: 900 }, { width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
     await page.setViewportSize(viewport);
-    await boot(page, { mfaReminder: true });
+    await boot(page, { mfaReminder: true, policyIntelligence: true });
     await expect(page.getByRole('region', { name: 'Two-step sign-in', exact: true })).toBeVisible();
     const form = page.locator('#setup-aiSetup');
     for (const name of [/^Legal entity name/, /^Industry/, /^Country/, /^Currency/, /^Company size/, /^Suggested head office city/, /^Working language/, /^Time zone/]) {
@@ -742,16 +846,17 @@ test('keeps each policy guide screen and its actions together on desktop', async
   test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
   for (const viewport of [{ width: 1728, height: 900 }, { width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
     await page.setViewportSize(viewport);
-    await boot(page, { mfaReminder: true });
+    await boot(page, { mfaReminder: true, policyIntelligence: true });
     await companyDetails(page);
     await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.getByRole('button', { name: 'Paste policy text', exact: true }).click();
     await expect(page.getByLabel(/^Legal entity name/)).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).not.toBeVisible();
     await expect(page.getByLabel('Policy excerpts', { exact: true })).toBeInViewport({ ratio: 1 });
-    await expect(page.getByLabel('Load policy text (.txt, up to 12,000 characters)', { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeInViewport({ ratio: 1 });
     await page.getByLabel('Policy excerpts', { exact: true }).fill('Approved policy. '.repeat(700));
-    for (const [stage, next] of ['Next: AI assistance', 'Next: review process', 'Continue company setup'].entries()) {
+    await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+    for (const [stage, next] of ['How to review and save', 'Continue company setup'].entries()) {
       const action = page.getByRole('button', { name: next, exact: true });
       await expect(page.getByRole('button', { name: 'Close guide', exact: true })).toBeInViewport({ ratio: 1 });
       await expect(action).toBeInViewport({ ratio: 1 });
@@ -763,7 +868,7 @@ test('keeps each policy guide screen and its actions together on desktop', async
     await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Meridian Health LLC');
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeInViewport({ ratio: 1 });
     await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
-    await expect(page.getByLabel('Policy excerpts', { exact: true })).toHaveValue('Approved policy. '.repeat(700));
+    await expect(page.getByRole('list', { name: 'Policy binder documents' })).toContainText('Approved policy.pdf');
     await page.getByRole('button', { name: 'Close guide', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Review policy text', exact: true })).toBeFocused();
   }
@@ -842,14 +947,14 @@ test('extracts policy settings only after consent and copies only reviewed selec
   await page.getByLabel('Upload a document for extraction', { exact: true }).setInputFiles({ name: 'Approved policy.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Synthetic browser upload fixture') });
   expect(state.policyWrites).toHaveLength(0);
   await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Extract settings', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Extract from policy', exact: true })).toBeDisabled();
   await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
-  await page.getByRole('button', { name: 'Extract settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
   await expect(page.getByText('Headquarters are in Dammam.', { exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Head office city', exact: true })).not.toBeChecked();
   await expect(page.getByText('Jeddah', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Use selected suggestions (0)', exact: true })).toBeDisabled();
-  await page.getByRole('checkbox', { name: 'Time recording methods', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Time recording methods', exact: true }).filter({ visible: true }).last().check();
   await page.getByRole('button', { name: 'Use selected suggestions (1)', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Selected suggestions copied' })).toBeVisible();
   await page.getByRole('button', { name: 'Close guide', exact: true }).click();
@@ -858,7 +963,7 @@ test('extracts policy settings only after consent and copies only reviewed selec
   await page.getByLabel('Upload a document for extraction', { exact: true }).setInputFiles({ name: 'Benefits policy.pdf', mimeType: 'application/pdf', buffer: Buffer.from('Second synthetic browser fixture') });
   await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
   await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
-  await page.getByRole('button', { name: 'Extract settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
   await page.getByText('Medical insurance · MED', { exact: true }).click();
   await expect(page.getByText('Requires Enrollment', { exact: true })).toBeVisible();
   await expect(page.getByText('Yes', { exact: true })).toBeVisible();
@@ -867,7 +972,7 @@ test('extracts policy settings only after consent and copies only reviewed selec
   await page.getByRole('button', { name: 'Use selected suggestions (1)', exact: true }).click();
   await page.getByRole('button', { name: 'Close guide', exact: true }).click();
   await toReview(page); await generate(page);
-  expect(state.previews[0].configuration).toMatchObject({ attendanceMethods: ['WebCheckIn', 'BiometricDevice'], policyDocumentId: 'policy-benefits', policySourceHash: 'fedcba9876543210' });
+  expect(state.previews[0].configuration).toMatchObject({ attendanceMethods: ['WebCheckIn', 'BiometricDevice'], policyDocumentId: 'policy-fixture', policySourceHash: 'abcdef0123456789', policySources: [{ documentId: 'policy-fixture' }, { documentId: 'policy-benefits' }] });
   expect(state.previews[0].configuration?.policySourceText).toBeUndefined();
   expect(state.previews[0].configuration?.policyFieldSources).toEqual([
     { documentId: 'policy-fixture', contentSha256: 'abcdef0123456789', target: 'configuration', field: 'attendanceMethods', sourceStart: 0, sourceLength: 32 },

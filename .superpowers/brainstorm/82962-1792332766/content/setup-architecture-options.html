@@ -1,0 +1,164 @@
+<style>
+  .decision-intro { max-width: 920px; margin-bottom: 28px; }
+  .decision-intro strong { color: #172554; }
+  .architecture-grid { display: grid; gap: 28px; }
+  .architecture-card { border: 1px solid #d7deeb; border-radius: 18px; overflow: hidden; background: #fff; cursor: pointer; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+  .architecture-card:hover { border-color: #6284e8; box-shadow: 0 16px 38px rgba(30, 58, 138, .12); transform: translateY(-2px); }
+  .architecture-card.selected { border: 2px solid #2457e6; box-shadow: 0 18px 42px rgba(36, 87, 230, .18); }
+  .architecture-meta { padding: 18px 20px; border-bottom: 1px solid #e7ebf2; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+  .architecture-meta h3 { margin: 2px 0 5px; color: #101828; }
+  .architecture-meta p { margin: 0; color: #667085; }
+  .architecture-tag { flex: 0 0 auto; font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: #1d4ed8; background: #edf3ff; border: 1px solid #cfddff; padding: 6px 9px; border-radius: 999px; }
+  .screen { background: #f5f7fb; min-height: 420px; display: grid; grid-template-columns: 116px 1fr; color: #1d2939; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  .app-nav { background: #fbfcfe; border-right: 1px solid #dfe5ef; padding: 14px 10px; }
+  .brand { font-weight: 800; font-size: 12px; color: #172554; padding: 5px 4px 16px; }
+  .brand b { color: #2563eb; }
+  .nav-item { font-size: 8px; padding: 8px; border-radius: 6px; color: #667085; margin: 3px 0; }
+  .nav-item.active { color: #2457e6; background: #eaf0ff; font-weight: 700; border-left: 2px solid #2457e6; }
+  .screen-main { min-width: 0; }
+  .topbar { height: 42px; background: #fff; border-bottom: 1px solid #dfe5ef; display: flex; align-items: center; justify-content: space-between; padding: 0 17px; font-size: 8px; color: #667085; }
+  .search-mini { border: 1px solid #d7deea; border-radius: 7px; padding: 6px 10px; width: 42%; }
+  .canvas { padding: 18px; }
+  .page-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+  .page-title h4 { margin: 0 0 4px; font-size: 17px; color: #111827; }
+  .page-title p { margin: 0; font-size: 8px; color: #667085; }
+  .scope { background: #fff; border: 1px solid #dfe5ef; padding: 8px 10px; border-radius: 8px; font-size: 8px; white-space: nowrap; }
+  .scope strong { color: #111827; }
+  .mode-band { background: #fff; border: 1px solid #dce3ef; display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 12px; }
+  .mode-choice { padding: 13px 14px; min-height: 66px; position: relative; }
+  .mode-choice + .mode-choice { border-left: 1px solid #dce3ef; }
+  .mode-choice.active { box-shadow: inset 0 -3px 0 #2457e6; background: #f8faff; }
+  .mode-choice .eyebrow { color: #2457e6; font-size: 7px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+  .mode-choice h5 { margin: 5px 0 3px; font-size: 11px; color: #111827; }
+  .mode-choice p { margin: 0; font-size: 7px; line-height: 1.45; color: #667085; max-width: 42ch; }
+  .button-mini { display: inline-block; margin-top: 8px; padding: 5px 8px; border-radius: 5px; background: #2457e6; color: #fff; font-size: 7px; font-weight: 700; }
+  .button-mini.secondary { background: #fff; color: #344054; border: 1px solid #cfd7e6; }
+  .content-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; }
+  .panel { background: #fff; border: 1px solid #dfe5ef; padding: 12px; }
+  .panel h5 { margin: 0 0 9px; font-size: 10px; color: #111827; }
+  .row { display: grid; grid-template-columns: 1.4fr .7fr auto; align-items: center; gap: 8px; padding: 9px 4px; border-top: 1px solid #edf0f5; font-size: 7px; }
+  .row:first-of-type { border-top: 0; }
+  .row strong { font-size: 8px; color: #1d2939; }
+  .row small { display: block; color: #667085; margin-top: 2px; font-size: 6px; }
+  .row .go { color: #2457e6; font-weight: 800; }
+  .metric { padding: 8px 0; border-top: 1px solid #edf0f5; font-size: 7px; display: flex; justify-content: space-between; }
+  .metric b { color: #111827; }
+  .notice { margin-top: 9px; background: #fff8e6; border-left: 3px solid #f59e0b; padding: 8px; color: #92400e; font-size: 7px; line-height: 1.45; }
+  .lane-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .lane { background: #fff; border: 1px solid #dce3ef; padding: 14px; min-height: 146px; }
+  .lane.guided { border-top: 4px solid #2457e6; }
+  .lane.config { border-top: 4px solid #0f766e; }
+  .lane h5 { font-size: 12px; margin: 4px 0; color: #111827; }
+  .lane p { font-size: 7px; color: #667085; line-height: 1.5; margin: 0 0 8px; }
+  .trust-line { font-size: 7px; color: #344054; padding: 7px 0; border-top: 1px solid #edf0f5; border-bottom: 1px solid #edf0f5; }
+  .lane-preview { display: flex; gap: 5px; margin-top: 9px; }
+  .lane-preview span { font-size: 6px; padding: 4px 6px; background: #f2f4f7; color: #475467; border-radius: 4px; }
+  .wide-register { background: #fff; border: 1px solid #dfe5ef; padding: 12px 14px; }
+  .register-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .register-head h5 { margin: 0; font-size: 10px; }
+  .blueprint-layout { display: grid; grid-template-columns: 96px minmax(0,1fr) 175px; gap: 10px; }
+  .mode-rail, .blueprint, .plan-rail { background: #fff; border: 1px solid #dfe5ef; min-height: 278px; }
+  .mode-rail { padding: 9px; }
+  .rail-choice { font-size: 7px; padding: 9px 7px; margin-bottom: 5px; border-left: 2px solid transparent; color: #667085; }
+  .rail-choice.active { background: #eef3ff; color: #2457e6; border-left-color: #2457e6; font-weight: 800; }
+  .blueprint { padding: 12px; position: relative; overflow: hidden; background-image: linear-gradient(#eef1f6 1px, transparent 1px), linear-gradient(90deg,#eef1f6 1px,transparent 1px); background-size: 18px 18px; }
+  .blueprint h5, .plan-rail h5 { margin: 0 0 10px; font-size: 9px; color: #111827; }
+  .domain-map { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+  .domain-node { background: rgba(255,255,255,.96); border: 1px solid #cfd7e6; padding: 8px; min-height: 36px; font-size: 7px; box-shadow: 0 3px 8px rgba(16,24,40,.04); }
+  .domain-node strong { display: block; font-size: 8px; color: #1d2939; }
+  .domain-node em { font-style: normal; color: #667085; font-size: 6px; }
+  .domain-node.active { border-color: #2457e6; box-shadow: inset 3px 0 0 #2457e6; }
+  .plan-rail { padding: 12px; }
+  .task { border-top: 1px solid #edf0f5; padding: 8px 0; font-size: 7px; color: #475467; }
+  .task b { color: #111827; display: block; margin-bottom: 2px; }
+  .state-dot { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; display: inline-block; margin-right: 4px; }
+  .state-dot.blue { background: #2457e6; }
+  .state-dot.green { background: #16a34a; }
+  .architecture-footer { padding: 15px 20px 18px; background: #fff; color: #475467; font-size: 13px; line-height: 1.45; }
+  @media (max-width: 780px) {
+    .screen { grid-template-columns: 82px 1fr; }
+    .content-grid, .blueprint-layout { grid-template-columns: 1fr; }
+    .panel.aside, .mode-rail, .plan-rail { display: none; }
+    .lane-grid, .mode-band { grid-template-columns: 1fr; }
+    .mode-choice + .mode-choice { border-left: 0; border-top: 1px solid #dce3ef; }
+  }
+</style>
+
+<div class="decision-intro">
+  <div class="label">Setup Studio architecture</div>
+  <h2>Which complete Setup experience feels clearest?</h2>
+  <p class="subtitle">All three keep the existing KynexOne shell, canonical forms, permissions and company scope. Compare how easily a Group Admin can choose between guided work and direct configuration, resume safely, and find any setting.</p>
+</div>
+
+<div class="architecture-grid">
+  <div class="architecture-card" data-choice="command-desk" onclick="toggleSelect(this)">
+    <div class="architecture-meta">
+      <div><h3>A. Command Desk</h3><p>One calm administrative register with explicit mode switching.</p></div>
+      <span class="architecture-tag">Recommended</span>
+    </div>
+    <div class="screen">
+      <aside class="app-nav"><div class="brand">Kynex<b>One</b></div><div class="nav-item">Dashboard</div><div class="nav-item">People</div><div class="nav-item">Payroll</div><div class="nav-item active">Setup</div></aside>
+      <main class="screen-main">
+        <div class="topbar"><div class="search-mini">Search employees, payroll, approvals…</div><div>EN &nbsp; · &nbsp; Evostel Admin</div></div>
+        <div class="canvas">
+          <div class="page-title"><div><h4>Setup Studio</h4><p>Prepare reviewed changes or maintain live configuration.</p></div><div class="scope"><strong>Scope:</strong> Evostel ▾</div></div>
+          <div class="mode-band">
+            <div class="mode-choice active"><div class="eyebrow">Reviewed change workspace</div><h5>Guided Setup &amp; Major Update</h5><p>Coordinate changes across several HR areas without applying them automatically.</p><span class="button-mini">Resume plan</span></div>
+            <div class="mode-choice"><div class="eyebrow">Live configuration</div><h5>Configuration Center</h5><p>Open a business area and maintain its approved settings directly.</p><span class="button-mini secondary">Browse settings</span></div>
+          </div>
+          <div class="content-grid">
+            <section class="panel"><h5>Evostel HR foundation</h5><div class="row"><div><strong>Organization &amp; employee data</strong><small>Companies, structure and reference lists</small></div><div>3 proposals · 1 blocker</div><div class="go">Continue ›</div></div><div class="row"><div><strong>Leave &amp; absence</strong><small>Leave types, policies and holidays</small></div><div>4 proposals</div><div class="go">Review ›</div></div><div class="row"><div><strong>Payroll</strong><small>GL, rates and fiscal years</small></div><div>Not assessed</div><div class="go">Open ›</div></div></section>
+            <aside class="panel aside"><h5>Plan facts</h5><div class="metric"><span>Proposed changes</span><b>8</b></div><div class="metric"><span>Blocking issues</span><b>2</b></div><div class="metric"><span>Applied records</span><b>3</b></div><div class="notice">Draft only. Live settings have not changed.</div></aside>
+          </div>
+        </div>
+      </main>
+    </div>
+    <div class="architecture-footer"><strong>Why it works:</strong> scope and draft/live status never disappear, while a compact register supports serious administrative work. <strong>Risk:</strong> the two paths feel less visually dramatic because this prioritizes clarity and density.</div>
+  </div>
+
+  <div class="architecture-card" data-choice="twin-workspaces" onclick="toggleSelect(this)">
+    <div class="architecture-meta">
+      <div><h3>B. Twin Workspaces</h3><p>A welcoming landing page that makes the two jobs unmistakable.</p></div>
+      <span class="architecture-tag">Fastest to learn</span>
+    </div>
+    <div class="screen">
+      <aside class="app-nav"><div class="brand">Kynex<b>One</b></div><div class="nav-item">Dashboard</div><div class="nav-item">People</div><div class="nav-item">Payroll</div><div class="nav-item active">Setup</div></aside>
+      <main class="screen-main">
+        <div class="topbar"><div class="search-mini">Search employees, payroll, approvals…</div><div>EN &nbsp; · &nbsp; Evostel Admin</div></div>
+        <div class="canvas">
+          <div class="page-title"><div><h4>Setup Studio</h4><p>Choose how you want to work. Both paths use the same saved records.</p></div><div class="scope"><strong>Company:</strong> Evostel ▾</div></div>
+          <div class="lane-grid">
+            <section class="lane guided"><div class="eyebrow">Reviewed change workspace</div><h5>Guided Setup &amp; Major Update</h5><p>Prepare initial setup or coordinated changes across selected areas, then review before applying.</p><div class="trust-line">Nothing is applied automatically.</div><span class="button-mini">Resume Evostel plan</span><div class="lane-preview"><span>8 proposals</span><span>2 blockers</span><span>Saved locally</span></div></section>
+            <section class="lane config"><div class="eyebrow" style="color:#0f766e">Live configuration maintenance</div><h5>Configuration Center</h5><p>Find one setting and update it directly through its standard KynexOne form.</p><div class="trust-line">Changes use each form’s Save action.</div><span class="button-mini" style="background:#0f766e">Open Configuration Center</span><div class="lane-preview"><span>12 business areas</span><span>Permission-aware</span></div></section>
+          </div>
+          <section class="wide-register"><div class="register-head"><h5>Supporting setup tools</h5><span style="font-size:7px;color:#667085">For Evostel</span></div><div class="row"><div><strong>Policy library</strong><small>Review sources and publication status</small></div><div>3 documents</div><div class="go">Open ›</div></div><div class="row"><div><strong>Import organization structure</strong><small>Prepare companies, branches and departments</small></div><div>CSV import</div><div class="go">Open ›</div></div></section>
+        </div>
+      </main>
+    </div>
+    <div class="architecture-footer"><strong>Why it works:</strong> first-time administrators immediately understand the difference between reviewed drafts and live maintenance. <strong>Risk:</strong> frequent administrators must pass through a landing decision unless recent destinations are added carefully.</div>
+  </div>
+
+  <div class="architecture-card" data-choice="operating-blueprint" onclick="toggleSelect(this)">
+    <div class="architecture-meta">
+      <div><h3>C. Operating Blueprint</h3><p>A spatial map of Setup areas, dependencies and current plan work.</p></div>
+      <span class="architecture-tag">Most visual</span>
+    </div>
+    <div class="screen">
+      <aside class="app-nav"><div class="brand">Kynex<b>One</b></div><div class="nav-item">Dashboard</div><div class="nav-item">People</div><div class="nav-item">Payroll</div><div class="nav-item active">Setup</div></aside>
+      <main class="screen-main">
+        <div class="topbar"><div class="search-mini">Search setup areas and settings…</div><div>EN &nbsp; · &nbsp; Evostel Admin</div></div>
+        <div class="canvas">
+          <div class="page-title"><div><h4>Setup Studio</h4><p>See how organization, workforce policies and statutory controls fit together.</p></div><div class="scope"><strong>Scope:</strong> Evostel ▾</div></div>
+          <div class="blueprint-layout">
+            <nav class="mode-rail"><div class="rail-choice active">Guided plan</div><div class="rail-choice">Configuration</div><div class="rail-choice">Policy sources</div><div class="rail-choice">Imports</div></nav>
+            <section class="blueprint"><h5>Evostel configuration map</h5><div class="domain-map"><div class="domain-node active"><strong>Organization</strong><em>1 blocker · 3 proposals</em></div><div class="domain-node"><strong>Recruitment</strong><em>Manual configuration</em></div><div class="domain-node"><strong>Time &amp; attendance</strong><em>Not assessed</em></div><div class="domain-node"><strong>Leave &amp; absence</strong><em>4 proposals</em></div><div class="domain-node"><strong>Compensation</strong><em>Direct settings</em></div><div class="domain-node"><strong>Payroll</strong><em>Not assessed</em></div><div class="domain-node"><strong>Performance</strong><em>Related workspace</em></div><div class="domain-node"><strong>Compliance</strong><em>1 proposal</em></div></div></section>
+            <aside class="plan-rail"><h5>Current plan</h5><div class="task"><b><span class="state-dot"></span>Resolve company scope</b>Organization &amp; employee data</div><div class="task"><b><span class="state-dot blue"></span>Review leave proposal</b>4 field changes prepared</div><div class="task"><b><span class="state-dot green"></span>Applied</b>3 organization records</div><span class="button-mini">Continue next task</span></aside>
+          </div>
+        </div>
+      </main>
+    </div>
+    <div class="architecture-footer"><strong>Why it works:</strong> relationships and blockers become visible across a complex implementation. <strong>Risk:</strong> the map adds cognitive load and may imply dependencies that the product cannot yet verify.</div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:22px">Click one option to select it. You can still tell me what you would combine or remove.</p>

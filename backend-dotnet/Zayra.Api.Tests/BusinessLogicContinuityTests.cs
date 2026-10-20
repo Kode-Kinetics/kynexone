@@ -712,7 +712,8 @@ public class BusinessLogicContinuityTests
         await db.SaveChangesAsync();
 
         var ctrl = CreateOffersController(db, tenantId);
-        var result = await ctrl.Accept(offer.Id, CancellationToken.None);
+        var result = await ctrl.Accept(offer.Id, CancellationToken.None,
+            new Zayra.Api.Application.Recruitment.OfferResponseRequest(offer.Version, "Accepted", "StaffRecorded", DateTime.UtcNow, "Candidate accepted by phone"));
 
         result.Should().BeOfType<OkObjectResult>("accepting offer must return 200");
 
@@ -765,7 +766,7 @@ public class BusinessLogicContinuityTests
         await db.SaveChangesAsync();
 
         var ctrl = CreateOffersController(db, tenantId);
-        var result = await ctrl.Decline(offer.Id, new DeclineOfferRequest("Accepted counter offer"), CancellationToken.None);
+        var result = await ctrl.Decline(offer.Id, new DeclineOfferRequest("Accepted counter offer", offer.Version, "Declined", "StaffRecorded", DateTime.UtcNow), CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>();
 
         var updatedOffer = await db.OfferLetters.FindAsync(offer.Id);

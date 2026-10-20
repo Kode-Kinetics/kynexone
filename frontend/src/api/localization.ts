@@ -6,7 +6,7 @@ export interface TransliterateResult {
   requiresManualEntry?: boolean;
 }
 
-export type TransliterateKind = 'generic' | 'person-name';
+export type TransliterateKind = 'generic' | 'person-name' | 'organization-label';
 
 /**
  * P0-6: sanctioned, in-house replacement for the removed MyMemory keystroke call.

@@ -136,6 +136,12 @@ public class JobApplication : ITenantOwned, ICompanyScopedOperational
     public DateTime? StageChangedAtUtc { get; set; }
     public DateTime? HiredAtUtc { get; set; }
     public Guid? OnboardingDraftId { get; set; }
+    public long Version { get; set; } = 1;
+    public Guid? CurrentIssuedOfferId { get; set; }
+    public Guid? OfferReservationId { get; set; }
+    public Guid? OfferReservationOfferId { get; set; }
+    public string? OfferReservationState { get; set; }
+    public long? OfferReservationVersion { get; set; }
 }
 
 // ── Application Event (Timeline) ──────────────────────────────────────────────
@@ -184,6 +190,17 @@ public class OfferLetter : ITenantOwned, ICompanyScopedOperational
     /// <summary>Legal-entity scope. Stamped from the parent application on create; required for new operational writes.</summary>
     public Guid? CompanyId { get; set; }
     public Guid ApplicationId { get; set; }
+    // Null series means an independent legacy root; no original bytes or delivery evidence is inferred.
+    public Guid? SeriesId { get; set; }
+    public Guid? PreviousRevisionId { get; set; }
+    public int? RevisionNumber { get; set; }
+    public long Version { get; set; } = 1;
+    public string? RecipientEmail { get; set; }
+    public Guid? CandidateId { get; set; }
+    public DateTime? FrozenAtUtc { get; set; }
+    public Guid? ArtifactId { get; set; }
+    public DateTime? SupersededAtUtc { get; set; }
+    public string? CommunicationOutcome { get; set; }
     public string CandidateName { get; set; } = string.Empty;
     public string OfferedJobTitle { get; set; } = string.Empty;
     public string OfferedDepartment { get; set; } = string.Empty;
@@ -193,8 +210,18 @@ public class OfferLetter : ITenantOwned, ICompanyScopedOperational
     public decimal TransportAllowance { get; set; }
     public decimal OtherAllowances { get; set; }
     public decimal GrossSalary { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? CompensationSnapshotJson { get; set; }
+    public string? CompensationCurrency { get; set; }
+    public int? CompensationPrecision { get; set; }
+    public long? OfferPolicyVersion { get; set; }
+    public decimal? AnnualRecurringCash { get; set; }
+    public decimal? OneTimeCash { get; set; }
     public int ProbationMonths { get; set; } = 3;
     public string ContentHtml { get; set; } = string.Empty;
+    // Self-contained, immutable after approval begins. Never re-resolve a template on download.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? DesignSnapshotJson { get; set; }
     public string Status { get; set; } = "Draft";                      // Draft/Approved/Sent/Accepted/Declined/Expired
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? SentAtUtc { get; set; }

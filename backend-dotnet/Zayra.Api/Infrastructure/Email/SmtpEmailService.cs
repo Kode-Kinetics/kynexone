@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using MimeKit;
 using Zayra.Api.Data;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace Zayra.Api.Infrastructure.Email;
 
@@ -13,17 +16,19 @@ public class SmtpEmailService : IEmailService
     private readonly IDataProtectionProvider _protection;
     private readonly IConfiguration _config;
     private readonly ILogger<SmtpEmailService> _log;
+    private readonly Func<ISmtpSession> _session;
 
     public SmtpEmailService(
         ZayraDbContext db,
         IDataProtectionProvider protection,
         IConfiguration config,
-        ILogger<SmtpEmailService> log)
+        ILogger<SmtpEmailService> log, Func<ISmtpSession>? session = null)
     {
         _db = db;
         _protection = protection;
         _config = config;
         _log = log;
+        _session = session ?? (() => new SmtpSession());
     }
 
     /// <summary>
@@ -31,7 +36,23 @@ public class SmtpEmailService : IEmailService
     /// repo ever overrode it — a black-holed relay could stall a caller for minutes per recipient.
     /// Bounded here; the notification queue retries with backoff instead of blocking.
     /// </summary>
-    private const int SmtpTimeoutMs = 20_000;
+    public async Task<EffectiveEmailSender> GetEffectiveSenderAsync(Guid tenantId, CancellationToken ct = default)
+        => Describe(await LoadConfigAsync(Scope.Tenant(tenantId), ct), Policy);
+
+    private static EffectiveEmailSender Describe(SmtpConfig? cfg, EmailTransportPolicy policy)
+    {
+        // Deliberately exclude credentials, including their hashes. Source captures actual field
+        // provenance; the transport uses the same resolved private snapshot after comparison.
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        { version = 1, cfg?.Source, cfg?.Host, cfg?.Port, cfg?.UseTls, cfg?.FromAddress, cfg?.FromName,
+            mode = policy.Mode.ToString(), allowed = policy.AllowedRecipients.OrderBy(x => x).ToArray() }))));
+        return new(cfg is not null, policy.Mode.ToString(), cfg?.Source ?? "None", cfg?.FromAddress, cfg?.FromName, fingerprint, policy.HasAllowList);
+    }
+
+    public Task<EmailDeliveryResult> DeliverAsync(Guid tenantId, string reviewedSenderFingerprint, string toAddress,
+        string toName, string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null,
+        CancellationToken cancellationToken = default)
+        => DeliverCoreAsync(Scope.Tenant(tenantId), toAddress, toName, subject, htmlBody, attachments, cancellationToken, reviewedSenderFingerprint);
 
     /// <summary>
     /// THE PORT DECIDES HOW TLS STARTS, not the checkbox alone.
@@ -109,21 +130,43 @@ public class SmtpEmailService : IEmailService
     }
 
     private async Task<EmailDeliveryResult> DeliverCoreAsync(Scope scope, string toAddress, string toName,
-        string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments, CancellationToken cancellationToken)
+        string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments, CancellationToken cancellationToken,
+        string? reviewedSenderFingerprint = null)
+    {
+        var observation = new SubmissionObservation();
+        try { return await DeliverResolvedAsync(scope, toAddress, toName, subject, htmlBody, attachments, cancellationToken, reviewedSenderFingerprint, observation); }
+        catch (Exception) when (observation.AcceptedRelay is not null)
+        { return EmailDeliveryResult.Accepted(observation.AcceptedRelay); }
+        catch (EmailTransportException) { throw; }
+        catch (Exception e) when (reviewedSenderFingerprint is not null)
+        { throw new EmailTransportException(observation.Started ? "smtp_submission_unknown" : "smtp_pre_submission_failed", observation.Started, e); }
+    }
+
+    private sealed class SubmissionObservation
+    {
+        public bool Started;
+        public string? AcceptedRelay;
+    }
+
+    private async Task<EmailDeliveryResult> DeliverResolvedAsync(Scope scope, string toAddress, string toName,
+        string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments, CancellationToken cancellationToken,
+        string? reviewedSenderFingerprint, SubmissionObservation observation)
     {
         var policy = Policy;
+        var cfg = policy.IsCapture && reviewedSenderFingerprint is null ? null : await LoadConfigAsync(scope, cancellationToken);
+        if (reviewedSenderFingerprint is not null && Describe(cfg, policy).ConfigurationFingerprint != reviewedSenderFingerprint)
+            throw new EmailTransportException("offer_sender_changed", false);
 
-        // TEST CAPTURE MODE is decided BEFORE any relay is loaded, so a server that was told not to
-        // send can never reach a relay, however one came to be configured in its database.
+        // Capture never opens a connection. Sender-bound calls resolve identity for review only;
+        // generic capture callers retain the existing fast path without loading relay settings.
         if (policy.IsCapture)
         {
             await CaptureAsync(scope, toAddress, toName, subject, htmlBody, attachments, policy,
                 $"{EmailTransportPolicy.ModeKey} is '{policy.UnrecognisedMode ?? "capture"}'",
-                EmailCaptureReasons.CaptureMode, null, cancellationToken);
+                EmailCaptureReasons.CaptureMode, cfg?.FromAddress, cancellationToken);
             return EmailDeliveryResult.CapturedNotSent("test delivery mode is on for this server.");
         }
 
-        var cfg = await LoadConfigAsync(scope, cancellationToken);
         if (cfg is null)
         {
             // NO RECIPIENT IN THE LOG, masked or not: a centralised log sink is the hardest place to
@@ -158,12 +201,22 @@ public class SmtpEmailService : IEmailService
             builder.Attachments.Add(att.FileName, att.Data, ContentType.Parse(att.ContentType));
         message.Body = builder.ToMessageBody();
 
-        using var client = new SmtpClient { Timeout = SmtpTimeoutMs };
-        await client.ConnectAsync(cfg.Host, cfg.Port, ResolveSecureOption(cfg.UseTls, cfg.Port), cancellationToken);
-        if (!string.IsNullOrWhiteSpace(cfg.Username))
-            await client.AuthenticateAsync(cfg.Username, cfg.Password, cancellationToken);
-        await client.SendAsync(message, cancellationToken);
-        await client.DisconnectAsync(true, cancellationToken);
+        using var client = _session();
+        var submissionMayHaveStarted = false;
+        try
+        {
+            await client.ConnectAsync(cfg.Host, cfg.Port, ResolveSecureOption(cfg.UseTls, cfg.Port), cancellationToken);
+            if (!string.IsNullOrWhiteSpace(cfg.Username))
+                await client.AuthenticateAsync(cfg.Username, cfg.Password, cancellationToken);
+            submissionMayHaveStarted = true;
+            observation.Started = true;
+            await client.SendAsync(message, cancellationToken);
+            observation.AcceptedRelay = cfg.Host;
+        }
+        catch (Exception e) when (reviewedSenderFingerprint is not null)
+        { throw new EmailTransportException(submissionMayHaveStarted ? "smtp_submission_unknown" : "smtp_connection_failed", submissionMayHaveStarted, e); }
+        try { await client.DisconnectAsync(cancellationToken); }
+        catch (Exception) { _log.LogWarning("SMTP disconnect failed after observed relay acceptance (scope {Scope}).", scope.Describe()); }
         // No recipient (masked or not) and no SUBJECT: a template subject routinely carries the
         // employee name or the payroll period ("Payslip for Ahmed — July 2026"), so it is PII in its
         // own right. The Message-Id, scope and outcome identify the message without disclosing it.
@@ -246,18 +299,23 @@ public class SmtpEmailService : IEmailService
             Get("Smtp.Password") ?? string.Empty,
             fromAddress,
             Get("Smtp.FromName") ?? "KynexOne HR",
-            (Get("Smtp.UseTls") ?? "true").Equals("true", StringComparison.OrdinalIgnoreCase)
+            (Get("Smtp.UseTls") ?? "true").Equals("true", StringComparison.OrdinalIgnoreCase), "Tenant"
         );
     }
 
     private async Task<SmtpConfig?> LoadPlatformConfigAsync(CancellationToken ct)
     {
-        var platform = await PlatformSmtpConfig.LoadAsync(_db, _protection, _config, _log, ct);
+        var saved = await _db.PlatformConfigEntries.AsNoTracking()
+            .Where(e => PlatformSmtpConfig.AllKeys.Contains(e.Key))
+            .ToDictionaryAsync(e => e.Key, e => e.Value, ct);
+        var platform = PlatformSmtpConfig.Build(saved, _protection, _config, _log);
         if (!platform.IsUsable) return null;
-
+        string Origin(string key, string configKey) => saved.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? "database" : !string.IsNullOrWhiteSpace(_config[configKey]) ? "environment" : "default";
+        var source = $"Platform (relay:{platform.Source};address:{Origin(PlatformSmtpConfig.KeyFromAddress, "Smtp:FromEmail")};name:{Origin(PlatformSmtpConfig.KeyFromName, "Smtp:FromName")})";
         return new SmtpConfig(
             platform.Host, platform.Port, platform.Username, platform.Password,
-            platform.FromAddress, platform.FromName, platform.UseTls);
+            platform.FromAddress, platform.FromName, platform.UseTls, source);
     }
 
     /// <summary>Which relay a call is allowed to resolve to. Never inferred — always passed in.</summary>
@@ -271,5 +329,5 @@ public class SmtpEmailService : IEmailService
         public string Describe() => PlatformOnly ? "platform" : TenantId?.ToString() ?? "ambient";
     }
 
-    private record SmtpConfig(string Host, int Port, string Username, string Password, string FromAddress, string FromName, bool UseTls);
+    private record SmtpConfig(string Host, int Port, string Username, string Password, string FromAddress, string FromName, bool UseTls, string Source);
 }

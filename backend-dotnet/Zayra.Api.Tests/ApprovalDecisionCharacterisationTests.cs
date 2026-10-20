@@ -388,7 +388,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: "PendingApproval", stepStatus: "Approved");
 
         var result = await Offers(db, f.TenantId, Guid.NewGuid())
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null, (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         Assert.Equal("approval_already_decided", ErrorCode(conflict.Value));
@@ -405,7 +405,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: offerStatus);
 
         var result = await Offers(db, f.TenantId, Guid.NewGuid())
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null, (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         Assert.Equal("invalid_offer_state", ErrorCode(conflict.Value));
@@ -424,16 +424,16 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: "PendingApproval", author: author);
 
         var byAnyone = await Offers(db, f.TenantId, Guid.NewGuid())
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
         Assert.Equal("not_the_named_approver", ErrorCode(Assert.IsType<ObjectResult>(byAnyone).Value));
 
         var byAuthor = await Offers(db, f.TenantId, author)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "self", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
         Assert.Equal("offer_maker_checker", ErrorCode(Assert.IsType<ObjectResult>(byAuthor).Value));
         Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
 
         var byApprover = await Offers(db, f.TenantId, f.ApproverUserId)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
         Assert.IsType<OkObjectResult>(byApprover);
         Assert.Equal("Approved", (await db.OfferLetters.SingleAsync()).Status);
     }
@@ -447,7 +447,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
         await Offers(db, f.TenantId, f.ApproverUserId)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         var row = await db.RecruitmentAuditLogs.SingleAsync(l => l.Action == "ApprovalDecided");
         Assert.Equal(f.ApproverUserId, row.PerformedByUserId);
@@ -462,7 +462,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
         var result = await Offers(db, f.TenantId, f.ApproverUserId)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", "ok", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal("Approved", (await db.OfferLetters.SingleAsync()).Status);
@@ -485,7 +485,7 @@ public class ApprovalDecisionCharacterisationTests
         await db.SaveChangesAsync();
 
         var result = await Offers(db, f.TenantId, f.ApproverUserId)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Approved", null, (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
@@ -500,7 +500,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: "PendingApproval");
 
         var result = await Offers(db, f.TenantId, f.ApproverUserId)
-            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Rejected", "band too high"), CancellationToken.None);
+            .DecideApproval(f.OfferId, f.ApprovalId, new DecideApprovalRequest("Rejected", "band too high", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal("Draft", (await db.OfferLetters.SingleAsync()).Status);
@@ -516,7 +516,7 @@ public class ApprovalDecisionCharacterisationTests
         var f = await SeedOfferAsync(db, status: offerStatus);
 
         var result = await Offers(db, f.TenantId, Guid.NewGuid())
-            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", null, "Finance"), CancellationToken.None);
+            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", null, "Finance", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         Assert.Equal("invalid_offer_state", ErrorCode(conflict.Value));
@@ -532,7 +532,7 @@ public class ApprovalDecisionCharacterisationTests
         var cfo = await SeedApproverAsync(db, f.TenantId);
 
         var result = await Offers(db, f.TenantId, author)
-            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", cfo, "Finance"), CancellationToken.None);
+            .AddApproval(f.OfferId, new AddOfferApprovalRequest("CFO", cfo, "Finance", (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == f.OfferId)).Version), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal("PendingApproval", (await db.OfferLetters.SingleAsync()).Status);
@@ -629,12 +629,13 @@ public class ApprovalDecisionCharacterisationTests
     private sealed record OfferFixture(Guid TenantId, Guid OfferId, Guid ApplicationId, Guid ApprovalId, Guid ApproverUserId);
 
     /// <summary>An active HR Manager of the tenant: someone an offer step may name.</summary>
-    private static async Task<Guid> SeedApproverAsync(ZayraDbContext db, Guid tenantId)
+    private static async Task<Guid> SeedApproverAsync(ZayraDbContext db, Guid tenantId, string name = "CFO")
     {
         var role = new Zayra.Api.Domain.Entities.Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        var email = $"{name.Replace(" ", ".").ToLowerInvariant()}@example.test";
         var user = new Zayra.Api.Domain.Entities.User
         {
-            TenantId = tenantId, Email = "cfo@example.test", NormalizedEmail = "CFO@EXAMPLE.TEST", FullName = "CFO",
+            TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = name,
             Status = "Active", IsActive = true,
         };
         user.UserRoles.Add(new Zayra.Api.Domain.Entities.UserRole { UserId = user.Id, RoleId = role.Id, Role = role });
@@ -658,12 +659,18 @@ public class ApprovalDecisionCharacterisationTests
             StartDate = new DateOnly(2026, 11, 1),
             Status = status,
         };
-        var approverUserId = Guid.NewGuid();
+        // The decider must still be an eligible approver (an active HR Manager or Admin) when deciding.
+        var approverUserId = await SeedApproverAsync(db, tenantId, "Head of Eng");
         var approval = new OfferApproval
         {
             TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId,
             StepOrder = 1, ApproverName = "Head of Eng", ApproverUserId = approverUserId, Status = stepStatus,
         };
+        // Approvals endorse a frozen managed original (legacy submitted terms must be revised first), and the
+        // lifecycle service locks the offer's application before any change, as production data always has one.
+        var application = new JobApplication { Id = applicationId, TenantId = tenantId, CandidateName = "Layla Hassan", JobTitle = "Engineer", Stage = "OfferExtended", StageOrder = 5, Status = "Active" };
+        db.JobApplications.Add(application);
+        OfferWorkflowTestSupport.SeedFrozenManaged(db, offer, application);
         db.AddRange(offer, approval);
         if (author is { } a)
             db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, a, "Author"));
@@ -683,7 +690,8 @@ public class ApprovalDecisionCharacterisationTests
         => WithPrincipal(new AdvancesController(db, new OrgScope()), tenantId, userId);
 
     private static OffersController Offers(ZayraDbContext db, Guid tenantId, Guid userId)
-        => WithPrincipal(new OffersController(db, new NoLetters(), new RecruitmentService(db)), tenantId, userId);
+        => WithPrincipal(new OffersController(db, new NoLetters(), new RecruitmentService(db),
+            OfferWorkflowTestSupport.Lifecycle(db), OfferWorkflowTestSupport.Artifacts(db)), tenantId, userId);
 
     private static T WithPrincipal<T>(T controller, Guid tenantId, Guid userId) where T : ControllerBase
     {

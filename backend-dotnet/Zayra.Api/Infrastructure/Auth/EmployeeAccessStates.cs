@@ -38,6 +38,7 @@ public static class EmployeeAccessStates
             string.IsNullOrEmpty(domain) ? "The work email isn't on the company's email domain." : $"Work email must end in @{domain}.",
         EmployeeLoginProvisioner.BlockedCodes.PlusAddress => WorkEmailPlusAddressException.Text,
         EmployeeLoginProvisioner.BlockedCodes.InvalidCharacters => WorkEmailInvalidCharactersException.Text,
+        EmployeeLoginProvisioner.BlockedCodes.InvalidFormat => WorkEmailFormatException.Text,
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToExistingLogin =>
             "This work email is already someone's sign-in. An administrator must check it is the same person and connect it.",
         EmployeeLoginProvisioner.BlockedCodes.EmailBelongsToFormerEmployee =>
@@ -125,9 +126,7 @@ public static class EmployeeAccessStates
             if (email.Length == 0) return new Evaluation(WaitingForWorkEmail);
             if (WorkEmailPlusAddressException.IsPlusAddressed(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.PlusAddress, f.CompanyDomain);
             if (WorkEmailInvalidCharactersException.IsInvalid(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.InvalidCharacters, f.CompanyDomain);
-            if (f.CompanyDomain.Length == 0) return Block(EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing, null);
-            if (!EmployeeLoginProvisioner.IsOnDomain(email, f.CompanyDomain))
-                return Block(EmployeeLoginProvisioner.BlockedCodes.WrongDomain, f.CompanyDomain);
+            if (WorkEmailFormatException.IsInvalid(email)) return Block(EmployeeLoginProvisioner.BlockedCodes.InvalidFormat, f.CompanyDomain);
             if (f.EmailOwnerBlockedCode is { } owner) return Block(owner, f.CompanyDomain);
             return new Evaluation(NotStarted);
         }
@@ -153,7 +152,7 @@ public static class EmployeeAccessStates
     }
 
     private const string Why =
-        "Employee access state: each listed employee's own login, any login already using their work email, and the employing company's domain are read across legal entities; the tenant is re-applied and the employee ids were already scope-filtered by the caller.";
+        "Employee access state: each listed employee's own login and any login already using their work email are read across legal entities; the tenant is re-applied and the employee ids were already scope-filtered by the caller.";
 
     /// <summary>Loads the facts for <paramref name="employeeIds"/> (already tenant- and scope-filtered by the caller).</summary>
     public static async Task<Dictionary<int, Facts>> LoadAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct)
@@ -171,11 +170,6 @@ public static class EmployeeAccessStates
             })
             .ToListAsync(ct);
 
-        var companyIds = employees.Where(e => e.CompanyId.HasValue).Select(e => e.CompanyId!.Value).Distinct().ToList();
-        var domains = await ScopedBypass.TenantWide(db.Companies, tenantId, Why).AsNoTracking()
-            .Where(c => companyIds.Contains(c.Id) && !c.IsDeleted)
-            .Select(c => new { c.Id, c.EmailDomain })
-            .ToDictionaryAsync(c => c.Id, c => (c.EmailDomain ?? string.Empty).Trim().ToLowerInvariant(), ct);
         var branchIds = employees.Where(e => string.IsNullOrEmpty(e.Branch) && e.BranchId.HasValue).Select(e => e.BranchId!.Value).Distinct().ToList();
         var branches = branchIds.Count == 0
             ? new Dictionary<Guid, string>()
@@ -221,7 +215,7 @@ public static class EmployeeAccessStates
                 e.Department ?? string.Empty,
                 !string.IsNullOrEmpty(e.Branch) ? e.Branch : e.BranchId is Guid b && branches.TryGetValue(b, out var bn) ? bn : string.Empty,
                 e.Status ?? string.Empty, e.IsDeleted, e.DuplicateOfEmployeeId.HasValue, e.WorkEmail ?? string.Empty,
-                e.CompanyId, e.CompanyId is Guid c && domains.TryGetValue(c, out var dom) ? dom : string.Empty,
+                e.CompanyId, string.Empty,
                 e.UserAccountId, e.JoiningDate, link, login,
                 link is null && ownerCode.TryGetValue(normalized, out var oc) ? oc : null);
         }

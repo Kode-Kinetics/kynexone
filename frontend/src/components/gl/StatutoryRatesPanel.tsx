@@ -478,7 +478,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
           {isGroupView && countries.length > 1 && (
             <div className="min-w-[160px]">
               <Field label={t('Country')}>
-                <select value={groupCountryEntry?.code ?? ''} onChange={(e) => setGroupCountry(e.target.value)} className="select h-8 w-full text-xs">
+                <select data-setup-filter value={groupCountryEntry?.code ?? ''} onChange={(e) => setGroupCountry(e.target.value)} className="select h-8 w-full text-xs">
                   {countries.map((c) => (
                     <option key={c.code} value={c.code}>
                       {c.code}

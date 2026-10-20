@@ -35,7 +35,7 @@ public sealed class OfferAcceptanceExactlyOnceTests
                 firstDb, new RecruitmentService(firstDb), new AcceptanceNullNotifications());
             SetPrincipal(applications, seeded.TenantId, actorId);
 
-            var first = await applications.AcceptOffer(seeded.OfferId, CancellationToken.None);
+            var first = await applications.AcceptOffer(seeded.OfferId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(firstDb, seeded.OfferId));
             first.Should().BeOfType<OkObjectResult>();
         }
 
@@ -45,7 +45,7 @@ public sealed class OfferAcceptanceExactlyOnceTests
                 replayDb, new AcceptanceNullLetters(), new RecruitmentService(replayDb));
             SetPrincipal(offers, seeded.TenantId, actorId);
 
-            var replay = await offers.Accept(seeded.OfferId, CancellationToken.None);
+            var replay = await offers.Accept(seeded.OfferId, CancellationToken.None, new(1, "Accepted", "StaffRecorded", DateTime.UtcNow, "Replay confirmed response"));
             replay.Should().BeOfType<OkObjectResult>("acceptance replay is an idempotent success");
         }
 
@@ -174,9 +174,10 @@ public sealed class OfferAcceptanceExactlyOnceTests
             SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
 
             var result = await controller.Decline(
-                seeded.OfferId, new DeclineOfferRequest("changed mind"), CancellationToken.None);
+                seeded.OfferId, new DeclineOfferRequest("changed mind", await OfferWorkflowTestSupport.VersionAsync(declineDb, seeded.OfferId), "Declined", "StaffRecorded", DateTime.UtcNow), CancellationToken.None);
 
             result.Should().BeOfType<ConflictObjectResult>();
+            System.Text.Json.JsonSerializer.Serialize(((ObjectResult)result).Value).Should().Contain("application_not_active");
         }
 
         await AssertExactlyOnceAsync(seeded);
@@ -260,7 +261,7 @@ public sealed class OfferAcceptanceExactlyOnceTests
             SetPrincipal(controller, seeded.TenantId, Guid.NewGuid());
 
             var result = await controller.DecideApproval(
-                seeded.OfferId, approvalId, new DecideApprovalRequest("Escalated", null), CancellationToken.None);
+                seeded.OfferId, approvalId, new DecideApprovalRequest("Escalated", null, 1), CancellationToken.None);
 
             result.Should().BeOfType<BadRequestObjectResult>();
         }

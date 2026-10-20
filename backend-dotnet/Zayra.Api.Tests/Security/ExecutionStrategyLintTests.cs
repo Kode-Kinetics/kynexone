@@ -225,12 +225,19 @@ public class ExecutionStrategyLintTests
     // ── 1. The ratchet ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Known, justified exceptions. Empty by design: every one of the fifteen transaction sites in
-    /// Zayra.Api runs inside the execution strategy. A new entry needs a comment stating why the
+    /// Known, justified exceptions. Every other transaction site in Zayra.Api runs inside the
+    /// registered execution strategy. A new entry needs a comment stating why the
     /// site can never run under a retrying strategy — "it is only reached from tests" is not a
     /// reason, because the production DbContext is the one that is registered with retry.
     /// </summary>
-    private static readonly HashSet<string> AllowList = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> AllowList = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Inside UploadSingleAttemptStrategy.ExecuteAsync — an ExecutionStrategy that never retries, on purpose:
+        // the delegate PUTs the frozen PDF to storage, and replaying it would upload the same key twice. Running
+        // under any ExecutionStrategy sets ExecutionStrategy.Current, so the registered retrying strategy does
+        // not refuse the transaction. OfferArtifactPostgresTests runs this path on EnableRetryOnFailure.
+        Path.Combine("Infrastructure", "Recruitment", "OfferArtifactService.cs") + ":114",
+    };
 
     [Fact]
     public void BeginTransaction_EverySiteMustRunInsideTheExecutionStrategy()

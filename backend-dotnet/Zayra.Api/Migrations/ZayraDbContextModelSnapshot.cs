@@ -10932,6 +10932,22 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("AcceptedOfferCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("accepted_offer_company_id");
+
+                    b.Property<Guid?>("OfferCompensationPlacementCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_compensation_placement_company_id");
+
+                    b.Property<string>("AcceptedOfferCompensationJson")
+                        .HasColumnType("text")
+                        .HasColumnName("accepted_offer_compensation_json");
+
+                    b.Property<Guid?>("AcceptedOfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("accepted_offer_id");
+
                     b.Property<DateTime?>("ActivatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("activated_at_utc");
@@ -11088,6 +11104,27 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("nationality");
 
+                    b.Property<DateTime?>("OfferCompensationConfirmedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("offer_compensation_confirmed_at_utc");
+
+                    b.Property<Guid?>("OfferCompensationConfirmedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_compensation_confirmed_by_user_id");
+
+                    b.Property<string>("OfferCompensationConfirmedFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("offer_compensation_confirmed_fingerprint");
+
+                    b.Property<string>("OfferCompensationDispositionsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("offer_compensation_dispositions_json");
+
+                    b.Property<long>("OfferCompensationVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("offer_compensation_version");
+
                     b.Property<DateOnly?>("PassportExpiryDate")
                         .HasColumnType("date")
                         .HasColumnName("passport_expiry_date");
@@ -11215,6 +11252,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("wps_bank_details");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AcceptedOfferCompanyId");
+
+                    b.HasIndex("TenantId", "OfferCompensationPlacementCompanyId");
+
+                    b.HasIndex("TenantId", "AcceptedOfferId");
 
                     b.HasIndex("TenantId", "Status");
 
@@ -17048,6 +17091,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<Guid?>("CurrentIssuedOfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("current_issued_offer_id");
+
                     b.Property<DateTime?>("HiredAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("hired_at_utc");
@@ -17061,9 +17108,25 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("job_title");
 
+                    b.Property<Guid?>("OfferReservationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_reservation_id");
+
+                    b.Property<Guid?>("OfferReservationOfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_reservation_offer_id");
+
+                    b.Property<string>("OfferReservationState")
+                        .HasColumnType("text")
+                        .HasColumnName("offer_reservation_state");
+
+                    b.Property<long?>("OfferReservationVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("offer_reservation_version");
+
                     b.Property<decimal?>("OfferedSalary")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("offered_salary");
 
                     b.Property<Guid?>("OnboardingDraftId")
@@ -17097,9 +17160,21 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CurrentIssuedOfferId");
+
+                    b.HasIndex("TenantId", "OfferReservationOfferId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Id")
+                        .IsUnique();
 
                     b.HasIndex("TenantId", "JobOpeningId", "CandidateId")
                         .IsUnique();
@@ -22279,6 +22354,365 @@ namespace Zayra.Api.Migrations
                     b.ToTable("offer_approvals", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.OfferArtifact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("application_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<DateTime?>("FinalizedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finalized_at_utc");
+
+                    b.Property<Guid>("OfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_id");
+
+                    b.Property<long>("PendingOfferVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("pending_offer_version");
+
+                    b.Property<string>("Provenance")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("provenance");
+
+                    b.Property<string>("RendererVersion")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("renderer_version");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<long>("SourceOfferVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("source_offer_version");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(600)
+                        .HasColumnType("character varying(600)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StorageKey")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "ApplicationId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "OfferId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Id")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "OfferId", "Id")
+                        .IsUnique();
+
+                    b.ToTable("offer_artifacts", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferCompanyPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<int>("Precision")
+                        .HasColumnType("integer")
+                        .HasColumnName("precision");
+
+                    b.Property<string>("RequiredComponentCodesJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("required_component_codes_json");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId")
+                        .IsUnique();
+
+                    b.ToTable("offer_company_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_offer_company_policy_precision", "precision BETWEEN 0 AND 3");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferDispatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("application_id");
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime?>("FinalizedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finalized_at_utc");
+
+                    b.Property<string>("FromAddress")
+                        .HasColumnType("text")
+                        .HasColumnName("from_address");
+
+                    b.Property<string>("FromName")
+                        .HasColumnType("text")
+                        .HasColumnName("from_name");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("InitiatorName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("initiator_name");
+
+                    b.Property<Guid>("InitiatorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("initiator_user_id");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lease_token");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_until_utc");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<Guid>("OfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("RecipientEmail")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("recipient_email");
+
+                    b.Property<string>("RecipientName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("recipient_name");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<string>("ResendReason")
+                        .HasColumnType("text")
+                        .HasColumnName("resend_reason");
+
+                    b.Property<long>("ReservationVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reservation_version");
+
+                    b.Property<string>("SenderFingerprint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("sender_fingerprint");
+
+                    b.Property<string>("SenderSource")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("sender_source");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("subject");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("TransportCompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("transport_completed_at_utc");
+
+                    b.Property<DateTime?>("TransportStartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("transport_started_at_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ApplicationId");
+
+                    b.HasIndex("TenantId", "ArtifactId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("Outcome", "LeaseUntilUtc", "CreatedAtUtc");
+
+                    b.HasIndex("TenantId", "OfferId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "ApplicationId", "OfferId", "Id")
+                        .IsUnique();
+
+                    b.ToTable("offer_dispatches", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferDispatchAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("application_id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("code");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("DispatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("dispatch_id");
+
+                    b.Property<Guid>("LeaseToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lease_token");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at_utc");
+
+                    b.Property<Guid>("OfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("Stage")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("stage");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "DispatchId", "OccurredAtUtc");
+
+                    b.HasIndex("TenantId", "DispatchId", "LeaseToken", "Stage")
+                        .IsUnique();
+
+                    b.ToTable("offer_dispatch_attempts", (string)null);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.OfferLetter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -22290,23 +22724,53 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("accepted_at_utc");
 
+                    b.Property<decimal?>("AnnualRecurringCash")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
+                        .HasColumnName("annual_recurring_cash");
+
                     b.Property<Guid>("ApplicationId")
                         .HasColumnType("uuid")
                         .HasColumnName("application_id");
 
+                    b.Property<Guid?>("ArtifactId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_id");
+
                     b.Property<decimal>("BasicSalary")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("basic_salary");
+
+                    b.Property<Guid?>("CandidateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_id");
 
                     b.Property<string>("CandidateName")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("candidate_name");
 
+                    b.Property<string>("CommunicationOutcome")
+                        .HasColumnType("text")
+                        .HasColumnName("communication_outcome");
+
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
+
+                    b.Property<string>("CompensationCurrency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("compensation_currency");
+
+                    b.Property<int?>("CompensationPrecision")
+                        .HasColumnType("integer")
+                        .HasColumnName("compensation_precision");
+
+                    b.Property<string>("CompensationSnapshotJson")
+                        .HasColumnType("text")
+                        .HasColumnName("compensation_snapshot_json");
 
                     b.Property<string>("ContentHtml")
                         .IsRequired()
@@ -22322,19 +22786,31 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("declined_at_utc");
 
+                    b.Property<string>("DesignSnapshotJson")
+                        .HasColumnType("text")
+                        .HasColumnName("design_snapshot_json");
+
+                    b.Property<DateTime?>("FrozenAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("frozen_at_utc");
+
                     b.Property<DateTime>("GeneratedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("generated_at_utc");
 
                     b.Property<decimal>("GrossSalary")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("gross_salary");
 
                     b.Property<decimal>("HousingAllowance")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("housing_allowance");
+
+                    b.Property<long?>("OfferPolicyVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("offer_policy_version");
 
                     b.Property<string>("OfferedDepartment")
                         .IsRequired()
@@ -22346,22 +22822,43 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("offered_job_title");
 
+                    b.Property<decimal?>("OneTimeCash")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
+                        .HasColumnName("one_time_cash");
+
                     b.Property<decimal>("OtherAllowances")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("other_allowances");
+
+                    b.Property<Guid?>("PreviousRevisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("previous_revision_id");
 
                     b.Property<int>("ProbationMonths")
                         .HasColumnType("integer")
                         .HasColumnName("probation_months");
 
+                    b.Property<string>("RecipientEmail")
+                        .HasColumnType("text")
+                        .HasColumnName("recipient_email");
+
                     b.Property<DateTime?>("ResponseDeadline")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("response_deadline");
 
+                    b.Property<int?>("RevisionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision_number");
+
                     b.Property<DateTime?>("SentAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at_utc");
+
+                    b.Property<Guid?>("SeriesId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("series_id");
 
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
@@ -22372,14 +22869,156 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("status");
 
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at_utc");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.Property<decimal>("TransportAllowance")
-                        .HasPrecision(12, 2)
-                        .HasColumnType("numeric(12,2)")
+                        .HasPrecision(19, 3)
+                        .HasColumnType("numeric(19,3)")
                         .HasColumnName("transport_allowance");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ApplicationId");
+
+                    b.HasIndex("TenantId", "ArtifactId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "PreviousRevisionId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Id")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "SeriesId", "RevisionNumber")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "ApplicationId", "Id")
+                        .IsUnique();
+
+                    b.ToTable("offer_letters", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferLetterTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("archived");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("DesignJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("design_json");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.ToTable("offer_letter_templates", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferLifecycleEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("actor_name");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("application_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("DataJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("data_json");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at_utc");
+
+                    b.Property<Guid>("OfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("RecordedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at_utc");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
 
@@ -22387,7 +23026,63 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
-                    b.ToTable("offer_letters", (string)null);
+                    b.HasIndex("TenantId", "OfferId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "RecordedAtUtc", "Id");
+
+                    b.ToTable("offer_lifecycle_events", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferSeries", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("application_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("LegacyRootOfferId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("legacy_root_offer_id");
+
+                    b.Property<int>("NextRevisionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("next_revision_number");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ApplicationId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "LegacyRootOfferId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "Id")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId", "ApplicationId", "Id")
+                        .IsUnique();
+
+                    b.ToTable("offer_series", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.OnboardingChecklist", b =>
@@ -31454,6 +32149,27 @@ namespace Zayra.Api.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeDraft", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AcceptedOfferCompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferCompensationPlacementCompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AcceptedOfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.EmployeeEntitlement", b =>
                 {
                     b.HasOne("Zayra.Api.Models.Company", null)
@@ -31639,6 +32355,21 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.JobApplication", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CurrentIssuedOfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferReservationOfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LearningAssignment", b =>
@@ -31858,6 +32589,156 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.FinanceGlEntry", null)
                         .WithMany()
                         .HasForeignKey("TenantId", "ReversalGlEntryId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferArtifact", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.JobApplication", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ApplicationId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferCompanyPolicy", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferDispatch", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.JobApplication", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ApplicationId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferArtifact", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ArtifactId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferDispatchAttempt", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferDispatch", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "DispatchId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferLetter", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.OfferArtifact", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ArtifactId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "PreviousRevisionId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.OfferSeries", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "SeriesId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferLifecycleEvent", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.JobApplication", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ApplicationId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OfferSeries", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.JobApplication", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ApplicationId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CompanyId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.OfferLetter", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LegacyRootOfferId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
                 });

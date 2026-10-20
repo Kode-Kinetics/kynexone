@@ -4,6 +4,7 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Jobs;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Retention.Rules;
@@ -184,10 +185,12 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
         // throws here, before any row is touched, and the item is retried.
         var selfieFiles = await SelfieEvidenceErasure.DeleteAllFilesAsync(
             TenantRows<AttendanceEvidence>(ctx), ctx.Services.GetService<Zayra.Api.Infrastructure.Documents.IDocumentStorage>(), ctx.TenantId, ct);
+        var offerErasure = await OfferArtifactErasure.EraseAsync(ctx.Db,
+            ctx.Services.GetService<Zayra.Api.Infrastructure.Documents.IDocumentStorage>(), ctx.TenantId, ct);
 
-        var erased = await EraseAsync(ctx, ct);
+        var erased = await EraseAsync(ctx, offerErasure.RowsDeleted, ct);
         tenant.PurgedAtUtc = nowUtc;
-        return new { erasedRowsByTable = erased, totalRows = erased.Values.Sum(), selfieFilesDeleted = selfieFiles, tenantShellRetained = true };
+        return new { erasedRowsByTable = erased, totalRows = erased.Values.Sum(), selfieFilesDeleted = selfieFiles, offerFilesDeleted = offerErasure.FilesDeleted, tenantShellRetained = true };
     }
 
     /// <summary>
@@ -214,9 +217,8 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
     /// transaction, so a foreign-key ordering failure on pass 1 would poison the transaction rather than
     /// letting pass 2 retry. Rolling back to a savepoint keeps the outer transaction usable.
     /// </summary>
-    private static async Task<Dictionary<string, int>> EraseAsync(JobExecutionContext ctx, CancellationToken ct)
+    private static async Task<Dictionary<string, int>> EraseAsync(JobExecutionContext ctx, Dictionary<string, int> erased, CancellationToken ct)
     {
-        var erased = new Dictionary<string, int>(StringComparer.Ordinal);
         var pending = ErasableTypes(ctx.Db).ToList();
         var transaction = ctx.Db.Database.CurrentTransaction
             ?? throw new InvalidOperationException(

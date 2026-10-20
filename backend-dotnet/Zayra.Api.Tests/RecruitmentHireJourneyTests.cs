@@ -34,7 +34,7 @@ public sealed class RecruitmentHireJourneyTests
     // ── Offer approval -> send ────────────────────────────────────────────────
 
     [Fact]
-    public async Task ApplicationSendOffer_SendsAnOfferWhoseApprovalChainIsComplete()
+    public async Task DeprecatedApplicationSendDoesNotIssueEvenWhenLegacyApprovalChainIsComplete()
     {
         // The application drawer sends through ApplicationsController. It accepted only Draft, so an
         // offer that had been through approval (Status = Approved) could never be sent from there.
@@ -49,12 +49,12 @@ public sealed class RecruitmentHireJourneyTests
         {
             var result = await Applications(db, seeded.TenantId, Guid.NewGuid())
                 .SendOffer(seeded.OfferId, CancellationToken.None);
-            result.Should().BeOfType<OkObjectResult>();
+            JsonSerializer.Serialize(result.Should().BeOfType<ConflictObjectResult>().Subject.Value).Should().Contain("explicit_delivery_required");
         }
 
         await using var verify = _fixture.CreateDb();
         (await verify.OfferLetters.AsNoTracking().SingleAsync(x => x.Id == seeded.OfferId))
-            .Status.Should().Be("Sent");
+            .Status.Should().Be("Approved");
     }
 
     [Fact]
@@ -95,9 +95,9 @@ public sealed class RecruitmentHireJourneyTests
         await using (var db = _fixture.CreateDb())
         {
             var result = await Offers(db, seeded.TenantId).AddApproval(
-                seeded.OfferId, new AddOfferApprovalRequest("Finance", null, "Finance Approver"), CancellationToken.None);
+                seeded.OfferId, new AddOfferApprovalRequest("Finance", null, "Finance Approver", 1), CancellationToken.None);
             var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
-            JsonSerializer.Serialize(conflict.Value).Should().Contain("offer_approval_rejected");
+            JsonSerializer.Serialize(conflict.Value).Should().Contain("offer_revision_required");
         }
 
         await using var verify = _fixture.CreateDb();
@@ -156,7 +156,7 @@ public sealed class RecruitmentHireJourneyTests
 
         var recruiter = Guid.NewGuid();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, seeded.TenantId, recruiter).AcceptOffer(seeded.OfferId, CancellationToken.None))
+            (await Applications(db, seeded.TenantId, recruiter).AcceptOffer(seeded.OfferId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, seeded.OfferId)))
                 .Should().BeOfType<OkObjectResult>();
 
         Guid draftId;
@@ -168,6 +168,8 @@ public sealed class RecruitmentHireJourneyTests
         // DraftStatutoryIdentity. This test is about the hire journey, not statutory readiness.
         await using (var db = _fixture.CreateDb())
             await DraftStatutoryIdentity.ApplyAsync(db, draftId, "AE");
+        await using (var db = _fixture.CreateDb())
+            await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, recruiter);
 
         // A different, group-level HR user activates the hire. There is no screen or endpoint that
         // "submits" a recruitment draft, so it has to arrive in a state approval accepts.
@@ -199,7 +201,7 @@ public sealed class RecruitmentHireJourneyTests
         await using (var db = _fixture.CreateDb())
         {
             var result = await Applications(db, seeded.TenantId, Guid.NewGuid())
-                .Advance(seeded.ApplicationId, new AdvanceRequest(null, "HR"), CancellationToken.None);
+                .Advance(seeded.ApplicationId, new AdvanceRequest(null, "HR", 1), CancellationToken.None);
             var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
             JsonSerializer.Serialize(conflict.Value).Should().Contain("hire_requires_offer_acceptance");
         }

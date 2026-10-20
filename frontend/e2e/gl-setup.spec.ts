@@ -614,15 +614,22 @@ test('chart of accounts: the ERP account code is shown, set on add, and changed 
   const puts = () => state.writes.filter((w) => w.method === 'PUT').map((w) => ({ path: w.path, externalCode: (w.body as { externalCode?: unknown }).externalCode }));
   await row('Basic Salary Expense').getByRole('button', { name: 'Edit', exact: true }).click();
   let dialog = page.getByRole('dialog', { name: 'Edit account 5001' });
+  // The Modal moves focus to its Close button one animation frame after it opens. fill() focuses
+  // the field and then presses keys in a separate round trip, so typing before that initial focus
+  // lands can send the keys to the Close button (CI once saved 5001 with its old code this way).
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await expect(dialog.getByText('The account code in your ERP if it differs from this one. Journal exports use it.')).toBeVisible();
   await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('01-000-6100');
   await dialog.getByLabel('ERP account code', { exact: true }).fill('');
+  await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await row('Housing Allowance Expense').getByRole('button', { name: 'Edit', exact: true }).click();
   dialog = page.getByRole('dialog', { name: 'Edit account 5002' });
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('');
   await dialog.getByLabel('ERP account code', { exact: true }).fill('6200/HOU');
+  await expect(dialog.getByLabel('ERP account code', { exact: true })).toHaveValue('6200/HOU');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(puts).toEqual([
     { path: '/api/finance/gl/accounts/acc-5001', externalCode: '' },

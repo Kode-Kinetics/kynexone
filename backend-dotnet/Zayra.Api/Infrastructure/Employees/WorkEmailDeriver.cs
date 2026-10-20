@@ -6,8 +6,8 @@ namespace Zayra.Api.Infrastructure.Employees;
 /// <summary>
 /// AUTHORITATIVE, DB-free work-email derivation. The single implementation shared by single-create
 /// (EmployeeManagementService), the bulk importer (EmployeeImportRowResolver / EmployeesController.Import)
-/// and the modal preview endpoint (EmployeesController.DeriveWorkEmail) so the preview a user sees is
-/// byte-identical to what is committed.
+/// and the modal preview endpoint (EmployeesController.DeriveWorkEmail). Suggestions are advisory;
+/// only the complete address explicitly submitted by the user is committed.
 ///
 /// Design notes / verified constraints:
 ///  - The name → local-part step reuses the EXISTING <see cref="NameNormalizer.Normalize"/> helper
@@ -58,16 +58,10 @@ public static class WorkEmailDeriver
     }
 
     /// <summary>
-    /// The single server-authoritative resolution shared by create, update, the PATCH edit, and the preview endpoint
-    /// so they can NEVER diverge. Given a company <paramref name="domain"/> (already known non-empty) and the provided
-    /// value (blank / local part / full address):
-    ///  - blank → outcome "blank", returns "": a derived address is a SUGGESTION only (<see cref="Suggest"/>), never
-    ///    saved — the login's username must be the employee's real work email (employee-access contract §3);
-    ///  - a full address on ANOTHER domain → <see cref="WorkEmailRejectedException"/> <c>work_email_wrong_domain</c>
-    ///    ("Work email must end in @{domain}."); it is refused, never silently re-assembled onto the company domain;
-    ///  - a local part, or an address on the domain → assembled on the domain; a collision throws
-    ///    <see cref="WorkEmailConflictException"/> (the deliberate stop — never silently duplicate).
-    /// <paramref name="coercedFrom"/> is always null now (kept for call-site compatibility).
+    /// Validate and retain a complete IT-issued address. The company domain/pattern never constrain
+    /// the address. Blank stays blank; optional suggestions use Suggest and are never saved implicitly.
+    /// Duplicate detection uses the caller's tenant-normalized set and suggests on the supplied domain.
+    /// coercedFrom is retained for call-site compatibility and is always null.
     /// </summary>
     public static string Resolve(
         string? providedWorkEmail, string? englishName, string? arabicName,
@@ -77,15 +71,14 @@ public static class WorkEmailDeriver
         coercedFrom = null;
         var provided = (providedWorkEmail ?? string.Empty).Trim();
         if (provided.Length == 0) { outcome = "blank"; return string.Empty; }
+        Auth.WorkEmailInvalidCharactersException.ThrowIfNotAllowed(provided);
+        Auth.WorkEmailFormatException.ThrowIfInvalid(provided);
         var localPart = ExtractLocalPart(provided);
-        var (matches, providedDomain) = ValidateAgainstDomain(provided, domain);
-        if (!matches && !string.IsNullOrEmpty(providedDomain))
-            throw WorkEmailRejectedException.WrongDomain(domain, localPart.Length > 0 && !isTaken(Assemble(localPart, domain)) ? Assemble(localPart, domain) : null);
-        var assembled = Assemble(localPart, domain);
-        if (isTaken(assembled))
-            throw new WorkEmailConflictException(assembled, Uniqueify(localPart, domain, isTaken));
-        outcome = "assembled";
-        return assembled;
+        var providedDomain = provided[(provided.IndexOf('@') + 1)..];
+        if (isTaken(provided))
+            throw new WorkEmailConflictException(provided, Uniqueify(localPart, providedDomain, isTaken));
+        outcome = "provided";
+        return provided;
     }
 
     /// <summary>The address HR may accept for a blank work email: derived from the name per the pattern, made unique.
@@ -94,7 +87,8 @@ public static class WorkEmailDeriver
     {
         if (string.IsNullOrWhiteSpace(domain)) return null;
         var local = BuildLocalPart(englishName, arabicName, pattern);
-        return local.Length == 0 ? null : Uniqueify(local, domain, isTaken);
+        var suggestion = local.Length == 0 ? string.Empty : Uniqueify(local, domain, isTaken);
+        return suggestion.Length == 0 ? null : suggestion;
     }
 
     /// <summary>Assemble a full address from a local part and a domain (domain lowercased/trimmed).</summary>
@@ -108,18 +102,27 @@ public static class WorkEmailDeriver
     /// </summary>
     public static string Uniqueify(string localPart, string domain, Func<string, bool> isTaken)
     {
-        var baseAddr = Assemble(localPart, domain);
+        var budget = Math.Min(64, 253 - domain.Trim().Length);
+        if (budget < 1) return string.Empty;
+        localPart = localPart.Trim();
+        var stem = localPart[..Math.Min(localPart.Length, budget)].TrimEnd('.');
+        var baseAddr = Assemble(stem, domain);
+        if (Auth.WorkEmailFormatException.IsInvalid(baseAddr) || Auth.WorkEmailInvalidCharactersException.IsInvalid(baseAddr))
+            return string.Empty;
         if (!isTaken(baseAddr)) return baseAddr;
         for (var i = 2; i < 100000; i++)
         {
-            var candidate = Assemble($"{localPart}{i}", domain);
+            var suffix = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (suffix.Length >= budget) break;
+            var prefix = stem[..Math.Min(stem.Length, budget - suffix.Length)].TrimEnd('.');
+            var candidate = Assemble($"{prefix}{suffix}", domain);
             if (!isTaken(candidate)) return candidate;
         }
-        return baseAddr; // astronomically unreachable — the caller's own guard is the final backstop
+        return string.Empty; // Never offer an already-taken address when the candidate space is exhausted.
     }
 
     /// <summary>Extract the local part of an address (everything before the last '@'; the whole trimmed
-    /// value when there is no '@'). Used to coerce a submitted address onto the authoritative domain.</summary>
+    /// value when there is no '@'). Used only for suggestion construction and display.</summary>
     public static string ExtractLocalPart(string workEmail)
     {
         var value = (workEmail ?? string.Empty).Trim();
@@ -183,7 +186,8 @@ public sealed class WorkEmailConflictException : Exception
     public string Suggestion { get; }
 
     public WorkEmailConflictException(string attempted, string suggestion)
-        : base($"Work email '{attempted}' is already used by another employee in this tenant. Try '{suggestion}'.")
+        : base($"Work email '{attempted}' is already used by another employee in this tenant." +
+            (string.IsNullOrEmpty(suggestion) ? " Enter another IT-issued address." : $" Try '{suggestion}'."))
     {
         Attempted = attempted;
         Suggestion = suggestion;

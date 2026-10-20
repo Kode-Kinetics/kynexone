@@ -207,7 +207,7 @@ test('superseded draft defaults remain read-only history in HR and ESS', async (
   await page.route(`**${base}/enrollments/${replaced.id}`, route => route.fulfill({ json: { enrollment: replaced, exceptions: [], contributions: [], links: [], deductions: [] } }));
   await page.route('**/api/ess/benefits', route => route.fulfill({ json: { employeeId: 42, enrollments: [current, replaced] } }));
 
-  await page.goto('/people?employeeId=42&tab=benefits');
+  await page.goto('/people/42?section=pay-benefits&panel=benefits');
   const panel = page.getByTestId('employee-benefits-panel');
   await expect(panel.getByText(medical.name, { exact: true })).toBeVisible();
   await expect(panel.getByText(replaced.planName, { exact: true })).toBeHidden();
@@ -239,32 +239,23 @@ test('superseded draft defaults remain read-only history in HR and ESS', async (
 test('an employee Benefits URL opens the populated panel before activation cards and the mobile list', async ({ page }, info) => {
   const { errors } = await boot(page, { extra: true });
   await mockEmployeeProfile(page);
-  await page.goto('/people?employeeId=42&tab=benefits');
-  await expect(page).toHaveURL(/\/people\?employeeId=42&tab=benefits$/);
+  await page.goto('/people/42?section=pay-benefits&panel=benefits');
+  await expect(page).toHaveURL(/\/people\/42\?section=pay-benefits&panel=benefits$/);
   const panel = page.getByTestId('employee-benefits-panel');
-  const profile = page.locator('aside').filter({ has: panel });
-  const table = page.getByRole('table').filter({ has: page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }) });
   await expect(panel.getByText('Medical Gold', { exact: true })).toBeVisible();
   await expect(panel.getByText('Education Allowance', { exact: true })).toBeVisible();
-  await expect(profile.getByRole('button', { name: 'Benefits', exact: true })).toBeInViewport({ ratio: 1 });
   await expect(panel.getByRole('heading', { name: 'Benefits', exact: true })).toBeInViewport({ ratio: 1 });
   await expect(panel.getByText('Medical Gold', { exact: true })).toBeInViewport();
-  await expect(profile.getByText('Activation checklist', { exact: true })).toHaveCount(0);
-  await expect(profile.getByTestId('employee-access-card')).toHaveCount(0);
+  await expect(page.getByText('Activation checklist', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('employee-access-card')).toHaveCount(0);
   expect(await panel.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-  if (info.project.name === 'phone') {
-    const panelBounds = await panel.boundingBox(), tableBounds = await table.boundingBox();
-    expect(panelBounds).not.toBeNull(); expect(tableBounds).not.toBeNull();
-    expect(panelBounds!.y + panelBounds!.height).toBeLessThan(tableBounds!.y);
-  }
   const screenshot = info.outputPath(`employee-benefits-url-${info.project.name}.png`);
   await page.screenshot({ path: screenshot, animations: 'disabled', style: 'nextjs-portal { display: none !important; }' });
   await info.attach('employee-benefits-url', { path: screenshot, contentType: 'image/png' });
-  await profile.getByRole('button', { name: 'Personal Information', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Employee record sections' }).getByRole('link', { name: 'Personal', exact: true }).click();
   await expect(panel).toHaveCount(0);
-  await expect(page.getByText('Activation checklist', { exact: true })).toBeVisible();
-  await expect(page.getByTestId('employee-access-card')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Personal details', exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -276,12 +267,8 @@ test('an unavailable employee Benefits URL keeps Personal and never loads the be
     packageReads++;
     return route.fulfill({ status: 403, json: { message: 'Forbidden' } });
   });
-  await page.goto('/people?employeeId=42&tab=benefits');
-  await expect(page.getByText('Activation checklist', { exact: true })).toBeVisible();
-  await expect(page.getByTestId('employee-access-card')).toBeVisible();
-  const profile = page.locator('aside').filter({ has: page.getByRole('button', { name: 'Close employee profile', exact: true }) });
-  await expect(profile.getByRole('button', { name: 'Personal Information', exact: true })).toHaveClass(/bg-sapphire/);
-  await expect(profile.getByRole('button', { name: 'Benefits', exact: true })).toHaveCount(0);
+  await page.goto('/people/42?section=pay-benefits&panel=benefits');
+  await expect(page.getByText('This panel is not available for your current access.', { exact: true })).toBeVisible();
   await expect(page.getByTestId('employee-benefits-panel')).toHaveCount(0);
   expect(packageReads).toBe(0);
   expect(errors).toEqual([]);

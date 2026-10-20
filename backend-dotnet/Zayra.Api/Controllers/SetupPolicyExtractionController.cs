@@ -25,7 +25,7 @@ public sealed class SetupPolicyExtractionController(IPolicyDocumentService docum
     {
         if (!Guid.TryParse(User.FindFirstValue("tenant_id"), out var tenantId)) return Unauthorized();
         if (!User.HasPermission("organization.write")) return Forbid();
-        if (!request.UseAi) return BadRequest(new { message = "Choose AI assistance before sending policy content to the configured provider." });
+        if (request.ChunkIndex < 0) return BadRequest(new { message = "The policy section index must be zero or greater." });
         if (request.Profile is null || request.Profile.Sections is null) return BadRequest(new { message = "Company context is required." });
         var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;
         var scope = this.GetRequestScope();
@@ -33,6 +33,17 @@ public sealed class SetupPolicyExtractionController(IPolicyDocumentService docum
             new(true, scope.IsGroupLevel, scope.AuthorizedCompanyIds, userId, User.IsInRole("Admin")), ct);
         if (source is null) return NotFound();
         if (source.Text.Length == 0) return UnprocessableEntity(new { message = "This document has no readable text. Upload a text-based PDF, DOCX or TXT document." });
+        // Native document parsing already happened at upload. Local mapping is read-only,
+        // uses the same source access controls, and never consults AI quotas or providers.
+        if (!request.UseAi)
+        {
+            if (request.ChunkIndex != 0)
+                return BadRequest(new { message = "Local preparation reads the complete document; use section zero." });
+            ct.ThrowIfCancellationRequested();
+            return Ok(LocalOnboardingPolicyMapper.Prepare(request.DocumentId, source.ContentSha256, source.Text));
+        }
+        if (!extraction.IsValidChunkIndex(source.Text, request.ChunkIndex))
+            return BadRequest(new { message = "This policy section no longer exists. Restart extraction from the first section." });
         var subscription = await db.TenantSubscriptions.AsNoTracking().Where(s => s.TenantId == tenantId && s.Status == "Active")
             .OrderByDescending(s => s.StartedAtUtc).FirstOrDefaultAsync(ct);
         var limit = AiPlanLimits.GetMonthlyTokenLimit(subscription?.Plan ?? "Starter");
@@ -41,6 +52,6 @@ public sealed class SetupPolicyExtractionController(IPolicyDocumentService docum
             return StatusCode(429, new { message = "Your workspace AI usage limit has been reached." });
         return Ok(await extraction.ExtractAsync(new(tenantId, userId,
             string.Join(",", User.FindAll(ClaimTypes.Role).Select(c => c.Value))), request.DocumentId,
-            source.ContentSha256, source.Text, request.Profile, ct));
+            source.ContentSha256, source.Text, request.Profile, ct, request.ChunkIndex));
     }
 }

@@ -29,6 +29,7 @@ async function boot(page: Page, handler: (path: string, method: string, body: an
     } });
     if (url.pathname === '/api/employees/field-catalog') return route.fulfill({ json: fixtures.FieldCatalogSaIndian });
     if (url.pathname === '/api/tenant-admin/localization') return route.fulfill({ json: { currencyCode: 'SAR' } });
+    if (url.pathname === '/api/admin/master-data/values') return route.fulfill({ json: [] });
     if (url.pathname === '/api/notifications' || url.pathname.includes('/features/')) return route.fulfill({ json: [] });
     return route.fulfill({ json: { items: [], total: 0, page: 1, pageSize: 25 } });
   });

@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { useAuth } from './AuthContext';
 import type { CompanyAccess } from '../api/auth';
 import { setActiveCompanyId } from '../api/client';
+import { useNavigationGuard } from './NavigationGuardContext';
 
 /**
  * Current-company selection for multi-company (Group) users.
@@ -17,7 +18,7 @@ interface CompanyContextValue {
   companies: CompanyAccess[];
   /** null = "All companies" (group-scope users) or the only company (single). */
   selectedCompanyId: string | null;
-  setSelectedCompany: (companyId: string | null) => void;
+  setSelectedCompany: (companyId: string | null, restoreFocus?: HTMLElement | null) => void;
   isGroupScope: boolean;
   accountType: 'SingleCompany' | 'Group';
   /** Switcher renders only for users who can actually switch. */
@@ -40,6 +41,7 @@ const storageKey = (userId: string) => `kynexone-company:${userId}`;
 
 export function CurrentCompanyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const navigationGuard = useNavigationGuard();
   const companies = useMemo(() => user?.companies ?? [], [user?.companies]);
   const isGroupScope = user?.isGroupScope ?? false;
   const accountType = user?.accountType ?? 'SingleCompany';
@@ -64,17 +66,19 @@ export function CurrentCompanyProvider({ children }: { children: React.ReactNode
     setActiveCompanyId(initial);
   }, [user, companies, isGroupScope]);
 
-  const setSelectedCompany = useCallback((companyId: string | null) => {
-    setSelectedCompanyId(companyId);
-    setActiveCompanyId(companyId);
-    setCompanyVersion((v) => v + 1);
-    if (user) {
-      try {
-        if (companyId) localStorage.setItem(storageKey(user.id), companyId);
-        else localStorage.removeItem(storageKey(user.id));
-      } catch { /* storage unavailable */ }
-    }
-  }, [user]);
+  const setSelectedCompany = useCallback((companyId: string | null, restoreFocus?: HTMLElement | null) => {
+    navigationGuard.run(`company:${companyId ?? 'all'}`, () => {
+      setSelectedCompanyId(companyId);
+      setActiveCompanyId(companyId);
+      setCompanyVersion((v) => v + 1);
+      if (user) {
+        try {
+          if (companyId) localStorage.setItem(storageKey(user.id), companyId);
+          else localStorage.removeItem(storageKey(user.id));
+        } catch { /* storage unavailable */ }
+      }
+    }, restoreFocus);
+  }, [navigationGuard, user]);
 
   const value = useMemo<CompanyContextValue>(() => ({
     companies,

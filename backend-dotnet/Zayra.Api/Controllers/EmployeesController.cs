@@ -15,6 +15,7 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Entitlements;
@@ -108,6 +109,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default, [FromQuery] string? access = null)
     {
         page = Math.Max(1, page);
@@ -165,6 +167,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("ex-employees")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<PagedResult<ExEmployeeListItemDto>>> ExEmployees(
         [FromQuery] string? search, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
@@ -490,6 +493,7 @@ public class EmployeesController : ControllerBase
     /// registry-derived placeholder row showing the expected shape of every column.</summary>
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("employees.bulk_import")]
     public IActionResult ImportTemplate() =>
         File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow)), "text/csv", "employees_import_template.csv");
 
@@ -506,6 +510,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("field-catalog")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> FieldCatalog(
         [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? nationality,
         CancellationToken ct = default,
@@ -960,6 +965,7 @@ public class EmployeesController : ControllerBase
             // Rows whose work email is plus-addressed: the whole file is refused (422) and nothing is written.
             var plusAddressedRows = new List<int>();
             var invalidCharacterRows = new List<int>();
+            var invalidEmailFormatRows = new List<int>();
             // Login usernames: a row whose work email already IS a login is warned about (never refused).
             var existingLoginNorm = (await ScopedBypass.TenantWide(_db.Users, tenantId,
                     "Employee import: the tenant's login usernames are compared with imported work emails across legal entities, to warn only.")
@@ -1261,6 +1267,7 @@ public class EmployeesController : ControllerBase
 
                 if (WorkEmailPlusAddressException.IsPlusAddressed(workEmail)) plusAddressedRows.Add(rowNum);
                 else if (WorkEmailInvalidCharactersException.IsInvalid(workEmail)) invalidCharacterRows.Add(rowNum);
+                else if (WorkEmailFormatException.IsInvalid(workEmail)) invalidEmailFormatRows.Add(rowNum);
                 if (!string.IsNullOrWhiteSpace(workEmail) && existingLoginNorm.Contains(AuthService.Normalize(workEmail)))
                     RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
 
@@ -1327,6 +1334,9 @@ public class EmployeesController : ControllerBase
                     message = $"{WorkEmailPlusAddressException.Text} Fix row(s) {string.Join(", ", plusAddressedRows)} and import again; nothing was imported.",
                     rows = plusAddressedRows,
                 });
+            if (invalidEmailFormatRows.Count > 0)
+                return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code,
+                    message = WorkEmailFormatException.Text, rows = invalidEmailFormatRows });
             if (invalidCharacterRows.Count > 0)
                 return UnprocessableEntity(new
                 {
@@ -2731,6 +2741,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("org-chart")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> OrgChart(
         [FromServices] IHrmHierarchyService hierarchy,
         [FromQuery] int? rootEmployeeId = null,
@@ -2739,7 +2750,11 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         maxDepth = Math.Clamp(maxDepth, 1, 10);
-        var chart = await hierarchy.GetOrgChartAsync(tenantId, rootEmployeeId, maxDepth, ct);
+        var visibleEmployeeIds = await ResolveVisibleEmployeeIdsAsync(ct);
+        if (rootEmployeeId.HasValue && visibleEmployeeIds is not null
+            && !visibleEmployeeIds.Contains(rootEmployeeId.Value))
+            return Forbid();
+        var chart = await hierarchy.GetOrgChartAsync(tenantId, rootEmployeeId, maxDepth, ct, visibleEmployeeIds);
         return Ok(chart);
     }
 
@@ -2767,6 +2782,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/reporting-lines")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyList<ReportingLineDto>>> GetReportingLines(
         int id,
         [FromServices] IHrmHierarchyService hierarchy,
@@ -2809,6 +2825,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/hierarchy")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<HierarchyResolverDto>> ResolveHierarchy(
         int id,
         [FromServices] IHrmHierarchyService hierarchy,
@@ -2825,6 +2842,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}/workflow-approvers")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Payroll Manager,Payroll Officer,Finance Approver,Finance Controller,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<WorkflowApproverResolutionDto>> ResolveWorkflowApprovers(
         int id,
         [FromQuery] string workflowType,
@@ -2842,12 +2860,11 @@ public class EmployeesController : ControllerBase
     public record SetManagerRequest(int? ManagerEmployeeId);
 
     [HttpGet("{id:int}")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<EmployeeDetailDto>> Get(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var employee = await employeeManagement.GetAsync(tenantId, id, CanViewSensitive(), Context(), cancellationToken);
         return employee is null ? NotFound() : Ok(employee);
     }
@@ -2911,6 +2928,7 @@ public class EmployeesController : ControllerBase
         // identity). Advisory: the modal offers the suggested next-free address. Auto-derived never hits this.
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
+        catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -2960,9 +2978,8 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
-    /// Work-email preview the create/edit modal calls to mirror the SERVER's authoritative derivation
-    /// byte-for-byte (same WorkEmailDeriver the commit uses). POST (not GET) so the name never lands in a URL.
-    /// ALWAYS 200. Returns the locked <c>domain</c>, the resolved <c>localPart</c> + full <c>workEmail</c>,
+    /// Advisory work-email preview. POST (not GET) so the name never lands in a URL.
+    /// Returns the preferred <c>domain</c>, the resolved <c>localPart</c> + full <c>workEmail</c>,
     /// whether it is <c>unique</c>, a <c>suggestion</c> (next-free address on collision), and a <c>status</c>:
     ///   derived            — auto-derived from the name (unique; localPart may carry an auto-suffix),
     ///   user               — the supplied local part is available,
@@ -2982,31 +2999,39 @@ public class EmployeesController : ControllerBase
         var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
         var pattern = WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
 
-        // Edge-7: no company domain → manual entry (never blocks).
-        if (string.IsNullOrWhiteSpace(domain))
-            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-no-domain"));
-
-        var providedLocal = (req.LocalPart ?? string.Empty).Trim();
-        var userSupplied = providedLocal.Length > 0;
-        var local = userSupplied
-            ? WorkEmailDeriver.ExtractLocalPart(providedLocal)           // in case they typed a full address
-            : WorkEmailDeriver.BuildLocalPart(req.EnglishName, req.ArabicName, pattern);
-        if (string.IsNullOrEmpty(local))
-            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-arabic-only"));
-
+        var supplied = (req.WorkEmail ?? (req.LocalPart?.Contains('@') == true ? req.LocalPart : null) ?? string.Empty).Trim();
         var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, req.ExcludeEmployeeId, ct);
         bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
+        if (supplied.Length > 0)
+        {
+            try
+            {
+                var exact = WorkEmailDeriver.Resolve(supplied, req.EnglishName, req.ArabicName, domain, pattern, IsTaken, out _, out _);
+                return Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(exact), exact, true, null, "user"));
+            }
+            catch (WorkEmailConflictException ex)
+            {
+                return Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(supplied),
+                    supplied, false, ex.Suggestion, "conflict", ex.Suggestion));
+            }
+            catch (WorkEmailFormatException) { return UnprocessableEntity(new { code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
+            catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
+            catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        }
+        if (string.IsNullOrWhiteSpace(domain))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-no-domain"));
+        // Legacy local-part previews remain advisory; saving always requires a full address.
+        var local = string.IsNullOrWhiteSpace(req.LocalPart)
+            ? WorkEmailDeriver.BuildLocalPart(req.EnglishName, req.ArabicName, pattern) : req.LocalPart.Trim();
+        if (string.IsNullOrEmpty(local))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-arabic-only"));
         var assembled = WorkEmailDeriver.Assemble(local, domain);
-        if (!IsTaken(assembled))
-            return Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, true, null, userSupplied ? "user" : "derived",
-                userSupplied ? null : assembled));
-
         var suggestion = WorkEmailDeriver.Uniqueify(local, domain, IsTaken);
-        return userSupplied
-            // Keep the user's local part but flag not-unique + suggest the next-free address (they adjust).
-            ? Ok(new DeriveWorkEmailResponse(domain, pattern, local, assembled, false, suggestion, "conflict"))
-            // Auto-derived → return the suffixed unique address directly (req 4).
-            : Ok(new DeriveWorkEmailResponse(domain, pattern, WorkEmailDeriver.ExtractLocalPart(suggestion), suggestion, true, suggestion, "derived", suggestion));
+        if (string.IsNullOrEmpty(suggestion))
+            return Ok(new DeriveWorkEmailResponse(domain, pattern, string.Empty, string.Empty, true, null, "manual-no-suggestion"));
+        var userSupplied = !string.IsNullOrWhiteSpace(req.LocalPart);
+        return Ok(new DeriveWorkEmailResponse(domain, pattern, local, userSupplied ? assembled : suggestion,
+            !userSupplied || !IsTaken(assembled), suggestion, userSupplied ? (IsTaken(assembled) ? "conflict" : "user") : "derived", suggestion));
     }
 
     /// <summary>Builds the persisted dup:* gap Detail + RawValue, scope-masked (S3): a counterpart in a
@@ -3109,6 +3134,83 @@ public class EmployeesController : ControllerBase
             ? await CheckDraftActivationAsync(tenantId, draft, cancellationToken)
             : null;
         return Ok(new EmployeeDraftReviewDto(summary, EmployeeDraftDto.Project(draft, CanViewSensitive()), documentCount, check));
+    }
+
+    [HttpGet("drafts/{draftId:guid}/offer-compensation")]
+    [HasPermission("employees.write", "employees.approve")]
+    public async Task<ActionResult<OfferCompensationHandoffDto>> GetDraftOfferCompensation(Guid draftId, CancellationToken ct)
+    {
+        if (!CanViewSensitive()) return Forbid();
+        var draft = await VisibleDrafts(RequireTenant()).AsNoTracking().SingleOrDefaultAsync(d => d.Id == draftId, ct);
+        return draft is null ? NotFound() : Ok(await DraftOfferCompensationDtoAsync(draft, ct));
+    }
+
+    [HttpPut("drafts/{draftId:guid}/offer-compensation")]
+    [HasPermission("employees.write")]
+    public async Task<ActionResult<OfferCompensationHandoffDto>> PutDraftOfferCompensation(Guid draftId,
+        OfferCompensationHandoffRequest request, CancellationToken ct)
+    {
+        if (!CanEditSensitive() || GetUserId() is null) return Forbid();
+        if (request is null || request.Dispositions is null || request.Dispositions.Count > 100
+            || request.Dispositions.Any(d => d is null || string.IsNullOrWhiteSpace(d.Code) || d.Code.Length > 64
+                || d.ProcessName?.Length > 200 || d.Reason?.Length > 1000)
+            || request.Dispositions.Select(d => d.Code).Distinct(StringComparer.Ordinal).Count() != request.Dispositions.Count)
+            return BadRequest(new { error = "invalid_compensation_dispositions", message = "Supply unique component dispositions within the permitted limits." });
+        var refusal = await ChangeOpenDraftAsync(RequireTenant(), draftId, EmployeeDraftAuditActions.CompensationUpdated, async (draft, token) =>
+        {
+            if (!OfferCompensationHandoff.HasSnapshot(draft))
+                return Conflict(new { error = "offer_snapshot_unavailable", message = "No immutable compensation snapshot was retained for this legacy draft. Use the existing legacy review process." });
+            if (request.ExpectedVersion != draft.OfferCompensationVersion)
+                return Conflict(new { error = "offer_compensation_version_conflict", message = "The draft compensation changed. Reload it before saving." });
+            var bindLegacyPlacement = request.Confirm && OfferCompensationHandoff.IsLegacyUnscopedSnapshot(draft)
+                && draft.OfferCompensationPlacementCompanyId is null;
+            if (bindLegacyPlacement && !this.GetEntityScope().IsGroupLevel) return Forbid();
+            var problems = new List<EmployeeDraftActivationProblem>();
+            var placement = await ResolveDraftPlacementAsync(draft.TenantId, draft, problems, token);
+            var context = await DraftHandoffPlacementAsync(draft.TenantId, placement, token);
+            var evaluation = OfferCompensationHandoff.Evaluate(draft, context, request.Dispositions, false);
+            if (request.Confirm && (problems.Count > 0 || evaluation.Blockers.Count > 0))
+                return UnprocessableEntity(new { error = "offer_compensation_blocked", blockers = problems.Select(p => p.Reason).Concat(evaluation.Blockers) });
+            OfferCompensationHandoff.Invalidate(draft);
+            draft.OfferCompensationDispositionsJson = JsonSerializer.Serialize(request.Dispositions, Zayra.Api.Infrastructure.Recruitment.OfferCompensation.Json);
+            if (request.Confirm)
+            {
+                if (bindLegacyPlacement) draft.OfferCompensationPlacementCompanyId = context.CompanyId;
+                draft.OfferCompensationConfirmedFingerprint = OfferCompensationHandoff.Evaluate(draft, context, request.Dispositions, false).Fingerprint;
+                draft.OfferCompensationConfirmedAtUtc = DateTime.UtcNow;
+                draft.OfferCompensationConfirmedByUserId = GetUserId();
+            }
+            return null;
+        }, ct, draft => JsonSerializer.Serialize(new { version = draft.OfferCompensationVersion, confirmed = request.Confirm,
+            fingerprint = draft.OfferCompensationConfirmedFingerprint, placementCompanyId = draft.OfferCompensationPlacementCompanyId }));
+        if (refusal is not null) return (ActionResult)refusal;
+        var saved = await VisibleDrafts(RequireTenant()).AsNoTracking().SingleAsync(d => d.Id == draftId, ct);
+        return Ok(await DraftOfferCompensationDtoAsync(saved, ct));
+    }
+
+    private async Task<OfferHandoffPlacement> DraftHandoffPlacementAsync(Guid tenantId, DraftPlacement placement, CancellationToken ct)
+    {
+        var currency = placement.CompanyId is { } companyId
+            ? await ScopedBypass.TenantWide(_db.Companies, tenantId, "Read the validated draft placement's active company currency for accepted compensation consistency.")
+                .AsNoTracking().Where(c => c.Id == companyId && c.IsActive && !c.IsDeleted).Select(c => c.DefaultCurrency).SingleOrDefaultAsync(ct)
+            : null;
+        return new(placement.CompanyId, currency, placement.DepartmentId, placement.DesignationId, placement.BranchId, placement.GradeId);
+    }
+
+    private async Task<OfferCompensationHandoffDto> DraftOfferCompensationDtoAsync(EmployeeDraft draft, CancellationToken ct)
+    {
+        var problems = new List<EmployeeDraftActivationProblem>();
+        var placement = await ResolveDraftPlacementAsync(draft.TenantId, draft, problems, ct);
+        var rows = OfferCompensationHandoff.Dispositions(draft);
+        var evaluation = OfferCompensationHandoff.Evaluate(draft, await DraftHandoffPlacementAsync(draft.TenantId, placement, ct), rows, true);
+        var blockers = problems.Select(p => p.Reason).Concat(evaluation.Blockers).ToArray();
+        return new(draft.AcceptedOfferId, draft.AcceptedOfferCompanyId,
+            !OfferCompensationHandoff.HasSnapshot(draft) ? draft.AcceptedOfferId is null ? "NotApplicable" : "LegacySnapshotUnavailable"
+                : blockers.Length == 0 ? "Confirmed" : "NeedsReview",
+            draft.OfferCompensationVersion, OfferCompensationHandoff.Snapshot(draft), rows,
+            draft.JoiningDate is { } date ? DateOnly.FromDateTime(date) : null, draft.OfferCompensationConfirmedAtUtc, blockers,
+            draft.AcceptedOfferCompanyId ?? draft.OfferCompensationPlacementCompanyId,
+            OfferCompensationHandoff.PlacementProvenance(draft), OfferCompensationHandoff.ReviewGuidance(draft));
     }
 
     /// <summary>
@@ -3251,6 +3353,7 @@ public class EmployeesController : ControllerBase
             TenantId = tenantId,
             DraftId = draftId,
             DocumentType = request.DocumentType.Trim(),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, category: null),
             FileName = request.FileName.Trim(),
             ContentType = request.ContentType.Trim(),
             StorageUrl = storageUrl,
@@ -3265,7 +3368,7 @@ public class EmployeesController : ControllerBase
             return Task.FromResult<IActionResult?>(null);
         }, cancellationToken);
         if (refusal is not null) return (ActionResult)refusal;
-        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
     }
 
     [HttpPost("drafts/{draftId:guid}/documents/upload")]
@@ -3284,6 +3387,7 @@ public class EmployeesController : ControllerBase
             TenantId = tenantId,
             DraftId = draftId,
             DocumentType = request.DocumentType.Trim(),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, category: null),
             FileName = stored.FileName,
             ContentType = stored.ContentType,
             StorageUrl = stored.StorageUrl,
@@ -3297,12 +3401,17 @@ public class EmployeesController : ControllerBase
         }, cancellationToken);
         if (refusal is not null) return (ActionResult)refusal;
         await NotifyBestEffortAsync("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
-        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+        return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
     }
 
     [HttpGet("documents/{documentId:guid}/download")]
     public async Task<IActionResult> DownloadDocument(Guid documentId, CancellationToken cancellationToken)
     {
+        // Raw content is more privileged than document metadata. HasPermission is ANY-of, so the
+        // required employees.read AND employees.documents conjunction is deliberately enforced here.
+        if (!User.HasPermission("employees.read") || !User.HasPermission("employees.documents"))
+            return Forbid();
+
         var tenantId = RequireTenant();
         // Loaded tenant-wide, then authorized below by whoever the document belongs to. The company
         // filter cannot decide this: a draft's documents have no company until the hire is activated,
@@ -3313,13 +3422,14 @@ public class EmployeesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
 
+        // Identity and payroll files contain the same protected facts masked on the employee record.
+        if (EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
+            && !User.HasPermission("employees.sensitive"))
+            return Forbid();
+
         if (document.EmployeeId.HasValue)
         {
-            // The company rule the filter used to apply, then the caller's data scope for this employee.
-            if (!this.GetEntityScope().CanAccessCompany(document.CompanyId)) return NotFound();
-            var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-            if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(document.EmployeeId.Value))
-                return Forbid();
+            if (!await CanAccessEmployeeAsync(document.EmployeeId.Value, cancellationToken)) return Forbid();
         }
         else if (document.DraftId.HasValue)
         {
@@ -3462,6 +3572,7 @@ public class EmployeesController : ControllerBase
             if (!EmployeeDraftStatuses.IsOpen(draft.Status))
                 throw new DraftApprovalNotReadyException(draft.Status);
             WorkEmailInvalidCharactersException.ThrowIfNotAllowed(draft.WorkEmail);
+            WorkEmailFormatException.ThrowIfInvalid(draft.WorkEmail);
 
             // Resolve every mutable draft field again after taking the draft lock. A preflight read
             // is authorization/UX only and is never trusted for the durable employee record. The
@@ -3469,6 +3580,10 @@ public class EmployeesController : ControllerBase
             var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems: null, ct);
             if (!entityScope.IsGroupLevel && !entityScope.CanAccessCompany(placement.CompanyId))
                 throw new DraftApprovalForbiddenException();
+            var compensation = OfferCompensationHandoff.Evaluate(draft,
+                await DraftHandoffPlacementAsync(tenantId, placement, ct), OfferCompensationHandoff.Dispositions(draft), true);
+            if (compensation.Blockers.Count > 0)
+                throw new DraftApprovalValidationException(CanViewSensitive() ? string.Join(" ", compensation.Blockers) : OfferCompensationHandoff.ReviewMessage);
             // The draft's manager is checked again here, under the lock and against the approver's own
             // scope: a draft saved before this rule, or by another path, may name anyone.
             if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
@@ -3523,6 +3638,8 @@ public class EmployeesController : ControllerBase
                 {
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
+                    if (compensation.Salary is not null)
+                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct);
                     await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                         _db, employee, requestContext.UserId, ct);
 
@@ -3623,6 +3740,7 @@ public class EmployeesController : ControllerBase
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text });
         }
+        catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailInvalidCharactersException)
         {
             _db.ChangeTracker.Clear();
@@ -3692,8 +3810,10 @@ public class EmployeesController : ControllerBase
 
     [HttpPut("{id:int}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
+    [HasPermission("employees.write")]
     public async Task<IActionResult> UpdateEmployee(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         // Work-email and draft entitlement edits commit atomically with their audit/default rows.
         // Placement edits also serialize with activation and individual benefit writers.
         var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
@@ -3939,6 +4059,7 @@ public class EmployeesController : ControllerBase
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
+        catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
@@ -3977,6 +4098,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.write")]
     public async Task<ActionResult<EmployeeDetailDto>> ChangeStatus(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             // D1 privilege boundary: SeparationType decides the end-of-service award (Article80 forfeits
@@ -4005,6 +4127,7 @@ public class EmployeesController : ControllerBase
     [Consumes("multipart/form-data")]
     public async Task<ActionResult<EmployeeDocumentDto>> UploadEmployeeDocument(int id, [FromForm] EmployeeDocumentUploadForm form, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var request = new EmployeeDocumentUploadMetadata(
@@ -4017,59 +4140,61 @@ public class EmployeesController : ControllerBase
                 form.ApprovalStatus,
                 form.Notes);
             var document = await employeeManagement.UploadDocumentAsync(RequireTenant(), id, request, form.File, Context(), cancellationToken);
-            return Created($"/api/employees/{id}/documents/{document.Id}", EmployeeDocumentDto.Project(document));
+            return Created($"/api/employees/{id}/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpGet("{id:int}/documents")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeDocumentDto>>> EmployeeDocuments(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var docs = await employeeManagement.GetDocumentsAsync(RequireTenant(), id, cancellationToken);
-        return Ok(docs.Select(EmployeeDocumentDto.Project).ToList());
+        return Ok(docs.Select(document => EmployeeDocumentDto.Project(document, CanViewSensitive())).ToList());
     }
 
     [HttpPut("{id:int}/documents/{docId:guid}")]
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc));
+        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
     }
 
     [HttpDelete("{id:int}/documents/{docId:guid}")]
     [HasPermission("employees.approve")]
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
     }
 
     [HttpGet("{id:int}/history")]
+    [HasPermission("employees.read")]
     public async Task<ActionResult<IReadOnlyCollection<EmployeeHistoryDto>>> EmployeeHistory(int id, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
-        if (!scope.IsUnrestricted && !scope.AllowedEmployeeIds!.Contains(id))
-            return Forbid();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var history = await employeeManagement.GetHistoryAsync(tenantId, id, cancellationToken);
         return Ok(history.Select(EmployeeHistoryDto.Project).ToList());
     }
@@ -4078,6 +4203,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Activate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var employee = await employeeManagement.ActivateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
@@ -4092,6 +4218,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("employees.approve")]
     public async Task<ActionResult<EmployeeDetailDto>> Terminate(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var employee = await employeeManagement.TerminateAsync(RequireTenant(), id, request, Context(), cancellationToken, CanViewSensitive());
@@ -4120,6 +4247,7 @@ public class EmployeesController : ControllerBase
     /// checklist drawer, and the inline 422 rendering.</summary>
     [HttpGet("{id:int}/readiness")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
+    [HasPermission("employees.read")]
     public async Task<IActionResult> Readiness(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -4474,6 +4602,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return NotFound();
         await SoftDeleteEmployeeAsync(tenantId, employee, reason: null, Context(), cancellationToken);
@@ -4896,6 +5025,7 @@ public class EmployeesController : ControllerBase
     [HasPermission("manager.approve")]
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         try
         {
             var tenantId = RequireTenant();
@@ -4934,6 +5064,7 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == tenantId, cancellationToken);
         if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != "PendingHrApproval")
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot be HR-approved." });
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == transfer.EmployeeId && x.TenantId == tenantId, cancellationToken);
@@ -5234,6 +5365,7 @@ public class EmployeesController : ControllerBase
     {
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == RequireTenant(), cancellationToken);
         if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != expectedStatus)
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot move to '{nextStatus}'." });
         if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
@@ -5299,7 +5431,8 @@ public class EmployeesController : ControllerBase
     /// </summary>
     private async Task<IActionResult?> ChangeOpenDraftAsync(
         Guid tenantId, Guid draftId, string auditAction,
-        Func<EmployeeDraft, CancellationToken, Task<IActionResult?>> change, CancellationToken cancellationToken)
+        Func<EmployeeDraft, CancellationToken, Task<IActionResult?>> change, CancellationToken cancellationToken,
+        Func<EmployeeDraft, string?>? auditMetadata = null)
     {
         var auditId = Guid.NewGuid();
         var context = Context() with { TenantId = tenantId };
@@ -5319,7 +5452,7 @@ public class EmployeesController : ControllerBase
             }
             refusal = await change(draft, ct);
             if (refusal is not null) return false;
-            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, DateTime.UtcNow, auditAction, "EmployeeDraft", draftId.ToString(), context));
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, DateTime.UtcNow, auditAction, "EmployeeDraft", draftId.ToString(), context, auditMetadata?.Invoke(draft)));
             await _db.SaveChangesAsync(ct);
             return true;
         }
@@ -5567,6 +5700,15 @@ public class EmployeesController : ControllerBase
                 .Select(u => new { u.Id, u.FullName })
                 .ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
 
+        var compensationBlocked = new HashSet<Guid>();
+        foreach (var draft in drafts.Where(d => EmployeeDraftStatuses.IsOpen(d.Status) && OfferCompensationHandoff.HasSnapshot(d)))
+        {
+            var problems = new List<EmployeeDraftActivationProblem>();
+            var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems, ct);
+            if (problems.Count > 0 || OfferCompensationHandoff.Evaluate(draft,
+                    await DraftHandoffPlacementAsync(tenantId, placement, ct), OfferCompensationHandoff.Dispositions(draft), true).Blockers.Count > 0)
+                compensationBlocked.Add(draft.Id);
+        }
         return drafts.Select(d =>
         {
             var isMine = actorId is not null && d.CreatedByUserId == actorId;
@@ -5575,6 +5717,7 @@ public class EmployeesController : ControllerBase
             string? blocked = !open ? null
                 : !canApprovePermission ? "You don't have permission to approve new hires (employees.approve)."
                 : isMaker ? DraftMakerChecker.Message
+                : compensationBlocked.Contains(d.Id) ? OfferCompensationHandoff.ReviewGuidance(d)
                 : null;
             originByDraft.TryGetValue(d.Id, out var origin);
             decisions.TryGetValue(d.Id, out var decision);
@@ -5590,7 +5733,9 @@ public class EmployeesController : ControllerBase
                 decision?.AtUtc ?? d.ActivatedAtUtc,
                 decision?.UserId is { } u && names.TryGetValue(u, out var decider) ? decider : null,
                 decision?.Reason,
-                decision?.EmployeeId, decision?.EmployeeCode);
+                decision?.EmployeeId, decision?.EmployeeCode,
+                d.AcceptedOfferId is null ? null : OfferCompensationHandoff.PlacementProvenance(d),
+                compensationBlocked.Contains(d.Id) ? OfferCompensationHandoff.ReviewGuidance(d) : null);
         }).ToList();
     }
 
@@ -5684,6 +5829,13 @@ public class EmployeesController : ControllerBase
                 }
             }
         }
+        // A retained accepted offer supplies the employing entity only when editable placement
+        // supplied none. A conflicting explicit entity remains visible and is rejected by handoff validation.
+        if (companyId is null && OfferCompensationHandoff.HasSnapshot(draft) && draft.AcceptedOfferCompanyId is { } sourceCompanyId
+            && this.GetEntityScope().CanAccessCompany(sourceCompanyId)
+            && await ScopedBypass.TenantWide(_db.Companies, tenantId, "Validate the accepted source company before filling missing draft placement.")
+                .AnyAsync(c => c.Id == sourceCompanyId && c.IsActive && !c.IsDeleted, ct))
+            companyId = sourceCompanyId;
         // The employing company's own country, carried with the placement so the employee the draft
         // becomes can derive its jurisdiction from the legal entity it actually lands in.
         var companyCountryCode = companyId is Guid placementCompanyId
@@ -5781,6 +5933,10 @@ public class EmployeesController : ControllerBase
         var problems = new List<EmployeeDraftActivationProblem>();
         var advisories = new List<string>();
         var placement = await ResolveDraftPlacementAsync(tenantId, draft, problems, ct);
+        if (OfferCompensationHandoff.Evaluate(draft, await DraftHandoffPlacementAsync(tenantId, placement, ct),
+                OfferCompensationHandoff.Dispositions(draft), true).Blockers.Count > 0)
+            problems.Add(new EmployeeDraftActivationProblem("offerCompensation", "Offer compensation", OfferCompensationHandoff.ReviewGuidance(draft),
+                "Review the accepted offer compensation and confirm its component dispositions."));
         if (await DraftManagerRejectionAsync(tenantId, draft.ManagerEmployeeId, ct) is { } managerRejection)
             problems.Add(new EmployeeDraftActivationProblem("manager", "Manager", managerRejection.Message,
                 "Pick a current employee you can see as the manager, or clear it."));
@@ -5800,6 +5956,8 @@ public class EmployeesController : ControllerBase
         else if (WorkEmailInvalidCharactersException.IsInvalid(draft.WorkEmail))
             problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailInvalidCharactersException.Text,
                 "Correct the draft's work email."));
+        if (WorkEmailFormatException.IsInvalid(draft.WorkEmail))
+            problems.Add(new EmployeeDraftActivationProblem("workEmail", "Work email", WorkEmailFormatException.Text, "Enter the complete IT-issued work email."));
         if (!string.IsNullOrWhiteSpace(draft.WorkEmail))
         {
             var normalized = AuthService.Normalize(draft.WorkEmail);
@@ -5850,6 +6008,7 @@ public class EmployeesController : ControllerBase
 
     private EmployeeDraft ApplyDraft(EmployeeDraft draft, EmployeeDraftRequest request)
     {
+        var compensationInputs = OfferCompensationHandoff.EditableInputs(draft);
         draft.CurrentStep = request.CurrentStep ?? draft.CurrentStep;
         draft.EnglishName = request.EnglishName ?? draft.EnglishName;
         draft.ArabicName = request.ArabicName ?? draft.ArabicName;
@@ -5880,6 +6039,7 @@ public class EmployeesController : ControllerBase
         draft.BankName = request.BankName ?? draft.BankName;
         draft.BankIban = request.BankIban ?? draft.BankIban;
         draft.WpsBankDetails = request.WpsBankDetails ?? draft.WpsBankDetails;
+        if (compensationInputs != OfferCompensationHandoff.EditableInputs(draft)) OfferCompensationHandoff.Invalidate(draft);
         draft.ShiftPolicyCode = request.ShiftPolicyCode ?? draft.ShiftPolicyCode;
         draft.LeavePolicyCode = request.LeavePolicyCode ?? draft.LeavePolicyCode;
         draft.SponsorName = request.SponsorName ?? draft.SponsorName;
@@ -5997,14 +6157,9 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
-    /// Server-authoritative work-email handling for the PATCH edit path — mirrors the create/update service
-    /// so the domain "lock" is enforced at the authoritative layer, not just the UI (B3). No-op unless
-    /// "workEmail" is among the applied changes. When the employing company has a domain: extract the local
-    /// part and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted) and a
-    /// collision throws WorkEmailConflictException (never silently duplicate). Then the login-identity guard
-    /// (<see cref="WorkEmailLoginGuard"/>): a STAGED login's username follows the work email and its pending
-    /// invitation is cancelled; an ACTIVATED login is never renamed by an employee edit. Returns true when the
-    /// work email now differs from an activated login's username. Sets the STRING only — no mailbox is provisioned.
+    /// Validate changed full addresses independently of company email preferences. A blank remains blank.
+    /// WorkEmailLoginGuard owns staged identity updates and protects activated logins from silent renaming.
+    /// No mailbox is provisioned.
     /// </summary>
     private async Task<bool> ApplyWorkEmailPatchAsync(Employee employee, IEnumerable<string> changedKeys, string priorWorkEmail, CancellationToken ct)
     {
@@ -6016,12 +6171,13 @@ public class EmployeesController : ControllerBase
             : null;
         var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
 
-        if (!string.IsNullOrWhiteSpace(domain))
+        // Validate changed addresses even without a company suggestion domain; retain unchanged legacy values.
+        if (!string.Equals(AuthService.Normalize(employee.WorkEmail ?? string.Empty), AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
         {
-            var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
+            var pattern = WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
             var taken = await LoadTenantWorkEmailNormalizedSetAsync(tenantId, employee.Id, ct);
             bool IsTaken(string addr) => taken.Contains(AuthService.Normalize(addr));
-            // Wrong domain → WorkEmailRejectedException (422); blank stays blank (no derived address is saved).
+            // Preserve the IT-issued domain; blank stays blank (no suggested address is saved).
             employee.WorkEmail = WorkEmailDeriver.Resolve(employee.WorkEmail, employee.EnglishName, employee.ArabicName,
                 domain, pattern, IsTaken, out _, out _);
         }
@@ -6173,8 +6329,37 @@ public class EmployeesController : ControllerBase
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), cancellationToken);
-        return scope.CanAccessEmployee(employeeId);
+        var tenantId = RequireTenant();
+        var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Employee authorization must resolve the target company before the ambient company filter can hide it.")
+            .AsNoTracking()
+            .Where(x => x.Id == employeeId)
+            .Select(x => new { x.CompanyId })
+            .SingleOrDefaultAsync(cancellationToken);
+        // An absent record is the action's own 404, not a scope refusal: a company-scoped DataScope is a
+        // materialised id set, so checking it first turned every missing id into a 403.
+        if (employee is null) return true;
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        return scope.CanAccessEmployee(employeeId) && this.GetEntityScope().CanAccessCompany(employee.CompanyId);
+    }
+
+    private async Task<IReadOnlyCollection<int>?> ResolveVisibleEmployeeIdsAsync(CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var dataScope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        var companyScope = this.GetEntityScope();
+        if (dataScope.IsUnrestricted && companyScope.IsGroupLevel) return null;
+
+        var employees = ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Org-chart authorization builds the caller-visible employee set before hierarchy projection.")
+            .AsNoTracking();
+        if (!dataScope.IsUnrestricted)
+            employees = employees.Where(x => dataScope.AllowedEmployeeIds!.Contains(x.Id));
+        if (!companyScope.IsGroupLevel)
+            employees = employees.Where(x => x.CompanyId.HasValue
+                && companyScope.AccessibleCompanyIds.Contains(x.CompanyId.Value));
+        return await employees.Select(x => x.Id).ToListAsync(cancellationToken);
     }
     private Task Audit(string action, string entity, string? entityId, CancellationToken cancellationToken) => _audit.WriteAsync(action, entity, entityId, new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant()), null, cancellationToken);
 }
@@ -6211,10 +6396,10 @@ public record DuplicateCheckResponse(bool HasStrong, bool HasProbable, IReadOnly
 /// local-part field; when blank the server derives from the name. CompanyId is the EMPLOYING company whose
 /// domain is used (multi-company req 5). ExcludeEmployeeId skips self on edit.</summary>
 public record DeriveWorkEmailRequest(
-    string? EnglishName, string? ArabicName, Guid? CompanyId, string? LocalPart, int? ExcludeEmployeeId);
+    string? EnglishName, string? ArabicName, Guid? CompanyId, string? LocalPart, int? ExcludeEmployeeId, string? WorkEmail = null);
 
-/// <summary><c>SuggestedWorkEmail</c>: the name-derived address the modal shows as ghost text (accepted with Tab /
-/// "Use"). It is a SUGGESTION only — the server never saves a derived address (employee-access contract §3).</summary>
+/// <summary><c>SuggestedWorkEmail</c>: an advisory address accepted only with the explicit "Use" action.
+/// The server never saves a derived address implicitly (employee-access contract §3).</summary>
 public record DeriveWorkEmailResponse(
     string Domain, string Pattern, string LocalPart, string WorkEmail, bool Unique, string? Suggestion, string Status,
     string? SuggestedWorkEmail = null);

@@ -60,7 +60,9 @@ public record WorkflowApproverResolutionDto(
 public interface IHrmHierarchyService
 {
     /// <summary>Returns the full org chart tree, optionally rooted at a specific employee.</summary>
-    Task<IReadOnlyList<OrgChartNodeDto>> GetOrgChartAsync(Guid tenantId, int? rootEmployeeId, int maxDepth, CancellationToken ct);
+    Task<IReadOnlyList<OrgChartNodeDto>> GetOrgChartAsync(
+        Guid tenantId, int? rootEmployeeId, int maxDepth, CancellationToken ct,
+        IReadOnlyCollection<int>? visibleEmployeeIds = null);
 
     /// <summary>All active reporting lines (any type) for an employee.</summary>
     Task<IReadOnlyList<ReportingLineDto>> GetReportingLinesAsync(Guid tenantId, int employeeId, CancellationToken ct);

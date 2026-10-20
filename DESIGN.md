@@ -21,7 +21,7 @@ omitted:
 ---
 
 ## Overview
-KynexOne is an HR operations product for HR administrators and technical implementation teams. Preserve the established application shell. Setup should read as a guided policy workbook: one decision area at a time, visible progress, and editable evidence before apply. Its signature is the relationship between company policy, structured configuration and the final reviewed records.
+KynexOne is an HR operations product for HR administrators and technical implementation teams. Preserve the established application shell. Setup Studio opens a non-linear twelve-area workspace with visible company context and permission-aware access to existing settings. Its signature is the relationship between company policy, structured configuration and the final reviewed records. The starter configuration draft retains its guided review-before-apply flow as a separate workspace action.
 
 ## Colors
 Runtime ownership remains in `frontend/tailwind.config.ts` and application CSS. Use sapphire for the primary action and active step, slate for hierarchy, and the existing dark theme tokens. This document records the existing palette; it does not introduce a rebrand.
@@ -30,7 +30,7 @@ Runtime ownership remains in `frontend/tailwind.config.ts` and application CSS. 
 Use the existing Geist and IBM Plex Sans Arabic stack. Headings identify the task; labels identify the exact policy value. Keep financial values and machine codes readable in bidirectional text.
 
 ## Layout
-Use a compact setup step rail on large screens, showing the description of the active step, and the existing responsive navigation on phones. Company details use four columns on desktop and two or one on smaller screens; align setup paths beside the page heading when width permits. Group repeatable policies in bordered fieldsets. Reveal detailed custom rules only on request. Show the policy guide as a focused stage instead of stacking it over the company form. Place independent authoring groups beside one another on desktop while keeping nested fields wide enough to read. Show employee-group scope beside each policy instead of unexplained global multi-selects.
+Use an area navigation rail on large screens and a named area disclosure on phones. Areas are destinations, not mandatory completion steps; the overview does not assess configuration completion. Keep settings/templates distinct from related operations, and show company, tenant-wide or record-dependent scope. Company details use four columns on desktop and two or one on smaller screens; align setup paths beside the page heading when width permits. Group repeatable policies in bordered fieldsets. Reveal detailed custom rules only on request. Show the starter policy guide as a focused stage instead of stacking it over the company form. Place independent authoring groups beside one another on desktop while keeping nested fields wide enough to read. Show employee-group scope beside each policy instead of unexplained global multi-selects.
 
 ## Elevation & Depth
 Retain existing button and shell elevation. Policy rows use borders rather than nested decorative cards.
@@ -39,6 +39,8 @@ Retain existing button and shell elevation. Policy rows use borders rather than 
 Keep existing input/button shapes and 12px panels. Do not add a parallel token system.
 
 ## Components
+`SetupStudioWorkspace` and `SetupAreaNavigator` own area discovery and URL navigation. Embedded settings reuse canonical module editors and save APIs; source-module routes remain available. Dialogs use the shared modal for focus management and scrolling. Preserve dirty-editor navigation guards and browser/company-scoped starter drafts. Document-to-form adapters and policy-library/Kody convergence remain required programme packages, not implied by twelve discoverable areas.
+
 Native labeled inputs, selects, checkboxes and date fields use the application input/select classes. `SetupPolicySource` owns the prominent policy entry and three-stage intake guide. `SetupPolicyEditor` owns repeatable setup policy authoring. `AiSetupAssistant` owns navigation, stale-draft invalidation, preview and apply. `useT` and `useFormat` remain locale owners. Backend domain services own validation, effective dates and permissions.
 
 `SetupPolicyExtraction` owns before/after proposal review with source passages and unchecked acceptance. `PolicyDocumentManager` owns draft intake, source review and explicit company-wide publication. `PolicyAnswer` is the shared evidence display for HR and employee answers; `EmployeePolicyAssistant` is the narrow employee entry inside Kody. Uploaded drafts and employee-visible documents must never share an ambiguous "Ready" publication label.

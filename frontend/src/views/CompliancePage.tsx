@@ -29,6 +29,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useReleaseA } from '../lib/releaseA';
 import { fill } from '../lib/renewalRadar';
 import { useAuth } from '../contexts/AuthContext';
+import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -329,7 +330,7 @@ function ContractsTab() {
                     <td colSpan={9} className="px-3 pb-3">
                       <BenefitsAwaitingNotice action={packageStatus[c.id].nextAction} busy={proposing === c.id}
                         onPropose={hasPermission('entitlements.manage') ? () => void proposeBenefits(packageStatus[c.id]) : undefined}
-                        reviewHref={`/people?employeeId=${packageStatus[c.id].employeeId}&tab=package`} />
+                        reviewHref={employeeWorkspaceHref(packageStatus[c.id].employeeId, { section: 'pay-benefits', panel: 'package' })} />
                     </td>
                   </tr>
                 )}
