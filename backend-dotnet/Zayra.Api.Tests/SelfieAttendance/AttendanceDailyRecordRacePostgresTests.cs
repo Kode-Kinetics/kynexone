@@ -58,27 +58,6 @@ public sealed class AttendanceDailyRecordRacePostgresTests
         }
     }
 
-    [Fact]
-    public async Task TwoParallelLegacyMobilePunches_BothSucceed_AndLeaveExactlyOneDailyRecord()
-    {
-        var tenantId = await SeedTenantAsync();
-        for (var round = 0; round < Rounds; round++)
-        {
-            var employeeId = await AddEmployeeAsync(tenantId);
-            var outcomes = await RaceAsync(["In", "In"], async direction =>
-            {
-                await using var db = _fx.CreateDb();
-                var controller = new MobileController(db, new AttendanceVerificationService(db)) { ControllerContext = Context(tenantId, employeeId) };
-                var result = await controller.Punch(new MobilePunchRequest(0, direction, null), default);
-                return result is OkObjectResult ? "ok" : $"refused {SelfieWorld.MessageOf(result)}";
-            });
-
-            Assert.All(outcomes, o => Assert.Equal("ok", o));
-            await using var verify = _fx.CreateDb();
-            Assert.Single(await verify.AttendanceDailyRecords.IgnoreQueryFilters().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId).ToListAsync());
-        }
-    }
-
     /// <summary>Runs one call per direction, all released at once; an exception (the old 23505) becomes its outcome.</summary>
     private static async Task<string[]> RaceAsync(string[] directions, Func<string, Task<string>> punch)
     {

@@ -109,7 +109,7 @@ public class MobileMutationSecurityTests
     }
 
     [Fact]
-    public async Task Punch_IgnoresClientEmployeeId_AndWritesOnlyForCaller()
+    public async Task Punch_IsRetired_AndWritesForNobody_EvenWhenAColleaguesIdIsSent()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -118,11 +118,9 @@ public class MobileMutationSecurityTests
         var controller = Controller(db, tenantId, caller.Id);
 
         (await controller.Punch(new MobilePunchRequest(victim.Id, "In", null), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(410);
 
-        var row = await db.AttendanceDailyRecords.AsNoTracking().SingleAsync();
-        row.EmployeeId.Should().Be(caller.Id);
-        row.EmployeeId.Should().NotBe(victim.Id);
+        (await db.AttendanceDailyRecords.AsNoTracking().AnyAsync()).Should().BeFalse();
     }
 
     private static Employee AddEmployee(ZayraDbContext db, Guid tenantId, string code)
