@@ -21,7 +21,7 @@ namespace Zayra.Api.Tests;
 /// </summary>
 public class AttendancePaidImpactPreservationTests
 {
-    private static readonly DateOnly Day = new(2026, 8, 18); // a Tuesday; UTC tenant, default policy, 09:00–18:00
+    internal static readonly DateOnly Day = new(2026, 8, 18); // a Tuesday; UTC tenant, default policy, 09:00–18:00
 
     [Fact]
     public async Task ReprocessingAPaidDay_LeavesItsProcessedImpactsUntouched_RaisesNoNewDeduction_AndFlagsTheDifference()

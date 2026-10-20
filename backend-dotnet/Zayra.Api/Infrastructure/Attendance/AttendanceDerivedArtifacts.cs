@@ -112,6 +112,10 @@ public static class AttendanceDerivedArtifacts
     /// payroll never consumes (it is claimed through overtime detection), is still recomputed like any pending impact
     /// unless it was itself processed.</para>
     ///
+    /// <para><b>A half-pair day</b> (<see cref="IsHalfPair"/>) raises no late-arrival or early-exit deduction: they are
+    /// held until the pair is complete. On a paid day a held type is left out of the comparison with what payroll paid
+    /// (it is undetermined, not different), so a held day raises no flag until its pair is completed.</para>
+    ///
     /// <para>The exception's lifecycle (no schema change: its signature is a tag in <c>Details</c>): one open exception
     /// per day, re-worded as the difference changes; closed automatically when the day matches what was paid again;
     /// never re-raised for a difference HR already resolved (that would invite a second adjustment), but raised again
@@ -130,8 +134,10 @@ public static class AttendanceDerivedArtifacts
         db.AttendancePayrollImpacts.RemoveRange(existing.Where(x => x.Status != ProcessedStatus));
 
         var recomputed = new List<(string Type, int Minutes)>();
-        if (daily.LateMinutes > 0) recomputed.Add((AttendanceImpactTypes.LateDeduction, daily.LateMinutes));
-        if (daily.EarlyExitMinutes > 0) recomputed.Add((AttendanceImpactTypes.EarlyExitDeduction, daily.EarlyExitMinutes));
+        // Held, not raised, on a half-pair day (see IsHalfPair): the minutes stay on the daily record for information.
+        var halfPair = IsHalfPair(daily);
+        if (daily.LateMinutes > 0 && !halfPair) recomputed.Add((AttendanceImpactTypes.LateDeduction, daily.LateMinutes));
+        if (daily.EarlyExitMinutes > 0 && !halfPair) recomputed.Add((AttendanceImpactTypes.EarlyExitDeduction, daily.EarlyExitMinutes));
         if (daily.Status == "Absent") recomputed.Add((AttendanceImpactTypes.AbsenceDeduction, absenceMinutes > 0 ? absenceMinutes : OrdinaryAbsenceMinutes));
         if (daily.OvertimeMinutes > 0) recomputed.Add((AttendanceImpactTypes.OvertimePayable, daily.OvertimeMinutes));
 
@@ -146,8 +152,10 @@ public static class AttendanceDerivedArtifacts
         if (!dayIsPaid) return;
 
         // What payroll paid vs what the day now says, for every type the paid day froze.
+        // A held type is undetermined on a half-pair day, not different: it is compared again once the pair is complete.
+        bool Held(string type) => halfPair && HeldOnHalfPairTypes.Contains(type);
         var differences = paid.Select(p => p.ImpactType).Concat(recomputed.Select(r => r.Type)).Distinct()
-            .Where(Frozen)
+            .Where(type => Frozen(type) && !Held(type))
             .Select(type => (Type: type,
                 Paid: paid.Where(p => p.ImpactType == type).Sum(p => p.Minutes),
                 Now: recomputed.Where(r => r.Type == type).Sum(r => r.Minutes)))
@@ -160,7 +168,10 @@ public static class AttendanceDerivedArtifacts
         var open = flags.FirstOrDefault(x => !x.IsResolved);
         if (differences.Count == 0)
         {
-            if (open is not null) AutoResolve(open, "the day matches what payroll paid again");
+            // An open flag about a held type stays open: the day does not match again, it is undetermined.
+            var openSignature = open is null ? null : SignatureOf(open.Details);
+            var aboutHeld = openSignature is not null && openSignature.Split(';').Any(d => Held(d.Split('=')[0]));
+            if (open is not null && !aboutHeld) AutoResolve(open, "the day matches what payroll paid again");
             return;
         }
 
@@ -178,6 +189,33 @@ public static class AttendanceDerivedArtifacts
             TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate,
             ExceptionType = PaidAttendanceChanged, Severity = "High", Details = details,
         });
+    }
+
+    /// <summary>The deductions held on a half-pair day until the pair is complete.</summary>
+    public static readonly string[] HeldOnHalfPairTypes = [AttendanceImpactTypes.LateDeduction, AttendanceImpactTypes.EarlyExitDeduction];
+
+    /// <summary>
+    /// A missing-punch day the employee did punch on: In-only, Out-only, or an Out at or before the In. Its late-arrival
+    /// and early-exit deductions are HELD, not raised: with half a pair the other end of the day is unknown (an In-only
+    /// day's "early exit" is a guess, an Out-only day's lateness is a guess, a reversed pair proves neither), and pay is
+    /// never deducted on a guessed value. The computed minutes stay on the daily record for information, the High
+    /// <c>MissingPunch</c> exception names them for HR, and completing the pair (the Out arriving, or an approved
+    /// correction) reprocesses the day and raises them then, once, like any pending impact. A day with no punch at all is
+    /// not half a pair (it is Absent, or leave / holiday / rest) and holds nothing. Overtime needs no hold: a half-pair
+    /// day has no worked span, so the processor computes no overtime for it.
+    /// </summary>
+    public static bool IsHalfPair(AttendanceDailyRecord daily) =>
+        daily.MissingPunch && (daily.FirstInUtc is not null || daily.LastOutUtc is not null);
+
+    /// <summary>The missing-punch exception's text: what is missing and, when there are any, the minutes held.</summary>
+    public static string DescribeMissingPunch(AttendanceDailyRecord daily)
+    {
+        var held = new List<string>();
+        if (daily.LateMinutes > 0) held.Add($"{daily.LateMinutes} late minutes");
+        if (daily.EarlyExitMinutes > 0) held.Add($"{daily.EarlyExitMinutes} early-exit minutes");
+        return held.Count == 0
+            ? "Missing in or out punch."
+            : $"Missing in or out punch. Held, not deducted, until the punch is corrected: {string.Join(" and ", held)}.";
     }
 
     private const string SignatureTag = "[sig:";
@@ -199,7 +237,8 @@ public static class AttendanceDerivedArtifacts
         return at < 0 ? details : details[..at];
     }
 
-    /// <summary>Closes an open <see cref="PaidAttendanceChanged"/> exception the system no longer needs HR to act on.</summary>
+    /// <summary>Closes an open attendance exception (a <see cref="PaidAttendanceChanged"/> flag, or a missing punch the day's
+    /// punches now complete) the system no longer needs HR to act on.</summary>
     public static void AutoResolve(AttendanceException exception, string reason)
     {
         exception.IsResolved = true;

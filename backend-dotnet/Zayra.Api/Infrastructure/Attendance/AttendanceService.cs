@@ -1135,7 +1135,12 @@ public class AttendanceService : IAttendanceService
         var records = await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to).ToListAsync(ct);
         return records
             .GroupBy(x => new { x.EmployeeId, x.EmployeeName })
-            .Select(g => new AttendancePayrollSummaryDto(g.Key.EmployeeId, g.Key.EmployeeName, g.Sum(x => x.LateMinutes), g.Sum(x => x.EarlyExitMinutes), g.Count(x => x.Status == "Absent"), g.Sum(x => x.OvertimeMinutes), g.Any(x => x.IsPayrollLocked)))
+            // Late / early-exit minutes held on a half-pair day are not deductible yet, so the payroll summary leaves them
+            // out and agrees with the payroll impacts (AttendanceDerivedArtifacts.IsHalfPair).
+            .Select(g => new AttendancePayrollSummaryDto(g.Key.EmployeeId, g.Key.EmployeeName,
+                g.Sum(x => AttendanceDerivedArtifacts.IsHalfPair(x) ? 0 : x.LateMinutes),
+                g.Sum(x => AttendanceDerivedArtifacts.IsHalfPair(x) ? 0 : x.EarlyExitMinutes),
+                g.Count(x => x.Status == "Absent"), g.Sum(x => x.OvertimeMinutes), g.Any(x => x.IsPayrollLocked)))
             .OrderBy(x => x.EmployeeName).ToList();
     }
 
@@ -1538,10 +1543,24 @@ public class AttendanceService : IAttendanceService
 
     private async Task UpsertExceptions(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
     {
+        // The missing-punch exception is where HR sees a half-pair day and the late / early-exit minutes held on it
+        // (AttendanceDerivedArtifacts.IsHalfPair). Its text follows the day; once the day's punches are complete (the Out
+        // arrived, or a correction was approved) it closes, because the hold it describes has been released.
+        var openMissing = await _db.AttendanceExceptions.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+            && x.WorkDate == daily.WorkDate && x.ExceptionType == "MissingPunch" && !x.IsResolved, ct);
+        if (!daily.MissingPunch)
+        {
+            if (openMissing is not null) AttendanceDerivedArtifacts.AutoResolve(openMissing, "the day no longer has a missing punch");
+        }
+        else if (openMissing is not null)
+        {
+            openMissing.Details = AttendanceDerivedArtifacts.DescribeMissingPunch(daily);
+            return;
+        }
         if (!daily.MissingPunch && daily.LateMinutes == 0) return;
         var type = daily.MissingPunch ? "MissingPunch" : "LateArrival";
         var exists = await _db.AttendanceExceptions.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate && x.ExceptionType == type && !x.IsResolved, ct);
-        if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? "Missing in or out punch." : $"{daily.LateMinutes} late minutes." });
+        if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? AttendanceDerivedArtifacts.DescribeMissingPunch(daily) : $"{daily.LateMinutes} late minutes." });
     }
 
     /// <summary>

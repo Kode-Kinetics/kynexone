@@ -218,9 +218,16 @@ These are intended results of the one-boundary model. They are not defects, but 
   night keeps its full 2-hour tolerance, so the boundary is 08:00. If the employee does work an unrostered early day:
   - a clock-in at 07:30 counts on the night's day (as a second In; the night's first-in is unchanged);
   - that day's later clock-out lands on the next day as an Out-only day, with a High missing-punch exception for
-    review.
+    review. Its early-exit minutes are held, not deducted, until the punch is corrected.
 
   Roster the early day, and the boundary moves to 2 hours before its start.
+
+- **Half-pair days hold their late and early-exit deductions.** On an In-only, Out-only or reversed day no
+  `Late deduction` or `Early exit deduction` is raised. The minutes stay on the daily record and are named in the
+  day's High `MissingPunch` exception. When the pair is completed (the Out arrives, or a correction is approved), the
+  day is recomputed and the deductions are raised once. The `MissingPunch` exception then closes as
+  `[auto-resolved: …]`. On a paid day the completed pair raises no deduction; any difference is flagged as
+  `PaidAttendanceChanged`, as above.
 
 ## Known limitations
 
