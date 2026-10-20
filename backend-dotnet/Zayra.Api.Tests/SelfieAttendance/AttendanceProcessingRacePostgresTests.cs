@@ -23,6 +23,11 @@ namespace Zayra.Api.Tests.SelfieAttendance;
 /// (b) a punch racing the day-processing run (ProcessAsync, and the job's ProcessEmployeeRangeAsync) or device ingest on
 ///     the same employee-day used to 23505 on the daily record's unique (tenant_id, employee_id, work_date).
 /// Written only against types that exist before the fix (08bf4175), so it compiles there and fails there.
+/// <para>Each (b) round is pinned to ONE work date: the punch stamps its own UtcNow inside the call, so a round that
+/// straddled the tenant's midnight (or a device stamp 30 s in the past, taken in the first 30 s after it) used to put
+/// the two sides on different dates and fail <c>Assert.Single</c> for a reason that had nothing to do with the race.
+/// A round now starts only with <see cref="MidnightMargin"/> to spare, and the device stamp never reaches back into
+/// the previous day.</para>
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Integration")]
@@ -81,12 +86,14 @@ public sealed class AttendanceProcessingRacePostgresTests
         for (var round = 0; round < Rounds; round++)
         {
             var employeeId = await AddEmployeeAsync(tenantId);
+            await StayClearOfMidnightAsync();
+            var day = Today();
             var outcomes = await RaceAsync(
                 () => PunchAsync(tenantId, employeeId, "In"),
-                () => ProcessAsync(tenantId, employeeId, Today()));
+                () => ProcessAsync(tenantId, employeeId, day));
 
             Assert.All(outcomes, o => Assert.Equal("ok", o));
-            await AssertOneDailyRecordWithTheInPunchAsync(tenantId, employeeId);
+            await AssertOneDailyRecordWithTheInPunchAsync(tenantId, employeeId, day);
         }
     }
 
@@ -97,6 +104,8 @@ public sealed class AttendanceProcessingRacePostgresTests
         for (var round = 0; round < Rounds; round++)
         {
             var employeeId = await AddEmployeeAsync(tenantId);
+            await StayClearOfMidnightAsync();
+            var day = Today();
             var outcomes = await RaceAsync(
                 () => PunchAsync(tenantId, employeeId, "In"),
                 async () =>
@@ -109,7 +118,7 @@ public sealed class AttendanceProcessingRacePostgresTests
                     await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
                     {
                         await using var tx = await db.Database.BeginTransactionAsync();
-                        await service.ProcessEmployeeRangeAsync(tenantId, employee, policies.ToList(), Today(), Today(), Context(tenantId), default);
+                        await service.ProcessEmployeeRangeAsync(tenantId, employee, policies.ToList(), day, day, Context(tenantId), default);
                         await db.SaveChangesAsync();
                         await tx.CommitAsync();
                     });
@@ -117,7 +126,7 @@ public sealed class AttendanceProcessingRacePostgresTests
                 });
 
             Assert.All(outcomes, o => Assert.Equal("ok", o));
-            await AssertOneDailyRecordWithTheInPunchAsync(tenantId, employeeId);
+            await AssertOneDailyRecordWithTheInPunchAsync(tenantId, employeeId, day);
         }
     }
 
@@ -142,34 +151,87 @@ public sealed class AttendanceProcessingRacePostgresTests
             await using (var db = _fx.CreateDb())
                 code = await db.Employees.IgnoreQueryFilters().Where(e => e.Id == employeeId).Select(e => e.EmployeeCode).SingleAsync();
 
+            await StayClearOfMidnightAsync();
+            var day = Today();
+            var deviceAt = DeviceStampOnTheSameDay(DateTime.UtcNow);
             var outcomes = await RaceAsync(
                 () => PunchAsync(tenantId, employeeId, "In"),
                 async () =>
                 {
                     await using var db = _fx.CreateDb();
                     var result = await Service(db).IngestByDeviceKeyAsync(key, new DeviceIngestRequest(
-                        [new DeviceIngestPunch(code, DateTime.UtcNow.AddSeconds(-30), "Out", null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+                        [new DeviceIngestPunch(code, deviceAt, "Out", null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
                     return result is { Accepted: 1 } ? "ok" : "not accepted";
                 });
 
             Assert.All(outcomes, o => Assert.Equal("ok", o));
             await using var verify = _fx.CreateDb();
-            Assert.Single(await verify.AttendanceDailyRecords.IgnoreQueryFilters().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId).ToListAsync());
+            var raws = await verify.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId).ToListAsync();
+            var punch = Assert.Single(raws, r => r.DeviceId == null);
+            var device = Assert.Single(raws, r => r.DeviceId != null);
+            Assert.Equal(day, WorkDateOf(punch.PunchTimestampUtc));
+            Assert.Equal(day, WorkDateOf(device.PunchTimestampUtc));
+            // The invariant: one daily record for the (employee, work date), and it reflects BOTH events — whichever of
+            // the punch and the ingest recomputed the day last, it saw the other's raw event under the same lock.
+            var daily = Assert.Single(await verify.AttendanceDailyRecords.IgnoreQueryFilters().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId).ToListAsync());
+            Assert.Equal(day, daily.WorkDate);
+            Assert.Equal(punch.PunchTimestampUtc, daily.FirstInUtc);
+            Assert.Equal(device.PunchTimestampUtc, daily.LastOutUtc);
         }
+    }
+
+    [Fact]
+    public void DeviceStampOnTheSameDay_JustAfterMidnight_StaysOnThatDay()
+    {
+        // The stamp the device test used to send, UtcNow - 30 s, fell on the previous work date for the first 30 s of
+        // every day: the punch and the ingest then wrote two different days' records and the test failed.
+        var justAfterMidnight = TenantTimeZone.LocalDayStartUtc(TenantTimeZone.FromId(null), Today()).AddSeconds(10);
+        Assert.NotEqual(WorkDateOf(justAfterMidnight), WorkDateOf(justAfterMidnight.AddSeconds(-30)));
+        Assert.Equal(WorkDateOf(justAfterMidnight), WorkDateOf(DeviceStampOnTheSameDay(justAfterMidnight)));
+        Assert.True(DeviceStampOnTheSameDay(justAfterMidnight) <= justAfterMidnight);
+        var midday = justAfterMidnight.AddHours(12);
+        Assert.Equal(midday.AddSeconds(-30), DeviceStampOnTheSameDay(midday));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>The punch's work date: today in the tenant's (default) time zone.</summary>
-    private static DateOnly Today() => TenantTimeZone.LocalDate(TenantTimeZone.FromId(null), DateTime.UtcNow);
+    private static DateOnly Today() => WorkDateOf(DateTime.UtcNow);
 
-    private async Task AssertOneDailyRecordWithTheInPunchAsync(Guid tenantId, int employeeId)
+    /// <summary>The work date of an instant in the tenant's (default) time zone; these tenants have no shifts.</summary>
+    private static DateOnly WorkDateOf(DateTime utc) => TenantTimeZone.LocalDate(TenantTimeZone.FromId(null), utc);
+
+    /// <summary>How long a (b) round may take, from choosing its day to the punch stamping UtcNow, without leaving it.</summary>
+    private static readonly TimeSpan MidnightMargin = TimeSpan.FromSeconds(30);
+
+    /// <summary>Waits out the tenant's midnight when it is less than <see cref="MidnightMargin"/> away, so the
+    /// round's day, the punch's own UtcNow and the device stamp all fall on one work date.</summary>
+    private static async Task StayClearOfMidnightAsync()
+    {
+        var untilMidnight = TenantTimeZone.LocalDayStartUtc(TenantTimeZone.FromId(null), Today().AddDays(1)) - DateTime.UtcNow;
+        if (untilMidnight < MidnightMargin) await Task.Delay(untilMidnight + TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>A device stamp 30 s before <paramref name="nowUtc"/>, clamped to the start of <paramref name="nowUtc"/>'s
+    /// work date so it can never land on the previous day.</summary>
+    private static DateTime DeviceStampOnTheSameDay(DateTime nowUtc)
+    {
+        var dayStart = TenantTimeZone.LocalDayStartUtc(TenantTimeZone.FromId(null), WorkDateOf(nowUtc));
+        var stamp = nowUtc.AddSeconds(-30);
+        return stamp < dayStart ? dayStart : stamp;
+    }
+
+    private async Task AssertOneDailyRecordWithTheInPunchAsync(Guid tenantId, int employeeId, DateOnly day)
     {
         await using var verify = _fx.CreateDb();
+        var punch = await verify.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.TenantId == tenantId && r.EmployeeId == employeeId);
+        Assert.Equal(day, WorkDateOf(punch.PunchTimestampUtc));
         var daily = await verify.AttendanceDailyRecords.IgnoreQueryFilters().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId).ToListAsync();
-        Assert.Single(daily);
-        // No lost update: whichever ran second, the punch is reflected in the one record.
-        Assert.NotNull(daily[0].FirstInUtc);
+        // One daily record for the (employee, work date)...
+        var record = Assert.Single(daily);
+        Assert.Equal(day, record.WorkDate);
+        // ...and no lost update: whichever ran second, the punch is reflected in it.
+        Assert.Equal(punch.PunchTimestampUtc, record.FirstInUtc);
     }
 
     private static async Task<string[]> RaceAsync(params Func<Task<string>>[] calls)
