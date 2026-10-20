@@ -257,6 +257,7 @@ public class LeaveService : ILeaveService
             .Where(c => c.TenantId == tenantId)
             .Select(c => new { c.Id, c.CountryCode })
             .ToDictionaryAsync(c => c.Id, c => c.CountryCode, ct);
+        var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
 
         // Which leave types are ANNUAL leave? The Art. 109 tier applies to annual leave only — it must
         // not silently inflate a sick, maternity or unpaid balance. Matches the same way the rest of
@@ -297,7 +298,7 @@ public class LeaveService : ILeaveService
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
                     ? companyCountry
                     : string.Empty;
-                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender))
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, referenceLists))
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
                 // company-specific override). Accrue only the same most-specific policy that
@@ -307,7 +308,7 @@ public class LeaveService : ILeaveService
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
                             emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
-                            emp.ContractType, emp.Gender))
+                            emp.ContractType, emp.Gender, referenceLists))
                     .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
@@ -2657,6 +2658,7 @@ public class LeaveService : ILeaveService
 
     private async Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
     {
+        var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
         var policies = await _db.LeavePolicies
             .Where(p => p.TenantId == tenantId && p.LeaveTypeId == leaveTypeId && p.Status == "Active")
             .ToListAsync(ct);
@@ -2675,13 +2677,13 @@ public class LeaveService : ILeaveService
             var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
             if (requested is null)
                 throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
-            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
                 throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
             return requested;
         }
 
         return policies
-            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
             .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, employee.DepartmentId, employee.GradeId))
             .ThenByDescending(p => p.UpdatedAtUtc)
             .FirstOrDefault();
@@ -2699,16 +2701,19 @@ public class LeaveService : ILeaveService
         string? grade,
         string? employmentType,
         string? contractType,
-        string? gender)
+        string? gender,
+        PolicyReferenceLists lists)
     {
         if (!CountryMatches(policy.CountryCode, countryCode)) return false;
         if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
         if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
         if (!string.IsNullOrWhiteSpace(policy.Grade) && !string.Equals(policy.Grade, grade, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !string.Equals(policy.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.ContractType) && !string.Equals(policy.ContractType, contractType, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.Gender) && !string.Equals(policy.Gender, gender, StringComparison.OrdinalIgnoreCase)) return false;
+        // Reference-list values: a policy or employee may hold the code (FULL_TIME) or the older English label
+        // (Full-Time); ReferenceList.Same treats them as one value.
+        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !lists.EmploymentType.Same(policy.EmploymentType, employmentType)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.ContractType) && !lists.ContractType.Same(policy.ContractType, contractType)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.Gender) && !lists.Gender.Same(policy.Gender, gender)) return false;
 
         var scopedRows = rows.Where(r => r.LeavePolicyId == policy.Id).ToList();
         if (scopedRows.Count == 0) return true;
@@ -2718,8 +2723,8 @@ public class LeaveService : ILeaveService
             (!r.BranchId.HasValue || r.BranchId == branchId) &&
             (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
             (!r.GradeId.HasValue || r.GradeId == gradeId) &&
-            (string.IsNullOrWhiteSpace(r.EmploymentType) || string.Equals(r.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(r.ContractType) || string.Equals(r.ContractType, contractType, StringComparison.OrdinalIgnoreCase)));
+            (string.IsNullOrWhiteSpace(r.EmploymentType) || lists.EmploymentType.Same(r.EmploymentType, employmentType)) &&
+            (string.IsNullOrWhiteSpace(r.ContractType) || lists.ContractType.Same(r.ContractType, contractType)));
     }
 
     /// <summary>
@@ -2735,6 +2740,18 @@ public class LeaveService : ILeaveService
     /// applies for the same reason. Unrecognised values fall back to a case-insensitive comparison
     /// of the raw strings, so nothing that matched before stops matching.</para>
     /// </summary>
+    /// <summary>The reference lists a leave policy's scope is compared through (code or label, any case).</summary>
+    internal sealed record PolicyReferenceLists(
+        Zayra.Api.Infrastructure.Setup.ReferenceList EmploymentType,
+        Zayra.Api.Infrastructure.Setup.ReferenceList ContractType,
+        Zayra.Api.Infrastructure.Setup.ReferenceList Gender)
+    {
+        public static async Task<PolicyReferenceLists> LoadAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) => new(
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.EmploymentTypeType, ct),
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.ContractTypeType, ct),
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.GenderType, ct));
+    }
+
     internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
     {
         if (string.IsNullOrWhiteSpace(policyCountry)) return true;
