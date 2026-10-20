@@ -17,7 +17,8 @@ const HOLD_REASONS: HoldReason[] = ['Resignation', 'UnpaidLeave', 'Abroad', 'Tra
 /**
  * Contract renewals (Release A slice R4): every fixed-term contract ending in the window, bucketed by how soon it ends,
  * the exceptions that need someone today, and for each review its Next line — what is due, by when, and what happens
- * if it is missed. Rows that can renew on current terms can be selected for R5's batch fast lane. ?contract={id}
+ * if it is missed. Rows that can renew on current terms can be selected for R5's batch fast lane — only once a caller
+ * passes `batchActions`; until then the list shows no selection controls. ?contract={id}
  * opens that contract's history (the Compliance contracts register links here).
  */
 export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds: string[], done: () => void) => React.ReactNode } = {}) {
@@ -128,12 +129,14 @@ export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds
               </p>
             )}
             <Radar radar={radar} filter={filter} onFilter={changeFilter} rows={rows} selected={selected} onSelected={setSelected}
-              canManage={canManage} onOpenChain={setChainFor} busyCaseId={busyCaseId}
+              canManage={canManage} hasBatchActions={batchActions != null} onOpenChain={setChainFor} busyCaseId={busyCaseId}
               onHold={(item) => { setHoldReason('Resignation'); setHoldFor(item); }}
               onRelease={(item) => void act(item, () => renewalsApi.release(item.caseId), 'The hold could not be released.')} />
-            <SelectionBar count={selected.size} onClear={() => setSelected(new Set())}>
-              {batchActions?.([...selected], () => { setSelected(new Set()); void load(); })}
-            </SelectionBar>
+            {batchActions && (
+              <SelectionBar count={selected.size} onClear={() => setSelected(new Set())}>
+                {batchActions([...selected], () => { setSelected(new Set()); void load(); })}
+              </SelectionBar>
+            )}
           </>
         )}
       </div>
