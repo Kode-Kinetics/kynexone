@@ -1749,6 +1749,11 @@ public class EmployeeManagementService : IEmployeeManagementService
             employee.GradeId ??= designation.GradeId;
         }
 
+        // Pre-save, like the rest of this method, and AFTER the grade is resolved (a designation can supply it), so
+        // the default structure is the grade's and not DIRECT: an unknown or inactive named salary structure is
+        // refused (422) before anything is staged. The writer re-checks as the backstop for its other callers.
+        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary?.SalaryStructureCode, cancellationToken);
+
         if (employee.GradeId is null) return;
 
         var grade = await _db.Grades

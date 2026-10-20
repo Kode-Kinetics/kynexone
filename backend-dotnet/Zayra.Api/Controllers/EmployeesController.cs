@@ -60,7 +60,11 @@ public class EmployeesController : ControllerBase
         "socialInsuranceReference",
         // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
         "bankRoutingCode", "accountNumber",
-        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown"
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
+        // The national ID and the four identity-card expiries take the same route as the passport and visa beside
+        // them: they identify the person and gate activation/payroll, so a change is approved before it applies.
+        // Creating an employee is not a change and still sets them directly.
+        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate"
     };
 
     private readonly ZayraDbContext _db;
@@ -2931,6 +2935,7 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -3735,6 +3740,11 @@ public class EmployeesController : ControllerBase
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { message = ex.Message });
         }
+        catch (SalaryStructureRefusedException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return SalaryStructureRefused(ex);
+        }
         catch (WorkEmailPlusAddressException)
         {
             _db.ChangeTracker.Clear();
@@ -3919,6 +3929,7 @@ public class EmployeesController : ControllerBase
                     throw new InvalidOperationException("Save a future salary package separately from other approval-required changes.");
             }
         }
+        catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex, " No change was applied."); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
@@ -4582,6 +4593,10 @@ public class EmployeesController : ControllerBase
         if (failed > 0) parts.Add($"{failed} failed");
         return string.Join(", ", parts);
     }
+
+    /// <summary>One 422 shape for a refused salary structure on every employee salary path (see SalaryStructureRefusedException).</summary>
+    private UnprocessableEntityObjectResult SalaryStructureRefused(SalaryStructureRefusedException ex, string suffix = "") =>
+        UnprocessableEntity(new { error = ex.ErrorCode, code = ex.ErrorCode, salaryStructureCode = ex.StructureCode, message = ex.Message + suffix });
 
     private static object ReadinessItemDto(Zayra.Api.Infrastructure.Employees.ReadinessItem i) => new
     {

@@ -63,9 +63,14 @@ public class MasterDataController : ControllerBase
         var uid = GetUserId();
         var t = await _db.MasterDataTypes.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (t == null) return NotFound();
+        // Status is an explicit decision: absent means "keep", never "reactivate". A system-defined type backs
+        // built-in forms, so — like delete — it cannot be retired.
+        if (req.IsActive == false && t.IsSystemDefined && t.IsActive)
+            return BadRequest("System-defined types cannot be deactivated.");
         var old = System.Text.Json.JsonSerializer.Serialize(new { t.NameEn, t.IsActive });
         t.NameEn = req.NameEn; t.NameAr = req.NameAr ?? string.Empty;
         t.Description = req.Description ?? string.Empty; t.AllowCustomValues = req.AllowCustomValues;
+        if (req.IsActive is bool typeActive) t.IsActive = typeActive;
         t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = uid;
         await _db.SaveChangesAsync(ct);
         await WriteAdminAuditLog(tid, uid, "MasterDataType", id.ToString(), "Updated", old, System.Text.Json.JsonSerializer.Serialize(new { t.NameEn, t.IsActive }), ct);
@@ -140,11 +145,17 @@ public class MasterDataController : ControllerBase
         var uid = GetUserId();
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
+        var old = System.Text.Json.JsonSerializer.Serialize(new { v.ValueEn, v.IsActive });
         v.ValueEn = req.ValueEn; v.ValueAr = req.ValueAr ?? string.Empty;
-        v.ExtraJson = req.ExtraJson; v.SortOrder = req.SortOrder;
-        v.IsDefault = req.IsDefault; v.IsActive = req.IsActive;
+        // Absent means "keep" for the two fields the edit form does not carry: an unrelated rename used to
+        // reactivate a retired value (IsActive defaulted to true) and wipe its ExtraJson metadata.
+        if (req.ExtraJson is not null) v.ExtraJson = req.ExtraJson;
+        v.SortOrder = req.SortOrder;
+        v.IsDefault = req.IsDefault;
+        if (req.IsActive is bool valueActive) v.IsActive = valueActive;
         v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
         await _db.SaveChangesAsync(ct);
+        await WriteAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Updated", old, System.Text.Json.JsonSerializer.Serialize(new { v.ValueEn, v.IsActive }), ct);
         return Ok(v);
     }
 
@@ -174,5 +185,7 @@ public class MasterDataController : ControllerBase
     }
 }
 
-public record MasterDataTypeRequest(string Code, string NameEn, string? NameAr, string? Description, bool AllowCustomValues);
-public record MasterDataValueRequest(string Code, string ValueEn, string? ValueAr, string? ExtraJson, int SortOrder, bool IsDefault, bool IsActive = true);
+/// <summary><c>IsActive</c> is ignored on create (new types start active); on update, null keeps the current status.</summary>
+public record MasterDataTypeRequest(string Code, string NameEn, string? NameAr, string? Description, bool AllowCustomValues, bool? IsActive = null);
+/// <summary>New values always start active. On update, a null <c>IsActive</c> or <c>ExtraJson</c> keeps the current value.</summary>
+public record MasterDataValueRequest(string Code, string ValueEn, string? ValueAr, string? ExtraJson, int SortOrder, bool IsDefault, bool? IsActive = null);

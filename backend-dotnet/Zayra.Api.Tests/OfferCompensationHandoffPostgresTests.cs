@@ -94,6 +94,30 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         assignment.Currency.Should().Be("SAR"); assignment.EffectiveDate.Should().Be(new DateOnly(2027, 1, 1));
     }
 
+    /// <summary>
+    /// The draft's PayrollProfileCode is the PAYROLL GROUP, not a salary structure. The hand-off used to pass it as the
+    /// structure code, so a hire with payroll group "MONTHLY" was put on (and, before structure codes were checked, given
+    /// a brand-new empty) structure called MONTHLY. The accepted offer names no structure: the default applies.
+    /// </summary>
+    [Fact]
+    public async Task ThePayrollGroupIsNeverUsedAsTheSalaryStructure()
+    {
+        var (seed, id) = await SeedAccepted();
+        await using (var db = fixture.CreateDb())
+        {
+            (await db.EmployeeDrafts.SingleAsync(d => d.Id == id)).PayrollProfileCode = "MONTHLY";
+            await db.SaveChangesAsync();
+        }
+        await Confirm(seed, id);
+        await using var verify = fixture.CreateDb();
+        var approval = await EmployeeDraftLifecyclePostgresTests.Employees(verify, seed.Actor.TenantId, Guid.NewGuid()).ApproveDraft(id, default);
+        approval.Result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((approval.Result as ObjectResult)?.Value));
+        var assignment = await verify.EmployeeSalaryStructures.SingleAsync(e => e.TenantId == seed.Actor.TenantId);
+        var structure = await verify.SalaryStructures.SingleAsync(s => s.Id == assignment.SalaryStructureId);
+        structure.Code.Should().Match(c => c == "DIRECT" || c.StartsWith("GRADE-"), "the default structure applies when the offer names none");
+        (await verify.SalaryStructures.CountAsync(s => s.TenantId == seed.Actor.TenantId && s.Code == "MONTHLY")).Should().Be(0);
+    }
+
     [Theory]
     [InlineData("salary")][InlineData("date")][InlineData("currency")][InlineData("company")]
     public async Task ChangedInputsInvalidateOrRefusePreviouslyConfirmedTerms(string change)

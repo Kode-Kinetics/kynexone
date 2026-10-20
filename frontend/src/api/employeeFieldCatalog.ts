@@ -93,8 +93,8 @@ export const SALARY_CURRENCY_OPTIONS = ['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR'
  * and never a per-section default.
  *
  * It used to be both. `complianceEditFieldsForCountry` stamped `sensitive: true` on every statutory
- * input, promising approval for six keys the server writes on the spot (`idNumber`, `sponsorName`
- * and the four card `*ExpiryDate` columns); meanwhile the remote overlay's `r.sensitive ?? ...`
+ * input, promising approval for keys the server wrote on the spot (then `idNumber`, `sponsorName`
+ * and the four card `*ExpiryDate` columns — all but `sponsorName` are approval-gated now); meanwhile the remote overlay's `r.sensitive ?? ...`
  * DEMOTED `dateOfBirth` and `bankName` whenever the registry answered, so the same field's badge
  * changed meaning between online and offline mode. `requiresApproval` unions this mirror with a
  * server-supplied flag and never downgrades: when the field-catalog endpoint starts publishing
@@ -116,6 +116,8 @@ const APPROVAL_REQUIRED_EDIT_KEYS = new Set<string>([
   // Where the WPS/SIF line pays — approval-gated server-side with the IBAN.
   'bankroutingcode', 'accountnumber', 'molid', 'salarycurrency', 'payrollgroup',
   'salarystructurereference', 'paymentmethod', 'salarybreakdown',
+  // The national ID and the four identity-card expiries — approval-gated server-side like the passport and visa.
+  'idnumber', 'iqamaexpirydate', 'emiratesidexpirydate', 'qidexpirydate', 'civilidexpirydate',
 ]);
 
 /** True when saving this edit key submits a change request instead of writing immediately. */
@@ -165,7 +167,8 @@ export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Payroll & Banking', key: 'salaryCurrency', label: 'Salary currency', type: 'select', options: SALARY_CURRENCY_OPTIONS },
   { section: 'Payroll & Banking', key: 'paymentMethod', label: 'Payment method', type: 'select', options: PAYMENT_METHOD_OPTIONS },
   { section: 'Payroll & Banking', key: 'payrollGroup', label: 'Payroll group' },
-  { section: 'Payroll & Banking', key: 'salaryStructureReference', label: 'Salary structure reference' },
+  // No free-text "salary structure reference": the structure is chosen in the Salary step
+  // (salaryBreakdown.salaryStructureCode) and the payroll profile's reference is derived from it server-side.
 ];
 
 /** UI keys group back into one atomic, approval-controlled salaryBreakdown change. */
@@ -179,7 +182,8 @@ export const SALARY_BREAKDOWN_EDIT_FIELDS: EmployeeEditField[] = [
   { key: 'mobileAllowance', label: 'Mobile allowance', type: 'number' },
   { key: 'otherAllowance', label: 'Other allowance', type: 'number' },
   { key: 'fixedDeduction', label: 'Fixed deduction', type: 'number' },
-  { key: 'salaryStructureCode', label: 'Salary structure code', hidden: true },
+  // Rendered as a choice of the company's active structures (SalaryStructureSelect), never free text.
+  { key: 'salaryStructureCode', label: 'Salary structure', type: 'select' },
 ].map((field) => ({ ...field, type: field.type as FieldInputType | undefined, key: `salaryBreakdown.${field.key}`, section: 'Salary', sensitive: true }));
 
 // Passport is common to every GCC jurisdiction.

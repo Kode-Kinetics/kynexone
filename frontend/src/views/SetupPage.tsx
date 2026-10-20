@@ -74,6 +74,7 @@ import type {
 } from '../api/setup';
 import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
+import { notifyGradesChanged } from '../lib/gradeEvents';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -959,18 +960,22 @@ function GradesTab() {
     if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
     if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
     setSaving(true); setError('');
+    // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
+    // scale write then fails.
+    let gradeSaved = false;
     try {
       const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
+      gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
-    finally { setSaving(false); }
+    finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
   const deleteGrade = async (id: string) => {
     if (!confirm('Delete this grade?')) return;
     setDeleting(id);
-    try { await gradesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
+    try { await gradesApi.remove(id); load(); notifyGradesChanged(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -985,7 +990,7 @@ function GradesTab() {
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
-            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); notifyGradesChanged(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
@@ -1170,6 +1175,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 // ─── Master Data ─────────────────────────────────────────────────────────────
 
 function MasterDataTab() {
+  const t = useT();
   const [types, setTypes] = useState<MasterDataType[]>([]);
   const [values, setValues] = useState<MasterDataValue[]>([]);
   const [selectedType, setSelectedType] = useState<MasterDataType | null>(null);
@@ -1180,8 +1186,10 @@ function MasterDataTab() {
   const [editingType, setEditingType] = useState<MasterDataType | null>(null);
   const [editingValue, setEditingValue] = useState<MasterDataValue | null>(null);
   useSetupEditorState(typeModal || valueModal);
-  const [typeForm, setTypeForm] = useState({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true });
-  const [valueForm, setValueForm] = useState({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false });
+  // isActive travels with every edit: the API keeps the current status only when it is absent, and the
+  // form always knows it, so a rename can never silently reactivate (or retire) a record.
+  const [typeForm, setTypeForm] = useState({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true, isActive: true });
+  const [valueForm, setValueForm] = useState({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false, isActive: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1199,19 +1207,19 @@ function MasterDataTab() {
 
   useEffect(() => { loadTypes(); }, [loadTypes]);
 
-  const selectType = (t: MasterDataType) => {
-    setSelectedType(t);
-    loadValues(t.id);
+  const selectType = (type: MasterDataType) => {
+    setSelectedType(type);
+    loadValues(type.id);
   };
 
   const openNewType = () => {
     setEditingType(null);
-    setTypeForm({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true });
+    setTypeForm({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true, isActive: true });
     setError(''); setTypeModal(true);
   };
-  const openEditType = (t: MasterDataType) => {
-    setEditingType(t);
-    setTypeForm({ code: t.code, nameEn: t.nameEn, nameAr: t.nameAr, description: t.description, allowCustomValues: t.allowCustomValues });
+  const openEditType = (type: MasterDataType) => {
+    setEditingType(type);
+    setTypeForm({ code: type.code, nameEn: type.nameEn, nameAr: type.nameAr, description: type.description, allowCustomValues: type.allowCustomValues, isActive: type.isActive });
     setError(''); setTypeModal(true);
   };
   const saveType = async () => {
@@ -1219,20 +1227,21 @@ function MasterDataTab() {
     setSaving(true); setError('');
     try {
       if (editingType) await masterDataApi.updateType(editingType.id, typeForm);
-      else await masterDataApi.createType(typeForm);
+      else await masterDataApi.createType({ code: typeForm.code, nameEn: typeForm.nameEn, nameAr: typeForm.nameAr, description: typeForm.description, allowCustomValues: typeForm.allowCustomValues });
       setTypeModal(false); loadTypes();
+      if (editingType && selectedType?.id === editingType.id) setSelectedType({ ...selectedType, ...typeForm });
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
     finally { setSaving(false); }
   };
 
   const openNewValue = () => {
     setEditingValue(null);
-    setValueForm({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false });
+    setValueForm({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false, isActive: true });
     setError(''); setValueModal(true);
   };
   const openEditValue = (v: MasterDataValue) => {
     setEditingValue(v);
-    setValueForm({ code: v.code, valueEn: v.valueEn, valueAr: v.valueAr, sortOrder: v.sortOrder, isDefault: v.isDefault });
+    setValueForm({ code: v.code, valueEn: v.valueEn, valueAr: v.valueAr, sortOrder: v.sortOrder, isDefault: v.isDefault, isActive: v.isActive });
     setError(''); setValueModal(true);
   };
   const saveValue = async () => {
@@ -1240,7 +1249,7 @@ function MasterDataTab() {
     setSaving(true); setError('');
     try {
       if (editingValue) await masterDataApi.updateValue(editingValue.id, { ...valueForm });
-      else await masterDataApi.createValue(selectedType.id, { ...valueForm, isDefault: valueForm.isDefault });
+      else await masterDataApi.createValue(selectedType.id, { code: valueForm.code, valueEn: valueForm.valueEn, valueAr: valueForm.valueAr, sortOrder: valueForm.sortOrder, isDefault: valueForm.isDefault });
       setValueModal(false); loadValues(selectedType.id);
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
     finally { setSaving(false); }
@@ -1266,19 +1275,20 @@ function MasterDataTab() {
             <p className="py-6 text-center text-xs text-slate-400">No types yet</p>
           ) : (
             <ul className="space-y-0.5">
-              {types.map((t) => (
-                <li key={t.id}>
+              {types.map((type) => (
+                <li key={type.id}>
                   <div
                     role="button"
                     tabIndex={0}
-                    onClick={() => selectType(t)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectType(t); } }}
-                    className={`group flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm ${selectedType?.id === t.id ? 'bg-sapphire/10 text-sapphire font-semibold' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03] text-slate-700 dark:text-slate-300'}`}
+                    onClick={() => selectType(type)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectType(type); } }}
+                    className={`group flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm ${selectedType?.id === type.id ? 'bg-sapphire/10 text-sapphire font-semibold' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03] text-slate-700 dark:text-slate-300'}`}
                   >
-                    <span className="truncate">{t.nameEn}</span>
+                    <span className={`truncate ${type.isActive ? '' : 'text-slate-400 line-through'}`}>{type.nameEn}</span>
                     <div className="flex items-center gap-1">
-                      {!t.isSystemDefined && (
-                        <button type="button" aria-label="Edit type" onClick={(e) => { e.stopPropagation(); openEditType(t); }} className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-slate-200 dark:hover:bg-white/10">
+                      {!type.isActive && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
+                      {!type.isSystemDefined && (
+                        <button type="button" aria-label="Edit type" onClick={(e) => { e.stopPropagation(); openEditType(type); }} className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-slate-200 dark:hover:bg-white/10">
                           <Pencil className="h-3 w-3" />
                         </button>
                       )}
@@ -1351,12 +1361,18 @@ function MasterDataTab() {
         <div className="space-y-3">
           <FormField label="Code" required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
           <FormField label="Name (EN)" required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Name (AR)"><input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
+          <FormField label="Name (AR)">
+            <div className="flex items-stretch gap-1.5">
+              <input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={typeForm.nameEn} kind="organization-label" onSuggest={(s) => setTypeForm(x => ({ ...x, nameAr: s }))} />
+            </div>
+          </FormField>
           <FormField label="Description"><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="allowCustom" checked={typeForm.allowCustomValues} onChange={(e) => setTypeForm(x => ({ ...x, allowCustomValues: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="allowCustom" className="text-sm text-slate-700 dark:text-slate-300">Allow custom values</label>
           </div>
+          {editingType && <FormField label={t('Status')}><select aria-label={t('Status')} value={typeForm.isActive ? 'true' : 'false'} onChange={(e) => setTypeForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
 
@@ -1367,12 +1383,18 @@ function MasterDataTab() {
         <div className="space-y-3">
           <FormField label="Code" required><input value={valueForm.code} onChange={(e) => setValueForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="UAE" /></FormField>
           <FormField label="Value (EN)" required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Value (AR)"><input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
+          <FormField label="Value (AR)">
+            <div className="flex items-stretch gap-1.5">
+              <input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={valueForm.valueEn} kind="organization-label" onSuggest={(s) => setValueForm(x => ({ ...x, valueAr: s }))} />
+            </div>
+          </FormField>
           <FormField label="Sort Order"><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="isDefault" checked={valueForm.isDefault} onChange={(e) => setValueForm(x => ({ ...x, isDefault: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="isDefault" className="text-sm text-slate-700 dark:text-slate-300">Default value</label>
           </div>
+          {editingValue && <FormField label={t('Status')}><select aria-label={t('Status')} value={valueForm.isActive ? 'true' : 'false'} onChange={(e) => setValueForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
     </div>

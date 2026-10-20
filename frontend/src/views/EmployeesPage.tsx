@@ -89,6 +89,8 @@ import {
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 import { masterDataApi, type MasterDataValue } from '../api/setup';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
+import { SalaryStructureSelect } from '../components/SalaryStructureSelect';
+import { useLiveGrades } from '../hooks/useLiveGrades';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -441,7 +443,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live: refetched when Setup changes a grade (this tab or another) and when the user returns to the tab.
+  const { grades } = useLiveGrades();
   const [gradeBenefits, setGradeBenefits] = useState<GradeBenefitDefault[]>([]);
   const [gradeBenefitsLoading, setGradeBenefitsLoading] = useState(false);
   const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
@@ -611,12 +614,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const loadLookups = useCallback(async () => {
     // Every row of each lookup, page by page. One page of 100 left the 101st department,
     // designation or active manager missing from the form's selects with nothing to say so.
-    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
+    const [companyRes, branchRes, deptRes, desigRes, costRes, managerRes] = await Promise.all([
       companiesApi.listAll(),
       branchesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(),
       employeesApi.listAll({ status: 'Active' }),
     ]);
@@ -624,7 +626,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setBranches(branchRes);
     setDepartments(deptRes);
     setDesignations(desigRes);
-    setGrades(gradeRes);
     setCostCenters(costRes);
     setManagerCandidates(managerRes);
   }, []);
@@ -999,8 +1000,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     [grades, form.gradeId],
   );
   const eligibleGrades = useMemo(
-    () => selectedDesignation?.gradeId ? grades.filter((grade) => grade.id === selectedDesignation.gradeId) : grades,
-    [grades, selectedDesignation],
+    () => {
+      // Retired grades are not offered for a new hire (the edit form already filters them); one already chosen
+      // on a resumed draft stays visible so the select never shows a value it has no option for.
+      const offered = grades.filter((grade) => grade.isActive || grade.id === form.gradeId);
+      return selectedDesignation?.gradeId ? offered.filter((grade) => grade.id === selectedDesignation.gradeId) : offered;
+    },
+    [grades, selectedDesignation, form.gradeId],
   );
   const salaryTotal = useMemo(() => {
     const s = form.salaryBreakdown;
@@ -1187,6 +1193,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       },
     }));
 
+  const setSalaryStructure = useCallback((code: string) =>
+    setForm((current) => ({
+      ...current,
+      salaryBreakdown: { ...current.salaryBreakdown, salaryStructureCode: code },
+      payrollProfile: { ...current.payrollProfile!, salaryStructureReference: code },
+    })), []);
+
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
     setForm((current) => {
       const complianceRecords = (current.complianceRecords ?? []).map((record, i) => (i === index ? { ...record, [key]: value } : record));
@@ -1307,13 +1320,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       ['Account number', form.payrollProfile?.accountNumber], ['Bank routing / sort code', form.payrollProfile?.bankRoutingCode],
       ['MOL ID / National labour number', form.payrollProfile?.molId],
       ['Salary currency', form.payrollProfile?.salaryCurrency || currencyCode], ['Payment method', form.payrollProfile?.paymentMethod],
-      ['Payroll group', form.payrollProfile?.payrollGroup], ['Salary structure reference', form.payrollProfile?.salaryStructureReference],
+      ['Payroll group', form.payrollProfile?.payrollGroup],
     ] },
     { title: 'Salary', rows: [
       ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
       ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
       ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
       ['Fixed deduction', form.salaryBreakdown?.fixedDeduction],
+      ['Salary structure', form.salaryBreakdown?.salaryStructureCode || t('Default for the grade')],
       ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
       ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
@@ -1326,7 +1340,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   ];
   const createReviewSections = allCreateReviewSections.map((section, step) => ({ ...section, step, rows: section.rows.filter(([, value]) => value !== undefined && value !== null && value !== '' && value !== '-') }))
     .filter(section => section.step < 2 || fullSetup
-      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup || form.payrollProfile?.salaryStructureReference))
+      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup))
       || (section.step === 3 && (salaryTotal > 0 || Object.entries(form.salaryBreakdown ?? {}).some(([key, value]) => !['currency', 'effectiveDate'].includes(key) && value !== undefined && value !== '')))
       || (section.step === 4 && section.rows.length > 0));
 
@@ -2736,7 +2750,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code used in the UAE WPS SIF (6-digit code). Saudi bank files take the bank from the IBAN and the approved BIC." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number used in the UAE WPS SIF. Saudi wage files use the employee's own national ID or Iqama number instead." infoKey="employees.molId" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
-            <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
             </EmployeeAdditionalDetails>
           </Section>
 
@@ -2746,6 +2759,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
+            {/* A choice of the company's active structures, never free text (an unknown code is refused, 422). The
+                payroll profile's reference follows the choice. */}
+            <SalaryStructureSelect
+              companyId={form.companyId}
+              value={form.salaryBreakdown?.salaryStructureCode ?? ''}
+              retainCurrent={false}
+              onChange={setSalaryStructure}
+            />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
               {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
