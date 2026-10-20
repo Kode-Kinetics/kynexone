@@ -159,9 +159,10 @@ const ROWS: Row[] = [
     kind: 'pack',
     name: 'Saudi Arabia',
     nameAr: 'السعودية',
-    /* 'ANB-format', not 'ANB': SaudiBankExportPanel states the layout is not a bank-certified format. */
-    items: ['GOSI', 'Nitaqat', 'ANB-format payroll file, pending ANB certification', 'Qiwa data check'],
-    itemsAr: ['التأمينات', 'نطاقات', 'ملف رواتب بصيغة البنك العربي، بانتظار اعتماد البنك', 'فحص بيانات قوى'],
+    /* 'ANB-format … uncertified', not 'ANB': SaudiBankExportPanel states the layout is not a bank-certified format.
+       Kept to two lines on the 8-em drum face; the screen-reader sentence below carries the full wording. */
+    items: ['GOSI', 'Nitaqat', 'ANB-format file, uncertified', 'Qiwa data check'],
+    itemsAr: ['التأمينات', 'نطاقات', 'ملف بصيغة البنك العربي، غير معتمد', 'فحص بيانات قوى'],
     heads: 612,
   },
   {
@@ -247,8 +248,8 @@ const ROWS: Row[] = [
     nameAr: 'ملفات حماية الأجور',
     /* AnbConnectCsvGenerator + KsaWageFileRules (Saudi bank file with WPS
        fields), UaeWageProtectionExporter (SIF), QatarWageProtectionExporter */
-    items: ['ANB-format file, WPS fields (pending ANB certification)', 'UAE SIF', 'Qatar WPS'],
-    itemsAr: ['ملف بصيغة البنك العربي بحقول الأجور (بانتظار اعتماد البنك)', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
+    items: ['ANB-format WPS file, uncertified', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف أجور بصيغة البنك العربي، غير معتمد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
   },
   {
     code: 'EOS',
