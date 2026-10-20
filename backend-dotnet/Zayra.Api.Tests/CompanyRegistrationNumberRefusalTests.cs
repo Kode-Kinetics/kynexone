@@ -43,9 +43,10 @@ public class CompanyRegistrationNumberRefusalTests
     {
         await using var db = Db();
         var tenantId = Guid.NewGuid();
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = tenantId, Name = "Group", Slug = $"group-{tenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.Group });
         db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "First Co", RegistrationNumber = "CR-100", IsActive = true });
         await db.SaveChangesAsync();
-        var controller = new OrganizationController(new OrganizationSetupService(db, new AuditService(db)))
+        var controller = new OrganizationController(new OrganizationSetupService(db, new AuditService(db)), db)
         { ControllerContext = new ControllerContext { HttpContext = GroupAdmin(tenantId) } };
 
         var result = (await controller.CreateCompany(Request("CR-100"), CancellationToken.None)).Result;

@@ -12,10 +12,12 @@ namespace Zayra.Api.Controllers;
 public class OrganizationController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
+    private readonly Zayra.Api.Data.ZayraDbContext _db;
 
-    public OrganizationController(IOrganizationSetupService organization)
+    public OrganizationController(IOrganizationSetupService organization, Zayra.Api.Data.ZayraDbContext db)
     {
         _organization = organization;
+        _db = db;
     }
 
     [HttpGet("companies")]
@@ -30,35 +32,21 @@ public class OrganizationController : ControllerBase
 
     [HttpGet("companies/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
-    public async Task<ActionResult<CompanyDto>> Company(Guid id, CancellationToken cancellationToken)
-        => await _organization.GetCompanyAsync(RequireTenant(), id, cancellationToken) is { } company ? Ok(company) : NotFound();
+    public Task<ActionResult<CompanyDto>> Company(Guid id, CancellationToken cancellationToken)
+        => CompanyEndpoints.GetAsync(this, _organization, id, cancellationToken);
 
+    // Create and update go through the same rules as /api/companies (CompanyEndpoints): a group grant
+    // and the company-creation gate to create; the company within the caller's grant to update.
     [HttpPost("companies")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CompanyDto>> CreateCompany(CompanyRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var company = await _organization.CreateCompanyAsync(RequireTenant(), request, Context(), cancellationToken);
-            return Created($"/api/organization/companies/{company.Id}", company);
-        }
-        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (Zayra.Api.Infrastructure.Organization.CompanyRegistrationNumberTakenException ex) { return BadRequest(ex.ToPayload()); }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CompanyDto>> CreateCompany(CompanyRequest request, CancellationToken cancellationToken)
+        => CompanyEndpoints.CreateAsync(this, _organization, _db, request, Context(),
+            company => Created($"/api/organization/companies/{company.Id}", company), cancellationToken);
 
     [HttpPut("companies/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CompanyDto>> UpdateCompany(Guid id, CompanyRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _organization.UpdateCompanyAsync(RequireTenant(), id, request, Context(), cancellationToken) is { } company ? Ok(company) : NotFound();
-        }
-        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (Zayra.Api.Infrastructure.Organization.CompanyRegistrationNumberTakenException ex) { return BadRequest(ex.ToPayload()); }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CompanyDto>> UpdateCompany(Guid id, CompanyRequest request, CancellationToken cancellationToken)
+        => CompanyEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
     [HttpGet("branches")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]

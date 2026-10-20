@@ -132,7 +132,7 @@ public class BranchCompanyScopeTests
     {
         await using var db = Db();
         var w = await Seed(db);
-        var c = new OrganizationController(new OrganizationSetupService(db, new AuditService(db)))
+        var c = new OrganizationController(new OrganizationSetupService(db, new AuditService(db)), db)
         { ControllerContext = new ControllerContext { HttpContext = Caller(w.TenantId, null, w.B.Id) } };
 
         var page = (PagedResult<BranchDto>)((OkObjectResult)(await c.Branches(null, 1, 100, CancellationToken.None)).Result!).Value!;
@@ -291,7 +291,7 @@ public class BranchCompanyScopeTests
     // ── /api/organization/companies follows the same scope as /api/companies ─────────────────
 
     private static async Task<PagedResult<CompanyDto>> OrgCompanies(ZayraDbContext db, DefaultHttpContext http) =>
-        (PagedResult<CompanyDto>)((OkObjectResult)(await new OrganizationController(new OrganizationSetupService(db, new AuditService(db)))
+        (PagedResult<CompanyDto>)((OkObjectResult)(await new OrganizationController(new OrganizationSetupService(db, new AuditService(db)), db)
             { ControllerContext = new ControllerContext { HttpContext = http } }
             .Companies(1, 100, CancellationToken.None)).Result!).Value!;
 
@@ -314,5 +314,131 @@ public class BranchCompanyScopeTests
         (await OrgCompanies(db, Caller(w.TenantId, w.A.Id))).Items.Select(c => c.Id)
             .Should().BeEquivalentTo(new[] { w.A.Id }, "with a company selected it matches /api/companies");
         (await OrgCompanies(db, Caller(w.TenantId, null, w.OtherTenantBranch.CompanyId))).Items.Should().BeEmpty();
+    }
+
+    // ── Single-company read, create and update: one rule for both company endpoints ──────────
+
+    private static CompaniesController Companies(ZayraDbContext db, DefaultHttpContext http) =>
+        new(new OrganizationSetupService(db, new AuditService(db)), db) { ControllerContext = new ControllerContext { HttpContext = http } };
+
+    private static OrganizationController Organization(ZayraDbContext db, DefaultHttpContext http) =>
+        new(new OrganizationSetupService(db, new AuditService(db)), db) { ControllerContext = new ControllerContext { HttpContext = http } };
+
+    private static CompanyRequest CompanyEdit(Company c, string name) => new(
+        name, null, null, c.CountryCode is { Length: > 0 } cc ? cc : "SA", null, c.RegistrationNumber,
+        null, null, null, null, "SAR", IsActive: c.IsActive);
+
+    private static async Task<ActionResult<CompanyDto>[]> ReadBoth(ZayraDbContext db, DefaultHttpContext http, Guid id) => new[]
+    {
+        await Companies(db, http).Get(id, CancellationToken.None),
+        await Organization(db, http).Company(id, CancellationToken.None),
+    };
+
+    [Fact]
+    public async Task CompanyRead_CompanyScopedCaller_GetsOwnAndNotFoundForOthers()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        foreach (var r in await ReadBoth(db, Caller(w.TenantId, null, w.A.Id), w.A.Id)) r.Result.Should().BeOfType<OkObjectResult>();
+        foreach (var r in await ReadBoth(db, Caller(w.TenantId, null, w.A.Id), w.B.Id)) r.Result.Should().BeOfType<NotFoundResult>();
+    }
+
+    [Fact]
+    public async Task CompanyRead_GroupCaller_ReadsAll_OrTheSelectedCompany_LikeTheList()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        foreach (var id in new[] { w.A.Id, w.B.Id })
+            foreach (var r in await ReadBoth(db, Caller(w.TenantId), id)) r.Result.Should().BeOfType<OkObjectResult>();
+        foreach (var r in await ReadBoth(db, Caller(w.TenantId, w.A.Id), w.A.Id)) r.Result.Should().BeOfType<OkObjectResult>();
+        foreach (var r in await ReadBoth(db, Caller(w.TenantId, w.A.Id), w.B.Id))
+            r.Result.Should().BeOfType<NotFoundResult>("with Company A selected the list shows only A, and so does the single read");
+    }
+
+    [Fact]
+    public async Task CompanyRead_AnotherTenantsCompany_IsNotFound()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var foreignCompany = w.OtherTenantBranch.CompanyId;
+        foreach (var r in await ReadBoth(db, Caller(w.TenantId), foreignCompany)) r.Result.Should().BeOfType<NotFoundResult>();
+    }
+
+    [Fact]
+    public async Task CompanyUpdate_CompanyScopedCaller_RefusedForOthers_OnBothEndpoints_AllowedForOwn()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        // A real tenant row, so an unguarded update would succeed rather than miss the tenant lock.
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = w.TenantId, Name = "Group", Slug = $"g-{w.TenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.Group });
+        await db.SaveChangesAsync();
+
+        (await Companies(db, Caller(w.TenantId, null, w.A.Id)).Update(w.B.Id, CompanyEdit(w.B, "Taken Over"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>();
+        (await Organization(db, Caller(w.TenantId, null, w.A.Id)).UpdateCompany(w.B.Id, CompanyEdit(w.B, "Taken Over"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>();
+        (await Companies(db, Caller(w.TenantId, w.A.Id, w.A.Id)).Delete(w.B.Id, CancellationToken.None))
+            .Should().BeOfType<NotFoundResult>();
+        db.ChangeTracker.Clear();
+        var beta = await db.Companies.SingleAsync(c => c.Id == w.B.Id);
+        beta.LegalNameEn.Should().Be("Beta Contracting");
+        beta.IsDeleted.Should().BeFalse();
+
+        (await Organization(db, Caller(w.TenantId, null, w.A.Id)).UpdateCompany(w.A.Id, CompanyEdit(w.A, "Alpha Renamed"), CancellationToken.None)).Result
+            .Should().BeOfType<OkObjectResult>("own company stays editable");
+    }
+
+    [Fact]
+    public async Task CompanyCreate_OrganizationEndpoint_RequiresAGroupGrant_LikeCompanies()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = w.TenantId, Name = "Group", Slug = $"g-{w.TenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.Group });
+        await db.SaveChangesAsync();
+        var request = new CompanyRequest("Gamma Holding", null, null, "SA", null, "G-1", null, null, null, null, "SAR");
+
+        foreach (var refused in new[]
+                 {
+                     (await Companies(db, Caller(w.TenantId, null, w.A.Id)).Create(request, CancellationToken.None)).Result,
+                     (await Organization(db, Caller(w.TenantId, null, w.A.Id)).CreateCompany(request, CancellationToken.None)).Result,
+                 })
+        {
+            var obj = refused.Should().BeOfType<ObjectResult>().Subject;
+            obj.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+            JsonSerializer.Serialize(obj.Value).Should().Contain("group_scope_required");
+        }
+        (await db.Companies.AnyAsync(c => c.TenantId == w.TenantId && c.LegalNameEn == "Gamma Holding")).Should().BeFalse();
+
+        (await Organization(db, Caller(w.TenantId, w.A.Id)).CreateCompany(request, CancellationToken.None)).Result
+            .Should().BeOfType<CreatedResult>("a group admin creates with or without a company selected");
+    }
+
+    [Fact]
+    public async Task CompanyCreate_OrganizationEndpoint_AppliesTheCreationGate()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = w.TenantId, Name = "Single", Slug = $"s-{w.TenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.SingleCompany });
+        await db.SaveChangesAsync();
+        var request = new CompanyRequest("Gamma Holding", null, null, "SA", null, "G-1", null, null, null, null, "SAR");
+
+        (await Organization(db, Caller(w.TenantId)).CreateCompany(request, CancellationToken.None)).Result
+            .Should().BeOfType<ConflictObjectResult>("a single-company account cannot add a second company through either endpoint");
+    }
+
+    [Fact]
+    public async Task CompanyUpdate_GroupCaller_WithOrWithoutCompanySelected_UpdatesAnyCompany()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = w.TenantId, Name = "Group", Slug = $"g-{w.TenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.Group });
+        await db.SaveChangesAsync();
+        foreach (var (selected, name) in new[] { ((Guid?)null, "Beta Renamed"), (w.A.Id, "Beta Renamed Again") })
+        {
+            (await Organization(db, Caller(w.TenantId, selected)).UpdateCompany(w.B.Id, CompanyEdit(w.B, name), CancellationToken.None)).Result
+                .Should().BeOfType<OkObjectResult>();
+            (await Companies(db, Caller(w.TenantId, selected)).Update(w.B.Id, CompanyEdit(w.B, name + "!"), CancellationToken.None)).Result
+                .Should().BeOfType<OkObjectResult>();
+        }
     }
 }
