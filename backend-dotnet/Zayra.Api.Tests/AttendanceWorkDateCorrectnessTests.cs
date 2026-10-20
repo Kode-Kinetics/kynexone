@@ -128,13 +128,14 @@ public class AttendanceWorkDateCorrectnessTests
     /// A night worker (22:00–06:00, assigned on 15 Sep, Riyadh) clocks in at 22:00 and out at 02:00 local on a gate
     /// device; the device pushes each punch as it happens. The 02:00 Out belongs to 15 Sep — as the punch path has
     /// always said — so ingest must recompute 15 Sep under 15 Sep's lock and open nothing on 16 Sep.
-    /// <para><paramref name="anonymousStrictScope"/> runs it as Production does: the webhook is anonymous and strict
-    /// company scope hides every company-scoped row (ShiftAssignment is one), so the shift must be read tenant-wide.</para>
+    /// <para><paramref name="anonymousWebhook"/> runs it as the webhook really runs, in every environment: the request is
+    /// anonymous, so it resolves to an empty, strict company scope that hides every company-scoped row (ShiftAssignment
+    /// is one), and the shift must be read tenant-wide.</para>
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task DeviceIngest_AttributesAnOvernightShiftsEarlyMorningPunch_ToTheShiftsWorkDate(bool anonymousStrictScope)
+    public async Task DeviceIngest_AttributesAnOvernightShiftsEarlyMorningPunch_ToTheShiftsWorkDate(bool anonymousWebhook)
     {
         var store = Guid.NewGuid().ToString();
         var tenantId = Guid.NewGuid();
@@ -158,9 +159,9 @@ public class AttendanceWorkDateCorrectnessTests
         var clockOut = new DateTime(2026, 9, 15, 23, 0, 0, DateTimeKind.Utc); // 02:00 local, 16 Sep
         foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
         {
-            await using var db = anonymousStrictScope ? AnonymousStrictDb(store) : StoreDb(store);
-            if (anonymousStrictScope)
-                (await db.ShiftAssignments.CountAsync()).Should().Be(0, "premise: strict anonymous scope hides the shift assignment");
+            await using var db = anonymousWebhook ? AnonymousWebhookDb(store) : StoreDb(store);
+            if (anonymousWebhook)
+                (await db.ShiftAssignments.CountAsync()).Should().Be(0, "premise: the anonymous scope hides the shift assignment");
             var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey,
                 new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true),
                 "127.0.0.1", default);
@@ -434,13 +435,13 @@ public class AttendanceWorkDateCorrectnessTests
 
     /// <summary>
     /// An employee on approved leave passes the gate device, which logs a single break event (no In, no Out). Ingest
-    /// recomputes the day. Under Production's strict company scope the anonymous webhook could not see the
+    /// recomputes the day. The anonymous webhook has an empty company scope (in every environment), so it could not see the
     /// company-scoped <c>LeaveRequest</c>, so the leave day became "Absent" with a 480-minute absence deduction.
     /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task DeviceIngest_UnderStrictScope_KeepsAnApprovedLeaveDayOnLeave(bool anonymousStrictScope)
+    public async Task DeviceIngest_FromTheAnonymousWebhook_KeepsAnApprovedLeaveDayOnLeave(bool anonymousWebhook)
     {
         var store = Guid.NewGuid().ToString();
         var tenantId = Guid.NewGuid();
@@ -462,10 +463,10 @@ public class AttendanceWorkDateCorrectnessTests
         }
         await using (var hr = StoreDb(store)) await ProcessAsync(hr, tenantId, employeeId, Weekday);
 
-        await using (var db = anonymousStrictScope ? AnonymousStrictDb(store) : StoreDb(store))
+        await using (var db = anonymousWebhook ? AnonymousWebhookDb(store) : StoreDb(store))
         {
-            if (anonymousStrictScope)
-                (await db.LeaveRequests.CountAsync()).Should().Be(0, "premise: strict anonymous scope hides the leave request");
+            if (anonymousWebhook)
+                (await db.LeaveRequests.CountAsync()).Should().Be(0, "premise: the anonymous scope hides the leave request");
             var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                 [new DeviceIngestPunch(code, RiyadhToUtc(Weekday, 10, 0), "BreakOut", null, null, null, null, null, null)], AutoProcess: true),
                 "127.0.0.1", default);
@@ -481,11 +482,11 @@ public class AttendanceWorkDateCorrectnessTests
 
     /// <summary>
     /// The second device punch of a day recomputes a day whose legacy <c>AttendanceRecord</c> already exists. That row
-    /// is company-scoped, so under strict anonymous scope the lookup missed it and a second row was added for the same
+    /// is company-scoped, so under the anonymous webhook's empty company scope the lookup missed it and a second row was added for the same
     /// (tenant, employee, work date) — a unique-index violation on PostgreSQL.
     /// </summary>
     [Fact]
-    public async Task DeviceIngest_UnderStrictScope_UpdatesTheDaysLegacyRecord_NeverAddsASecond()
+    public async Task DeviceIngest_FromTheAnonymousWebhook_UpdatesTheDaysLegacyRecord_NeverAddsASecond()
     {
         var store = Guid.NewGuid().ToString();
         var tenantId = Guid.NewGuid();
@@ -500,7 +501,7 @@ public class AttendanceWorkDateCorrectnessTests
 
         foreach (var (at, direction) in new[] { (RiyadhToUtc(Weekday, 9, 0), "In"), (RiyadhToUtc(Weekday, 17, 0), "Out") })
         {
-            await using var db = AnonymousStrictDb(store);
+            await using var db = AnonymousWebhookDb(store);
             await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                 [new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
         }
@@ -546,7 +547,7 @@ public class AttendanceWorkDateCorrectnessTests
             await using (var db = StoreDb(store))
                 await Service(db, new FixedClock(at)).PunchAsync(tenantId, new WebPunchRequest(viaPunch.Id, direction, null, null, null),
                     "Web", new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
-            await using (var db = AnonymousStrictDb(store))
+            await using (var db = AnonymousWebhookDb(store))
                 await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                     [new DeviceIngestPunch(viaDevice.EmployeeCode, at, direction, null, null, null, null, null, null)], AutoProcess: true),
                     "127.0.0.1", default);
@@ -757,11 +758,13 @@ public class AttendanceWorkDateCorrectnessTests
     private static ZayraDbContext StoreDb(string store) =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options);
 
-    /// <summary>What the [AllowAnonymous] device webhook presents in Production: no authenticated principal, strict scope.</summary>
-    private static ZayraDbContext AnonymousStrictDb(string store) =>
+    /// <summary>What the [AllowAnonymous] device webhook presents in every environment: no authenticated principal, so an
+    /// empty, strict company scope (RequestEntityScopeResolver's unauthenticated branch).</summary>
+    private static ZayraDbContext AnonymousWebhookDb(string store) =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options,
             new HttpAccessor(new DefaultHttpContext()), logger: null,
-            scopeOptions: Options.Create(new EntityScopeOptions { StrictMode = true }));
+            // StrictMode is left at its non-Production default (false): an anonymous request is strict regardless.
+            scopeOptions: Options.Create(new EntityScopeOptions()));
 
     private sealed class FixedClock(DateTime utcNow) : TimeProvider
     {

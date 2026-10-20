@@ -38,8 +38,9 @@ namespace Zayra.Api.Infrastructure.Attendance;
 /// <para>The shift assignment is read tenant-wide (<see cref="ScopedBypass.TenantWide{T}"/>): the employee has already
 /// been authorised by the calling path, nothing about the shift is returned to the caller, and which day a punch
 /// belongs to must not depend on who is asking. <c>ShiftAssignment</c> is company-scoped-operational, so on the
-/// anonymous device webhook — empty company scope under Production's strict mode — the filtered read saw no shift at
-/// all and every overnight punch fell back to the calendar date.</para>
+/// anonymous device webhook — an unauthenticated request resolves to an EMPTY, strict company scope in every
+/// environment (<c>RequestEntityScopeResolver</c>) — the filtered read saw no shift at all and every overnight punch
+/// fell back to the calendar date.</para>
 /// </summary>
 public static class AttendanceWorkDate
 {

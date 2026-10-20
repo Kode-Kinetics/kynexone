@@ -184,6 +184,67 @@ public sealed class AttendanceProcessingRacePostgresTests
         }
     }
 
+    /// <summary>
+    /// Two SEPARATE device batches for the same employee-day, on real PostgreSQL (InMemory does not enforce the unique
+    /// (tenant_id, employee_id, work_date) index on attendance_records). The webhook is anonymous, so its company scope is
+    /// empty: the second batch's recompute used to miss the legacy row the first created, insert another, and fail with
+    /// 23505 after its raw events were saved.
+    /// </summary>
+    [Fact]
+    public async Task C_TwoDeviceBatchesForTheSameEmployeeDay_FromTheAnonymousWebhook_BothSucceed_AndLeaveOneLegacyRow()
+    {
+        var tenantId = await SeedTenantAsync(withPolicy: true);
+        const string key = "knx_test_two_batches_device_key";
+        Guid companyId;
+        string code;
+        int employeeId;
+        await using (var db = _fx.CreateDb())
+        {
+            var company = new Company { TenantId = tenantId, LegalNameEn = "Gate Co", TradeName = "Gate", CountryCode = "SA", IsActive = true };
+            db.Companies.Add(company);
+            await db.SaveChangesAsync();
+            companyId = company.Id;
+            var employee = new Employee
+            {
+                TenantId = tenantId, CompanyId = companyId, EmployeeCode = $"PTWO-{Guid.NewGuid():N}"[..20], FullName = "Two Batches",
+                Status = EmployeeStatuses.Active, JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            };
+            db.Employees.Add(employee);
+            db.AttendanceDevices.Add(new AttendanceDevice
+            {
+                TenantId = tenantId, DeviceName = "Gate", SerialNumber = $"SN-{Guid.NewGuid():N}", IsActive = true,
+                ApiKeyReference = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key))),
+            });
+            await db.SaveChangesAsync();
+            code = employee.EmployeeCode;
+            employeeId = employee.Id;
+        }
+
+        var day = new DateOnly(2026, 8, 18);
+        var clockIn = new DateTime(2026, 8, 18, 9, 0, 0, DateTimeKind.Utc);
+        var clockOut = new DateTime(2026, 8, 18, 17, 0, 0, DateTimeKind.Utc);
+        foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
+        {
+            await using var db = _fx.CreateDbWithAccessor(new HttpContextAccessor { HttpContext = new DefaultHttpContext() });
+            var result = await Service(db).IngestByDeviceKeyAsync(key, new DeviceIngestRequest(
+                [new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+            Assert.NotNull(result);
+            Assert.Equal(1, result!.Accepted);
+            Assert.Equal(1, result.Processed);
+        }
+
+        await using var verify = _fx.CreateDb();
+        var legacy = Assert.Single(await verify.AttendanceRecords.IgnoreQueryFilters()
+            .Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId).ToListAsync());
+        Assert.Equal(day, legacy.WorkDate);
+        Assert.Equal(companyId, legacy.CompanyId);
+        var daily = Assert.Single(await verify.AttendanceDailyRecords.IgnoreQueryFilters()
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId).ToListAsync());
+        Assert.Equal(clockIn, daily.FirstInUtc);
+        Assert.Equal(clockOut, daily.LastOutUtc);
+        Assert.False(daily.MissingPunch);
+    }
+
     [Fact]
     public void DeviceStampOnTheSameDay_JustAfterMidnight_StaysOnThatDay()
     {

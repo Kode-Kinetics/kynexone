@@ -1239,7 +1239,8 @@ public class AttendanceService : IAttendanceService
         var isPublicHoliday = await _db.PublicHolidays.AsNoTracking()
             .AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
         // Tenant-wide, like the shift read (AttendanceWorkDate): LeaveRequest is company-scoped-operational, so on the
-        // anonymous device webhook (empty company scope under Production's strict mode) the filtered read saw no leave
+        // anonymous device webhook (an unauthenticated request gets an empty company scope in every environment, see
+        // RequestEntityScopeResolver) the filtered read saw no leave
         // and an approved leave day was recomputed as "Absent" with an absence deduction. The employee is re-applied
         // below and was authorised by the calling path; only the leave type name is read, never returned.
         var approvedLeave = await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId, ApprovedLeaveReadJustification).AsNoTracking()
