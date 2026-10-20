@@ -3082,18 +3082,6 @@ public partial class PayrollController : ControllerBase
                 .Where(x => x.TenantId == tenantId && leaveImpactIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
-            if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count)
-                throw new PayrollProcessAbortException(409, new
-                {
-                    error    = "payroll_impacts_changed_concurrently",
-                    message  = "Attendance or leave for this period changed while the run was processing (a day was " +
-                               "re-processed, a leave was cancelled, or another run consumed it), so the pay this run " +
-                               "computed no longer matches the records. Nothing was written — re-process this run.",
-                    attendanceExpected = attendanceImpactIds.Count,
-                    attendanceMarked   = markedAttendance,
-                    leaveExpected      = leaveImpactIds.Count,
-                    leaveMarked        = markedLeave,
-                });
 
             var consumedOtImpacts = overtimeImpacts
                 .Where(x => x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)
@@ -3103,9 +3091,27 @@ public partial class PayrollController : ControllerBase
             foreach (var x in consumedOtImpacts)
                 Witness(PayrollConsumptionArtifacts.OvertimeImpact, x.Id, x.EmployeeId, x.Amount, x.Status,
                         priorRunId: x.PayrollRunId);
-            await _db.OvertimePayrollImpacts
-                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id))
+            // Same compare-and-swap: two concurrent runs (or a double-submit) could otherwise both pay this
+            // overtime, with the PayrollRunId stamp last-writer-wins.
+            var markedOvertime = await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+
+            // The message deliberately does not claim WHO changed the impacts: an ambiguous-commit retry of a
+            // run that did commit also lands here (its own commit marked them), and reloading shows that.
+            if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count
+                || markedOvertime != consumedOtIds.Count)
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error    = "payroll_impacts_changed_concurrently",
+                    message  = "The impacts this run uses changed while it was processing. Reload the run and process it again.",
+                    attendanceExpected = attendanceImpactIds.Count,
+                    attendanceMarked   = markedAttendance,
+                    leaveExpected      = leaveImpactIds.Count,
+                    leaveMarked        = markedLeave,
+                    overtimeExpected   = consumedOtIds.Count,
+                    overtimeMarked     = markedOvertime,
+                });
         }
         // Adjustments are NOT gated: they are already `PayrollRunId == id`-scoped, i.e. attached to THIS
         // run by the operator, and a supplemental run pays them.

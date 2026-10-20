@@ -1146,8 +1146,9 @@ public class LeaveService : ILeaveService
     ///
     /// <para>Idempotent under <c>NpgsqlRetryingExecutionStrategy</c>: it asserts a target state
     /// (status is "On leave", the pending absence charge is gone) rather than applying a delta, so a
-    /// retried body reaches the same place. It stages only — the caller's single
-    /// <c>SaveChangesAsync</c> commits it atomically with the approval.</para>
+    /// retried body reaches the same place. It stages everything except the absence-charge delete,
+    /// which on a relational provider runs immediately (with its status predicate) inside the
+    /// approval's transaction; the caller's single <c>SaveChangesAsync</c> commits it all atomically.</para>
     /// </summary>
     /// <returns>A human-readable note for the audit line, or empty if there was nothing to do.</returns>
     private async Task<string> ReconcileAttendanceForApprovedLeaveAsync(
@@ -1189,6 +1190,35 @@ public class LeaveService : ILeaveService
                 settledDates.Add(day.WorkDate);
                 continue;
             }
+            // The charge was read as pending, but a payroll run may have consumed it since. Delete it
+            // with the status predicate ON THE DELETE (a delete by key alone would wait for the run's
+            // commit and then remove the Processed row out from under its consumption witness), and
+            // treat a charge the run got to first as settled. Done BEFORE the day is touched, so a
+            // settled day is left exactly as the run paid it. The approval runs in a transaction on a
+            // relational provider, so this enlists in it and commits with the approval.
+            if (charge is not null)
+            {
+                var removed = true;
+                if (_db.Database.IsRelational())
+                {
+                    var chargeId = charge.Id;
+                    removed = await _db.AttendancePayrollImpacts
+                        .Where(x => x.TenantId == tenantId && x.Id == chargeId && x.Status != "Processed")
+                        .ExecuteDeleteAsync(ct) > 0
+                        || !await _db.AttendancePayrollImpacts.AsNoTracking()
+                            .AnyAsync(x => x.TenantId == tenantId && x.Id == chargeId && x.Status == "Processed", ct);
+                    _db.Entry(charge).State = EntityState.Detached;
+                }
+                else
+                {
+                    _db.AttendancePayrollImpacts.Remove(charge);
+                }
+                if (!removed)
+                {
+                    settledDates.Add(day.WorkDate);
+                    continue;
+                }
+            }
 
             // Mirror exactly what ProcessEmployeeDay writes for an approved-leave day, so a later
             // reprocess of the same day is a no-op instead of a second, different answer.
@@ -1197,8 +1227,6 @@ public class LeaveService : ILeaveService
             day.LateMinutes = day.EarlyExitMinutes = day.UndertimeMinutes = 0;
             day.ProcessedAtUtc = DateTime.UtcNow;
             day.UpdatedAtUtc = DateTime.UtcNow;
-
-            if (charge is not null) _db.AttendancePayrollImpacts.Remove(charge);
 
             // The legacy attendance_records projection is what the dashboard still reads; leaving it
             // saying "Absent" would keep the day counted against the employee on that screen.
@@ -1479,6 +1507,30 @@ public class LeaveService : ILeaveService
 
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, ct);
+
+        // The pending-impact delete below is a set-based DELETE that runs immediately, so it needs the
+        // same transaction as the cancellation's SaveChanges: otherwise a failed save would leave the
+        // leave un-cancelled with its unpaid deduction already gone. Inside the execution strategy, as
+        // Npgsql's retrying strategy requires; a retry starts from a clean change tracker.
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var firstAttempt = true;
+        return await strategy.ExecuteInTransactionAsync(
+            async retryCt =>
+            {
+                if (!firstAttempt)
+                    _db.ChangeTracker.Clear();
+                firstAttempt = false;
+                return await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, retryCt);
+            },
+            retryCt => _db.LeaveRequests.AsNoTracking()
+                .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Cancelled", retryCt),
+            ct);
+    }
+
+    private async Task<LeaveRequest> CancelRequestCoreAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct)
+    {
         var request = await _db.LeaveRequests
             .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
             ?? throw new InvalidOperationException("Leave request not found.");
@@ -1498,11 +1550,19 @@ public class LeaveService : ILeaveService
         // Remove any unpaid-leave payroll deduction that has not yet been picked up by a run,
         // so cancelling an approved unpaid leave does not still dock the employee's salary.
         // Already-processed impacts (Status == "Processed") are left for audit integrity.
-        var pendingImpacts = await _db.LeavePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == requestId && x.Status != "Processed")
-            .ToListAsync(ct);
-        if (pendingImpacts.Count > 0)
-            _db.LeavePayrollImpacts.RemoveRange(pendingImpacts);
+        //
+        // The status predicate is ON THE DELETE ITSELF. This used to read the pending rows and then
+        // delete them by key at SaveChanges. A payroll run that marked the row Processed in between
+        // (holding its row lock until commit) made that DELETE wait, then re-check only the key and
+        // delete a CONSUMED impact: the run's consumption witness then named a row that no longer
+        // exists, so a void/reopen had nothing to release. Under READ COMMITTED, Postgres re-evaluates
+        // this WHERE against the run's committed row, so a consumed impact is now left alone.
+        var pendingImpacts = _db.LeavePayrollImpacts
+            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == requestId && x.Status != "Processed");
+        if (_db.Database.IsRelational())
+            await pendingImpacts.ExecuteDeleteAsync(ct);
+        else
+            _db.LeavePayrollImpacts.RemoveRange(await pendingImpacts.ToListAsync(ct));
 
         var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId
             && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString() && x.Status == "Pending", ct);

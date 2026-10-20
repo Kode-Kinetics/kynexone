@@ -85,7 +85,7 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
         var conflict = first.Should().BeOfType<ObjectResult>().Subject;
         conflict.StatusCode.Should().Be(409);
         JsonSerializer.Serialize(conflict.Value).Should().Contain("payroll_impacts_changed_concurrently")
-            .And.Contain("re-process");
+            .And.Contain("process it again");
 
         // The operator re-processes: the run now consumes the CURRENT impacts, exactly once.
         (await ProcessAsync(w, gate: null)).Should().BeOfType<OkObjectResult>();
@@ -116,6 +116,68 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
             "the cancelled leave's impact no longer exists, so a witness for it would be dangling");
         (await AttendanceImpactsAsync(db, w)).Should().OnlyContain(x => x.Status == "PendingPayroll");
         (await db.PayrollRuns.AsNoTracking().SingleAsync(x => x.Id == w.RunId)).Status.Should().Be("Draft");
+        var conflict = first.Should().BeOfType<ObjectResult>().Subject;
+        conflict.StatusCode.Should().Be(409);
+        JsonSerializer.Serialize(conflict.Value).Should().Contain("payroll_impacts_changed_concurrently");
+    }
+
+    /// <summary>
+    /// F1, the OPPOSITE ordering: the leave cancellation has already read the unpaid-leave deduction as pending;
+    /// the run then marks it Processed and commits; only then does the cancellation's DELETE execute. A delete by
+    /// key alone removed the consumed row (dangling witness, nothing for void/reopen to release). The DELETE now
+    /// carries the status predicate, so the consumed impact survives.
+    /// </summary>
+    [Fact]
+    public async Task LeaveCancelDeletingAfterTheRunCommitted_LeavesTheConsumedImpactAndItsWitnessIntact()
+    {
+        var w = await SeedAsync(withLeaveImpact: true);
+        var leaveRequestId = await SeedApprovedUnpaidLeaveAsync(w);
+
+        IActionResult? runResult = null;
+        var gate = new BeforeFirstWrite("DELETE FROM leave_payroll_impacts", async () => runResult = await ProcessAsync(w, gate: null));
+        var options = new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(RowLockingInterceptor.Instance,
+                Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance, gate);
+        await using (var cancelDb = new ZayraDbContext(options.Options))
+            await new Zayra.Api.Infrastructure.Leave.LeaveService(cancelDb, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(cancelDb))
+                .CancelRequestAsync(w.TenantId, leaveRequestId, "HR", "changed plans");
+
+        gate.Fired.Should().BeTrue("the run must commit between the cancellation's read and its delete");
+        runResult.Should().BeOfType<OkObjectResult>();
+
+        await using var db = _fx.CreateDb();
+        var leave = await db.LeavePayrollImpacts.AsNoTracking().Where(x => x.TenantId == w.TenantId).ToListAsync();
+        leave.Should().ContainSingle("a deduction a committed run already consumed must not be deleted underneath it")
+            .Which.Status.Should().Be("Processed");
+        (await WitnessIdsAsync(db, w, PayrollConsumptionArtifacts.LeaveImpact)).Should().Equal(leave[0].Id);
+        (await db.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == leaveRequestId)).Status.Should().Be("Cancelled");
+    }
+
+    /// <summary>Overtime: another run consumes the impact after this run loaded it. Both paid it before.</summary>
+    [Fact]
+    public async Task OvertimeConsumedByAnotherRunBetweenLoadAndMark_RollsTheRunBack()
+    {
+        var w = await SeedAsync(withLeaveImpact: false);
+        var otImpactId = await SeedApprovedOvertimeAsync(w);
+        var otherRunId = Guid.NewGuid();
+        var gate = new AfterFirstRead("overtime_payroll_impacts", async () =>
+        {
+            await using var other = _fx.CreateDb();
+            var ot = await other.OvertimePayrollImpacts.SingleAsync(x => x.Id == otImpactId);
+            ot.Status = "Processed";
+            ot.PayrollRunId = otherRunId;
+            await other.SaveChangesAsync();
+        });
+
+        var first = await ProcessAsync(w, gate);
+        gate.Fired.Should().BeTrue();
+
+        await using var db = _fx.CreateDb();
+        (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(x => x.Id == otImpactId)).PayrollRunId
+            .Should().Be(otherRunId, "the overtime belongs to the run that consumed it first; paying it here pays it twice");
+        (await WitnessIdsAsync(db, w, PayrollConsumptionArtifacts.OvertimeImpact)).Should().BeEmpty();
+        (await db.PayrollSlips.AsNoTracking().CountAsync(x => x.RunId == w.RunId)).Should().Be(0);
         var conflict = first.Should().BeOfType<ObjectResult>().Subject;
         conflict.StatusCode.Should().Be(409);
         JsonSerializer.Serialize(conflict.Value).Should().Contain("payroll_impacts_changed_concurrently");
@@ -166,6 +228,46 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
         db.PayrollRunConsumptions.AsNoTracking()
             .Where(x => x.TenantId == w.TenantId && x.PayrollRunId == w.RunId && x.ArtifactType == artifactType)
             .Select(x => x.ArtifactId).ToListAsync();
+
+    /// <summary>An approved unpaid leave that owns the world's pending leave deduction.</summary>
+    private async Task<Guid> SeedApprovedUnpaidLeaveAsync(World w)
+    {
+        await using var db = _fx.CreateDb();
+        var impact = await db.LeavePayrollImpacts.SingleAsync(x => x.TenantId == w.TenantId);
+        var request = new LeaveRequest
+        {
+            TenantId = w.TenantId, EmployeeId = w.EmployeeId, EmployeeName = "Late Racer", LeaveTypeId = Guid.NewGuid(),
+            LeaveTypeName = "Unpaid", StartDate = new DateOnly(2026, 6, 15), EndDate = new DateOnly(2026, 6, 15),
+            TotalDays = 1m, Status = "Approved",
+        };
+        db.LeaveRequests.Add(request);
+        impact.LeaveRequestId = request.Id;
+        await db.SaveChangesAsync();
+        return request.Id;
+    }
+
+    /// <summary>An approved overtime request in the period, and its pending payroll impact.</summary>
+    private async Task<Guid> SeedApprovedOvertimeAsync(World w)
+    {
+        await using var db = _fx.CreateDb();
+        var companyId = (await db.PayrollRuns.AsNoTracking().SingleAsync(x => x.Id == w.RunId)).CompanyId;
+        var request = new OvertimeRequest
+        {
+            TenantId = w.TenantId, CompanyId = companyId, EmployeeId = w.EmployeeId, EmployeeName = "Late Racer",
+            WorkDate = new DateOnly(2026, 6, 12),
+            StartTimeUtc = new DateTime(2026, 6, 12, 17, 0, 0, DateTimeKind.Utc),
+            EndTimeUtc = new DateTime(2026, 6, 12, 19, 0, 0, DateTimeKind.Utc),
+            RequestedMinutes = 120, ApprovedMinutes = 120, Status = "Approved",
+        };
+        var impact = new OvertimePayrollImpact
+        {
+            TenantId = w.TenantId, OvertimeRequestId = request.Id, EmployeeId = w.EmployeeId, Minutes = 120,
+            Status = "PendingPayroll",
+        };
+        db.AddRange(request, impact);
+        await db.SaveChangesAsync();
+        return impact.Id;
+    }
 
     // ── World ────────────────────────────────────────────────────────────────────────────────────
 
@@ -244,6 +346,38 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
     /// computes pay from is taken) and before the run goes on to compute and mark — the exact window in which an
     /// unsynchronised writer can replace the rows it loaded.
     /// </summary>
+    /// <summary>
+    /// Runs <c>before</c> once, immediately before the first command containing <c>marker</c> is sent (so the
+    /// writer has already read what it will act on, but its write has not reached the server yet).
+    /// </summary>
+    private sealed class BeforeFirstWrite(string marker, Func<Task> before) : DbCommandInterceptor
+    {
+        private int _fired;
+        public bool Fired => _fired == 1;
+
+        private async Task MaybeFire(DbCommand command)
+        {
+            if (command.CommandText.Contains(marker, StringComparison.Ordinal) && Interlocked.Exchange(ref _fired, 1) == 0)
+                await before();
+        }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            await MaybeFire(command);
+            return result;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await MaybeFire(command);
+            return result;
+        }
+    }
+
     private sealed class AfterFirstRead(string table, Func<Task> between) : DbCommandInterceptor
     {
         private int _fired;

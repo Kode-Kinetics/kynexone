@@ -410,6 +410,11 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var leave = await _leaveService.CancelRequestAsync(tenantId.Value, id, reviewer, cancellation.Reason, ct);
+            // Re-resolved by key: a transient retry inside CancelRequestAsync clears the change tracker,
+            // which would detach the row read above and silently drop this decision. Returns the same
+            // tracked instance when no retry happened.
+            var cancellationId = cancellation.Id;
+            cancellation = await _db.LeaveCancellationRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == cancellationId, ct);
             cancellation.Status = "Approved";
             cancellation.ReviewedByName = reviewer;
             cancellation.ReviewNotes = req.Notes ?? string.Empty;
