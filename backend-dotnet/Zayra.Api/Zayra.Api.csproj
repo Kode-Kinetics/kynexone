@@ -33,8 +33,9 @@
     <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.EntityFrameworkCore" Version="8.0.11" />
-    <!-- Pin the servicing releases that carry the fixes for the XML-signature and PKCS
-         advisories reported by the fail-closed NuGet gate. -->
+    <!-- DataProtection 8.0.11 resolves Cryptography.Xml 8.0.2 transitively. Pin the patched servicing
+         releases so XML-signature and PKCS CVEs cannot pass the fail-closed NuGet gate. Xml 8.0.5 (October 2026)
+         fixes CVE-2026-96222 (spoofing) and CVE-2026-96958/96959/96960 (denial of service). -->
     <PackageReference Include="System.Security.Cryptography.Xml" Version="8.0.5" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="8.0.2" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.10" />
