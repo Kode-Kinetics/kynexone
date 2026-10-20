@@ -129,12 +129,14 @@ public static class AttendanceDerivedArtifacts
     public static async Task UpsertImpactsAsync(ZayraDbContext db, Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct,
         PayrollCoverageMemo? coverage = null)
     {
-        var paid = await ReplacePendingAsync(db, tenantId, daily, ct);
+        var (paid, hadPending) = await ReplacePendingAsync(db, tenantId, daily, ct);
 
         var recomputed = ImpliedImpacts(daily, absenceMinutes);
         var halfPair = IsHalfPair(daily);
 
-        var dayIsPaid = paid.Count > 0 || (coverage is not null
+        // A day that carried pending deductions is always asked afresh: the memo's "paid" may predate a void, and treating
+        // a no-longer-paid day as paid would delete those deductions without raising them again.
+        var dayIsPaid = paid.Count > 0 || (coverage is not null && !hadPending
             ? await coverage.IsCoveredAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct)
             : await IsCoveredByPayrollAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct));
         bool Frozen(string type) => paid.Any(p => p.ImpactType == type) || (dayIsPaid && type != AttendanceImpactTypes.OvertimePayable);
@@ -316,7 +318,8 @@ public static class AttendanceDerivedArtifacts
     /// delete then sees it, and the day is treated as paid. No row lock is taken for this (a <c>FOR UPDATE</c> here
     /// would order against the void's locks).</para>
     /// </summary>
-    private static async Task<List<AttendancePayrollImpact>> ReplacePendingAsync(ZayraDbContext db, Guid tenantId,
+    /// <returns>The consumed impacts, and whether the day had any pending ones.</returns>
+    private static async Task<(List<AttendancePayrollImpact> Paid, bool HadPending)> ReplacePendingAsync(ZayraDbContext db, Guid tenantId,
         AttendanceDailyRecord daily, CancellationToken ct)
     {
         var day = db.AttendancePayrollImpacts
@@ -325,16 +328,17 @@ public static class AttendanceDerivedArtifacts
         {
             // The in-memory test provider has no set-based delete and no concurrency to guard against.
             var existing = await day.ToListAsync(ct);
-            db.AttendancePayrollImpacts.RemoveRange(existing.Where(x => x.Status != ProcessedStatus));
-            return existing.Where(x => x.Status == ProcessedStatus).ToList();
+            var pending = existing.Where(x => x.Status != ProcessedStatus).ToList();
+            db.AttendancePayrollImpacts.RemoveRange(pending);
+            return (existing.Where(x => x.Status == ProcessedStatus).ToList(), pending.Count > 0);
         }
-        await day.Where(x => x.Status != ProcessedStatus).ExecuteDeleteAsync(ct);
+        var removed = await day.Where(x => x.Status != ProcessedStatus).ExecuteDeleteAsync(ct);
         // Tracked copies of rows that statement removed would otherwise be written back (or deleted again) on save.
         foreach (var entry in db.ChangeTracker.Entries<AttendancePayrollImpact>().ToList())
             if (entry.Entity.TenantId == tenantId && entry.Entity.EmployeeId == daily.EmployeeId && entry.Entity.WorkDate == daily.WorkDate
                 && entry.State != EntityState.Added)
                 entry.State = EntityState.Detached;
-        return await day.AsNoTracking().Where(x => x.Status == ProcessedStatus).ToListAsync(ct);
+        return (await day.AsNoTracking().Where(x => x.Status == ProcessedStatus).ToListAsync(ct), removed > 0);
     }
 
     private const string UndeterminedSentence =
@@ -383,7 +387,8 @@ public static class AttendanceDerivedArtifacts
 
     /// <summary>
     /// A range run's memo of payroll coverage, so a month of days asks "has payroll paid this employee's month?" once
-    /// instead of once per day. Only a YES is remembered. A month found paid stays paid for the rest of the run (it can
+    /// instead of once per day. Only a YES is remembered, and it is not used for a day that carries pending deductions
+    /// (those days are asked afresh). A month found paid stays paid for the rest of the run (it can
     /// only stop being paid through a void or reopen, and treating it as paid a little longer is the safe side: no
     /// deduction is raised, a difference is flagged). A NO is asked again for every day, because a payroll run that
     /// commits mid-range must protect the days processed after it — remembering a NO would let the range raise new
