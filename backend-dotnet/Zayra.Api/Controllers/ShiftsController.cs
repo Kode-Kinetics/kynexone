@@ -93,6 +93,12 @@ public class ShiftsController : ControllerBase
         def.Color = req.Color;
         def.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+        // New times move the punches of everyone rostered on this shift: their recent assigned days are recomputed.
+        var since = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-62);
+        var rostered = await _db.ShiftAssignments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ShiftDefinitionId == def.Id && x.AssignedDate >= since)
+            .Select(x => new { x.EmployeeId, x.AssignedDate }).ToListAsync(ct);
+        await QueueAttendanceRecomputeAsync(tenantId, rostered.Select(x => (x.EmployeeId, x.AssignedDate)), ct);
         return Ok(def);
     }
 
@@ -189,8 +195,19 @@ public class ShiftsController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok();
+        var queued = await QueueAttendanceRecomputeAsync(tenantId, [(req.EmployeeId, req.Date)], ct);
+        return Ok(new { attendanceRecomputeQueued = queued });
     }
+
+    /// <summary>
+    /// The punches around a changed assignment are re-dated by the existing attendance job (RosterAttendanceRecompute),
+    /// after the change has committed. The job store comes from the request's services; without it (a hand-built
+    /// controller) nothing is queued and the next range run or payroll's stale check catches the days.
+    /// </summary>
+    private Task<int> QueueAttendanceRecomputeAsync(Guid tenantId, IEnumerable<(int EmployeeId, DateOnly Date)> changed, CancellationToken ct) =>
+        Zayra.Api.Infrastructure.Attendance.RosterAttendanceRecompute.EnqueueAsync(_db,
+            HttpContext?.RequestServices?.GetService(typeof(Zayra.Api.Infrastructure.Jobs.BackgroundJobStore)) as Zayra.Api.Infrastructure.Jobs.BackgroundJobStore,
+            tenantId, changed, this.GetUserId(), ct);
 
     [HttpPost("roster/auto-plan")]
     [Authorize(Roles = "Admin,HR Manager")]
@@ -234,6 +251,7 @@ public class ShiftsController : ControllerBase
             .ToHashSet(new AssignmentKeyComparer());
 
         int created = 0, skipped = 0;
+        var changedDays = new List<(int EmployeeId, DateOnly Date)>();
         for (int ei = 0; ei < employees.Count; ei++)
         {
             var emp = employees[ei];
@@ -270,10 +288,12 @@ public class ShiftsController : ControllerBase
                     });
                 }
                 created++;
+                changedDays.Add((emp.Id, day));
             }
         }
         await _db.SaveChangesAsync(ct);
-        return Ok(new { created, skipped, employees = employees.Count, days = days.Count });
+        var queued = await QueueAttendanceRecomputeAsync(tenantId, changedDays, ct);
+        return Ok(new { created, skipped, employees = employees.Count, days = days.Count, attendanceRecomputeQueued = queued });
     }
 
     // ── Rostering Policy ──────────────────────────────────────────────
@@ -393,6 +413,7 @@ public class ShiftsController : ControllerBase
             .ToDictionaryAsync(e => e.Id, e => e.FullName, ct);
 
         int created = 0, updated = 0, skipped = 0;
+        var changedDays = new List<(int EmployeeId, DateOnly Date)>();
         foreach (var a in req.Assignments)
         {
             if (!shifts.TryGetValue(a.ShiftDefinitionId, out var shift)) { skipped++; continue; }
@@ -411,6 +432,7 @@ public class ShiftsController : ControllerBase
                 existing.ShiftDefinitionId = shift.Id; existing.ShiftName = shift.Name;
                 existing.ShiftCode = shift.Code; existing.ShiftColor = shift.Color;
                 updated++;
+                changedDays.Add((a.EmployeeId, a.Date));
             }
             else
             {
@@ -421,10 +443,12 @@ public class ShiftsController : ControllerBase
                     ShiftCode = shift.Code, ShiftColor = shift.Color, AssignedDate = a.Date,
                 });
                 created++;
+                changedDays.Add((a.EmployeeId, a.Date));
             }
         }
         await _db.SaveChangesAsync(ct);
-        return Ok(new { created, updated, skipped });
+        var queued = await QueueAttendanceRecomputeAsync(tenantId, changedDays, ct);
+        return Ok(new { created, updated, skipped, attendanceRecomputeQueued = queued });
     }
 
     [HttpDelete("roster/{id:guid}")]
@@ -438,6 +462,7 @@ public class ShiftsController : ControllerBase
         if (!scope.CanAccessEmployee(a.EmployeeId)) return Forbid();
         _db.ShiftAssignments.Remove(a);
         await _db.SaveChangesAsync(ct);
+        await QueueAttendanceRecomputeAsync(tenantId, [(a.EmployeeId, a.AssignedDate)], ct);
         return NoContent();
     }
 
