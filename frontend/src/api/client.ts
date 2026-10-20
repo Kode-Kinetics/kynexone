@@ -94,7 +94,9 @@ client.interceptors.response.use(
     // subscription is inactive the tenant-admin page's own calls also 402, so a
     // self-redirect would loop infinitely. (Platform routes are already excluded
     // by the guard above.)
-    if (err.response?.status === 402 && typeof window !== 'undefined') {
+    const responseError = err.response?.data?.error;
+    const isCompanyLimitRefusal = responseError === 'company_limit_reached';
+    if (err.response?.status === 402 && !isCompanyLimitRefusal && typeof window !== 'undefined') {
       if (!window.location.pathname.startsWith('/tenant-admin')) {
         window.location.href = '/tenant-admin?alert=subscription';
       }
@@ -120,6 +122,8 @@ client.interceptors.response.use(
             ? err.response.data.message
             : 'You do not have permission to perform this action. Please contact your administrator.';
         window.dispatchEvent(new CustomEvent('zayra:access-denied', { detail: reason }));
+        const isIdentityCheck = typeof original?.url === 'string' && /^\/api\/auth\/me(?:\?|$)/.test(original.url);
+        if (!isIdentityCheck) window.dispatchEvent(new Event('kynexone:authorization-stale'));
       }
       return Promise.reject(err);
     }

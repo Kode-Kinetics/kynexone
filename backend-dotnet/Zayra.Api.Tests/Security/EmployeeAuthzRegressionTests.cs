@@ -123,7 +123,8 @@ public sealed class EmployeeAuthzRegressionTests
         // returns the same EmployeeListItemDto projection over the same table.
         static string[] RolesOf(string action) =>
             typeof(EmployeesController).GetMethod(action, BindingFlags.Public | BindingFlags.Instance)!
-                .GetCustomAttribute<AuthorizeAttribute>()?.Roles
+                .GetCustomAttributes<AuthorizeAttribute>()
+                .FirstOrDefault(attribute => !string.IsNullOrWhiteSpace(attribute.Roles))?.Roles
                 ?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
                 ?? [];
 

@@ -19,6 +19,8 @@ export interface PathModuleVerdict {
 }
 
 interface FeatureFlagContextValue {
+  /** Distinguishes an unresolved fetch from a known disabled module. */
+  status: FlagState['status'];
   /**
    * Returns whether a feature is enabled for the current tenant.
    *
@@ -45,6 +47,7 @@ interface FeatureFlagContextValue {
 }
 
 const FeatureFlagContext = createContext<FeatureFlagContextValue>({
+  status: 'loading',
   isFeatureEnabled: () => false,
   verdictForPath: () => ({ allowed: true }),
   isLoading: true,
@@ -110,7 +113,7 @@ export function FeatureFlagProvider({ children }: { children: React.ReactNode })
 
   return (
     <FeatureFlagContext.Provider
-      value={{ isFeatureEnabled, verdictForPath, isLoading: state.status === 'loading', refresh }}
+      value={{ status: state.status, isFeatureEnabled, verdictForPath, isLoading: state.status === 'loading', refresh }}
     >
       {children}
     </FeatureFlagContext.Provider>

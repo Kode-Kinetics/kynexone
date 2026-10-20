@@ -21,7 +21,7 @@ namespace Zayra.Api.Infrastructure.Auth;
 ///
 /// <para>It never adopts an existing login: a work email that already belongs to another login (live, deleted, or a
 /// former employee's) leaves the employee <c>blocked</c> for an administrator to resolve through the two-person Link.
-/// It never invents a domain: a company without <c>EmailDomain</c> leaves the employee blocked.</para>
+/// It uses the complete address issued by IT; a company email domain is only a suggestion setting.</para>
 ///
 /// <para>Idempotent, and saves nothing: the caller's unit of work commits the login with the employee change that
 /// caused it. Callers inside a transaction hold the employee row; the unique (tenant, normalized email) index on users
@@ -45,6 +45,7 @@ public sealed class EmployeeLoginProvisioner
         public const string WrongDomain = "work_email_wrong_domain";
         public const string PlusAddress = WorkEmailPlusAddressException.Code;
         public const string InvalidCharacters = WorkEmailInvalidCharactersException.Code;
+        public const string InvalidFormat = WorkEmailFormatException.Code;
         public const string EmailBelongsToExistingLogin = "email_belongs_to_existing_login";
         public const string EmailBelongsToFormerEmployee = "email_belongs_to_former_employee";
         public const string LegacyUnlinkedLogin = "legacy_unlinked_login";
@@ -54,7 +55,7 @@ public sealed class EmployeeLoginProvisioner
     public sealed record Outcome(int EmployeeId, string Result, string? BlockedCode = null, Guid? UserId = null);
 
     private const string Why =
-        "Employee login provisioning: the employee's own login, any login already using the work email, and the employee's company domain are read across legal entities; the tenant is re-applied and the employee was already authorised for the caller.";
+        "Employee login provisioning: the employee's own login and any login already using the work email are read across legal entities; the tenant is re-applied and the employee was already authorised for the caller.";
 
     private readonly ZayraDbContext _db;
 
@@ -89,12 +90,6 @@ public sealed class EmployeeLoginProvisioner
                 .Select(x => x.Entity.EmployeeId))
             .ToHashSet();
 
-        var companyIds = employees.Where(e => e.CompanyId.HasValue).Select(e => e.CompanyId!.Value).Distinct().ToList();
-        var domains = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).AsNoTracking()
-            .Where(c => companyIds.Contains(c.Id) && !c.IsDeleted)
-            .Select(c => new { c.Id, c.EmailDomain })
-            .ToDictionaryAsync(c => c.Id, c => (c.EmailDomain ?? string.Empty).Trim().ToLowerInvariant(), ct);
-
         var wanted = employees
             .Select(e => (e.WorkEmail ?? string.Empty).Trim())
             .Where(e => e.Length > 0)
@@ -124,13 +119,11 @@ public sealed class EmployeeLoginProvisioner
             if (linkedEmployeeIds.Contains(employee.Id)) { outcomes[i] = new Outcome(employee.Id, Results.Existing); continue; }
 
             string? blocked = null;
-            var domain = employee.CompanyId is Guid cid && domains.TryGetValue(cid, out var d) ? d : string.Empty;
             var normalized = AuthService.Normalize(email);
             if (employee.UserAccountId.HasValue) blocked = BlockedCodes.LegacyUnlinkedLogin;
             else if (WorkEmailPlusAddressException.IsPlusAddressed(email)) blocked = BlockedCodes.PlusAddress;
             else if (WorkEmailInvalidCharactersException.IsInvalid(email)) blocked = BlockedCodes.InvalidCharacters;
-            else if (domain.Length == 0) blocked = BlockedCodes.CompanyEmailDomainMissing;
-            else if (!IsOnDomain(email, domain)) blocked = BlockedCodes.WrongDomain;
+            else if (WorkEmailFormatException.IsInvalid(email)) blocked = BlockedCodes.InvalidFormat;
             else if (ownerByEmail.TryGetValue(normalized, out var ownerIds))
                 blocked = ownerIds.Any(formerOwnerIds.Contains)
                     ? BlockedCodes.EmailBelongsToFormerEmployee

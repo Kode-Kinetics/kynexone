@@ -97,7 +97,12 @@ export function EmployeeCreatePanel({ step, activeStep, children, steps = EMPLOY
     if (!active) return;
     const frame = requestAnimationFrame(() => {
       headingRef.current?.focus({ preventScroll: true });
-      // Scroll only the dialog's content region; never move the page underneath it.
+      const workspace = panelRef.current?.closest<HTMLElement>('[data-employee-workspace-scroll]');
+      if (workspace) {
+        workspace.scrollIntoView({ block: 'start', behavior: 'auto' });
+        return;
+      }
+      // Legacy modal compatibility: scroll only the dialog content, never the page underneath it.
       let ancestor = panelRef.current?.parentElement;
       while (ancestor && ancestor.getAttribute('role') !== 'dialog') {
         if (/(auto|scroll)/.test(window.getComputedStyle(ancestor).overflowY)) {

@@ -106,10 +106,10 @@ public sealed class OfferPlacementTests
         await using (var db = _fixture.CreateDb())
             offerId = (await db.OfferLetters.AsNoTracking().SingleAsync(x => x.ApplicationId == seeded.ApplicationId)).Id;
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, seeded.TenantId, Guid.NewGuid()).SendOffer(offerId, CancellationToken.None))
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, Guid.NewGuid()))
                 .Should().BeOfType<OkObjectResult>();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, seeded.TenantId, Guid.NewGuid()).AcceptOffer(offerId, CancellationToken.None))
+            (await Applications(db, seeded.TenantId, Guid.NewGuid(), true).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId)))
                 .Should().BeOfType<OkObjectResult>();
 
         Guid draftId;
@@ -119,6 +119,8 @@ public sealed class OfferPlacementTests
         // DraftStatutoryIdentity. This test is about placement, not statutory readiness.
         await using (var db = _fixture.CreateDb())
             await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
+        await using (var db = _fixture.CreateDb())
+            await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, Guid.NewGuid());
         await using (var db = _fixture.CreateDb())
         {
             var approval = await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None);
@@ -233,15 +235,17 @@ public sealed class OfferPlacementTests
             offerId = offer.Id;
         }
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, seeded.TenantId, Guid.NewGuid()).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, Guid.NewGuid())).Should().BeOfType<OkObjectResult>();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, seeded.TenantId, Guid.NewGuid()).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await Applications(db, seeded.TenantId, Guid.NewGuid(), true).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId))).Should().BeOfType<OkObjectResult>();
         Guid draftId;
         await using (var db = _fixture.CreateDb())
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId)).OnboardingDraftId!.Value;
         // See DraftStatutoryIdentity: this test is about which legal entity the hire lands in.
         await using (var db = _fixture.CreateDb())
             await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
+        await using (var db = _fixture.CreateDb())
+            await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, Guid.NewGuid());
         await using (var db = _fixture.CreateDb())
             (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None))
                 .Result.Should().BeOfType<OkObjectResult>();
@@ -332,8 +336,8 @@ public sealed class OfferPlacementTests
         return new Seeded(tenantId, application.Id, department.Id, designation.Id);
     }
 
-    private static ApplicationsController Applications(ZayraDbContext db, Guid tenantId, Guid userId) =>
-        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new PlacementNullNotifications()), tenantId, userId);
+    private static ApplicationsController Applications(ZayraDbContext db, Guid tenantId, Guid userId, bool managed = false) =>
+        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new PlacementNullNotifications(), managed ? OfferWorkflowTestSupport.Lifecycle(db) : null), tenantId, userId);
 
     private static OffersController Offers(ZayraDbContext db, Guid tenantId) =>
         WithPrincipal(new OffersController(db, new PlacementNullLetters(), new RecruitmentService(db)), tenantId, Guid.NewGuid());

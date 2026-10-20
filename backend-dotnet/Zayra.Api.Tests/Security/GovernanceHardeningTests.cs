@@ -281,6 +281,10 @@ public class GovernanceHardeningTests
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
             new Claim(ClaimTypes.Role, role),
+            // A real Admin's bundle: employee scope is resolved from permissions, never from the role name.
+            new Claim("permission", "employees.write"),
+            new Claim("permission", "employees.delete"),
+            new Claim("is_group_scope", "true"),
         }, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
         return controller;

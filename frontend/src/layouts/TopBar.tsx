@@ -4,6 +4,7 @@ import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, User
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale, LOCALES } from '../contexts/LocaleContext';
 import { CompanySwitcher } from '../components/CompanySwitcher';
@@ -63,6 +64,8 @@ interface TopBarProps {
   onToggleTheme: () => void;
   onOpenSidebar: () => void;
   onOpenSearch: () => void;
+  navigationButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  searchButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; onCountChange: (n: number) => void }) {
@@ -211,16 +214,18 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
   );
 }
 
-export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: TopBarProps) {
+export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navigationButtonRef, searchButtonRef }: TopBarProps) {
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const { user, logout } = useAuth();
   const { t } = useLocale();
   const router = useRouter();
+  const navigationGuard = useNavigationGuard();
   const [notifOpen, setNotifOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const bellRef = useRef<HTMLDivElement>(null);
   const userRef = useRef<HTMLDivElement>(null);
+  const userButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!userMenuOpen) return;
@@ -255,6 +260,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: To
   return (
     <header className="wg-glass sticky top-0 z-20 flex h-[60px] items-center gap-3 border-b px-4 sm:px-5">
       <button
+        ref={navigationButtonRef}
         type="button"
         aria-label="Open navigation"
         onClick={onOpenSidebar}
@@ -264,6 +270,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: To
       </button>
 
       <button
+        ref={searchButtonRef}
         type="button"
         aria-label="Open command search"
         onClick={onOpenSearch}
@@ -313,6 +320,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: To
 
         <div ref={userRef} className="relative">
           <button
+            ref={userButtonRef}
             type="button"
             aria-label="Open user menu"
             onClick={() => setUserMenuOpen((o) => !o)}
@@ -332,14 +340,14 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch }: To
               </div>
               <button
                 type="button"
-                onClick={() => { setUserMenuOpen(false); router.push('/ess'); }}
+                onClick={() => { setUserMenuOpen(false); navigationGuard.push('/ess', userButtonRef.current); }}
                 className="flex w-full items-center gap-2.5 px-4 py-2.5 text-start text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
               >
                 <UserCircle2 className="h-4 w-4 text-slate-400" /> {t('My Profile')}
               </button>
               <button
                 type="button"
-                onClick={async () => { setUserMenuOpen(false); await logout(); router.replace('/login'); }}
+                onClick={() => { setUserMenuOpen(false); navigationGuard.run('sign-out:/login', async () => { await logout(); router.replace('/login'); }, userButtonRef.current); }}
                 className="flex w-full items-center gap-2.5 border-t border-slate-100 px-4 py-2.5 text-start text-sm text-rose-600 transition hover:bg-rose-50 dark:border-white/[0.07] dark:text-rose-400 dark:hover:bg-rose-500/10"
               >
                 <LogOut className="h-4 w-4" /> {t('Sign out')}

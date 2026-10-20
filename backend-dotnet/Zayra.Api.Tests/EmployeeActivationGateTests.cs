@@ -85,6 +85,8 @@ public class EmployeeActivationGateTests
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Role, "Admin"),
             new Claim("permission", "organization.establishment.write"),
+            // Employee scope is resolved from permissions, never from the role name.
+            new Claim("permission", "employees.write"),
             new Claim("is_group_scope", "true"),
         }, "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };

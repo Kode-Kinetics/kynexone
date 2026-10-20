@@ -1,410 +1,124 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
-import { FileText } from "lucide-react";
-import { useT } from "../hooks/useT";
-import { msg } from "../i18n/translations";
-import { policyDocumentsApi } from "../api/policyDocuments";
-import { useAuth } from "../contexts/AuthContext";
-import { SetupPolicyExtraction } from "./SetupPolicyExtraction";
-import type { CompanyProfile, SetupConfiguration } from "../api/setupAssistant";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { SetupPendingFilesState } from './setup/SetupEditorState';
+import { FileText } from 'lucide-react';
+import { useT } from '../hooks/useT';
+import { policyDocumentsApi, type PolicyDocument } from '../api/policyDocuments';
+import { apiErrorReason } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
+import { SetupPolicyExtraction } from './SetupPolicyExtraction';
+import { LocalOnboardingPreparation } from './setup/LocalOnboardingPreparation';
+import type { CompanyProfile, PolicyDraftSource, SetupConfiguration } from '../api/setupAssistant';
+import { policySources } from '../lib/policyBinder';
 
-const steps = [
-  msg("Add policy text"),
-  msg("Choose AI assistance"),
-  msg("Build and review"),
-];
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_TEXT_CHARACTERS = 5_000_000;
 
-export function SetupPolicySource({
-  value,
-  onChange,
-  onOpenChange,
-  profile,
-  onProfileChange,
-}: {
+export function SetupPolicySource({ value, onChange, onOpenChange, profile, onProfileChange, onReviewOnboardingDraft }: {
   value: SetupConfiguration;
   onChange: (value: SetupConfiguration) => void;
   onOpenChange?: (open: boolean) => void;
   profile?: CompanyProfile;
   onProfileChange?: (patch: Partial<CompanyProfile>) => void;
+  /** Embedded onboarding uses the same intake, without the starter-wizard handoff. */
+  onReviewOnboardingDraft?: () => void;
 }) {
   const t = useT();
   const { hasRole, hasPermission } = useAuth();
   const canUpload = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
-  const [intake, setIntake] = useState<'document' | 'text'>('document');
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [documentName, setDocumentName] = useState('');
-  const uploadRequest = useRef<AbortController | null>(null);
-  const documentPicker = useRef<HTMLInputElement>(null);
-  useEffect(() => () => uploadRequest.current?.abort(), []);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!onReviewOnboardingDraft);
   const [step, setStep] = useState(0);
-  const [fileError, setFileError] = useState("");
-  const [reading, setReading] = useState(false);
-  const panelId = useId();
-  const heading = useRef<HTMLHeadingElement>(null);
+  const [intake, setIntake] = useState<'document' | 'text'>('document');
+  const [files, setFiles] = useState<File[]>([]);
+  const reportPendingFiles = useContext(SetupPendingFilesState);
+  useLayoutEffect(() => { reportPendingFiles?.(files.length > 0); return () => reportPendingFiles?.(false); }, [files.length, reportPendingFiles]);
+  const [text, setText] = useState(value.policyIntakeText ?? value.policySourceText ?? '');
+  const [replaceId, setReplaceId] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [library, setLibrary] = useState<PolicyDocument[] | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const revision = useRef(0);
-  const latest = useRef({ value, onChange });
-  latest.current = { value, onChange };
-  useEffect(
-    () => () => {
-      revision.current++;
-    },
-    [],
-  );
-  const text = value.policySourceText ?? "";
-  const update = (patch: Partial<SetupConfiguration>) =>
-    onChange({ ...value, ...patch });
-  const close = () => {
-    if (uploading) { uploadRequest.current?.abort(); revision.current++; setUploading(false); }
-    setOpen(false);
-    onOpenChange?.(false);
-    requestAnimationFrame(() =>
-      trigger.current?.focus({ preventScroll: true }),
-    );
+  const panelId = useId();
+  const latest = useRef({ value, onChange }); latest.current = { value, onChange };
+  const sources = policySources(value);
+  const updateText = (next: string) => { setText(next); onChange({ ...value, policyIntakeText: next }); };
+  useEffect(() => () => request.current?.abort(), []);
+  const show = (next = 0) => { setStep(next); setOpen(true); onOpenChange?.(true); };
+  const cancel = () => { request.current?.abort(); setUploading(false); setStatus(t('Upload cancelled. Documents already added are kept.')); };
+  const close = () => { if (uploading) cancel(); setOpen(false); onOpenChange?.(false); requestAnimationFrame(() => trigger.current?.focus()); };
+  const updateSources = (next: PolicyDraftSource[]) => {
+    setStatus(''); setError('');
+    const current = latest.current;
+    const nextValue = { ...current.value, policySources: next, policyDocumentId: next[0]?.documentId, policySourceHash: next[0]?.contentSha256, policySourceText: undefined, policyExtraction: undefined, localOnboardingPreparation: undefined, usePolicySourceForAi: false };
+    latest.current = { ...current, value: nextValue };
+    current.onChange(nextValue);
   };
-  const show = (next: number) => {
-    setStep(next);
-    setOpen(true);
-    onOpenChange?.(true);
-    requestAnimationFrame(() =>
-      heading.current?.focus({ preventScroll: true }),
-    );
+  const addDocument = (doc: PolicyDocument, replacing?: string | null) => {
+    const current = policySources(latest.current.value);
+    if (!replacing && current.length >= 50) { setError(t('A binder supports up to 50 documents. Replace or remove a source before adding another.')); return; }
+    if (current.some(source => source.contentSha256 === doc.contentSha256 && source.documentId !== replacing)) {
+      setStatus(t('This document is already in the binder.')); return;
+    }
+    const source = { documentId: doc.id, contentSha256: doc.contentSha256, name: doc.originalName };
+    updateSources(replacing ? current.map(old => old.documentId === replacing ? source : old) : [...current, source]);
   };
-
-  const uploadDocument = async () => {
-    if (!uploadFile || uploading || !canUpload) return;
-    if (!/\.(pdf|docx|txt)$/i.test(uploadFile.name) || !uploadFile.size || uploadFile.size > 20 * 1024 * 1024) { setFileError(t('Choose a PDF, DOCX or TXT file between 1 byte and 20 MB.')); return; }
-    const controller = new AbortController(); uploadRequest.current = controller;
-    const current = ++revision.current; setUploading(true); setFileError('');
+  const upload = async () => {
+    const pending = intake === 'text' ? [new File([text], 'Pasted policy.txt', { type: 'text/plain' })] : files;
+    if (!pending.length || uploading || !canUpload) return;
+    if (sources.length + pending.length - (replaceId ? 1 : 0) > 50) { setError(t('A binder supports up to 50 documents. Replace or remove a source before adding another.')); return; }
+    if (intake === 'text' && (!text.trim() || text.length > MAX_TEXT_CHARACTERS)) { setError(t('Paste between 1 and 5,000,000 characters.')); return; }
+    if (pending.some(file => !/\.(pdf|docx|txt)$/i.test(file.name) || !file.size || file.size > MAX_FILE_BYTES)) { setError(t('Each file must be a PDF, DOCX or TXT between 1 byte and 20 MB.')); return; }
+    const controller = new AbortController(); request.current = controller; setUploading(true); setError('');
+    let remaining = [...pending];
     try {
-      const doc = await policyDocumentsApi.upload(uploadFile, controller.signal);
-      if (controller.signal.aborted || current !== revision.current) return;
-      if (doc.status !== 'Ready') { setFileError(t('The document is not ready for extraction. Check the policy library and retry.')); return; }
-      if (!doc.contentSha256) { setFileError(t('The policy service needs an update before document extraction is available.')); return; }
-      latest.current.onChange({ ...latest.current.value, policyDocumentId: doc.id, policySourceHash: doc.contentSha256, policySourceText: undefined, usePolicySourceForAi: false });
-      setDocumentName(doc.originalName); setUploadFile(null); show(1);
-    } catch { if (!controller.signal.aborted && current === revision.current) setFileError(t('Document upload failed. Your file is kept; try again.')); }
+      for (const [index, file] of pending.entries()) {
+        setStatus(`${t('Uploading')} ${index + 1}/${pending.length}: ${file.name}`);
+        const doc = await policyDocumentsApi.upload(file, controller.signal);
+        if (controller.signal.aborted) return;
+        if (doc.status !== 'Ready' || !doc.contentSha256) throw new Error(doc.errorMessage || t('This document could not be prepared. Check the policy library and retry.'));
+        addDocument(doc, index === 0 ? replaceId : undefined);
+        remaining = remaining.slice(1); setFiles(remaining); setReplaceId(null);
+      }
+      setStatus(t('Documents added. Extract from policy, then review the proposals to fill your forms.'));
+      if (intake === 'text') { setText(''); latest.current.onChange({ ...latest.current.value, policyIntakeText: undefined }); }
+      show(1);
+    } catch (cause) { if (!controller.signal.aborted) setError(apiErrorReason(cause, t('Upload failed. Retry the remaining files.'))); }
     finally { if (!controller.signal.aborted) setUploading(false); }
   };
+  const loadLibrary = async () => {
+    setError('');
+    try { setLibrary((await policyDocumentsApi.list()).filter(doc => doc.status === 'Ready' && doc.contentSha256)); }
+    catch (cause) { setError(apiErrorReason(cause, t('Could not load the policy library.'))); }
+  };
 
-  return (
-    <section
-      className="setup-policy-source mb-4 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30 dark:bg-blue-400/5 sm:p-4"
-      aria-label={t("Existing HR policy")}
-    >
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div className="flex items-start gap-3">
-          <FileText
-            className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-blue-300"
-            aria-hidden="true"
-          />
-          <div>
-            <h3 className="text-base font-semibold text-slate-950 dark:text-white">
-              {t("Start from your existing HR policy")}
-            </h3>
-            <p
-              className={`mt-1 text-sm leading-5 text-slate-600 dark:text-slate-300 xl:sr-only`}
-            >
-              {t(
-                "Add your approved policy as a reference for setup. We will guide you through the next steps.",
-              )}
-            </p>
-            {(text.trim() || value.policyDocumentId) && !open && (
-              <p className="mt-2 text-xs font-medium text-sapphire dark:text-blue-300">
-                {value.policyDocumentId ? t("Policy document added") : t("Policy text added")}
-              </p>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-3">
-          <button
-            ref={trigger}
-            type="button"
-            className="btn-primary"
-            aria-expanded={open}
-            aria-controls={panelId}
-            onClick={() => (open ? close() : show(0))}
-          >
-            {open
-              ? t("Close guide")
-              : (text.trim() || value.policyDocumentId)
-                ? t("Review policy text")
-                : t("Add your HR policy")}
-          </button>
-          {!open && (
-            <button
-              type="button"
-              className="btn-secondary"
-              aria-controls={panelId}
-              onClick={() => show(2)}
-            >
-              {t("How this works")}
-            </button>
-          )}
-        </div>
+  return <section className="setup-policy-source mb-4 rounded-xl border border-sapphire/30 bg-sapphire/5 p-4 dark:border-blue-400/30" aria-label={t('Existing HR policy')}>
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-start gap-3"><FileText className="mt-1 h-5 w-5 shrink-0 text-sapphire" aria-hidden="true" /><div><h3 className="font-semibold">{t(onReviewOnboardingDraft ? 'Onboarding policy documents' : 'Start from your existing HR policy')}</h3><p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{sources.length ? t('{count} policy documents in this draft. Extract and review to fill your forms.', { count: sources.length }) : t('Upload a whole HR binder or add its chapters as separate documents.')}</p></div></div>
+      {!onReviewOnboardingDraft && <div className="flex flex-wrap gap-2"><button ref={trigger} type="button" className="btn-primary" aria-expanded={open} aria-controls={panelId} onClick={() => open ? close() : show()}>{t(open ? 'Close guide' : sources.length ? 'Review policy text' : 'Add your HR policy')}</button>{!open && <button type="button" className="btn-secondary" onClick={() => show(2)}>{t('How this works')}</button>}</div>}
+    </div>
+    {open && <div id={panelId} className="setup-policy-source-panel mt-4 space-y-3 border-t border-sapphire/20 pt-4">
+      <nav className="flex flex-wrap gap-2" aria-label={t('Policy setup guide')}>{['Policy documents', 'Prepare form values', 'How to review and save'].map((label, index) => <button key={label} type="button" className={step === index ? 'btn-primary' : 'btn-secondary'} aria-current={step === index ? 'step' : undefined} onClick={() => setStep(index)}>{index + 1}. {t(label)}</button>)}</nav>
+      <div hidden={step !== 0} className="space-y-3">
+        {sources.length > 0 && <p className="text-sm">{t('Add, replace or remove draft sources here. Reviewed form values are preserved; replacing a source requires a new extraction and review.')}</p>}
+        <p className="text-xs text-slate-600 dark:text-slate-300">{t('Up to 50 documents can be combined in one policy binder.')}</p>
+        <ul className="space-y-2" aria-label={t('Policy binder documents')}>{sources.map(source => <li key={source.documentId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white p-3 dark:bg-slate-950"><span className="min-w-0 break-words text-sm">{source.name}</span><div className="flex gap-2"><button type="button" className="btn-secondary" disabled={uploading} onClick={() => { setReplaceId(source.documentId); setIntake('document'); setFiles([]); picker.current?.click(); }}>{t('Replace')}<span className="sr-only"> {source.name}</span></button><button type="button" className="btn-secondary" disabled={uploading} onClick={() => { updateSources(sources.filter(item => item.documentId !== source.documentId)); setStatus(t('Source removed from this draft. The library document and reviewed form values are kept.')); }}>{t('Remove')}<span className="sr-only"> {source.name}</span></button></div></li>)}</ul>
+        {canUpload ? <>
+          <div className="flex flex-wrap gap-2"><button type="button" className={intake === 'document' ? 'btn-primary' : 'btn-secondary'} disabled={uploading} onClick={() => setIntake('document')}>{t('Upload document')}</button><button type="button" className={intake === 'text' ? 'btn-primary' : 'btn-secondary'} disabled={uploading} onClick={() => { setIntake('text'); setReplaceId(null); }}>{t('Paste policy text')}</button><button type="button" className="btn-secondary" disabled={uploading} onClick={() => void loadLibrary()}>{t('Choose from policy library')}</button></div>
+          {library && <div className="max-h-48 overflow-auto rounded-lg border bg-white p-3 dark:bg-slate-950"><p className="mb-2 text-sm font-medium">{t('Existing policy documents')}</p>{!library.length && <p className="text-sm">{t('No ready documents available.')}</p>}{library.map(doc => <div className="flex items-center justify-between gap-2 py-1" key={doc.id}><span className="break-words text-sm">{doc.originalName}</span><button type="button" className="btn-secondary" disabled={uploading || sources.some(source => source.contentSha256 === doc.contentSha256)} onClick={() => addDocument(doc)}>{t('Add to binder')}</button></div>)}</div>}
+          {intake === 'document' ? <div className="space-y-2"><label className="block text-sm font-medium">{t('Upload a document for extraction')}<input ref={picker} type="file" accept=".pdf,.docx,.txt" multiple={!replaceId} disabled={uploading} className="mt-2 block w-full text-sm" onChange={event => { setFiles(Array.from(event.target.files ?? [])); setError(''); }} /></label>{replaceId && <p className="text-sm">{t('Choose a replacement document, then upload it.')} <button type="button" className="underline" onClick={() => { setReplaceId(null); setFiles([]); }}>{t('Cancel replacement')}</button></p>}<p className="text-xs">{t('PDF, DOCX or TXT: 20 MB and 5,000,000 extracted characters per file; PDFs up to 2,000 pages. Add multiple files to one binder. AI processes sections automatically.')}</p></div> : <div className="space-y-1"><div className="flex flex-wrap items-baseline justify-between gap-2"><label className="block text-sm font-medium" htmlFor={`${panelId}-text`}>{t('Policy excerpts')}</label><p className="text-xs">{t('{count} of {limit} characters', { count: text.length, limit: MAX_TEXT_CHARACTERS })}</p></div><textarea id={`${panelId}-text`} className="setup-policy-textarea input h-40 w-full" maxLength={MAX_TEXT_CHARACTERS} value={text} disabled={uploading} onChange={event => updateText(event.target.value)} /><p className="text-xs">{t('Pasted text becomes a private document in the same binder and uses the same extraction and review process.')}</p></div>}
+        </> : <p className="text-sm">{t('An authorized HR administrator can add policy documents. You can review the draft sources already attached.')}</p>}
       </div>
-      <div
-        id={panelId}
-        hidden={!open}
-        className="setup-policy-source-panel mt-3 border-t border-sapphire/20 pt-3 dark:border-blue-400/20"
-      >
-        <ol
-          className="mb-3 flex flex-wrap gap-x-5 gap-y-2 text-xs"
-          aria-label={t("Policy setup guide")}
-        >
-          {steps.map((label, index) => (
-            <li
-              key={label}
-              aria-current={index === step ? "step" : undefined}
-              className={
-                index === step
-                  ? "font-semibold text-sapphire dark:text-blue-300"
-                  : "text-slate-600 dark:text-slate-400"
-              }
-            >
-              {index + 1}. {t(label)}
-            </li>
-          ))}
-        </ol>
-        <h4
-          ref={heading}
-          tabIndex={-1}
-          className="mb-3 scroll-mt-24 text-base font-semibold outline-none"
-        >
-          {t(steps[step])}
-        </h4>
-        <div hidden={step !== 0}>
-          {profile && onProfileChange && canUpload && <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label={t('Policy source')}>
-            <button type="button" className={intake === 'document' ? 'btn-primary' : 'btn-secondary'} aria-pressed={intake === 'document'} onClick={() => setIntake('document')}>{t('Upload document')}</button>
-            <button type="button" className={intake === 'text' ? 'btn-primary' : 'btn-secondary'} aria-pressed={intake === 'text'} onClick={() => { uploadRequest.current?.abort(); revision.current++; setUploading(false); setIntake('text'); update({ policyDocumentId: undefined, policySourceHash: undefined, usePolicySourceForAi: false }); }}>{t('Paste policy text')}</button>
-          </div>}
-          {intake === 'document' && profile && onProfileChange && canUpload ? <div className="space-y-2 rounded-lg border border-sapphire/20 bg-white p-3 dark:bg-slate-950">
-                <label className="block text-sm font-medium">{t('Upload a document for extraction')}
-                  <input ref={documentPicker} type="file" accept=".pdf,.docx,.txt" disabled={uploading} className="hidden" onChange={event => { setUploadFile(event.target.files?.[0] ?? null); setFileError(''); }} />
-                </label>
-                <div className="flex flex-wrap items-center gap-2"><button type="button" className="btn-secondary" disabled={uploading} onClick={() => documentPicker.current?.click()}>{t('Choose file')}</button><span className="break-words text-xs">{uploadFile?.name || t('No file selected')}</span></div>
-                <p className="text-xs text-slate-600 dark:text-slate-300">{t('PDF, DOCX or TXT, up to 20 MB. Uploads remain private drafts until published.')}</p>
-                <button type="button" className="btn-primary" disabled={!uploadFile || uploading} onClick={() => void uploadDocument()}>{uploading ? t('Uploading…') : t('Upload and review')}</button>
-                {uploading && <button type="button" className="btn-secondary ms-2" onClick={() => { uploadRequest.current?.abort(); revision.current++; setUploading(false); }}>{t('Cancel upload')}</button>}
-                {value.policyDocumentId && <p className="text-xs">{documentName || t('Policy document added')}</p>}
-              </div> : <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-            <div className="min-w-0 space-y-2">
-              <div>
-                <label
-                  htmlFor={`${panelId}-text`}
-                  className="mb-1.5 block text-sm font-medium"
-                >
-                  {t("Policy excerpts")}
-                </label>
-                <textarea
-                  id={`${panelId}-text`}
-                  className="setup-policy-textarea input h-36 w-full resize-none"
-                  maxLength={12000}
-                  value={text}
-                  onChange={(e) => {
-                    revision.current++;
-                    setReading(false);
-                    setFileError("");
-                    update({ policySourceText: e.target.value, policyDocumentId: undefined, policySourceHash: undefined });
-                  }}
-                />
-              </div>
-              <p className="text-xs text-slate-600">
-                {t("{count} of {limit} characters", {
-                  count: text.length,
-                  limit: 12000,
-                })}
-              </p>
-            </div>
-            <div className="min-w-0 space-y-3">
-
-              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-                {t(
-                  "Paste relevant policy sections or choose a plain-text (.txt) file, up to 12,000 characters. Use Upload document for PDF or Word extraction.",
-                )}
-              </p>
-              <label className="block text-sm">
-                <span className="mb-1.5 block font-medium">
-                  {t("Load policy text (.txt, up to 12,000 characters)")}
-                </span>
-                <input
-                  type="file"
-                  accept=".txt,text/plain"
-                  className="block w-full min-w-0 text-sm file:me-3 file:rounded-lg file:border file:border-slate-300 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 dark:file:border-slate-600 dark:file:bg-slate-900 dark:file:text-slate-200"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    const current = ++revision.current;
-                    setFileError("");
-                    setReading(false);
-                    if (!file) return;
-                    if (
-                      !file.name.toLowerCase().endsWith(".txt") ||
-                      file.size > 48000
-                    ) {
-                      setFileError(
-                        t(
-                          "Choose a plain-text file within the policy text limit.",
-                        ),
-                      );
-                      return;
-                    }
-                    setReading(true);
-                    try {
-                      const content = await file.text();
-                      if (current !== revision.current) return;
-                      if (
-                        content.length > 12000 ||
-                        content.includes("\u0000")
-                      ) {
-                        setFileError(
-                          t(
-                            "Choose a plain-text file within the policy text limit.",
-                          ),
-                        );
-                        return;
-                      }
-                      latest.current.onChange({
-                        ...latest.current.value,
-                        policySourceText: content,
-                        policyDocumentId: undefined, policySourceHash: undefined,
-                      });
-                    } catch {
-                      if (current === revision.current)
-                        setFileError(t("Could not read this policy file."));
-                    } finally {
-                      if (current === revision.current) setReading(false);
-                    }
-                  }}
-                />
-              </label>
-              {reading && (
-                <p role="status" className="text-sm">
-                  {t("Reading policy file…")}
-                </p>
-              )}
-              {fileError && (
-                <p
-                  role="alert"
-                  className="text-sm text-red-700 dark:text-red-300"
-                >
-                  {fileError}
-                </p>
-              )}
-              <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-                {t(
-                  "Choosing a file does not send it. Policy text is sent to the setup service when you generate a draft. Sharing it with AI is optional.",
-                )}
-              </p>
-            </div>
-          </div>}
-          {intake === 'document' && fileError && <p role="alert" className="mt-2 text-sm text-rose-700 dark:text-rose-300">{fileError}</p>}
-          {uploading && <p role="status" className="mt-2 text-sm">{t('Uploading…')}</p>}
-        </div>
-        <div hidden={step !== 1}>
-          {value.policyDocumentId && profile && onProfileChange ? <SetupPolicyExtraction value={value} onChange={onChange} profile={profile} onProfileChange={onProfileChange} /> : <div className="grid gap-4 xl:grid-cols-2">
-            <div
-              role="region"
-              aria-label={t("Policy text preview")}
-              tabIndex={0}
-              className="max-h-48 xl:h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white p-3 text-sm dark:border-white/10 dark:bg-slate-950"
-            >
-              {text || t("No policy text added")}
-            </div>
-            <div className="space-y-3">
-              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
-                {t(
-                  "Review the text and remove employee names, individual salaries and other personal information. Go back to edit it.",
-                )}
-              </p>
-              <label className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 h-4 w-4 accent-sapphire"
-                  checked={value.usePolicySourceForAi ?? false}
-                  onChange={(e) =>
-                    update({ usePolicySourceForAi: e.target.checked })
-                  }
-                />
-                {t(
-                  "Use these excerpts with the configured AI provider when generating the draft",
-                )}
-              </label>
-              <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-                {t(
-                  "This is optional. Without AI assistance, enter your policy rules in the setup fields. With AI assistance, the text provides context for suggestions; it does not automatically fill every setting.",
-                )}
-              </p>
-            </div>
-          </div>}
-        </div>
-        <div hidden={step !== 2} className="space-y-4">
-          <ol className="grid gap-4 text-sm leading-6 xl:grid-cols-3">
-            <li>
-              <strong>{t("Complete your settings")}</strong>
-              <p className="text-slate-600 dark:text-slate-300">
-                {t(
-                  "Enter your company details, leave, overtime, salary grades, benefits and approval preferences in the following steps.",
-                )}
-              </p>
-            </li>
-            <li>
-              <strong>{t("Generate and review the draft")}</strong>
-              <p className="text-slate-600 dark:text-slate-300">
-                {t(
-                  "Choose Generate draft on the final step. Check each proposed record against your approved policy and edit or remove anything that does not fit.",
-                )}
-              </p>
-            </li>
-            <li>
-              <strong>{t("Apply only after review")}</strong>
-              <p className="text-slate-600 dark:text-slate-300">
-                {t(
-                  "Uploading text does not configure your company. Changes are saved only when an authorized user chooses Apply. Some settings remain planning preferences, as labeled.",
-                )}
-              </p>
-            </li>
-          </ol>
-          <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-            {t(
-              "If AI is unavailable, the draft identifies the starter template used. Always review its suggestions.",
-            )}
-          </p>
-        </div>
-        <div className="setup-policy-guide-footer mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-sapphire/20 pt-3 xl:pe-40 dark:border-blue-400/20">
-          {step > 0 ? (
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => show(step - 1)}
-            >
-              {t("Previous guide step")}
-            </button>
-          ) : (
-            <span className="text-xs text-slate-600">
-              {t("Your existing text is kept when you close this guide.")}
-            </span>
-          )}
-          {step < 2 ? (
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={reading || uploading || (step === 0 && !text.trim() && !value.policyDocumentId)}
-              onClick={() => show(step + 1)}
-            >
-              {step === 0
-                ? t("Next: AI assistance")
-                : t("Next: review process")}
-            </button>
-          ) : (
-            <button type="button" className="btn-primary" onClick={close}>
-              {t("Continue company setup")}
-            </button>
-          )}
-        </div>
-      </div>
-    </section>
-  );
+      <div hidden={step !== 1}>{sources.length > 0 && profile && onProfileChange ? onReviewOnboardingDraft
+        ? <LocalOnboardingPreparation value={value} onChange={onChange} profile={profile} onProfileChange={onProfileChange} onReviewOnboardingDraft={onReviewOnboardingDraft} />
+        : <SetupPolicyExtraction value={value} onChange={onChange} profile={profile} onProfileChange={onProfileChange} />
+        : <p className="text-sm">{t('Add a policy document first, then extract its settings into draft forms.')}</p>}</div>
+      <div hidden={step !== 2} className="space-y-2 text-sm"><p>{t(onReviewOnboardingDraft ? 'Local preparation runs automatically after upload. Review local form values, or optionally improve the suggestions with AI.' : 'Extract from policy to read every document. Review each proposed value beside the current form value and its supporting policy passage. Choose which suggestions to copy into your forms.')}</p><p>{t(onReviewOnboardingDraft ? 'Choose Review prefilled forms to review onboarding tasks here. Only the existing task Save action changes a checklist. Other policy topics are not applied in this area.' : 'For onboarding tasks, choose Review prefilled forms, review each task in the existing form, then use its Save action. For setup settings, review your draft before choosing Apply.')}</p><p>{t('Return to Policy documents at any time to add or replace a chapter. Closing this guide keeps the draft sources and reviewed form values.')}</p></div>
+      {status && step === 0 && <p role="status" className="text-sm">{status}</p>}{error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}</p>}
+      <div className="setup-policy-guide-footer flex flex-wrap justify-between gap-2 border-t border-sapphire/20 pt-3">{step > 0 ? <button type="button" className="btn-secondary" onClick={() => setStep(step - 1)}>{t('Previous guide step')}</button> : canUpload ? <div className="flex flex-wrap gap-2"><button type="button" className="btn-primary" disabled={uploading || (intake === 'document' ? !files.length : !text.trim())} onClick={() => void upload()}>{t(uploading ? 'Uploading…' : 'Upload and review')}</button>{uploading && <button type="button" className="btn-secondary" onClick={cancel}>{t('Cancel upload')}</button>}</div> : <span />}{step < 2 ? <button type="button" className="btn-secondary" disabled={uploading || !sources.length} onClick={() => setStep(step + 1)}>{t(step === 0 ? 'Next: prepare form values' : 'How to review and save')}</button> : <button type="button" className="btn-primary" onClick={() => onReviewOnboardingDraft ? show(0) : close()}>{t(onReviewOnboardingDraft ? 'Policy documents' : 'Continue company setup')}</button>}</div>
+    </div>}
+  </section>;
 }

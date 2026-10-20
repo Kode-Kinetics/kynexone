@@ -15,10 +15,13 @@ import {
   type EmployeeDraftReview,
 } from '../api/employeeDrafts';
 import { notActivatableFromError } from '../api/employees';
+import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { establishmentBlockFromError, type EstablishmentBlockedPayload } from '../api/establishment';
 import { DraftPlacementFix } from '../components/DraftPlacementFix';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { Modal } from '../components/Modal';
+import { OfferCompensationHandoff } from '../components/recruitment/OfferCompensationHandoff';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { StatusChip } from '../components/StatusChip';
 import {
   DRAFT_FILTERS,
@@ -52,6 +55,8 @@ type Notice = { text: string; employeeId?: number | null; name?: string };
  * review shows, before anyone presses Approve, every reason activation would be refused.
  */
 export function NewHiresPage() {
+  const navigationGuard = useNavigationGuard();
+  const [handoffBusy, setHandoffBusy] = useState(false);
   const [filter, setFilter] = useState<DraftFilterKey>('awaiting');
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
@@ -248,7 +253,7 @@ export function NewHiresPage() {
           <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{notice.text}</span>
           {notice.employeeId != null && (
-            <Link href={`/people?employeeId=${notice.employeeId}`} className="font-semibold underline underline-offset-2">
+            <Link href={employeeWorkspaceHref(notice.employeeId, { section: 'overview' })} className="font-semibold underline underline-offset-2">
               Open employee record
             </Link>
           )}
@@ -389,7 +394,7 @@ export function NewHiresPage() {
                         </div>
                       )}
                       {action.kind === 'openEmployee' && (
-                        <Link href={`/people?employeeId=${action.employeeId}`} className="btn-secondary inline-flex h-8 items-center px-3 text-xs">
+                        <Link href={employeeWorkspaceHref(action.employeeId, { section: 'overview' })} className="btn-secondary inline-flex h-8 items-center px-3 text-xs">
                           {action.label}{row.activatedEmployeeCode ? ` ${row.activatedEmployeeCode}` : ''}
                         </Link>
                       )}
@@ -417,11 +422,12 @@ export function NewHiresPage() {
       <Modal
         isOpen={!!selected}
         title={summary ? `New hire: ${summary.name}` : 'New hire'}
-        onClose={closeReview}
+        onClose={() => navigationGuard.run('new-hire-close', closeReview)}
+        closeDisabled={!!deciding || handoffBusy}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={closeReview} disabled={!!deciding} className="btn-secondary">Close</button>
+            <button type="button" onClick={() => navigationGuard.run('new-hire-close', closeReview)} disabled={!!deciding || handoffBusy} className="btn-secondary">Close</button>
             {canWithdraw && (
               <button type="button" onClick={() => void withdraw()} disabled={!!deciding} className="btn-secondary disabled:opacity-60">
                 {deciding === 'withdraw' ? 'Withdrawing…' : 'Withdraw draft'}
@@ -435,7 +441,7 @@ export function NewHiresPage() {
                 <button
                   type="button"
                   onClick={() => void approve()}
-                  disabled={!!deciding || !!disabledReason}
+                  disabled={!!deciding || handoffBusy || !!disabledReason}
                   aria-describedby="approve-help"
                   className="btn-primary disabled:opacity-60"
                 >
@@ -487,6 +493,8 @@ export function NewHiresPage() {
                 ))}
               </dl>
             )}
+
+            {review && <OfferCompensationHandoff draftId={review.draft.id} readOnly={!isOpenDraft(review.summary.status)} refreshKey={`${review.draft.branch}:${review.draft.department}:${review.draft.joiningDate}:${review.draft.salary}`} onChanged={() => { void loadReview(review.draft.id); void load(); }} onBusy={setHandoffBusy} />}
 
             {review && !isOpenDraft(review.summary.status) && (
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">

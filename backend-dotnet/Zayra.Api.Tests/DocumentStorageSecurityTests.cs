@@ -166,6 +166,8 @@ public class DocumentStorageSecurityTests
                 new Claim(ClaimTypes.NameIdentifier, actorId.ToString()),
                 new Claim(ClaimTypes.Role, "Admin"),
                 new Claim("is_group_scope", "true"),
+                new Claim("permission", "employees.read"),
+                new Claim("permission", "employees.documents"),
             }, "Test")),
         },
     };

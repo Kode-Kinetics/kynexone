@@ -12,6 +12,7 @@ import {
 } from '../../lib/succession';
 import { StatusChip } from '../StatusChip';
 import { ErrorBlock, GapChips, LoadingRows, PersonName, ProgressBar } from './SuccessionParts';
+import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 
 /**
  * The workspace's headline figures, gaps first (SUC_DESIGN §6–7). Every tile shows its definition on hover and focus,
@@ -160,7 +161,7 @@ function DrillRows({ metric, result }: { metric: Metric; result: DrillResult }) 
         <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
           {result.plans.map((p) => (
             <li key={p.planId} data-testid="suc-drill-row" className="grid gap-1 py-2 text-sm sm:grid-cols-[1fr_auto_10rem] sm:items-center sm:gap-3">
-              <Link href={`/people?employeeId=${p.employee.employeeId}&tab=development`} className="hover:underline"><PersonName person={p.employee} /></Link>
+              <Link href={employeeWorkspaceHref(p.employee.employeeId, { section: 'activity', panel: 'development' })} className="hover:underline"><PersonName person={p.employee} /></Link>
               <span className="flex flex-wrap items-center gap-1">
                 <StatusChip label={t(planStatusLabel[p.status])} tone={planTone(p.status, p.onTrack)} />
                 {p.overdue > 0 && <StatusChip label={t('suc.plan.overdueCount', { count: p.overdue })} tone="rose" />}

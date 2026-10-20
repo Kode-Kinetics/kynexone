@@ -948,6 +948,12 @@ jobs:
         working-directory: frontend
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 
+      - name: Employee workspace responsive and accessibility gate
+        working-directory: frontend
+        env:
+          EMPLOYEE_WORKSPACE_BASE_URL: http://127.0.0.1:5173
+        run: npx playwright test -c e2e/playwright.employee-workspace.config.ts
+
       # The admin identity, password and employee floor come from e2e/world.ts. The E2E_DEFAULT_* and
       # E2E_MIN_EMPLOYEES overrides this step used to pass were a second declaration of the same
       # facts; they are retired and the preflight refuses them if set.

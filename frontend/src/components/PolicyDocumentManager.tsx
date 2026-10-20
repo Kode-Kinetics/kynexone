@@ -10,7 +10,7 @@ import { useFormat } from '../hooks/useFormat';
 import { Modal } from './Modal';
 import { PolicyAnswer } from './PolicyAnswer';
 
-export function PolicyDocumentManager() {
+export function PolicyDocumentManager({ onOpenSetup }: { onOpenSetup?: () => void }) {
   const id = useId();
   const t = useT(); const fmt = useFormat(); const { hasRole, hasPermission } = useAuth();
   const canAuthor = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
@@ -110,11 +110,11 @@ export function PolicyDocumentManager() {
   };
   const visible = documents.slice(page * 10, (page + 1) * 10);
   return <div className="space-y-4">
-    <div><h2 className="text-lg font-semibold">{t('Policy library')}</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Review documents, publish the approved version, and let employees ask Kody about their company policies.')}</p></div>
+    <div><h2 className="text-lg font-semibold">{t('Policy library')}</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Review documents, publish the approved version, and let employees ask Kody about their company policies.')}</p>{canAuthor && onOpenSetup && <button type="button" className="btn-secondary mt-3" onClick={onOpenSetup}>{t('Return to policy setup')}</button>}</div>
     {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
     {canAuthor && <div className="flex flex-wrap items-end gap-3 rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/20">
-      <label className="min-w-0 flex-1 text-sm font-medium">{t('Add a policy document')}<input ref={filePicker} type="file" accept=".pdf,.docx,.txt" disabled={busy} className="hidden" onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setError(''); }} /><span className="mt-2 block text-xs font-normal text-slate-600 dark:text-slate-400">{t('PDF, DOCX or TXT, up to 20 MB. Uploads remain private drafts until published.')}</span></label>
+      <label className="min-w-0 flex-1 text-sm font-medium">{t('Add a policy document')}<input ref={filePicker} type="file" accept=".pdf,.docx,.txt" disabled={busy} className="hidden" onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setError(''); }} /><span className="mt-2 block text-xs font-normal text-slate-600 dark:text-slate-400">{t('PDF, DOCX or TXT: 20 MB, 5 million extracted characters and 2,000 PDF pages per file. Documents stay private drafts until published.')}</span></label>
       <button type="button" className="btn-secondary" disabled={busy} onClick={() => filePicker.current?.click()}>{t('Choose file')}</button><span className="break-words text-xs">{selectedFile?.name || t('No file selected')}</span>
       <button type="button" className="btn-primary" disabled={busy || !selectedFile} onClick={() => void upload()}>{busy ? t('Working…') : t('Upload draft')}</button>
       {busy && uploadRequest.current && <button type="button" className="btn-secondary" onClick={() => { uploadRequest.current?.abort(); uploadRequest.current = null; setBusy(false); }}>{t('Cancel upload')}</button>}

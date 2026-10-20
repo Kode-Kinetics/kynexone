@@ -54,6 +54,8 @@ export interface EmployeeEditField {
   type?: FieldInputType;
   options?: string[];
   sensitive?: boolean;
+  /** Keep an internal value in the edit draft without exposing it as a manually editable control. */
+  hidden?: boolean;
 }
 
 /** One statutory/compliance field. Rendered as a value(+expiry) pair on create and as edit inputs. */
@@ -177,7 +179,7 @@ export const SALARY_BREAKDOWN_EDIT_FIELDS: EmployeeEditField[] = [
   { key: 'mobileAllowance', label: 'Mobile allowance', type: 'number' },
   { key: 'otherAllowance', label: 'Other allowance', type: 'number' },
   { key: 'fixedDeduction', label: 'Fixed deduction', type: 'number' },
-  { key: 'salaryStructureCode', label: 'Salary structure code' },
+  { key: 'salaryStructureCode', label: 'Salary structure code', hidden: true },
 ].map((field) => ({ ...field, type: field.type as FieldInputType | undefined, key: `salaryBreakdown.${field.key}`, section: 'Salary', sensitive: true }));
 
 // Passport is common to every GCC jurisdiction.
