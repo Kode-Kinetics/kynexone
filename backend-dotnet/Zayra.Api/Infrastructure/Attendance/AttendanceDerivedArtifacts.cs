@@ -174,13 +174,20 @@ public static class AttendanceDerivedArtifacts
             var openSignature = open is null ? null : SignatureOf(open.Details);
             var aboutHeld = openSignature is not null && openSignature.Split(';').Any(d => Held(d.Split('=')[0]));
             if (open is not null && !aboutHeld) AutoResolve(open, "the day matches what payroll paid again");
+            // Still open, but its "recomputed N min" is no longer true: with half a pair the deduction is undetermined.
+            // The signature is kept, so the comparison resumes when the pair is completed.
+            else if (open is not null)
+                open.Details = $"{UndeterminedSentence} The paid impacts were left as paid and no new deduction was raised."
+                    + $" {SignatureTag}{openSignature}]";
             return;
         }
 
         var signature = string.Join(";", differences.Select(d => $"{d.Type}={d.Paid}/{d.Now}"));
+        var heldAndPaid = halfPair && paid.Any(p => HeldOnHalfPairTypes.Contains(p.ImpactType));
         var details = "Attendance for a paid day changed after payroll: "
             + string.Join("; ", differences.Select(d => $"{d.Type} paid {d.Paid} min, recomputed {d.Now} min"))
             + ". The paid impacts were left as paid and no new deduction was raised; correct the difference with a payroll adjustment."
+            + (heldAndPaid ? " The day's late and early-exit deductions are undetermined until the punch is corrected." : string.Empty)
             + $" {SignatureTag}{signature}]";
         if (open is not null) { open.Details = details; return; }
         // HR resolved exactly this difference already (an automatic close does not count): do not ask for it twice.
@@ -257,6 +264,10 @@ public static class AttendanceDerivedArtifacts
             ? "Missing in or out punch."
             : $"Missing in or out punch. Held, not deducted, until the punch is corrected: {string.Join(" and ", held)}.";
     }
+
+    private const string UndeterminedSentence =
+        "Attendance for a paid day changed after payroll, and the day now has a missing punch: its late and early-exit " +
+        "deductions are undetermined until the punch is corrected.";
 
     private const string SignatureTag = "[sig:";
     private const string AutoResolvedTag = "[auto-resolved:";

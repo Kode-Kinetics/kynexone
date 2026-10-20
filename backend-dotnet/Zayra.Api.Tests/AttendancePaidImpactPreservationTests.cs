@@ -373,6 +373,29 @@ public sealed class AttendancePaidImpactVoidRestorePostgresTests
             .IsResolved.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task AFlagOnAPaidDayThatBecomesHalfAPair_SaysTheDeductionIsUndetermined_NotTheOldDifference()
+    {
+        // Paid at 20 late minutes; the In moves to 09:50 (flag: paid 20, recomputed 40); then the Out punch is removed.
+        // With half a pair the late deduction is held, so "recomputed 40" is no longer true and must not stay on the flag.
+        var (tenantId, employeeId, _) = await SeedPaidLateDayAsync();
+        await ReprocessWithInPunchAtAsync(tenantId, employeeId, 9, 50);
+        await using (var db = _fx.CreateDb())
+        {
+            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == tenantId && r.PunchDirection == "Out").ExecuteDeleteAsync();
+            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId);
+        }
+
+        await using var verify = _fx.CreateDb();
+        var flag = await verify.AttendanceExceptions.IgnoreQueryFilters()
+            .SingleAsync(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged);
+        flag.IsResolved.Should().BeFalse("the day does not match what was paid; it is undetermined");
+        var text = AttendanceDerivedArtifacts.DescribePaidAttendanceChange(flag.Details);
+        text.Should().Contain("undetermined until the punch is corrected").And.NotContain("recomputed 40");
+        (await verify.AttendancePayrollImpacts.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId)).Minutes
+            .Should().Be(20, "what payroll paid stays as paid");
+    }
+
     private async Task<(Guid TenantId, int EmployeeId, PayrollRun Run)> SeedPaidLateDayAsync()
     {
         Guid tenantId;
