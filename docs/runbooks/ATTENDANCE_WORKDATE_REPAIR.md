@@ -239,13 +239,19 @@ These are intended results of the one-boundary model. They are not defects, but 
   lists out of the run:
 
   ```sql
-  -- Daily records with a punch time but no raw event for that employee within a day of it.
+  -- Daily records whose first-in or last-out is not the timestamp of any raw event of that employee. A recompute only
+  -- ever copies a raw event's own timestamp into these columns, so every listed time came from somewhere else and is
+  -- lost on the next range run. (A window match is not enough: another day's punch nearby would hide it.)
   SELECT r.tenant_id, r.employee_id, r.work_date, r.first_in_utc, r.last_out_utc
   FROM attendance_daily_records r
-  WHERE NOT r.is_deleted AND (r.first_in_utc IS NOT NULL OR r.last_out_utc IS NOT NULL)
-    AND NOT EXISTS (SELECT 1 FROM attendance_raw_events e
-                    WHERE e.tenant_id = r.tenant_id AND e.employee_id = r.employee_id
-                      AND e.punch_timestamp_utc BETWEEN COALESCE(r.first_in_utc, r.last_out_utc) - INTERVAL '1 day'
-                                                    AND COALESCE(r.last_out_utc, r.first_in_utc) + INTERVAL '1 day')
+  WHERE NOT r.is_deleted
+    AND (   (r.first_in_utc IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM attendance_raw_events e
+               WHERE e.tenant_id = r.tenant_id AND e.employee_id = r.employee_id
+                 AND e.punch_timestamp_utc = r.first_in_utc))
+         OR (r.last_out_utc IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM attendance_raw_events e
+               WHERE e.tenant_id = r.tenant_id AND e.employee_id = r.employee_id
+                 AND e.punch_timestamp_utc = r.last_out_utc)))
   ORDER BY r.tenant_id, r.employee_id, r.work_date;
   ```
