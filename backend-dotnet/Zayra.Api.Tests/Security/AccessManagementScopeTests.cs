@@ -486,9 +486,9 @@ public class AccessManagementScopeTests
             AccessController C() => Controller(db, w.TenantId, callerId, selected, scope, v2);
             (await C().GetUser(w.UserB, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>();
             (await C().UpdateUser(w.UserB, new UpdateUserRequest("Taken over", null, null, null), CancellationToken.None)).Result
-                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>("the service treats a user outside the scope as not found");
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>("a user outside the scope is not found");
             (await C().AssignRoles(w.UserB, new AssignRolesRequest(new[] { "Team Viewer" }), CancellationToken.None)).Result
-                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>();
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>("the service refuses with 'User not found.'");
             (await C().CreateUser(new CreateUserRequest($"x-{Guid.NewGuid():N}@example.test", "B Admin", "StrongPassword!123", new[] { "Admin" }, w.CompanyB),
                     CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
             (await C().CreateEntityGrant(new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
