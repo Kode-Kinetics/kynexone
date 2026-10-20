@@ -118,6 +118,58 @@ public class ApprovalEligibleDeciderTests
         (await db.AuditLogs.AnyAsync(a => a.Action == "approval.routed_to_override")).Should().BeFalse();
     }
 
+    // ── Effective permissions, as Decide enforces them ─────────────────────────────
+
+    [Fact]
+    public async Task ARoleHolderWhoseApprovalsDecideIsDenied_DoesNotCount()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var workflow = await AddWorkflowAsync(db, tenantId, ("HR", "Role", "HR Manager", null));
+        var hr = await AddUserAsync(db, tenantId, "HR Manager");
+        await AddOverrideAsync(db, tenantId, hr, "approvals.decide", "Deny");
+
+        var act = () => Service(db).CreateRequestAsync(tenantId, Transfer(workflow.Id), Requester(tenantId), CancellationToken.None);
+
+        await act.Should().ThrowAsync<ApprovalNoEligibleDeciderException>("the only HR Manager cannot call Decide at all");
+    }
+
+    [Fact]
+    public async Task ApprovalsOverrideFromADirectAllowOverride_CountsForTheAdminQueue()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var workflow = await AddWorkflowAsync(db, tenantId, ("Finance review", "Role", "Finance Head", null));
+        var deputy = await AddRolelessUserAsync(db, tenantId);
+        await AddOverrideAsync(db, tenantId, deputy, "approvals.decide", "Allow");
+        await AddOverrideAsync(db, tenantId, deputy, "approvals.override", "Allow");
+
+        var created = await Service(db).CreateRequestAsync(tenantId, Transfer(workflow.Id), Requester(tenantId), CancellationToken.None);
+
+        created.CurrentApproverRole.Should().Be("Admin", "someone holds approvals.override through a direct grant, so it is not refused");
+    }
+
+    [Fact]
+    public async Task ApprovalsDecideFromTheAccessMode_MakesARoleHolderEligible()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var workflow = await AddWorkflowAsync(db, tenantId, ("Line approval", "Role", "Line Lead", null));
+        // The role itself carries no approvals.decide; the login's ManagerPortal access mode does (AuthService).
+        var role = new Role { TenantId = tenantId, Name = "Line Lead", NormalizedName = "LINE LEAD", IsActive = true };
+        db.Roles.Add(role);
+        var lead = await AddRolelessUserAsync(db, tenantId);
+        db.UserRoles.Add(new UserRole { UserId = lead, RoleId = role.Id });
+        var employee = await AddEmployeeAsync(db, tenantId, lead, "Lina Lead");
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount { TenantId = tenantId, EmployeeId = employee.Id, UserId = lead, AccessMode = AccessModes.ManagerPortal, Status = "Active", IsPrimary = true });
+        await db.SaveChangesAsync();
+
+        var created = await Service(db).CreateRequestAsync(tenantId, Transfer(workflow.Id), Requester(tenantId), CancellationToken.None);
+
+        created.CurrentApproverRole.Should().Be("Line Lead");
+        (await db.AuditLogs.AnyAsync(a => a.Action == "approval.routed_to_override")).Should().BeFalse();
+    }
+
     // ── Mid-chain ──────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -308,6 +360,11 @@ public class ApprovalEligibleDeciderTests
         {
             role = new Role { TenantId = tenantId, Name = roleName, NormalizedName = normalized, IsActive = true };
             db.Roles.Add(role);
+            // An approver role carries approvals.decide, as every seeded approver role does.
+            var decide = db.Permissions.Local.FirstOrDefault(p => p.Key == "approvals.decide")
+                ?? await db.Permissions.FirstOrDefaultAsync(p => p.Key == "approvals.decide");
+            if (decide is null) { decide = new Permission { Key = "approvals.decide", Module = "Approvals" }; db.Permissions.Add(decide); }
+            db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = decide.Id });
         }
         var user = new User { TenantId = tenantId, Email = $"{Guid.NewGuid():N}@example.test", FullName = roleName, IsActive = isActive };
         user.NormalizedEmail = user.Email.ToUpperInvariant();
@@ -315,6 +372,21 @@ public class ApprovalEligibleDeciderTests
         db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
         await db.SaveChangesAsync();
         return user.Id;
+    }
+
+    private static async Task<Guid> AddRolelessUserAsync(ZayraDbContext db, Guid tenantId)
+    {
+        var user = new User { TenantId = tenantId, Email = $"{Guid.NewGuid():N}@example.test", FullName = "Direct grant", IsActive = true };
+        user.NormalizedEmail = user.Email.ToUpperInvariant();
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
+
+    private static async Task AddOverrideAsync(ZayraDbContext db, Guid tenantId, Guid userId, string permission, string effect)
+    {
+        db.UserPermissionOverrides.Add(new UserPermissionOverride { TenantId = tenantId, UserId = userId, PermissionKey = permission, Effect = effect, IsActive = true, Reason = "test" });
+        await db.SaveChangesAsync();
     }
 
     private static async Task<Employee> AddEmployeeAsync(ZayraDbContext db, Guid tenantId, Guid? userAccountId, string name = "Huda Salem")

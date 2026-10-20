@@ -86,7 +86,8 @@ public class ApprovalAnyStepAuthorityTests
         var manager = new Employee { TenantId = tenantId, EmployeeCode = "MGR-1", FullName = "Line Manager", Status = "Active", UserAccountId = managerUserId, JoiningDate = DateTime.UtcNow.AddYears(-3) };
         db.Employees.Add(manager);
         // The line manager has an active login (a manager without one cannot act, so the step would go to HR).
-        db.Users.Add(new User { Id = managerUserId, TenantId = tenantId, Email = "mgr@example.test", NormalizedEmail = "MGR@EXAMPLE.TEST", FullName = "Line Manager", IsActive = true });
+        await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
         await db.SaveChangesAsync();
         var (approvalId, subjectId) = await StartChangeAsync(db, tenantId, DefaultEmployeeChangeWorkflow(tenantId), manager.Id);
 

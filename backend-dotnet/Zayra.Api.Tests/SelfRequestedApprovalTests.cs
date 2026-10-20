@@ -367,6 +367,9 @@ public class SelfRequestedApprovalTests
         db.Roles.Add(admin);
         db.Permissions.Add(overridePermission);
         db.RolePermissions.Add(new RolePermission { RoleId = admin.Id, PermissionId = overridePermission.Id });
+        var decidePermission = new Permission { Key = "approvals.decide", Module = "Approvals", Description = "Decide" };
+        db.Permissions.Add(decidePermission);
+        db.RolePermissions.Add(new RolePermission { RoleId = admin.Id, PermissionId = decidePermission.Id });
         await db.SaveChangesAsync();
         return (tenant.Id, admin.Id);
     }

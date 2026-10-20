@@ -809,7 +809,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             if (check.Eligible) continue;
             var label = $"Step {step.StepOrder} ('{Clean(step.StepName)}')";
             warnings.Add(check.NamedPerson
-                ? $"{label} goes to {check.Owner}, who has no active login. Give them a login, or name someone else."
+                ? $"{label} goes to {check.Owner}, who has no active login that can decide approvals. Give them one, or name someone else."
                 : $"{label} goes to the {check.Owner} role, which no active user holds. Assign someone to {check.Owner} in User Management, or change the step.");
         }
         return warnings;

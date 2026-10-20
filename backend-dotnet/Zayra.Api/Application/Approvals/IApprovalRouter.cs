@@ -208,7 +208,7 @@ public sealed class ApprovalNoEligibleDeciderException : ApprovalRoutingExceptio
     {
         var step = string.IsNullOrWhiteSpace(stepName) ? $"Step {stepOrder}" : $"Step {stepOrder} ('{stepName.Trim()}')";
         return namedPerson
-            ? $"Nobody can approve this yet. {step} goes to {owner}, who has no active login, and nobody else holds the Admin role. " +
+            ? $"Nobody can approve this yet. {step} goes to {owner}, who has no active login that can decide approvals, and nobody else holds the Admin role. " +
               $"Give {owner} a login, or change the workflow under Approvals → Workflows. This request was not submitted."
             : $"Nobody can approve this yet. {step} goes to the {owner} role, and no one other than the requester and the person it is about holds it or the Admin role. " +
               $"Assign someone to {owner} in User Management, or change the workflow under Approvals → Workflows. This request was not submitted.";

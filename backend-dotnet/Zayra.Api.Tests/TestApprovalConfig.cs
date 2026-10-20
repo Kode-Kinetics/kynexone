@@ -86,6 +86,11 @@ internal static class TestApprovalConfig
                 && !await db.UserRoles.AnyAsync(ur => ur.UserId == userId && ur.RoleId == roleId))
                 db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
         }
+        // The login can decide approvals (routing counts the effective approvals.decide, as Decide does): a direct
+        // Allow override, so it neither adds a role nor depends on one.
+        if (!db.Set<UserPermissionOverride>().Local.Any(o => o.UserId == userId && o.PermissionKey == "approvals.decide")
+            && !await db.Set<UserPermissionOverride>().IgnoreQueryFilters().AnyAsync(o => o.UserId == userId && o.PermissionKey == "approvals.decide"))
+            db.Set<UserPermissionOverride>().Add(new UserPermissionOverride { TenantId = tenantId, UserId = userId, PermissionKey = "approvals.decide", Effect = "Allow", IsActive = true, Reason = "test decider" });
         await db.SaveChangesAsync();
     }
 
@@ -96,6 +101,8 @@ internal static class TestApprovalConfig
     /// </summary>
     public static async Task<Guid> EnsureDeciderAsync(ZayraDbContext db, Guid tenantId, string roleName = "HR Manager", params string[] permissions)
     {
+        // A decider's role carries approvals.decide: routing counts effective permissions, as Decide does.
+        permissions = permissions.Append("approvals.decide").Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await EnsureTenantRowAsync(db, tenantId);
         var normalized = roleName.Trim().ToUpperInvariant();
         var role = await db.Roles.IgnoreQueryFilters().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.NormalizedName == normalized);
