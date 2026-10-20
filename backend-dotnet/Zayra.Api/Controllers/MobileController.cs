@@ -230,6 +230,36 @@ public class MobileController : ControllerBase
                     Status = "Present"
                 }).Entity;
 
+            // The punch is ALSO recorded as a raw event, as every other punch path records it: the day's recompute (HR's
+            // range run, a regularization, the processing job, a later device punch) rebuilds the day from raw events
+            // only, so without one it found nothing, wiped this in/out and raised an absence deduction for a worked day.
+            // The response and the direct update below are unchanged.
+            if (req.Direction is "In" or "Out")
+            {
+                var employeeCode = await _db.Employees.AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && e.Id == employeeId)
+                    .Select(e => e.EmployeeCode).FirstOrDefaultAsync(ct) ?? string.Empty;
+                var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;
+                var raw = new AttendanceRawEvent
+                {
+                    TenantId = tenantId.Value,
+                    EmployeeId = employeeId.Value,
+                    EmployeeCode = employeeCode,
+                    Source = "Mobile (legacy)",
+                    PunchTimestampUtc = nowUtc,
+                    PunchDirection = req.Direction,
+                    IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                    VerificationMethod = decision.Verification.Method,
+                    CreatedBy = userId,
+                };
+                _db.AttendanceRawEvents.Add(raw);
+                _db.AttendanceAuditLogs.Add(new AttendanceAuditLog
+                {
+                    TenantId = tenantId.Value, UserId = userId, Action = "attendance.raw_event.created",
+                    EntityName = "AttendanceRawEvent", EntityId = raw.Id.ToString(), MetadataJson = "{}",
+                });
+            }
+
             if (req.Direction == "In")
             {
                 existing.FirstInUtc = nowUtc;

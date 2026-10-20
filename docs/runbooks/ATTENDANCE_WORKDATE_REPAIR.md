@@ -232,3 +232,20 @@ These are intended results of the one-boundary model. They are not defects, but 
   the step 5 check.
 - **The 120-minute punch tolerance is a constant** (`AttendanceWorkDate.ShiftPunchToleranceMinutes`). It is not a
   tenant, policy or shift setting.
+- **Days recorded by the legacy mobile punch before branch `fix/attendance-device-path-parity`** (`/api/mobile/attendance/punch`)
+  have no raw event. A range run over such a day finds no punch, wipes its in/out and can raise an `Absence deduction`.
+  No current app calls that route, so expect few or none. Check before any range run. The query lists every day whose
+  times have no raw event behind them, whatever wrote them, so no recompute can rebuild those times. Leave any day it
+  lists out of the run:
+
+  ```sql
+  -- Daily records with a punch time but no raw event for that employee within a day of it.
+  SELECT r.tenant_id, r.employee_id, r.work_date, r.first_in_utc, r.last_out_utc
+  FROM attendance_daily_records r
+  WHERE NOT r.is_deleted AND (r.first_in_utc IS NOT NULL OR r.last_out_utc IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM attendance_raw_events e
+                    WHERE e.tenant_id = r.tenant_id AND e.employee_id = r.employee_id
+                      AND e.punch_timestamp_utc BETWEEN COALESCE(r.first_in_utc, r.last_out_utc) - INTERVAL '1 day'
+                                                    AND COALESCE(r.last_out_utc, r.first_in_utc) + INTERVAL '1 day')
+  ORDER BY r.tenant_id, r.employee_id, r.work_date;
+  ```

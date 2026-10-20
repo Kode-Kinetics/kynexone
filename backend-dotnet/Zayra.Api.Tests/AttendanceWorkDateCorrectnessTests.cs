@@ -565,6 +565,39 @@ public class AttendanceWorkDateCorrectnessTests
         Figures(ingested).Should().BeEquivalentTo(Figures(punched), "the same punches under the same policy are the same day");
     }
 
+    /// <summary>
+    /// The legacy mobile punch (/api/mobile/attendance/punch) wrote the daily record directly and no raw event, so the
+    /// next recompute of that day (HR's range run, a regularization, the processing job) found no punch, wiped the in and
+    /// out, and raised an absence deduction for a day the employee worked.
+    /// </summary>
+    [Fact]
+    public async Task LegacyMobilePunch_SurvivesALaterRecompute_BecauseItRecordsARawEvent()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        SeedRiyadh(db, tenantId);
+        await db.SaveChangesAsync();
+        var clockIn = RiyadhToUtc(Weekday, 9, 0);
+        var clockOut = RiyadhToUtc(Weekday, 17, 0);
+
+        (await MobilePunchAsync(db, tenantId, employee.Id, "In", clockIn)).Should().BeOfType<OkObjectResult>();
+        (await MobilePunchAsync(db, tenantId, employee.Id, "Out", clockOut)).Should().BeOfType<OkObjectResult>();
+
+        var raw = await db.AttendanceRawEvents.OrderBy(x => x.PunchTimestampUtc).ToListAsync();
+        raw.Select(x => (x.PunchTimestampUtc, x.PunchDirection)).Should().Equal([(clockIn, "In"), (clockOut, "Out")]);
+        raw.Should().OnlyContain(x => x.EmployeeId == employee.Id && x.DeviceId == null);
+
+        await ProcessAsync(db, tenantId, employee.Id, Weekday);
+
+        var daily = await db.AttendanceDailyRecords.SingleAsync();
+        daily.FirstInUtc.Should().Be(clockIn, "the recompute counts the legacy punch's own raw event");
+        daily.LastOutUtc.Should().Be(clockOut);
+        daily.MissingPunch.Should().BeFalse();
+        daily.TotalWorkedMinutes.Should().Be(8 * 60 - 60);
+        (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == "Absence deduction")).Should().BeFalse();
+    }
+
     /// <summary>HR's daily list with no dates ends on the TENANT's today: at 01:00 in Riyadh that is not the UTC date.</summary>
     [Fact]
     public async Task DailyList_WithNoDates_EndsOnTheTenantsToday_NotTheUtcDate()
