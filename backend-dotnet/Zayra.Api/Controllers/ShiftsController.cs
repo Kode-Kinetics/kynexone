@@ -9,6 +9,7 @@ using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Controllers;
 
@@ -340,6 +341,10 @@ public class ShiftsController : ControllerBase
         var employees = await employeeQuery
             .Select(e => new RosterPlanEmployee(e.Id, e.FullName, e.Gender, e.Department))
             .ToListAsync(ct);
+        // Rows store the gender code (MALE) or, on older rows, its label (Male); rules are typed as labels. Read
+        // both sides through the tenant's list so a rule matches every employee it means.
+        var genders = await ReferenceList.LoadAsync(_db, tenantId, ReferenceList.GenderType, ct);
+        employees = employees.Select(e => e with { Gender = genders.Normalize(e.Gender) }).ToList();
         if (employees.Count == 0)
             return BadRequest(new { message = "No active employees match the selection." });
 
@@ -363,7 +368,7 @@ public class ShiftsController : ControllerBase
             employees,
             shifts.Select(s => new RosterPlanShift(s.Id, s.Code, s.Name, s.StartTime, s.EndTime, s.Color)).ToList(),
             new RosterPlanPolicy(
-                (policyDto.GenderRules ?? new()).Select(r => new GenderShiftRule(r.Gender, r.ShiftCodes ?? new(), r.Mode)).ToList(),
+                (policyDto.GenderRules ?? new()).Select(r => new GenderShiftRule(genders.Normalize(r.Gender), r.ShiftCodes ?? new(), r.Mode)).ToList(),
                 policyDto.VoluntaryShiftCodes ?? new(),
                 (policyDto.WeekendDemand ?? new()).Select(d => new DemandTarget(d.ShiftCode, d.Headcount)).ToList(),
                 (policyDto.HolidayDemand ?? new()).Select(d => new DemandTarget(d.ShiftCode, d.Headcount)).ToList(),

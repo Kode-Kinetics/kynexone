@@ -9,6 +9,7 @@ using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Reports;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Controllers.Reports;
 
@@ -506,9 +507,16 @@ public class ReportsController : ControllerBase
             .GroupBy(x => x.Nationality)
             .Select(g => new { Nationality = g.Key, Count = g.Count() })
             .OrderByDescending(x => x.Count).ToListAsync(ct);
-        var byGender = await baseQuery
+        // Rows store the gender code (MALE) or, on older rows, its label (Male): count them by meaning so one
+        // gender is one bar, labelled the way the tenant's reference list spells it today.
+        var genderCounts = await baseQuery
             .GroupBy(x => x.Gender)
             .Select(g => new { Gender = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var genders = await ReferenceList.LoadAsync(_db, tid, ReferenceList.GenderType, ct);
+        var byGender = genderCounts
+            .GroupBy(g => genders.Normalize(g.Gender), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { Gender = genders.LabelEn(g.Key), Code = g.Key, Count = g.Sum(x => x.Count) })
+            .OrderByDescending(x => x.Count).ToList();
         return new { byNationality, byGender };
     }
 

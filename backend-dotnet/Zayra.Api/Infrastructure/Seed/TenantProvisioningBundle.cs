@@ -261,6 +261,13 @@ public static class TenantProvisioningBundle
         }),
     };
 
+    /// <summary>The starter values a reference list is provisioned with (code, English, Arabic) — empty for a
+    /// type that is not seeded. <see cref="Zayra.Api.Infrastructure.Setup.ReferenceList"/> reads these as the
+    /// fallback when a tenant's own list is missing or does not mention a value.</summary>
+    internal static IReadOnlyList<(string Code, string En, string Ar)> SeedMasterValues(string typeCode) =>
+        MasterTypes.FirstOrDefault(t => string.Equals(t.Code, typeCode, StringComparison.OrdinalIgnoreCase))?.Values
+        ?? Array.Empty<(string, string, string)>();
+
     private static async Task<(int types, int values)> InstallMasterDataAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.

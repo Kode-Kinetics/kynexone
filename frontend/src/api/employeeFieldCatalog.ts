@@ -53,6 +53,8 @@ export interface EmployeeEditField {
   label: string;
   type?: FieldInputType;
   options?: string[];
+  /** Reference-list choices (code stored, label shown in the reader's language) — set by the screen, not the catalog. */
+  choices?: Array<{ value: string; label: string }>;
   sensitive?: boolean;
   /** Keep an internal value in the edit draft without exposing it as a manually editable control. */
   hidden?: boolean;
