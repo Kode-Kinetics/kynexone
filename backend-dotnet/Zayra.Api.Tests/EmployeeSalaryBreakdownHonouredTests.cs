@@ -327,4 +327,54 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
         (await db.SalaryStructures.AsNoTracking().SingleAsync(x => x.Id == assignment.SalaryStructureId))
             .Code.Should().Be("GRADE-G7", "the grade path is untouched");
     }
+
+    /// <summary>A grade whose default structure ("GRADE-G9") was retired with no active successor, and no pay scale.</summary>
+    private static async Task<Grade> RetiredDefaultGradeAsync(ZayraDbContext db, Guid tenantId)
+    {
+        var grade = new Grade { TenantId = tenantId, Code = "G9", Name = "Grade 9", Level = 9, MinSalary = 0m, MidSalary = 0m, MaxSalary = 0m, Currency = "SAR", IsActive = true };
+        db.Grades.Add(grade);
+        db.SalaryStructures.Add(new SalaryStructure { TenantId = tenantId, Code = "GRADE-G9", Name = "Grade 9 (retired)", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false });
+        await db.SaveChangesAsync();
+        return grade;
+    }
+
+    [Fact]
+    public async Task ACreateWithNoSalary_IsNotRefusedByARetiredGradeDefault()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await RetiredDefaultGradeAsync(db, tenantId);
+
+        var created = await Service(db).CreateAsync(tenantId, Request($"No salary yet {Guid.NewGuid():N}", salary: null, gradeId: grade.Id), Ctx(tenantId), default);
+
+        created.Id.Should().BePositive();
+        (await db.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tenantId)).Should().Be(0, "no salary, so no structure is used");
+    }
+
+    [Fact]
+    public async Task AnUnrelatedUpdateOmittingTheSalary_IsNotRefusedByARetiredGradeDefault()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await RetiredDefaultGradeAsync(db, tenantId);
+        var name = $"Unrelated edit {Guid.NewGuid():N}";
+        var created = await Service(db).CreateAsync(tenantId, Request(name, salary: null, gradeId: grade.Id), Ctx(tenantId), default);
+
+        var updated = await Service(db).UpdateAsync(tenantId, created.Id, Request(name, salary: null, gradeId: grade.Id) with { JobTitle = "Senior analyst" }, Ctx(tenantId), default);
+
+        updated.Should().NotBeNull();
+        (await db.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id)).JobTitle.Should().Be("Senior analyst");
+    }
+
+    [Fact]
+    public async Task APositiveSalary_IsStillRefusedOnARetiredGradeDefault()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await RetiredDefaultGradeAsync(db, tenantId);
+
+        var act = () => Service(db).CreateAsync(tenantId, Request($"Paid hire {Guid.NewGuid():N}", Breakdown(5_000m, 1_000m), gradeId: grade.Id), Ctx(tenantId), default);
+
+        (await act.Should().ThrowAsync<InactiveSalaryStructureException>()).Which.ErrorCode.Should().Be("inactive_salary_structure");
+    }
 }

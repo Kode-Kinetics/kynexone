@@ -20,24 +20,8 @@ public static class EmployeeSalaryBreakdownWriter
         // grade. The repo rule is refuse rather than guess; silent partial success is neither, so
         // the operator's numbers are now honoured whether or not a grade resolves.
         if (employee.TenantId is null) return;
-        var grade = employee.GradeId is null
-            ? null
-            : await db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-
+        var (grade, salary, releaseA, components) = await ResolveSalaryAsync(db, employee, request, cancellationToken);
         var effectiveDate = SalaryEffectiveDate(employee, request);
-        // Release A: one fact in one place. The grade's cash allowances are the matrix (Benefits by grade); the frozen
-        // legacy pay scale is never read for a release_a tenant. The request was already prefilled from the matrix
-        // (PrefillSalaryFromMatrixAsync) and is used as it stands. Tenants without the flag are unchanged.
-        var releaseA = await EntitlementMatrixService.ReleaseAEnabledAsync(db, employee.TenantId.Value, cancellationToken);
-        var components = grade is null || releaseA
-            ? new List<GradePayScaleComponent>()
-            : await db.GradePayScaleComponents
-                .AsNoTracking()
-                .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
-                .OrderBy(x => x.SortOrder)
-                .ToListAsync(cancellationToken);
-
-        var salary = releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components);
         // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
         // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
@@ -179,13 +163,38 @@ public static class EmployeeSalaryBreakdownWriter
     }
 
     /// <summary>Pre-save check for the create path: <see cref="ResolveStructureAsync"/> with the employee's resolved grade.</summary>
-    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, string? requestedCode, CancellationToken cancellationToken)
+    /// <summary>
+    /// The pre-save structure check, for exactly the case <see cref="ApplyAsync"/> writes: only when the request, or the
+    /// grade's pay scale, yields a positive salary. With nothing to write (a create with no salary, an update that omits
+    /// the breakdown) no structure is used, so a retired grade default must not refuse an unrelated save.
+    /// </summary>
+    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request, CancellationToken cancellationToken)
     {
         if (employee.TenantId is null) return;
+        var (grade, salary, _, _) = await ResolveSalaryAsync(db, employee, request, cancellationToken);
+        if (GrossSalary(salary) <= 0) return;
+        await ResolveStructureAsync(db, employee, grade, request?.SalaryStructureCode, cancellationToken);
+    }
+
+    /// <summary>The grade and the breakdown <see cref="ApplyAsync"/> would write — one computation for the write and its pre-check.</summary>
+    private static async Task<(Grade? Grade, EmployeeSalaryBreakdownRequest Salary, bool ReleaseA, List<GradePayScaleComponent> Components)> ResolveSalaryAsync(ZayraDbContext db, Employee employee,
+        EmployeeSalaryBreakdownRequest? request, CancellationToken cancellationToken)
+    {
         var grade = employee.GradeId is null
             ? null
             : await db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
-        await ResolveStructureAsync(db, employee, grade, requestedCode, cancellationToken);
+        // Release A: one fact in one place. The grade's cash allowances are the matrix (Benefits by grade); the frozen
+        // legacy pay scale is never read for a release_a tenant. The request was already prefilled from the matrix
+        // (PrefillSalaryFromMatrixAsync) and is used as it stands. Tenants without the flag are unchanged.
+        var releaseA = await EntitlementMatrixService.ReleaseAEnabledAsync(db, employee.TenantId!.Value, cancellationToken);
+        var components = grade is null || releaseA
+            ? new List<GradePayScaleComponent>()
+            : await db.GradePayScaleComponents
+                .AsNoTracking()
+                .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync(cancellationToken);
+        return (grade, releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components), releaseA, components);
     }
 
     /// <summary>
