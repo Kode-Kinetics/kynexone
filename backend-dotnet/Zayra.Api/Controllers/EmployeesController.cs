@@ -3661,6 +3661,11 @@ public class EmployeesController : ControllerBase
                         tenantId, employee, requestContext with { TenantId = tenantId }, ct);
                     await _db.LinkOnboardingTasksForActivatedDraftAsync(
                         tenantId, draftId, employee, ct);
+                    var checklist = await _db.AttachForActivatedDraftAsync(tenantId, draftId, employee, requestContext.UserId, ct);
+                    if (checklist.Outcome is DefaultChecklistOutcome.NoDefaultChecklist or DefaultChecklistOutcome.AmbiguousDefaultChecklist)
+                        _logger?.LogInformation(
+                            "Hire activation: no onboarding checklist attached for draft {DraftId} in tenant {TenantId} ({Outcome}).",
+                            draftId, tenantId, checklist.Outcome);
 
                     draft.Status = EmployeeDraftStatuses.Activated;
                     draft.CurrentStep = EmployeeDraftStatuses.Activated;
