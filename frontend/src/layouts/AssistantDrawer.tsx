@@ -27,6 +27,7 @@ import { useT } from '../hooks/useT';
 import { dedupeInsights, insightRoute } from '../components/dashboard/dashboardModel';
 
 import { EmployeePolicyAssistant } from '../components/EmployeePolicyAssistant';
+import { POLICY_INTAKE_FLAG } from '../lib/policyIntake';
 import { useFormat } from '../hooks/useFormat';
 interface Turn {
   role: 'user' | 'assistant';
@@ -63,7 +64,8 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
   const { isFeatureEnabled } = useFeatureFlags();
   const moduleOn = isFeatureEnabled('ai_assistant');
   const mayQuery = moduleOn && hasPermission('ai.query');
-  const mayAskPolicies = moduleOn && hasPermission('ess.read');
+  // Policy questions exist only while the tenant has policy intake switched on (off by the owner's decision).
+  const mayAskPolicies = moduleOn && isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('ess.read');
   const [mode, setMode] = useState<'operations' | 'policies'>('operations');
   const policyMode = mayAskPolicies && (mode === 'policies' || !mayQuery);
 

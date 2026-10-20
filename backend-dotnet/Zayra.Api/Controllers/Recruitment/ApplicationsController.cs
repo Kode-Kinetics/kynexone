@@ -18,10 +18,18 @@ public class ApplicationsController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IRecruitmentService _svc;
     private readonly INotificationService _notify;
+    private readonly OfferLifecycleService _lifecycle;
 
-    public ApplicationsController(ZayraDbContext db, IRecruitmentService svc, INotificationService notify)
+    public ApplicationsController(ZayraDbContext db, IRecruitmentService svc, INotificationService notify, OfferLifecycleService? lifecycle = null)
     {
-        _db = db; _svc = svc; _notify = notify;
+        _db = db; _svc = svc; _notify = notify; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build());
+    }
+
+    private OfferActor Actor(Guid tenant, Guid? company) => new(tenant, company, this.GetUserId() ?? Guid.Empty, UserName());
+    private IActionResult LifecycleFailure(OfferLifecycleException e)
+    {
+        var body = new { error = e.Code, message = e.Message };
+        return e.Status switch { 409 => Conflict(body), 404 => NotFound(body), 422 => UnprocessableEntity(body), 400 => BadRequest(body), _ => StatusCode(e.Status, body) };
     }
 
     // ── Pipeline list ──────────────────────────────────────────────────────────
@@ -155,34 +163,12 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
-        if (app.Status != "Active") return BadRequest(new { message = "Cannot advance a non-active application." });
-
-        var nextStage = RecruitmentStages.Next(app.Stage);
-        if (nextStage is null) return BadRequest(new { message = "Application is already at the final stage." });
-
-        // Hiring is not a stage move. Accepting the offer marks the application Hired, takes the
-        // seat on the opening and creates the employee draft in one transaction. Moving the card
-        // did only the first two, left no draft to activate, and made the offer unacceptable.
-        if (nextStage == "Hired")
-            return Conflict(new
-            {
-                error = "hire_requires_offer_acceptance",
-                message = "A candidate is hired by accepting their offer, which also creates their employee record. Open the offer and choose Accept."
-            });
-
-        var prevStage = app.Stage;
-        app.Stage = nextStage;
-        app.StageOrder = RecruitmentStages.OrderOf(nextStage);
-        app.StageChangedAtUtc = DateTime.UtcNow;
-
-        await LogEventAsync(tenantId, app.Id, "StageAdvanced", nextStage,
-            req.Notes ?? $"Moved from {prevStage} to {nextStage}.", userId, req.PerformedByName ?? "HR", ct);
-
-        await _db.SaveChangesAsync(ct);
+        try { app = await _lifecycle.ChangeApplicationAsync(Actor(tenantId, app.CompanyId), id, req.ExpectedVersion, "Advance", req.Notes ?? "Advanced application stage.", ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
 
         await _notify.NotifyAsync(tenantId, null,
             "Application Advanced",
-            $"{app.CandidateName} moved to {nextStage} stage for {app.JobTitle}.",
+            $"{app.CandidateName} moved to {app.Stage} stage for {app.JobTitle}.",
             "JobApplication", app.Id.ToString(), ct);
 
         return Ok(app);
@@ -198,15 +184,8 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
-        if (app.Status != "Active") return BadRequest(new { message = "Application is not active." });
-
-        app.Status = "Rejected";
-        app.RejectionReason = req.Reason;
-
-        await LogEventAsync(tenantId, app.Id, "Rejected", app.Stage,
-            $"Application rejected. Reason: {req.Reason}", userId, req.PerformedByName ?? "HR", ct);
-
-        await _db.SaveChangesAsync(ct);
+        try { app = await _lifecycle.ChangeApplicationAsync(Actor(tenantId, app.CompanyId), id, req.ExpectedVersion, "Reject", req.Reason, ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
         return Ok(app);
     }
 
@@ -292,7 +271,8 @@ public class ApplicationsController : ControllerBase
     // ── Offer letter ───────────────────────────────────────────────────────────
 
     [HttpPost("{id:guid}/offer")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [Authorize(Roles = "Admin,HR Manager,Recruiter")]
+    [OfferAudience(OfferAudienceRequirement.Author)]
     public async Task<IActionResult> GenerateOffer(Guid id, [FromBody] GenerateOfferRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
@@ -300,71 +280,17 @@ public class ApplicationsController : ControllerBase
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
         if (app.Stage != "Offer") return BadRequest(new { message = "Application must be in Offer stage to generate an offer letter." });
+        if (req.Components is not null && !_lifecycle.Enabled) return Conflict(new { error = "managed_offer_lifecycle_disabled", message = "Managed component offers are not enabled for this deployment." });
 
-        // Replace an unsent draft. A draft that went through approval is kept: it is the record of
-        // what an approver rejected, and its approval rows point at it.
-        var existing = await _db.OfferLetters
-            .Where(o => o.TenantId == tenantId && o.ApplicationId == id && o.Status == "Draft"
-                && !_db.OfferApprovals.Any(a => a.TenantId == tenantId && a.OfferLetterId == o.Id))
-            .ToListAsync(ct);
-        _db.OfferLetters.RemoveRange(existing);
-
-        // Place the hire before anything is written: the department and designation must be records
-        // activation can match, or the accepted offer's draft is refused at approval. What HR picked
-        // wins; otherwise the opening's own department and designation; otherwise the advert title.
-        var opening = await _db.JobOpenings.AsNoTracking()
-            .Where(o => o.Id == app.JobOpeningId && o.TenantId == tenantId)
-            .Select(o => new { o.DepartmentId, o.DepartmentName, o.DesignationId })
-            .FirstOrDefaultAsync(ct);
-        var departmentText = string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentName : req.Department;
-        var placement = await OfferPlacement.ResolveAsync(_db, tenantId,
-            departmentId: req.DepartmentId ?? (string.IsNullOrWhiteSpace(req.Department) ? opening?.DepartmentId : null),
-            department: departmentText,
-            designationId: req.DesignationId ?? (string.IsNullOrWhiteSpace(req.Designation) ? opening?.DesignationId : null),
-            designation: string.IsNullOrWhiteSpace(req.Designation) ? app.JobTitle : req.Designation,
-            ct,
-            companyId: app.CompanyId);
-        if (!placement.IsResolved)
-            return UnprocessableEntity(new { error = placement.Error, field = placement.Field, message = placement.Message });
-
-        var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.OtherAllowances;
-        var currency = await OfferRules.ResolveCurrencyAsync(_db, tenantId, app.CompanyId, ct);
-        var templateData = new OfferLetterTemplateData(
-            app.CandidateName, placement.Designation,
-            placement.Department, req.StartDate,
-            req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.OtherAllowances,
-            gross, req.ProbationMonths, currency);
-
-        var offer = new OfferLetter
+        try
         {
-            TenantId = tenantId,
-            CompanyId = app.CompanyId, // inherit legal entity from parent application
-            ApplicationId = id,
-            CandidateName = app.CandidateName,
-            OfferedJobTitle = placement.Designation,
-            OfferedDepartment = placement.Department,
-            StartDate = req.StartDate,
-            BasicSalary = req.BasicSalary,
-            HousingAllowance = req.HousingAllowance,
-            TransportAllowance = req.TransportAllowance,
-            OtherAllowances = req.OtherAllowances,
-            GrossSalary = gross,
-            ProbationMonths = req.ProbationMonths,
-            ContentHtml = _svc.GenerateOfferLetterHtml(templateData),
-            Status = "Draft",
-            ResponseDeadline = DateTime.UtcNow.AddDays(7),
-        };
-        _db.OfferLetters.Add(offer);
-        app.OfferedSalary = gross;
-
-        await LogEventAsync(tenantId, id, "OfferGenerated", "Offer",
-            $"Offer letter generated. Gross salary: {currency} {gross:N2}/month.", userId, "HR", ct);
-        // The offer's author, for maker-checker: OfferLetter has no creator column.
-        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, userId, UserName(),
-            new { offer.GrossSalary, offer.StartDate, currency }));
-
-        await _db.SaveChangesAsync(ct);
-        return Created($"/api/recruitment/offers/{offer.Id}", offer);
+            var offer = await _lifecycle.CreateAsync(Actor(tenantId, app.CompanyId), id,
+                new(req.StartDate, req.ProbationMonths, req.Designation, req.Department, req.DepartmentId, req.DesignationId,
+                    req.ResponseDeadline, req.TemplateId, req.Components, req.BasicSalary, req.HousingAllowance,
+                    req.TransportAllowance, req.OtherAllowances, ExpectedApplicationVersion: req.ExpectedApplicationVersion), ct);
+            return Created($"/api/recruitment/offers/{offer.Id}", offer);
+        }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
     }
 
     [HttpPost("offers/{offerId:guid}/send")]
@@ -375,47 +301,26 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
-        var verdict = await OfferRules.EvaluateSendAsync(_db, offer, userId, ct);
-        if (verdict == OfferSendVerdict.InvalidState)
-            return BadRequest(new { message = "Offer must be in Draft or Approved status to send." });
-        if (verdict != OfferSendVerdict.Sendable)
-        {
-            var (error, message) = OfferRules.SendRefusal(verdict);
-            return Conflict(new { error, message });
-        }
-
-        offer.Status = "Sent";
-        offer.SentAtUtc = DateTime.UtcNow;
-        _db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.SentAction, userId, UserName()));
-        offer.ResponseDeadline = DateTime.UtcNow.AddDays(7);
-
-        await LogEventAsync(tenantId, offer.ApplicationId, "OfferSent", "Offer",
-            "Offer letter sent to candidate.", userId, "HR", ct);
-
-        await _db.SaveChangesAsync(ct);
-
-        await _notify.NotifyAsync(tenantId, null,
-            "Offer Letter Sent",
-            $"Offer letter sent to {offer.CandidateName} for {offer.OfferedJobTitle}.",
-            "OfferLetter", offer.Id.ToString(), ct);
-
-        return Ok(offer);
+        return Conflict(new { error = "explicit_delivery_required", message = "This endpoint no longer records delivery. Review a frozen managed revision and use /api/recruitment/offers/{id}/email or /external-sends. Existing sent offers remain readable." });
     }
 
     [HttpPost("offers/{offerId:guid}/accept")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> AcceptOffer(Guid offerId, CancellationToken ct)
+    [OfferAudience(OfferAudienceRequirement.Manager)]
+    public async Task<IActionResult> AcceptOffer(Guid offerId, CancellationToken ct,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] OfferResponseRequest? request = null)
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId = this.GetUserId()!.Value;
-        var acceptance = await _svc.AcceptOfferAsync(tenantId, offerId, userId, "HR", ct);
-        if (acceptance.Outcome == OfferAcceptanceOutcome.NotFound) return NotFound();
-        if (!acceptance.IsSuccess)
-            return Conflict(new { message = acceptance.Message, outcome = acceptance.Outcome.ToString() });
-
         var offer = await _db.OfferLetters.AsNoTracking()
-            .FirstAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
-        if (acceptance.WasAcceptedNow)
+            .FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
+        if (offer is null) return NotFound();
+        if (request is null || request.Decision != "Accepted") return Conflict(new { error = "explicit_response_required", message = "Submit expectedVersion, decision Accepted, source StaffRecorded, occurredAtUtc and reason, or use /api/recruitment/offers/{id}/responses." });
+        OfferResponseDto acceptance;
+        try { acceptance = await _lifecycle.RespondAsync(Actor(tenantId, offer.CompanyId), offerId, request, ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
+        offer = await _db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
+        if (!acceptance.AlreadyRecorded)
         {
             await _notify.NotifyAsync(tenantId, null,
                 "Offer Accepted — Onboarding Started",
@@ -427,36 +332,23 @@ public class ApplicationsController : ControllerBase
         {
             offer,
             onboardingDraftId = acceptance.OnboardingDraftId,
-            alreadyAccepted = !acceptance.WasAcceptedNow,
+            alreadyAccepted = acceptance.AlreadyRecorded,
         });
     }
 
     [HttpPost("offers/{offerId:guid}/decline")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [OfferAudience(OfferAudienceRequirement.Manager)]
     public async Task<IActionResult> DeclineOffer(Guid offerId, [FromBody] DeclineOfferRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId = this.GetUserId();
         var offer = await _db.OfferLetters.FirstOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (offer is null) return NotFound();
-        // The same rule as the Offers tab. Declining an Accepted offer left the application Hired and
-        // its employee draft live.
-        if (!OfferRules.CanDecline(offer))
-            return Conflict(new
-            {
-                error = "invalid_offer_state",
-                message = $"{OfferRules.DeclineStateMessage} (current: {offer.Status})"
-            });
-
-        offer.Status = "Declined";
-        offer.DeclinedAtUtc = DateTime.UtcNow;
-        offer.DeclineReason = req.Reason ?? string.Empty;
-
-        await LogEventAsync(tenantId, offer.ApplicationId, "OfferDeclined", "Offer",
-            $"Offer declined. Reason: {req.Reason}", userId, "HR", ct);
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(offer);
+        if (req.Response() is not { } response) return Conflict(new { error = "explicit_response_required", message = "Submit expectedVersion, decision Declined, source StaffRecorded, occurredAtUtc and reason, or use /api/recruitment/offers/{id}/responses." });
+        try { await _lifecycle.RespondAsync(Actor(tenantId, offer.CompanyId), offerId, response, ct); }
+        catch (OfferLifecycleException e) { return LifecycleFailure(e); }
+        return Ok(await _db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == offerId && o.TenantId == tenantId, ct));
     }
 
     [HttpGet("offers/{offerId:guid}/html")]
@@ -499,9 +391,9 @@ public class ApplicationsController : ControllerBase
 
 public record ApplyRequest(Guid JobOpeningId, Guid CandidateId, string? Notes);
 
-public record AdvanceRequest(string? Notes, string? PerformedByName);
+public record AdvanceRequest(string? Notes, string? PerformedByName, long? ExpectedVersion = null);
 
-public record RejectApplicationRequest(string Reason, string? PerformedByName);
+public record RejectApplicationRequest(string Reason, string? PerformedByName, long? ExpectedVersion = null);
 
 public record NoteRequest(string Notes, string? PerformedByName);
 
@@ -510,8 +402,11 @@ public record InterviewFeedbackRequest(int OverallRating, string Recommendation,
 /// <summary>Department and designation are resolved against the organisation's records when the offer
 /// is generated (<see cref="Zayra.Api.Infrastructure.Recruitment.OfferPlacement"/>). An id wins over a
 /// name. Left empty, they default to the job opening's department and designation.</summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public record GenerateOfferRequest(
     string? Department, DateOnly StartDate,
-    decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal OtherAllowances,
+    decimal? BasicSalary, decimal? HousingAllowance, decimal? TransportAllowance, decimal? OtherAllowances,
     int ProbationMonths,
-    Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null);
+    Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null, Guid? TemplateId = null,
+    IReadOnlyList<Zayra.Api.Application.Recruitment.OfferComponentInput>? Components = null,
+    long? ExpectedApplicationVersion = null, DateTime? ResponseDeadline = null);

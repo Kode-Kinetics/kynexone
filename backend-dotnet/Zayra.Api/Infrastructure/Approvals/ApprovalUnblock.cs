@@ -28,7 +28,10 @@ public static class ApprovalUnblock
             ? "reassign it, or give a colleague the Admin role in User Management"
             : string.IsNullOrWhiteSpace(roleLabel) || roleLabel.Trim().Equals("Any", StringComparison.OrdinalIgnoreCase)
                 ? "give a colleague an approver role or the Admin role in User Management"
-                : $"give a colleague the {roleLabel.Trim()} or Admin role in User Management";
+                // A step moved to the override queue is routed to Admin itself: "the Admin or Admin role" reads as a bug.
+                : roleLabel.Trim().Equals("Admin", StringComparison.OrdinalIgnoreCase)
+                    ? "give a colleague the Admin role in User Management"
+                    : $"give a colleague the {roleLabel.Trim()} or Admin role in User Management";
         return $" No other active user can {verb} it yet: {remedy}{(canWithdraw ? ", or withdraw it" : string.Empty)}.";
     }
 

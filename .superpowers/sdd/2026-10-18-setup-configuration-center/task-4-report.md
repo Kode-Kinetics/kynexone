@@ -1,0 +1,231 @@
+# Task 4 report — Configuration Center area and focused-form experience
+
+## Status
+
+Implemented the approved Configuration Center interaction model without changing Guided Setup. Each area now renders a grouped business-purpose canvas whose available destination row is the action. Opening an embedded destination replaces that canvas with exactly one canonical editor, destination-specific scope language, Back, and previous/next navigation above and below the form.
+
+## Dirty baseline
+
+- `frontend/src/components/setup/SetupStudioWorkspace.tsx` already contained one user-owned onboarding-description edit.
+- `frontend/src/i18n/setupStudio.ts` already contained user-owned company-form Arabic strings and the Arabic `Employee Reference Lists` rename.
+- `frontend/e2e/setup-studio-workspace.spec.ts` already contained user-owned company-actions, single-company, Arabic-suggestion, and company-limit fixture work.
+- Those baseline hunks were preserved in the working tree and excluded from the Task 4 index.
+- The configured Browser plugin named by the frontend testing skill was not available in this session, so repository Playwright was used for all browser evidence.
+
+## RED evidence
+
+Command:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "destination|focused|permission|tenant|Browse|navigator"
+```
+
+The pre-implementation run failed on the expected Task 4 contracts. In the captured partial RED before interruption, `whole_destination_row_is_action` could not find a destination-labelled row button and `focused_form_replaces_area_canvas` could not find the focused workspace; the old tenant-scope and detached-action contracts were also red. Result at interruption: 3 passed, 5 failed, 1 interrupted, 21 not run.
+
+## Implementation
+
+- Added `SetupAreaBlueprint` to render registry business groups in stable group/destination order.
+- Available embedded settings are whole-row buttons; external destinations are whole-row links; restricted, disabled, checking, and unknown destinations are explanatory non-actions.
+- Added `SetupFocusedWorkspace` with a focus-targeted destination heading, truthful effective-target scope, Back, and previous/next controls before and after the canonical editor.
+- Refactored `SetupStudioWorkspace` into exclusive blueprint/focused states. `renderSettings` is invoked only for the one currently available embedded destination; permission/feature loss replaces and unmounts the editor.
+- Back restores the originating destination focus and scroll position; direct-entry Back returns to the area heading.
+- Added `SetupAllAreasDialog` and simplified `SetupAreaNavigator` to a `Browse all areas` trigger. Desktop uses a large labelled modal; mobile uses the viewport; focus is contained; Escape/Close restore the trigger; accepted area selection focuses the new area heading.
+- Added customer-facing company/tenant/record-dependent impact language and Arabic strings. Internal `tenant-wide` terminology is no longer the only administrator-facing explanation.
+- Preserved canonical routes, form components, form-level Save/API/validation, feature/role checks, and the existing navigation guard.
+
+## GREEN evidence
+
+Focused Task 4 and retained canonical-save/accessibility command:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "manual_leave_edit_uses_existing_put|failed_save_retains_values|existing_record_identity_survives_edit|workspace_axe|whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_unmounts_focused_editor_and_stops_reads|tenant_setting_says_applies_to_all_companies|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading"
+```
+
+- 32 passed across desktop/mobile.
+- 2 intentional project-specific skips: desktop-only dialog sizing on mobile and mobile-only fullscreen sizing on desktop.
+- Canonical leave PUT, failed-save value retention, record identity, English/Arabic axe, whole-row/focused/access/scope/dialog/focus contracts all passed.
+
+TypeScript:
+
+```bash
+cd frontend
+npx tsc --noEmit
+```
+
+- Exit 0, no diagnostics.
+
+Staged/index-only Task 4 contract run:
+
+```bash
+git checkout-index --all --prefix=/tmp/kynexone-task4-index.OYkLEv/
+cd /tmp/kynexone-task4-index.OYkLEv/frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_unmounts_focused_editor_and_stops_reads|tenant_setting_says_applies_to_all_companies|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading"
+```
+
+- 22 passed and 2 intentional project-specific skips in 42.0 seconds.
+- This run used only `HEAD` plus the staged Task 4 index, proving the new behavior and tests do not depend on unstaged user work.
+- Index-only `npx tsc --noEmit` reaches one pre-existing unrelated mismatch in `unit/employeeAccess.spec.ts`: `workEmailDomainProblem` is not exported by the committed `employeeAccess` source. The live worktree TypeScript gate is green because its user-owned employee-access source/test work remains together and unstaged.
+
+## Full dirty-worktree suite
+
+Command:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts
+```
+
+Result: 136 passed, 2 skipped, 52 failed in 11.5 minutes. All new Task 4 tests passed in this full run. The failures are outside the focused Task 4 acceptance set and repeat on both projects in pre-existing dirty contracts: configuration-only onboarding tests toggle the template form closed even though `configurationOnly` initializes it open; direct GL/company/history dirty-state expectations do not observe the current guard behavior; and Guided pending-file/history contracts depend on broader dirty user-owned Setup work. They were documented rather than expanded into unrelated production fixes.
+
+## Commit
+
+Prepared as the isolated `feat: redesign Configuration Center navigation` commit; the final hash is reported in the controller handoff.
+
+## Fix round 1
+
+Review found four Important gaps and one Minor evidence gap in commit `3a0b2ff7`. The remediation adds deterministic origin restoration for explicit Back and browser Back/Forward after previous/next navigation, keeps the all-area navigator available beside the focused editor, gives focused navigation and dialog controls 44px minimum targets, makes the Setup Studio Arabic catalogue own the approved `Employee Reference Lists` rename, and proves live permission loss through an authoritative `/api/auth/me` refresh without reloading the page.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "back_after_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|permission_loss_unmounts_focused_editor_and_stops_reads|focused_workspace_keeps_all_area_navigator_without_extra_editor|arabic_uses_employee_reference_lists_rename"
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=mobile -g "mobile_focused_navigation_controls_are_44px_touch_targets"
+```
+
+- Desktop: the four new behavioral contracts failed for missing current-row restoration, live auth refresh, and focused navigator access; the Arabic rendering assertion was already green because the broader setup catalogue also carried that translation.
+- Mobile: the computed Back target height was 36px instead of the required 44px.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_unmounts_focused_editor_and_stops_reads|tenant_setting_says_applies_to_all_companies|focused_workspace_keeps_all_area_navigator_without_extra_editor|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|mobile_focused_navigation_controls_are_44px_touch_targets|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading|arabic_uses_employee_reference_lists_rename"
+```
+
+- 31 passed with 3 intentional desktop/mobile-specific skips.
+- `npx tsc --noEmit`: exit 0 with no diagnostics.
+- Relevant history/dirty subset: 6 passed and 10 known pre-existing dirty-guard failures. The passing contracts cover canonical-save guard clearing, URL Back area restoration, and absent-company history restoration. The failures are the previously documented stale onboarding/history tests: one leaves its confirmation modal open before trying a company switch, while the others expect native dialogs from the current custom navigation guard.
+- The same exact Task 4 command ran from a fresh `git checkout-index` export: 31 passed and 3 intentional project-specific skips, proving the fix does not depend on unstaged user work.
+- Staged-index TypeScript still reaches only the unrelated committed-index `workEmailDomainProblem` mismatch documented in Task 2/Task 4; live-worktree TypeScript remains green.
+
+Fix commit message: `fix: complete Configuration navigation contracts`; final hash is reported in the controller handoff.
+
+## Fix round 2
+
+Review found that the round-1 permission-loss proof still depended on a same-window application event and that concurrent identity reads were not ordered. The remediation now revalidates `/api/auth/me` after window focus, visible `visibilitychange`, a same-origin role-management signal, or a relevant protected-request 403. Focus/visibility signals are coalesced for 150 ms, and an identity-load generation guard makes the newest request authoritative. Direct login, MFA completion, enrolment handoff, and logout also invalidate older identity reads.
+
+The API client emits the authorization-stale signal only for relevant non-feature/non-panel 403 responses and excludes `/api/auth/me`, preventing a refused identity check from creating a refresh loop.
+
+Index-only verification exposed two Task-4 composition omissions that the dirty worktree had masked: the canonical leave editors were not present in the committed Configuration Center renderer, and the committed Setup Studio Arabic catalogue was not aggregated into the application dictionary. The fix stages only the three canonical leave adapters and the `setupStudio` catalogue import/spreads; the unrelated onboarding, policy-binder, company-form, and employee-workspace hunks remain unstaged.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions"
+```
+
+- Focus-based cross-page revocation and protected-403 revalidation both failed because the focused editor remained mounted.
+- After correcting the race fixture to snapshot each response's permissions before delaying it, `stale_authorization_refresh_cannot_restore_revoked_permissions` failed because the older privileged response remounted the editor.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g "permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions"
+```
+
+- 3 passed in 7.8 seconds.
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts -g "whole_destination_row_is_action|focused_form_replaces_area_canvas|focused_form_opens_at_heading_without_manual_scroll|back_restores_origin_focus_and_scroll|back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll|browser_back_forward_restores_matching_row_focus_and_scroll|previous_next_are_available_above_and_below_long_form|restricted_unknown_or_disabled_destination_never_mounts_editor|permission_loss_in_another_session_revalidates_on_focus_and_stops_reads|protected_403_revalidates_authoritative_permissions_and_unmounts_editor|stale_authorization_refresh_cannot_restore_revoked_permissions|tenant_setting_says_applies_to_all_companies|focused_workspace_keeps_all_area_navigator_without_extra_editor|browse_all_areas_is_large_desktop_dialog|mobile_area_navigator_is_full_screen|mobile_focused_navigation_controls_are_44px_touch_targets|navigator_contains_focus_closes_with_escape_and_restores_trigger|area_selection_focuses_area_heading|arabic_uses_employee_reference_lists_rename"
+npx playwright test -c playwright.unit.config.ts unit/authLoadState.spec.ts
+npx tsc --noEmit
+```
+
+- Exact Task 4 desktop/mobile contracts: 35 passed, 3 intentional project-specific skips.
+- Auth load-state units: 9 passed.
+- TypeScript: exit 0, no diagnostics.
+- The exact Task 4 command also passed from a fresh `git checkout-index` export served on port 5297: 35 passed, 3 intentional project-specific skips. The three new auth contracts passed independently in that export (3/3), and staged auth load-state units passed 9/9.
+- Staged-index TypeScript still stops only at the previously documented unrelated `unit/employeeAccess.spec.ts` / committed `employeeAccess` export mismatch; live-worktree TypeScript is green.
+
+Fix-round-2 commit hash is reported in the controller handoff.
+
+## Fix round 3
+
+Review found three remaining authorization-lifecycle gaps and one masked editor-composition gap. Background authorization refresh now applies the same public-route and token eligibility rule as initial session loading, so focus/visibility events on `/login`, `/welcome`, or a tokenless page do not call `/api/auth/me`. An established session now has a separate `checking`/`unavailable` refresh state: network and 5xx failures preserve the current user, mounted editor, and unsaved form values while making the Setup surface inert and visibly pausing mutation/navigation. A later authoritative success restores interaction; a definitive 401/403 still clears the session. Existing generation ordering continues to make the newest identity response authoritative.
+
+The Onboarding checklists destination now mounts the tracked recruitment `OnboardingTab` in a configuration-only mode. That mode opens the canonical Checklist Setup and Template Tasks form immediately, reads and writes through the existing `/api/recruitment/onboarding/checklists` and `/template-tasks` endpoints, suppresses employee-task operations, and reports authored form state to the Configuration navigation guard. It does not depend on the untracked `OnboardingPolicyWorkspace.tsx` user file.
+
+The cross-session permission-loss fixture now uses `browser.newContext()` for the independent administrator actor.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'public_auth_routes|transient_background_auth_failure|background_401|onboarding_checklists_mount|permission_loss_in_another_session'
+```
+
+- Public routes made two unexpected `/api/auth/me` requests.
+- A transient 500 removed the established Setup screen instead of exposing a preserved-but-blocked editor.
+- The 401 path did not satisfy the new explicit session-clear contract fixture.
+- The clean-index onboarding run could not find `Checklist Setup`; the dirty worktree's untracked onboarding workspace had masked the missing tracked composition.
+
+Clean-index onboarding RED was captured independently from a `git checkout-index` export on port 5298: 0 passed, 1 failed because `Checklist Setup` was absent.
+
+GREEN evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'public_auth_routes|transient_background_auth_failure|background_401|onboarding_checklists_mount|permission_loss_in_another_session|stale_authorization_refresh'
+npx playwright test -c playwright.unit.config.ts unit/authLoadState.spec.ts
+npx tsc --noEmit
+```
+
+- Live focused browser contracts: 6 passed.
+- Auth load-state units: 9 passed.
+- Live TypeScript: exit 0, no diagnostics.
+
+A fresh `git checkout-index` export served on port 5300 passed the complete Task 4 desktop/mobile acceptance set: 53 passed and 3 intentional project-specific skips. This includes canonical PUT, failed-save retention, record identity, English/Arabic axe, navigation/focus/scroll/touch targets, public-route suppression, transient failure preservation/action blocking/recovery, 401 clearing, independent-context revocation, stale-response ordering, and canonical onboarding API/editor coverage.
+
+Index-only TypeScript reaches only the previously documented unrelated committed-index mismatch in `unit/employeeAccess.spec.ts` (`workEmailDomainProblem` is not exported by the committed `employeeAccess` source). The live worktree TypeScript gate is green because the user-owned employee-access source and test changes remain together and unstaged.
+
+The temporary clean-index development server was stopped after evidence capture. Fix-round-3 commit hash is reported in the controller handoff.
+
+## Fix round 4
+
+The final accessibility remediation gives every input in the canonical onboarding checklist/template configuration form a durable accessible name: checklist selector, code, name, applicability, department, checklist description, task title, category, owner, due offset, order, and task description. English and Arabic focused-editor runs now exercise those names and report zero serious/critical Axe violations.
+
+Authorization recovery is now localized for Arabic across the checking title, unavailable title, paused-interaction explanation, preserved-draft explanation, and Retry action. When background authorization enters `checking`, focus moves from the active Setup control to the live status region; on a transient failure it moves to Retry; and after an authoritative successful retry it returns to the previously active control when that element remains connected and outside an inert subtree. This keeps keyboard users informed while preserving their authored value and work position.
+
+RED evidence:
+
+```bash
+cd frontend
+npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'arabic_authorization_unavailable|authorization_revalidation_hands_focus|onboarding_configuration_editor_axe'
+```
+
+- 0/4 passed before production changes.
+- Arabic recovery copy remained English, the checking status did not receive focus, and both locale Axe runs exposed unnamed onboarding controls.
+
+GREEN evidence from a fresh `git checkout-index` export served on port 5301:
+
+```bash
+SETUP_EXPERIENCE_BASE_URL=http://127.0.0.1:5301 npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop -g 'arabic_authorization_unavailable|authorization_revalidation_hands_focus|onboarding_configuration_editor_axe'
+```
+
+- 4 passed in 14.8 seconds.
+
+The complete exact Task 4 desktop/mobile acceptance set, including the new Arabic, keyboard-focus, and bilingual Axe contracts, passed from the same index-only export: 61 passed and 3 intentional project-specific skips in 1.9 minutes.
+
+TypeScript evidence:
+
+- Live worktree `npx tsc --noEmit`: exit 0, no diagnostics.
+- Clean index `npx tsc --noEmit`: reaches only the previously documented unrelated committed-index mismatch in `unit/employeeAccess.spec.ts` (`workEmailDomainProblem` is not exported by the committed employee-access source).
+- The temporary clean-index development server was stopped after verification.
+
+Fix-round-4 commit hash is reported in the controller handoff.

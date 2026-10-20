@@ -158,10 +158,53 @@ public sealed class ApprovalRouter : IApprovalRouter
             .Select(e => new { e.Id, e.FullName, e.Designation, e.UserAccountId })
             .FirstOrDefaultAsync(ct);
         if (person is null) return Escalate(personType);
+        // A manager, supervisor, department head... found through the reporting lines but with no active login
+        // cannot act either, so the step goes to the HR Manager queue like any other person who cannot act. A
+        // named employee (SpecificEmployee) is configuration: it stays named, and CheckDeciderAsync reports it.
+        if (type != "SPECIFICEMPLOYEE" && !await HasActiveLoginAsync(tenantId, person.UserAccountId, ct))
+            return Escalate(personType);
 
         var label = role.Length > 0 ? role : (string.IsNullOrWhiteSpace(person.Designation) ? personType : person.Designation!);
         return new ResolvedApprover(personType, label, person.Id, person.UserAccountId, person.FullName, false);
     }
+
+    public async Task<DeciderCheck> CheckDeciderAsync(Guid tenantId, ResolvedApprover approver, IReadOnlyCollection<Guid> excludedUserIds,
+        IReadOnlyCollection<string>? alsoAcceptedRoles, CancellationToken ct)
+    {
+        var excluded = excludedUserIds.Where(x => x != Guid.Empty).Distinct().OrderBy(x => x).ToArray();
+        var named = approver.EmployeeId is not null || approver.UserId is not null;
+        bool eligible;
+        string owner;
+        if (named)
+        {
+            owner = string.IsNullOrWhiteSpace(approver.Name) ? "the named approver" : approver.Name.Trim();
+            eligible = approver.UserId is Guid userId && !excluded.Contains(userId)
+                && await HasActiveLoginAsync(tenantId, userId, ct);
+        }
+        else
+        {
+            var role = (approver.QueueRole ?? string.Empty).Trim();
+            owner = role.Length == 0 ? "Any" : role;
+            eligible = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase)
+                // A legacy blank/"Any" step is decided by approvals.decide holders who also hold manager.approve
+                // or approvals.override (ApprovalWorkflowService.CanDecideRequestAsync).
+                ? await ApprovalUnblock.AnyOtherUserWithPermissionAndAnyOfAsync(_db, tenantId, "approvals.decide",
+                    new[] { "manager.approve", "approvals.override" }, excluded, ct)
+                : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId,
+                    new[] { role }.Concat(alsoAcceptedRoles ?? Array.Empty<string>()).ToArray(), orOverride: false, excluded, ct);
+        }
+        var overrideAvailable = eligible
+            || await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId, new[] { IApprovalRouter.OverrideQueueRole }, orOverride: true, excluded, ct);
+        return new DeciderCheck(eligible, overrideAvailable, owner, named);
+    }
+
+    /// <summary>The override queue as a resolved approver: a role queue that Admin and approvals.override holders decide.</summary>
+    public static ResolvedApprover OverrideQueue(string approverType)
+        => new(string.IsNullOrWhiteSpace(approverType) ? "Role" : approverType, IApprovalRouter.OverrideQueueRole, null, null, string.Empty, true);
+
+    private async Task<bool> HasActiveLoginAsync(Guid tenantId, Guid? userId, CancellationToken ct)
+        => userId is Guid id && id != Guid.Empty
+           && await _db.Users.AsNoTracking().AnyAsync(u => u.TenantId == tenantId && u.Id == id && u.IsActive && !u.IsDeleted, ct);
 
     private static ResolvedApprover Escalate(string approverType)
         => new(approverType, HrManagerRole, null, null, string.Empty, true);

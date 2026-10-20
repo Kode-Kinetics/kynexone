@@ -43,9 +43,13 @@ public class ApprovalRouterTests
             Status = "Active", JoiningDate = DateTime.UtcNow.AddDays(-30),
             ManagerEmployeeId = managerId, SupervisorEmployeeId = supervisorId,
             DepartmentId = deptId, GradeId = gradeId, Designation = designation ?? string.Empty,
-            UserAccountId = userId,
+            UserAccountId = userId ?? Guid.NewGuid(),
         };
         db.Employees.Add(emp);
+        // Every employee here has an active login: a reporting-line approver without one cannot act, and the
+        // router sends that step to the HR Manager queue (covered by its own test).
+        if (!await db.Users.AnyAsync(u => u.Id == emp.UserAccountId))
+            db.Users.Add(new Zayra.Api.Domain.Entities.User { Id = emp.UserAccountId!.Value, TenantId = tenantId, Email = $"{code}@example.test", NormalizedEmail = $"{code}@EXAMPLE.TEST".ToUpperInvariant(), FullName = emp.FullName, IsActive = true });
         await db.SaveChangesAsync();
         return emp;
     }
@@ -385,6 +389,7 @@ public class ApprovalRouterTests
         wf.Steps.Add(new ApprovalWorkflowStep { TenantId = tid, WorkflowId = wf.Id, StepOrder = 2, StepName = "HR", ApproverRole = "HR Manager", IsFinalStep = true });
         db.ApprovalWorkflows.Add(wf);
         await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureDeciderAsync(db, tid, "Manager");
         var svc = new ApprovalWorkflowService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
         var started = await svc.CreateRequestAsync(tid, new CreateApprovalRequest(wf.Id, "EmployeeTransferRequest", "T-1", "Transfer"),
             new("127.0.0.1", "tests", Guid.NewGuid(), tid, ["Employee"], []), default);

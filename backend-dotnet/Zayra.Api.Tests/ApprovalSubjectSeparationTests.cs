@@ -193,6 +193,9 @@ public class ApprovalSubjectSeparationTests
             workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, StepOrder = 2, StepName = "Second", ApproverRole = secondStepRole, IsFinalStep = true });
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // Someone other than the requester and the subject holds each step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "HR Manager");
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "Manager", "approvals.decide", "manager.approve");
 
         var requesterUserId = Guid.NewGuid();
         var request = await Service(db).CreateRequestAsync(tenantId,

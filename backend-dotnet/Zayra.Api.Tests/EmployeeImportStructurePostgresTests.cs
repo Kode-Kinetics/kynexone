@@ -82,4 +82,31 @@ public sealed class EmployeeImportStructurePostgresTests
         Assert.Equal(4, linked.Count);
         Assert.All(linked, x => Assert.Equal(x.EmployeeCompany, x.StructureCompany));
     }
+
+    /// <summary>
+    /// IMPORT BEHAVIOUR, stated on purpose. The Add/Edit Employee forms now refuse a salary structure code that does not
+    /// exist (422, <c>unknown_salary_structure</c>). The bulk employee import deliberately does NOT: a migration file's
+    /// SalaryStructureCode column names the structures the client's old system had, so the import creates each
+    /// missing one ONCE per company (reused by every later row and by a re-run), links the salaries to it, and keeps
+    /// the code on the payroll profile. Changing that would fail whole onboarding files; it is a separate decision.
+    /// </summary>
+    [Fact]
+    public async Task Import_ANamedStructureThatDoesNotExistYet_IsCreatedOncePerCompany_AndReused()
+    {
+        await using var db = _fixture.CreateDb();
+        var (tenant, company, _) = await Seed(db);
+        var ctrl = HrmHierarchyTests.BuildImportControllerInternal(db, tenant);
+        var csv = "EmployeeCode,FullName,CompanyLegalName,Grade,SalaryStructureCode,BasicSalary,Currency,JoiningDate\n"
+            + $"N1,Synthetic N1,{company.LegalNameEn},G1,LEGACY-BAND-7,5000,SAR,2024-01-01\n"
+            + $"N2,Synthetic N2,{company.LegalNameEn},G1,LEGACY-BAND-7,5100,SAR,2024-01-01\n";
+        var result = Assert.IsType<OkObjectResult>(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+        Assert.Equal(2, JsonSerializer.SerializeToElement(result.Value).GetProperty("created").GetInt32());
+        db.ChangeTracker.Clear();
+
+        var structure = Assert.Single(await db.SalaryStructures.Where(s => s.TenantId == tenant).ToListAsync());
+        Assert.Equal("LEGACY-BAND-7", structure.Code);
+        Assert.Equal(company.Id, structure.CompanyId);
+        Assert.All(await db.EmployeeSalaryStructures.Where(s => s.TenantId == tenant).ToListAsync(), s => Assert.Equal(structure.Id, s.SalaryStructureId));
+        Assert.All(await db.EmployeePayrollProfiles.Where(p => p.TenantId == tenant).ToListAsync(), p => Assert.Equal("LEGACY-BAND-7", p.SalaryStructureReference));
+    }
 }

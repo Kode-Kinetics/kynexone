@@ -277,8 +277,7 @@ test('SUC-06 — HR submits a slate, the HR Director returns it, HR revises, the
 
 test('SUC-04 — HR gives Liu Wei a development plan; the learning action completes itself when she finishes the course', async ({ browser }) => {
   const hr = await persona(browser, world.logins.hrManager.email, world.logins.hrManager.password);
-  await hr.page.goto(`/people?employeeId=${world.candidates.a.id}`);
-  await hr.page.getByTestId('suc-dev-tab').click();
+  await hr.page.goto(`/people/${world.candidates.a.id}?section=activity&panel=development`);
   await expect(hr.page.getByTestId('suc-dev-panel')).toBeVisible();
   await hr.page.waitForLoadState('networkidle').catch(() => {});
   if (await hr.page.getByTestId('suc-plan-status').count() === 0) {
@@ -347,8 +346,7 @@ test('SUC-04 — HR gives Liu Wei a development plan; the learning action comple
   await emp.context.close();
 
   const owner = await persona(browser, world.logins.hrManager.email, world.logins.hrManager.password);
-  await owner.page.goto(`/people?employeeId=${world.candidates.a.id}`);
-  await owner.page.getByTestId('suc-dev-tab').click();
+  await owner.page.goto(`/people/${world.candidates.a.id}?section=activity&panel=development`);
   const ownerRow = owner.page.locator('[data-testid="suc-action-row"]').filter({ hasText: 'Shadow the audit committee' });
   await expect(ownerRow.getByTestId('suc-action-proposed').or(ownerRow.getByTestId('suc-action-status').filter({ hasText: 'Completed' }))).toBeVisible();
   if (await ownerRow.getByTestId('suc-action-confirm').count() > 0) await ownerRow.getByTestId('suc-action-confirm').click();

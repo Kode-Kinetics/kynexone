@@ -68,12 +68,11 @@ public static class AttendanceDerivedArtifacts
         AttendanceDailyRecord daily, CancellationToken ct)
     {
         // Tenant-wide: (tenant, employee, work date) is UNIQUE on attendance_records, so the lookup must find the row
-        // whatever the caller's company scope. On the anonymous device webhook (an unauthenticated request gets an empty
-        // company scope in every environment) the filtered read missed the row the day's first punch created, and the
-        // second punch added
-        // another — a unique-index violation that failed the ingest after its raw events were saved.
-        var record = await ScopedBypass.NullableTenantWide(db.AttendanceRecords, tenantId, LegacyRecordJustification).FirstOrDefaultAsync(
-            x => x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
+        // whatever the caller's company scope. The device webhook is anonymous, and an anonymous request has an EMPTY
+        // company scope in every environment: the filtered read missed the row an earlier punch or run had created, the
+        // insert below then broke the unique index (23505), and the ingest failed after its raw events were saved.
+        var record = await ScopedBypass.NullableTenantWide(db.AttendanceRecords, tenantId, LegacyRecordJustification)
+            .FirstOrDefaultAsync(x => x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
         if (record is null)
         {
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };

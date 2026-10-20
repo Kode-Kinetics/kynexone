@@ -386,7 +386,7 @@ public record EmployeeDetailDto
             // Collections — projected to DTOs; raw entity collections accepted for backward compat
             PayrollProfile                = payrollProfile is not null ? EmployeePayrollProfileDto.Project(payrollProfile, includeSensitive) : null,
             ComplianceRecords             = complianceRecords ?? [],
-            Documents                     = documentDtos ?? documents?.Select(EmployeeDocumentDto.Project).ToList() ?? [],
+            Documents                     = documentDtos ?? documents?.Select(document => EmployeeDocumentDto.Project(document, includeSensitive)).ToList() ?? [],
             History                       = history?.Select(EmployeeHistoryDto.Project).ToList() ?? [],
             Transfers                     = transfers?.Select(EmployeeTransferDto.Project).ToList() ?? [],
         };
@@ -663,28 +663,129 @@ public record EmployeeDocumentDto
     public Guid? VerifiedBy { get; init; }
     public string Notes { get; init; } = string.Empty;
 
-    public static EmployeeDocumentDto Project(EmployeeDocument d) => new()
+    public static bool IsSensitiveCategory(string? category) =>
+        EmployeeDocumentSensitivity.IsSensitive(documentType: null, category);
+
+    public static bool IsSensitiveDocument(string? documentType, string? category) =>
+        EmployeeDocumentSensitivity.IsSensitive(documentType, category);
+
+    /// <summary>
+    /// Identity and payroll documents remain visible as workflow records without exposing their
+    /// identifying metadata to a caller that lacks employees.sensitive.
+    /// </summary>
+    public static EmployeeDocumentDto Project(EmployeeDocument d, bool includeSensitive = true)
     {
-        Id                   = d.Id,
-        EmployeeId           = d.EmployeeId,
-        DraftId              = d.DraftId,
-        DocumentType         = d.DocumentType,
-        DocumentCategory     = d.DocumentCategory,
-        FileName             = d.FileName,
-        ContentType          = d.ContentType,
-        StorageUrl           = d.StorageUrl,
-        IsRequired           = d.IsRequired,
-        IssueDate            = d.IssueDate,
-        ExpiryDate           = d.ExpiryDate,
-        RenewalReminderDate  = d.RenewalReminderDate,
-        ApprovalStatus       = d.ApprovalStatus,
-        VersionNumber        = d.VersionNumber,
-        UploadedBy           = d.UploadedBy,
-        UploadedAtUtc        = d.UploadedAtUtc,
-        VerifiedAtUtc        = d.VerifiedAtUtc,
-        VerifiedBy           = d.VerifiedBy,
-        Notes                = d.Notes,
+        var showProtectedMetadata = includeSensitive || !IsSensitiveDocument(d.DocumentType, d.DocumentCategory);
+        return new()
+        {
+            Id                   = d.Id,
+            EmployeeId           = d.EmployeeId,
+            DraftId              = d.DraftId,
+            DocumentType         = showProtectedMetadata ? d.DocumentType : "Sensitive document",
+            DocumentCategory     = d.DocumentCategory,
+            FileName             = showProtectedMetadata ? d.FileName : string.Empty,
+            ContentType          = d.ContentType,
+            StorageUrl           = showProtectedMetadata ? d.StorageUrl : string.Empty,
+            IsRequired           = d.IsRequired,
+            IssueDate            = showProtectedMetadata ? d.IssueDate : null,
+            ExpiryDate           = showProtectedMetadata ? d.ExpiryDate : null,
+            RenewalReminderDate  = showProtectedMetadata ? d.RenewalReminderDate : null,
+            ApprovalStatus       = d.ApprovalStatus,
+            VersionNumber        = d.VersionNumber,
+            UploadedBy           = d.UploadedBy,
+            UploadedAtUtc        = d.UploadedAtUtc,
+            VerifiedAtUtc        = d.VerifiedAtUtc,
+            VerifiedBy           = d.VerifiedBy,
+            Notes                = showProtectedMetadata ? d.Notes : string.Empty,
+        };
+    }
+}
+
+/// <summary>
+/// Server-owned sensitivity classification for employee documents. Known identity/payroll document
+/// types override a missing or misleading client category, so legacy rows and today's category-free
+/// Passport upload payload fail closed. Normalization is case-, spacing-, punctuation-, and alias-insensitive.
+/// </summary>
+public static class EmployeeDocumentSensitivity
+{
+    public const string Identity = "Identity";
+    public const string Payroll = "Payroll";
+
+    private static readonly HashSet<string> IdentityCategories = new(StringComparer.Ordinal)
+    {
+        "identity", "identitydocument", "identitydocuments", "identification", "personalidentity",
     };
+
+    private static readonly HashSet<string> PayrollCategories = new(StringComparer.Ordinal)
+    {
+        "payroll", "payrolldocument", "payrolldocuments", "payrollandbank", "salaryandpayroll",
+    };
+
+    // Exact server-owned registry. Values include the current remote/fallback field-catalog labels,
+    // their stable keys, and supported legacy aliases. Classification remains normalized equality;
+    // it never guesses from a free-form substring such as "passport" or "salary" inside another value.
+    private static readonly HashSet<string> IdentityDocumentTypes = ExactRegistry(
+        "Passport", "Passport Number", "passport_number", "Passport expiry", "PassportExpiryDate",
+        "National ID", "National Identity", "National ID (Hawiyya)", "id_number",
+        "Iqama", "Iqama (residence permit)", "Iqama (residence permit) no.", "iqama_number",
+        "Residence permit", "Residence permit number", "Residency permit",
+        "Visa", "Visa number", "Residence visa number", "visa_number", "Visa expiry", "VisaExpiryDate",
+        "Visa file", "Visa File Number", "visa_file_number",
+        "Work permit", "Work Permit Number", "work_permit",
+        "MOHRE work permit / labour card no.",
+        "LMRA work permit number", "LMRA work permit no.",
+        "Muqeem", "Muqeem Reference", "Muqeem number", "muqeem_reference",
+        "GOSI", "GOSI certificate", "GOSI Reference", "gosi_reference",
+        "Qiwa", "Qiwa contract", "Qiwa Contract Number", "qiwa_contract_reference",
+        "Emirates ID", "emirates_id",
+        "Labor card", "Labour card", "Labour Card Number", "labor_card_number",
+        "QID", "Qatar ID (QID)",
+        "Civil ID", "Kuwait Civil ID", "civil_id",
+        "Oman Resident Card / Civil ID", "Oman Resident Card / Civil ID no.",
+        "Bahrain CPR (Personal no.)",
+        "Residency ID", "Residence number", "Residency Number", "Residency (Article) number", "residency_number",
+        "Sponsor name", "sponsor");
+
+    private static readonly HashSet<string> PayrollDocumentTypes = ExactRegistry(
+        "Bank letter", "Bank statement", "IBAN", "IBAN (WPS)", "BankIban",
+        "Bank account number", "AccountNumber", "Bank routing code", "BankRoutingCode",
+        "WPS", "WPS bank details", "Payslip", "Payslip statement", "Salary certificate", "Payroll",
+        "Salary", "SalaryStructure",
+        "Basic salary", "BasicSalary",
+        "Housing allowance", "HousingAllowance",
+        "Transport allowance", "TransportAllowance",
+        "Food allowance", "FoodAllowance",
+        "Mobile allowance", "MobileAllowance",
+        "Other allowance", "OtherAllowance",
+        "Fixed deduction", "FixedDeduction",
+        "MOL personal ID", "MolId");
+
+    public static bool IsSensitive(string? documentType, string? category) =>
+        CanonicalSensitiveCategory(documentType, category) is not null;
+
+    public static string CanonicalCategory(string? documentType, string? category) =>
+        CanonicalSensitiveCategory(documentType, category)
+        ?? (string.IsNullOrWhiteSpace(category) ? string.Empty : category.Trim());
+
+    private static string? CanonicalSensitiveCategory(string? documentType, string? category)
+    {
+        var typeKey = Normalize(documentType);
+        if (IdentityDocumentTypes.Contains(typeKey)) return Identity;
+        if (PayrollDocumentTypes.Contains(typeKey)) return Payroll;
+
+        var categoryKey = Normalize(category);
+        if (IdentityCategories.Contains(categoryKey)) return Identity;
+        if (PayrollCategories.Contains(categoryKey)) return Payroll;
+        return null;
+    }
+
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : new string(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static HashSet<string> ExactRegistry(params string[] values) =>
+        values.Select(Normalize).ToHashSet(StringComparer.Ordinal);
 }
 
 /// <summary>

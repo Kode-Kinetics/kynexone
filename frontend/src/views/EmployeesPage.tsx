@@ -1,11 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Lock, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
-import { useSearchParams } from 'next/navigation';
+import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { benefitsApi, benefitsErrorMessage, type GradeBenefitDefault } from '../api/benefits';
-import { employeesApi, notActivatableFromError, possibleDuplicateFromError, deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
-import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter, DeriveWorkEmailResponse } from '../api/employees';
+import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
+import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
@@ -25,15 +24,17 @@ import { useSuccessionAccess } from '../components/succession/SuccessionParts';
 import { SUCCESSION_FLAG } from '../lib/succession';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
-import { createUrlSeed } from '../lib/urlSeed';
+import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
-import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailDomainProblem, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
+import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
 import { EmployeeCompletionHandoff } from '../components/EmployeeCompletionHandoff';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
+import { WorkEmailField } from '../components/employeeAccess/WorkEmailField';
 import { Ltr } from '../components/employeeAccess/fill';
 
 const employeesImportExport = {
@@ -86,10 +87,42 @@ import {
   SALARY_BREAKDOWN_EDIT_FIELDS,
 } from '../api/employeeFieldCatalog';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
+import { masterDataApi, type MasterDataValue } from '../api/setup';
+import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
+import { SalaryStructureSelect } from '../components/SalaryStructureSelect';
+import { useLiveGrades } from '../hooks/useLiveGrades';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
 type EditField = EmployeeEditField;
+
+type EmployeeMasterDataKey = 'gender' | 'maritalStatus' | 'employmentType' | 'contractType';
+type EmployeeMasterDataChoice = { options: string[]; defaultValue: string };
+type EmployeeMasterDataState = Record<EmployeeMasterDataKey, EmployeeMasterDataChoice>;
+
+const EMPLOYEE_MASTER_DATA_FALLBACK: EmployeeMasterDataState = {
+  gender: { options: GENDER_OPTIONS, defaultValue: '' },
+  maritalStatus: { options: MARITAL_STATUS_OPTIONS, defaultValue: '' },
+  employmentType: { options: EMPLOYMENT_TYPE_OPTIONS, defaultValue: EMPLOYMENT_TYPE_OPTIONS[0] },
+  contractType: { options: CONTRACT_TYPE_OPTIONS, defaultValue: CONTRACT_TYPE_OPTIONS[0] },
+};
+
+function resolveMasterDataChoice(values: MasterDataValue[], fallback: EmployeeMasterDataChoice): EmployeeMasterDataChoice {
+  const activeValues = values
+    .filter((item) => item.isActive !== false && item.valueEn.trim().length > 0)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .filter((item, index, all) => all.findIndex((candidate) => candidate.valueEn === item.valueEn) === index);
+  if (activeValues.length === 0) return fallback;
+  return {
+    options: activeValues.map((item) => item.valueEn),
+    defaultValue: activeValues.find((item) => item.isDefault)?.valueEn ?? '',
+  };
+}
+
+function retainCurrentOption(choice: EmployeeMasterDataChoice, current?: string): string[] {
+  const value = current?.trim();
+  return value && !choice.options.includes(value) ? [...choice.options, value] : choice.options;
+}
 
 function employeeEditStep(field: EditField): number {
   if (field.key === 'salary' || field.key.startsWith('salaryBreakdown.')) return 3;
@@ -286,10 +319,10 @@ interface EmployeeUsageData {
   storageUsedMb: number;
 }
 
-export function EmployeesPage() {
+export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } = {}) {
   const wizardFormat = useFormat();
   const { t } = useLocale();
-  const searchParams = useSearchParams();
+  const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
   // GET /api/tenant-admin/usage is security.manage only: anyone else would get a 403 (and an
@@ -299,21 +332,19 @@ export function EmployeesPage() {
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  // `?search=` seeds the box on load and when navigation changes it; it never overwrites typing.
-  const [searchSeed] = useState(createUrlSeed);
-  const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');
-  const [status, setStatus] = useState<StatusFilter>('');
+  const page = directoryQuery.state.page ?? 1;
+  const search = directoryQuery.state.search ?? '';
+  const status = (directoryQuery.state.status ?? '') as StatusFilter;
   // Server-side readiness worklist filter (paginates correctly across ALL pages, not just the
   // loaded page). "Needs info" = the worklist the import results view deep-links into.
-  const [readinessFilter, setReadinessFilter] = useState<'' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready'>('');
+  const readinessFilter = (directoryQuery.state.readiness ?? '') as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready';
   // Per-gap deep-link from the import results view: narrow the worklist to one typed gap
   // (e.g. link:manager) within a specific import batch. Both are server-side filters.
-  const [gapTypeFilter, setGapTypeFilter] = useState('');
-  const [importBatchFilter, setImportBatchFilter] = useState('');
-  const [view, setView] = useState<'current' | 'ex'>('current');
+  const gapTypeFilter = directoryQuery.state.gapType ?? '';
+  const importBatchFilter = directoryQuery.state.importBatchId ?? '';
+  const view = directoryQuery.state.view ?? 'current';
   // Self-service (sign-in access) filter chip: one state, or everyone.
-  const [accessFilter, setAccessFilter] = useState<'' | EmployeeAccessState>('');
+  const accessFilter = (directoryQuery.state.access ?? '') as '' | EmployeeAccessState;
   const [accessSummary, setAccessSummary] = useState<EmployeeAccessSummary | null>(null);
   const [everyoneCount, setEveryoneCount] = useState<number | null>(null);
   // ── Bulk multi-select ──────────────────────────────────────────────────────────────────────
@@ -333,6 +364,7 @@ export function EmployeesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
+  const [selectionNotice, setSelectionNotice] = useState('');
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
   const [usage, setUsage] = useState<EmployeeUsageData | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -344,6 +376,7 @@ export function EmployeesPage() {
   const [pendingCreateExit, setPendingCreateExit] = useState(false);
   const [lastSavedDraft, setLastSavedDraft] = useState<{ id: number; name: string } | null>(null);
   const createGeneration = useRef(0);
+  const createRouteOpened = useRef(false);
   const createSaveLock = useRef(false);
   const lastPersonProbe = useRef('');
   const createFormRef = useRef<HTMLFormElement>(null);
@@ -402,12 +435,16 @@ export function EmployeesPage() {
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentType, setDocumentType] = useState('Passport');
   const [documentExpiry, setDocumentExpiry] = useState('');
+  const [documentUploading, setDocumentUploading] = useState(false);
+  const [documentUploadNotice, setDocumentUploadNotice] = useState('');
+  const [documentUploadError, setDocumentUploadError] = useState('');
   const [statusSaving, setStatusSaving] = useState(false);
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live: refetched when Setup changes a grade (this tab or another) and when the user returns to the tab.
+  const { grades } = useLiveGrades();
   const [gradeBenefits, setGradeBenefits] = useState<GradeBenefitDefault[]>([]);
   const [gradeBenefitsLoading, setGradeBenefitsLoading] = useState(false);
   const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
@@ -415,6 +452,10 @@ export function EmployeesPage() {
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
+  // Employee reference values come from tenant-wide Master Data. The constants remain a deliberate
+  // offline fallback so a temporary setup API failure never leaves a required create control empty.
+  const [employeeMasterData, setEmployeeMasterData] = useState<EmployeeMasterDataState>(EMPLOYEE_MASTER_DATA_FALLBACK);
+  const [employeeMasterDataLoaded, setEmployeeMasterDataLoaded] = useState(false);
   // Field catalog: resolved by the backend EmployeeFieldRegistry on TWO axes — company country ×
   // employee nationality — via GET /api/employees/field-catalog. LOCAL_FIELD_CATALOG is only the
   // offline fallback used when that endpoint is unavailable.
@@ -451,6 +492,7 @@ export function EmployeesPage() {
   const canIssueAccess = hasPermission('employees.access.issue');
   const canResetAccess = hasPermission('employees.access.reset');
   const [accessRefresh, setAccessRefresh] = useState(0);
+  const [welcomeReturnEmployeeId, setWelcomeReturnEmployeeId] = useState<number | null>(null);
   const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
   // Code given → bulk print confirms first (their old codes stop working).
   const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[]; delivery: 'print' | 'email' } | null>(null);
@@ -466,6 +508,32 @@ export function EmployeesPage() {
   // Activate employee → "{name} is now active." with the same one next step.
   const [activatedPrompt, setActivatedPrompt] = useState<{ id: number; name: string; access: EmployeeAccessDto } | null>(null);
   const [createdEmployee, setCreatedEmployee] = useState<{ id: number; name: string; access: EmployeeAccessDto | null } | null>(null);
+
+  const setSearch = useCallback((value: string) => {
+    directoryQuery.update({ search: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setStatus = useCallback((value: StatusFilter) => {
+    directoryQuery.update({ status: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setReadinessFilter = useCallback((value: '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready') => {
+    directoryQuery.update({ readiness: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setGapTypeFilter = useCallback((value: string) => {
+    directoryQuery.update({ gapType: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setImportBatchFilter = useCallback((value: string) => {
+    directoryQuery.update({ importBatchId: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setAccessFilter = useCallback((value: '' | EmployeeAccessState) => {
+    directoryQuery.update({ access: value || undefined, page: undefined, anchor: undefined });
+  }, [directoryQuery]);
+  const setView = useCallback((value: 'current' | 'ex') => {
+    directoryQuery.update({ view: value === 'current' ? undefined : value, page: undefined, anchor: undefined }, { history: 'push' });
+  }, [directoryQuery]);
+  const setPage = useCallback((value: number | ((current: number) => number)) => {
+    const next = typeof value === 'function' ? value(page) : value;
+    directoryQuery.update({ page: next <= 1 ? undefined : next, anchor: undefined }, { history: 'push' });
+  }, [directoryQuery, page]);
 
   const surfaceAdvisoryWarning = (payload: unknown) => {
     const w = (payload as { establishmentWarning?: string } | null | undefined)?.establishmentWarning;
@@ -546,12 +614,11 @@ export function EmployeesPage() {
   const loadLookups = useCallback(async () => {
     // Every row of each lookup, page by page. One page of 100 left the 101st department,
     // designation or active manager missing from the form's selects with nothing to say so.
-    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
+    const [companyRes, branchRes, deptRes, desigRes, costRes, managerRes] = await Promise.all([
       companiesApi.listAll(),
       branchesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(),
       employeesApi.listAll({ status: 'Active' }),
     ]);
@@ -559,13 +626,34 @@ export function EmployeesPage() {
     setBranches(branchRes);
     setDepartments(deptRes);
     setDesignations(desigRes);
-    setGrades(gradeRes);
     setCostCenters(costRes);
     setManagerCandidates(managerRes);
   }, []);
 
+  const loadEmployeeMasterData = useCallback(async () => {
+    const specs: Array<[EmployeeMasterDataKey, string]> = [
+      ['gender', 'Gender'],
+      ['maritalStatus', 'MaritalStatus'],
+      ['employmentType', 'EmploymentType'],
+      ['contractType', 'ContractType'],
+    ];
+    const results = await Promise.allSettled(specs.map(([, typeCode]) => masterDataApi.listValuesByCode(typeCode, true)));
+    setEmployeeMasterData((current) => {
+      const next = { ...current };
+      specs.forEach(([key], index) => {
+        const result = results[index];
+        next[key] = result.status === 'fulfilled'
+          ? resolveMasterDataChoice(result.value, EMPLOYEE_MASTER_DATA_FALLBACK[key])
+          : EMPLOYEE_MASTER_DATA_FALLBACK[key];
+      });
+      return next;
+    });
+    setEmployeeMasterDataLoaded(true);
+  }, []);
+
   useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
+  useEffect(() => { void loadEmployeeMasterData(); }, [loadEmployeeMasterData]);
   useEffect(() => {
     if (!canReadUsage) return;
     client.get<EmployeeUsageData>('/api/tenant-admin/usage')
@@ -577,7 +665,6 @@ export function EmployeesPage() {
         }
       });
   }, [canReadUsage]);
-  useEffect(() => { setPage(1); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter]);
   useEffect(() => {
     setSelectedId(null);
     setDetail(null);
@@ -593,7 +680,14 @@ export function EmployeesPage() {
   // A stale "select all matching" flag (or a leftover page pick) must never carry across a FILTER
   // change or a tab switch — otherwise a bulk action could resolve against a different set than the
   // operator sees. Page navigation deliberately does NOT clear (cross-page picking is allowed).
-  useEffect(() => { clearSelection(); setBulkResult(null); }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
+  useEffect(() => {
+    if (selectedIds.size > 0 || selectAllMatching) setSelectionNotice('Selection cleared because the directory changed.');
+    clearSelection();
+    setBulkResult(null);
+  // Selection is intentionally read only when a directory dimension changes; selecting a row must
+  // not trigger this effect and immediately clear itself.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, status, readinessFilter, gapTypeFilter, importBatchFilter, accessFilter, view, clearSelection]);
 
   const pageIds = useMemo(() => employees.map((e) => e.id), [employees]);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
@@ -701,8 +795,12 @@ export function EmployeesPage() {
 
   const welcome = useWelcomeCodes(useCallback(() => {
     setAccessRefresh((n) => n + 1);
+    if (createOnly && welcomeReturnEmployeeId) {
+      window.location.assign(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
+      return;
+    }
     void load();
-  }, [load]));
+  }, [createOnly, load, welcomeReturnEmployeeId]));
 
   /** Every employee matching the current filter, page by page (for "all matching" selections). */
   const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
@@ -782,8 +880,6 @@ export function EmployeesPage() {
 
   const saveSingleWorkEmail = async () => {
     if (!workEmailFor || !singleWorkEmail.trim()) return;
-    const singleDomain = workEmailDomainProblem(singleWorkEmail, companies.find((c) => c.id === workEmailFor.companyId)?.emailDomain);
-    if (singleDomain) { setSingleWorkEmailError(t('Work email must end in @{domain}.', { domain: singleDomain })); return; }
     const localProblem = workEmailProblemKey(workEmailLocalProblem(singleWorkEmail));
     if (localProblem) { setSingleWorkEmailError(t(localProblem)); return; }
     setSingleWorkEmailBusy(true);
@@ -819,23 +915,11 @@ export function EmployeesPage() {
     }
   };
   useEffect(() => {
-    // Keyed on the URL only. It used to depend on `search` and re-apply the URL value whenever the
-    // box differed from it, which replaced every keystroke with the URL's search.
-    const seeded = searchSeed.take(searchParams?.get('search') ?? null);
-    if (seeded !== undefined) setSearch(seeded);
-  }, [searchParams, searchSeed]);
-  useEffect(() => {
-    const employeeId = searchParams?.get('employeeId') ?? null;
-    if (!employeeId) return;
-    const id = Number(employeeId);
-    if (Number.isFinite(id) && id > 0 && selectedId !== id) {
-      // ?tab=package (from the contract register's "Review proposal") opens the employee on that tab.
-      const requestedTab = searchParams?.get('tab');
-      const tabWanted = visibleTabs.some((x) => x.id === requestedTab) ? (requestedTab as DetailTab) : null;
-      void openDetail(id, tabWanted !== null).then(() => { if (tabWanted) setActiveTab(tabWanted); });
-      if (tabWanted) setActiveTab(tabWanted);
-    }
-  }, [searchParams, selectedId]);
+    const anchor = directoryQuery.state.anchor;
+    if (!anchor || loading) return;
+    const frame = requestAnimationFrame(() => document.getElementById(anchor)?.focus({ preventScroll: false }));
+    return () => cancelAnimationFrame(frame);
+  }, [directoryQuery.state.anchor, employees, loading]);
 
   const selectedEmployee = useMemo(() => detail ?? null, [detail]);
   const selectedEmployeeCompanyCountry =
@@ -849,13 +933,25 @@ export function EmployeesPage() {
   );
   const editFields = useMemo(
     () => {
-      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode);
+      const currentValues = selectedEmployee as unknown as Record<string, unknown> | null;
+      const masterOptions: Partial<Record<string, EmployeeMasterDataChoice>> = {
+        gender: employeeMasterData.gender,
+        maritalStatus: employeeMasterData.maritalStatus,
+        employmentType: employeeMasterData.employmentType,
+        contractType: employeeMasterData.contractType,
+      };
+      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode).map((field) => {
+        const choice = masterOptions[field.key];
+        return choice
+          ? { ...field, options: retainCurrentOption(choice, String(currentValues?.[field.key] ?? '')) }
+          : field;
+      });
       return selectedEmployee && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown')
         && (selectedEmployee.salaryBreakdown != null || Number(selectedEmployee.salary ?? 0) <= 0)
         ? [...fields.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
         : fields;
     },
-    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee],
+    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee, employeeMasterData],
   );
 
   // Two-axis catalog fetch. The catalog is resolved by the backend on (company country × employee
@@ -904,8 +1000,13 @@ export function EmployeesPage() {
     [grades, form.gradeId],
   );
   const eligibleGrades = useMemo(
-    () => selectedDesignation?.gradeId ? grades.filter((grade) => grade.id === selectedDesignation.gradeId) : grades,
-    [grades, selectedDesignation],
+    () => {
+      // Retired grades are not offered for a new hire (the edit form already filters them); one already chosen
+      // on a resumed draft stays visible so the select never shows a value it has no option for.
+      const offered = grades.filter((grade) => grade.isActive || grade.id === form.gradeId);
+      return selectedDesignation?.gradeId ? offered.filter((grade) => grade.id === selectedDesignation.gradeId) : offered;
+    },
+    [grades, selectedDesignation, form.gradeId],
   );
   const salaryTotal = useMemo(() => {
     const s = form.salaryBreakdown;
@@ -1015,6 +1116,10 @@ export function EmployeesPage() {
     complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
     setDuplicateWarning([]);
     const next = emptyEmployee();
+    next.gender = employeeMasterData.gender.defaultValue;
+    next.maritalStatus = employeeMasterData.maritalStatus.defaultValue;
+    next.employmentType = employeeMasterData.employmentType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.employmentType.defaultValue;
+    next.contractType = employeeMasterData.contractType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.contractType.defaultValue;
     if (defaultCompany) {
       next.companyId = defaultCompany.id;
       next.payrollProfile = {
@@ -1033,6 +1138,17 @@ export function EmployeesPage() {
     setFormError('');
     setFormOpen(true);
   };
+
+  // `/people/new` owns direct creation. Until the create state is fully extracted from this
+  // legacy directory module, the route opens the same proven wizard exactly once after its
+  // organization lookups arrive. Closing it leaves the route instead of exposing the directory.
+  useEffect(() => {
+    if (!createOnly || createRouteOpened.current || companies.length === 0 || !employeeMasterDataLoaded) return;
+    createRouteOpened.current = true;
+    openCreateEmployee();
+    // openCreateEmployee deliberately snapshots the just-loaded lookup state once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOnly, companies.length, employeeMasterDataLoaded]);
 
   const setField = (key: keyof EmployeeCreateRequest, value: string | boolean | number | undefined) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -1077,6 +1193,13 @@ export function EmployeesPage() {
       },
     }));
 
+  const setSalaryStructure = useCallback((code: string) =>
+    setForm((current) => ({
+      ...current,
+      salaryBreakdown: { ...current.salaryBreakdown, salaryStructureCode: code },
+      payrollProfile: { ...current.payrollProfile!, salaryStructureReference: code },
+    })), []);
+
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
     setForm((current) => {
       const complianceRecords = (current.complianceRecords ?? []).map((record, i) => (i === index ? { ...record, [key]: value } : record));
@@ -1097,10 +1220,8 @@ export function EmployeesPage() {
     let message = '';
     if (step === 0 && !form.englishName.trim()) message = t('Enter the employee’s English full name to continue.');
     if (step === 1) {
-      const domainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
       const emailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
-      if (domainProblem) message = t('Work email must end in @{domain}.', { domain: domainProblem });
-      else if (emailProblem) message = t(emailProblem);
+      if (emailProblem) message = t(emailProblem);
     }
     if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
     if (step === 1 && !selectedFormCompany) message = t('Choose an employing company before saving.');
@@ -1199,13 +1320,14 @@ export function EmployeesPage() {
       ['Account number', form.payrollProfile?.accountNumber], ['Bank routing / sort code', form.payrollProfile?.bankRoutingCode],
       ['MOL ID / National labour number', form.payrollProfile?.molId],
       ['Salary currency', form.payrollProfile?.salaryCurrency || currencyCode], ['Payment method', form.payrollProfile?.paymentMethod],
-      ['Payroll group', form.payrollProfile?.payrollGroup], ['Salary structure reference', form.payrollProfile?.salaryStructureReference],
+      ['Payroll group', form.payrollProfile?.payrollGroup],
     ] },
     { title: 'Salary', rows: [
       ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
       ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
       ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
-      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction], ['Salary structure code', form.salaryBreakdown?.salaryStructureCode],
+      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction],
+      ['Salary structure', form.salaryBreakdown?.salaryStructureCode || t('Default for the grade')],
       ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
       ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
@@ -1218,7 +1340,7 @@ export function EmployeesPage() {
   ];
   const createReviewSections = allCreateReviewSections.map((section, step) => ({ ...section, step, rows: section.rows.filter(([, value]) => value !== undefined && value !== null && value !== '' && value !== '-') }))
     .filter(section => section.step < 2 || fullSetup
-      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup || form.payrollProfile?.salaryStructureReference))
+      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup))
       || (section.step === 3 && (salaryTotal > 0 || Object.entries(form.salaryBreakdown ?? {}).some(([key, value]) => !['currency', 'effectiveDate'].includes(key) && value !== undefined && value !== '')))
       || (section.step === 4 && section.rows.length > 0));
 
@@ -1246,11 +1368,6 @@ export function EmployeesPage() {
     }
     if (!form.englishName.trim()) {
       setFormError('English full name is required.');
-      return;
-    }
-    const formDomainProblem = workEmailDomainProblem(form.workEmail, selectedFormCompany?.emailDomain);
-    if (formDomainProblem) {
-      setFormError(t('Work email must end in @{domain}.', { domain: formDomainProblem }));
       return;
     }
     const workEmailProblem = workEmailProblemKey(workEmailLocalProblem(form.workEmail));
@@ -1298,6 +1415,15 @@ export function EmployeesPage() {
         setActionNotice(t('{name} was saved as a draft.', { name }));
         createGeneration.current++;
         setFormOpen(false);
+        if (createOnly) {
+          const section = formStep === 0 ? 'personal'
+            : formStep === 1 ? 'employment'
+              : formStep === 4 ? 'compliance-documents'
+                : 'pay-benefits';
+          writeEmployeeCreateResume(window.localStorage, { employeeId: created.id, section });
+          window.location.assign(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
+          return;
+        }
         await load();
         return;
       }
@@ -1489,10 +1615,17 @@ export function EmployeesPage() {
   const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
-  const closeEditModal = () => {
-    if (editSaving) return;
-    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return;
+  const closeEditModal = (): boolean => {
+    if (editSaving) return false;
+    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return false;
     setEditOpen(false);
+    return true;
+  };
+
+  const openFullProfile = async () => {
+    const id = editEmployeeId ?? selectedEmployee?.id;
+    if (!id || !closeEditModal()) return;
+    await openDetail(id, true);
   };
 
   const validateEditStep = (step: number) => {
@@ -1508,10 +1641,9 @@ export function EmployeesPage() {
         return false;
       }
       if (field.key === 'workEmail') {
-        const domain = workEmailDomainProblem(editForm.workEmail, companies.find((company) => company.id === selectedEmployee?.companyId)?.emailDomain);
         const problem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
-        if (domain || problem) {
-          setEditNotice(domain ? t('Work email must end in @{domain}.', { domain }) : t(problem!));
+        if (problem) {
+          setEditNotice(t(problem));
           return false;
         }
       }
@@ -1551,7 +1683,7 @@ export function EmployeesPage() {
 
   const editReviewSections = EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => ({
     title: step.label,
-    rows: editFields.filter((field) => employeeEditStep(field) === index).map((field): [string, string] => [
+    rows: editFields.filter((field) => !field.hidden && employeeEditStep(field) === index).map((field): [string, string] => [
       editChangedKeys.includes(field.key) && field.sensitive ? `${t(field.label)} · ${t('Approval')}` : field.label,
       editChangedKeys.includes(field.key)
         ? t('From {before} to {after}', { before: editDisplayValue(field, true), after: editDisplayValue(field) })
@@ -1565,12 +1697,24 @@ export function EmployeesPage() {
     setCreatedEmployee(null);
     setFormOpen(false);
     setFormError('');
+    if (createOnly) {
+      window.location.assign(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
+      return;
+    }
     if (thenOpen && id) void openDetail(id);
   };
 
   const issueCreatedCode = async (delivery?: 'email' | 'print') => {
     if (!createdEmployee) return;
     const { id, name, access } = createdEmployee;
+    if (createOnly) {
+      setWelcomeReturnEmployeeId(id);
+      setCreatedEmployee(null);
+      setFormOpen(false);
+      setFormError('');
+      await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
+      return;
+    }
     finishCreated();
     await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
@@ -1584,6 +1728,7 @@ export function EmployeesPage() {
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
+    if (createOnly) window.location.assign('/people');
   };
 
   // ── Duplicate warning actions (create path — no new record exists yet) ──
@@ -1594,12 +1739,20 @@ export function EmployeesPage() {
     setDuplicateWarning([]);
     setFormOpen(false);
     setFormError('');
+    if (createOnly) {
+      window.location.assign(employeeWorkspaceHref(employeeId, { section: 'overview' }));
+      return;
+    }
     openDetail(employeeId);
   };
   const mergeFromCreate = (employeeId: number) => {
     if (saving) return;
     setDuplicateWarning([]);
     setFormOpen(false);
+    if (createOnly) {
+      window.location.assign(`/people/${employeeId}/edit?section=personal`);
+      return;
+    }
     setFormError('');
     openEmployeeWindow(employeeId);
   };
@@ -1610,8 +1763,6 @@ export function EmployeesPage() {
       if (!validateEditStep(step)) { setEditStep(step); return; }
     }
     if (editChangedKeys.includes('workEmail')) {
-      const editDomain = workEmailDomainProblem(editForm.workEmail, companies.find((c) => c.id === selectedEmployee?.companyId)?.emailDomain);
-      if (editDomain) { setEditNotice(t('Work email must end in @{domain}.', { domain: editDomain })); return; }
       const editEmailProblem = workEmailProblemKey(workEmailLocalProblem(editForm.workEmail));
       if (editEmailProblem) { setEditNotice(t(editEmailProblem)); return; }
     }
@@ -1766,18 +1917,36 @@ export function EmployeesPage() {
   };
 
   const uploadDocument = async () => {
-    if (!selectedId || !documentFile) return;
-    const uploaded = await employeesApi.uploadDocument(selectedId, {
-      documentType,
-      expiryDate: documentExpiry || undefined,
-      renewalReminderDate: documentExpiry || undefined,
-      isRequired: true,
-      approvalStatus: 'Pending',
-    }, documentFile);
-    setDetail((current) => current ? { ...current, documents: [uploaded, ...current.documents] } : current);
-    setDocumentFile(null);
-    setDocumentExpiry('');
-    loadReadiness(selectedId);
+    if (!selectedId || !documentFile || documentUploading) return;
+    setDocumentUploading(true);
+    setDocumentUploadNotice('');
+    setDocumentUploadError('');
+    const readinessView = blockedPanel ?? readiness;
+    const pendingDocumentTypes = readinessView
+      ? [...readinessView.blocking, ...readinessView.payBlocking, ...readinessView.recommended]
+        .flatMap((item) => item.fix?.kind === 'document' ? [item.fix.documentType] : [])
+      : [];
+    try {
+      const uploaded = await employeesApi.uploadDocument(selectedId, {
+        documentType,
+        expiryDate: documentExpiry || undefined,
+        renewalReminderDate: documentExpiry || undefined,
+        isRequired: true,
+        approvalStatus: 'Pending',
+      }, documentFile);
+      setDetail((current) => current ? { ...current, documents: [uploaded, ...current.documents] } : current);
+      setDocumentFile(null);
+      setDocumentExpiry('');
+      const remainingType = pendingDocumentTypes.find((type) => type.localeCompare(documentType, undefined, { sensitivity: 'accent' }) !== 0);
+      setDocumentUploadNotice(remainingType
+        ? `${documentType} uploaded. The ${remainingType} document checklist still requires a ${remainingType} file.`
+        : `${documentType} uploaded successfully.`);
+      await loadReadiness(selectedId);
+    } catch (error: unknown) {
+      setDocumentUploadError(describeApiError(error, t));
+    } finally {
+      setDocumentUploading(false);
+    }
   };
 
   // ── Fast-fix: close a single readiness gap without opening the ~40-field edit modal (§8.4) ──
@@ -1808,6 +1977,8 @@ export function EmployeesPage() {
   const handleFixDocument = (documentType: string) => {
     setActiveTab('documents');
     setDocumentType(documentType);
+    setDocumentUploadError('');
+    setDocumentUploadNotice(`Choose a ${documentType} file, then select Upload ${documentType}.`);
   };
 
   const requestTransfer = async () => {
@@ -1840,7 +2011,9 @@ export function EmployeesPage() {
   // Readiness / gap filtering is now SERVER-SIDE (see load()), so `total`/pagination match the
   // filtered set across all pages — the post-import deep-link no longer breaks past page 1.
   const importFilterActive = gapTypeFilter !== '' || importBatchFilter !== '';
-  const clearImportFilter = () => { setGapTypeFilter(''); setImportBatchFilter(''); setReadinessFilter(''); };
+  const clearImportFilter = () => {
+    directoryQuery.update({ gapType: undefined, importBatchId: undefined, readiness: undefined, page: undefined, anchor: undefined });
+  };
 
   // Activate-button gating. The readiness gate fires only on first-time activations from a
   // non-occupying status — mandated Suspended→Active / Offboarded→Active reinstatements are NOT
@@ -1848,9 +2021,8 @@ export function EmployeesPage() {
   const activationBlockers = readiness?.blocking.length ?? 0;
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
-
   return (
-    <div className="space-y-5">
+    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
           {subscriptionBanner}
@@ -1898,19 +2070,23 @@ export function EmployeesPage() {
                 canImport={canImportEmployees}
                 onPreview={(csv) => employeesApi.importPreview(csv)}
                 onViewIncomplete={(filter) => {
-                  setSearch('');
-                  setStatus('');
-                  setReadinessFilter((filter?.readiness as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready') ?? '');
-                  setGapTypeFilter(filter?.gapType ?? '');
-                  setImportBatchFilter(filter?.importBatchId ?? '');
+                  directoryQuery.update({
+                    search: undefined,
+                    status: undefined,
+                    readiness: filter?.readiness,
+                    gapType: filter?.gapType,
+                    importBatchId: filter?.importBatchId,
+                    page: undefined,
+                    anchor: undefined,
+                  });
                 }}
               />
               {canWriteEmployees && <div className="relative group">
                 <button
                   type="button"
-                  onClick={() => { if (!atEmployeeLimit) openCreateEmployee(); }}
+                  onClick={() => { if (!atEmployeeLimit) window.location.assign('/people/new'); }}
                   disabled={atEmployeeLimit}
-                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" />
                   Add Employee
@@ -1927,6 +2103,7 @@ export function EmployeesPage() {
       </div>
 
       {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      <p role="status" aria-live="polite" className="sr-only">{selectionNotice}</p>
       {actionNotice && <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"><span>{actionNotice}</span>
         {lastSavedDraft && actionNotice === t('{name} was saved as a draft.', { name: lastSavedDraft.name }) && canWriteEmployees && <button type="button" onClick={() => openEmployeeWindow(lastSavedDraft.id)} className="font-semibold underline underline-offset-2">{t(canEditEmployees ? 'Resume draft' : 'View draft')}</button>}
       </div>}
@@ -1938,9 +2115,14 @@ export function EmployeesPage() {
       )}
 
       {view === 'ex' ? (
-        <ExEmployeesTable />
+        <ExEmployeesTable
+          search={search}
+          page={page}
+          onSearchChange={(value) => setSearch(value)}
+          onPageChange={(value) => setPage(value)}
+        />
       ) : (
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <div className="grid grid-cols-1 gap-5" data-testid="people-directory-full-width">
         <section className="min-w-0 space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
@@ -2113,7 +2295,20 @@ export function EmployeesPage() {
                       <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'No employees match this filter.' : 'No employees yet'}</p>
                       <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
                       {(search || status || readinessFilter || importFilterActive || accessFilter) ? (
-                        <button type="button" className="btn-secondary mt-4" onClick={() => { setSearch(''); setStatus(''); setAccessFilter(''); clearImportFilter(); }}>Clear filters</button>
+                        <button
+                          type="button"
+                          className="btn-secondary mt-4"
+                          onClick={() => directoryQuery.update({
+                            search: undefined,
+                            status: undefined,
+                            readiness: undefined,
+                            access: undefined,
+                            gapType: undefined,
+                            importBatchId: undefined,
+                            page: undefined,
+                            anchor: undefined,
+                          })}
+                        >Clear filters</button>
                       ) : canWriteEmployees ? (
                         <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
                       ) : null}
@@ -2122,11 +2317,7 @@ export function EmployeesPage() {
                   {!loading && employees.map((employee) => {
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
-                    <tr
-                      key={employee.id}
-                      onClick={() => openEmployeeWindow(employee.id)}
-                      className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}
-                    >
+                    <tr key={employee.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
@@ -2140,14 +2331,15 @@ export function EmployeesPage() {
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <button
-                              type="button"
-                              aria-label={`Open profile for ${employee.fullName}`}
-                              onClick={(event) => { event.stopPropagation(); openEmployeeWindow(employee.id); }}
+                            <a
+                              id={`employee-${employee.id}`}
+                              href={employeeWorkspaceHref(employee.id, {
+                                returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
+                              })}
                               className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
-                            </button>
+                            </a>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
@@ -2186,324 +2378,6 @@ export function EmployeesPage() {
           </div>
         </section>
 
-        <aside className={`surface min-h-[560px] overflow-hidden ${selectedId && activeTab === 'benefits' ? 'order-first xl:order-none' : ''}`}>
-          {!selectedId && (
-            <div className="flex h-full min-h-[520px] flex-col items-center justify-center px-6 text-center">
-              <Users className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
-              <p className="font-semibold text-slate-900 dark:text-white">Select an employee</p>
-              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Open a live profile with payroll, compliance, documents, history, and transfers.</p>
-            </div>
-          )}
-
-          {selectedId && detailLoading && <div className="p-6 text-sm text-slate-500">Loading profile from API...</div>}
-
-          {selectedEmployee && !detailLoading && (
-            <div>
-              <div className="border-b border-slate-100 p-4 dark:border-white/[0.07]">
-                <div className="flex items-center gap-3">
-                  <Avatar name={selectedEmployee.fullName} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-bold text-slate-900 dark:text-white">{selectedEmployee.fullName}</p>
-                    <p className="text-xs text-slate-500">{selectedEmployee.employeeCode} · {selectedEmployee.status}</p>
-                  </div>
-                  {canEditEmployees && <button type="button" onClick={openEdit} className="btn-secondary h-8 shrink-0 px-3 text-xs">
-                    <Pencil className="h-3.5 w-3.5" />
-                    Edit
-                  </button>}
-                  <button type="button" onClick={() => { setSelectedId(null); setDetail(null); }} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10" aria-label="Close employee profile" title="Close profile">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="mt-4 flex gap-1 overflow-x-auto">
-                  {visibleTabs.map((tab) => (
-                    <button key={tab.id} ref={tab.id === 'benefits' ? benefitsTabRef : undefined} type="button" data-testid={tab.id === 'development' ? 'suc-dev-tab' : undefined} onClick={() => setActiveTab(tab.id)} className={`whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold ${activeTab === tab.id ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}>
-                      {t(tab.label)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-4 p-4">
-                {!releaseA && canReadBenefits && activeTab === 'benefits' && <EmployeeBenefitsPanel key={detail!.id}
-                  employeeId={detail!.id} employeeName={detail!.fullName} companyId={detail!.companyId ?? null} gradeId={detail!.gradeId} />}
-                {activeTab !== 'benefits' && <>
-                {/* Activation readiness — the 422 block and the live checklist share the SAME
-                    server-authoritative component; fast-fix closes gaps in place (§8.3/§8.4). */}
-                {blockedPanel ? (
-                  <div className="rounded-lg border border-rose-300 bg-rose-50/60 p-3 dark:border-rose-500/40 dark:bg-rose-500/[0.06]">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="flex items-center gap-1.5 text-sm font-bold text-rose-700 dark:text-rose-300">
-                        <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                        Cannot activate yet — {blockedPanel.blocking.length} required {blockedPanel.blocking.length === 1 ? 'detail' : 'details'} missing
-                      </p>
-                      <button type="button" onClick={() => setBlockedPanel(null)} className="shrink-0 text-xs font-semibold text-slate-500 underline">Dismiss</button>
-                    </div>
-                    <ReadinessChecklist
-                      readiness={blockedPanel}
-                      onFixField={handleFixField}
-                      onFixDocument={handleFixDocument}
-                      fieldFixMode={readinessFixMode}
-                    />
-                  </div>
-                ) : readiness ? (
-                  <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                    <p className="mb-2 text-xs font-bold uppercase text-slate-400">Activation checklist</p>
-                    <ReadinessChecklist
-                      readiness={readiness}
-                      onFixField={handleFixField}
-                      onFixDocument={handleFixDocument}
-                      fieldFixMode={readinessFixMode}
-                      showPresent
-                    />
-                  </div>
-                ) : null}
-
-                {canEditEmployees && <EmployeeCompletionHandoff employeeId={selectedEmployee.id} onChanged={() => { void openDetail(selectedEmployee.id, true); void load(); }} />}
-
-                <EmployeeAccessCard
-                  key={selectedEmployee.id}
-                  employeeId={selectedEmployee.id}
-                  employeeName={selectedEmployee.fullName}
-                  refreshKey={accessRefresh}
-                  canIssue={canIssueAccess}
-                  canReset={canResetAccess}
-                  isSelf={user?.employeeId != null && user.employeeId === selectedEmployee.id}
-                  issuing={welcome.busy}
-                  onIssue={welcome.issue}
-                  onAddWorkEmail={() => {
-                    setSingleWorkEmail('');
-                    setSingleWorkEmailError('');
-                    setWorkEmailFor({ id: selectedEmployee.id, name: selectedEmployee.fullName, englishName: selectedEmployee.englishName ?? selectedEmployee.fullName, arabicName: selectedEmployee.arabicName, companyId: selectedEmployee.companyId });
-                  }}
-                />
-                </>}
-
-                {/* Possible-duplicate resolver — shown when this record carries a dup:* flag. The
-                    operator confirms it is a distinct person (clears the flag, audited) or merges it
-                    into an existing record. Merge is offered only for STRONG (ID) matches. */}
-                {dupFlag && (
-                  <div className="rounded-lg border border-fuchsia-300 bg-fuchsia-50/60 p-3 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/[0.06]">
-                    <p className="flex items-center gap-1.5 text-sm font-bold text-fuchsia-700 dark:text-fuchsia-300">
-                      <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      {dupFlag.label || 'Possible duplicate'}
-                    </p>
-                    <p className="mt-1 text-xs text-fuchsia-700/90 dark:text-fuchsia-300/90">
-                      {dupFlag.reason || 'This record may be the same person as an existing employee. Confirm they are distinct, or merge this into the existing record.'}
-                    </p>
-                    {dupMatches.length > 0 && (
-                      <ul className="mt-2 space-y-1.5">
-                        {dupMatches.map((m) => (
-                          <li key={m.employeeId} className="rounded-lg border border-fuchsia-200/70 bg-white/60 px-2.5 py-2 text-xs dark:border-fuchsia-500/20 dark:bg-white/[0.03]">
-                            {m.canView ? (
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="font-semibold text-slate-800 dark:text-slate-100">
-                                    {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
-                                    {m.matchType === 'strong'
-                                      ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                                      : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
-                                  </p>
-                                  <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
-                                </div>
-                                <div className="flex shrink-0 gap-1.5">
-                                  <button type="button" onClick={() => openDetail(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View</button>
-                                  {m.matchType === 'strong' && (
-                                    <button type="button" disabled={dupResolving} onClick={() => mergeInto(m.employeeId, `${m.fullName} (${m.employeeCode})`)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">Merge into this</button>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="text-slate-500 dark:text-slate-400">A matching record exists in another company. Contact a group administrator.</p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="mt-2.5 space-y-1.5">
-                      <input
-                        value={dupReason}
-                        onChange={(e) => setDupReason(e.target.value)}
-                        placeholder="Reason (required to confirm distinct)"
-                        className="input w-full text-xs"
-                      />
-                      {dupNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{dupNotice}</p>}
-                      <div className="flex justify-end">
-                        <button type="button" disabled={dupResolving} onClick={confirmDistinct} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
-                          {dupResolving ? 'Saving…' : 'Confirm distinct person'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Imported bank details nobody has checked yet. A second person confirms them with the
-                    employee; until then every payroll run that pays this person by bank warns before Lock. */}
-                {bankFlag && (
-                  <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-500/40 dark:bg-amber-500/[0.06]">
-                    <p className="text-sm font-bold text-amber-800 dark:text-amber-300">{bankFlag.label ? t(bankFlag.label) : t('Imported bank details not yet verified')}</p>
-                    <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-300/90">
-                      {t('These bank details came from an employee import and nobody else has checked them. Confirm them with the employee before their first payroll. The person who imported them cannot confirm them.')}
-                    </p>
-                    <div className="mt-2.5 space-y-1.5">
-                      <input
-                        value={bankNote}
-                        onChange={(e) => setBankNote(e.target.value)}
-                        placeholder={t('How you checked them (required)')}
-                        className="input w-full text-xs"
-                      />
-                      {bankNotice && <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{bankNotice}</p>}
-                      <div className="flex justify-end">
-                        <button type="button" disabled={bankConfirming} onClick={confirmBankDetails} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
-                          {bankConfirming ? t('Saving…') : t('Confirm bank details')}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'personal' && (
-                  <DetailGrid rows={[
-                    ['English name', selectedEmployee.englishName],
-                    ['Arabic name', selectedEmployee.arabicName],
-                    ['Preferred name', selectedEmployee.preferredName],
-                    ['Gender', selectedEmployee.gender],
-                    ['Nationality', selectedEmployee.nationality],
-                    ['Personal email', selectedEmployee.personalEmail],
-                    ['Work email', selectedEmployee.workEmail],
-                    ['Mobile', selectedEmployee.phone],
-                  ]} />
-                )}
-                {activeTab === 'employment' && (
-                  <DetailGrid rows={[
-                    ['Company', nameById(companies, selectedEmployee.companyId, 'legalNameEn')],
-                    ['Branch', selectedEmployee.branch],
-                    ['Department', selectedEmployee.department],
-                    ['Designation', selectedEmployee.designation],
-                    ['Grade', selectedEmployee.grade],
-                    ['Job title', selectedEmployee.jobTitle],
-                    ['Employment type', selectedEmployee.employmentType],
-                    ['Contract type', selectedEmployee.contractType],
-                    ['Joining date', dateLabel(selectedEmployee.joiningDate)],
-                    ['Work location', selectedEmployee.workLocation],
-                  ]} />
-                )}
-                {activeTab === 'payroll' && (
-                  <>
-                    <DetailGrid rows={[
-                      ['Bank', detail!.payrollProfile?.bankName],
-                      ['IBAN', detail!.payrollProfile?.iban],
-                      ['Account', detail!.payrollProfile?.accountNumber],
-                      ['Payment method', detail!.payrollProfile?.paymentMethod],
-                      ['Currency', detail!.payrollProfile?.salaryCurrency],
-                      ['Payroll group', detail!.payrollProfile?.payrollGroup],
-                      ['WPS eligible', detail!.payrollProfile?.wpsEligible ? 'Yes' : 'No'],
-                      ['EOSB eligible', detail!.payrollProfile?.eosbEligible ? 'Yes' : 'No'],
-                    ]} />
-                    {/* F02 — the statutory fact the Saudi GOSI schedule is keyed on (approval-gated). */}
-                    <GosiCohortPanel key={detail!.id} employee={detail!} />
-                  </>
-                )}
-                {releaseA && activeTab === 'package' && <EmployeePackagePanel key={detail!.id} employee={detail!} />}
-                {releaseA && activeTab === 'deductions' && <EmployeeDeductionsPanel key={detail!.id} employee={detail!} />}
-                {canSeeDevelopment && activeTab === 'development' && <DevelopmentPlanPanel key={detail!.id} employeeId={detail!.id} access={successionAccess} />}
-                {activeTab === 'compliance' && (
-                  <div className="space-y-2">
-                    {detail!.complianceRecords.length === 0 && <SmallEmpty label="No compliance records saved" />}
-                    {detail!.complianceRecords.map((record) => (
-                      <div key={`${record.countryCode}-${record.fieldKey}`} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{record.fieldLabel}</p>
-                        <p className="mt-1 text-xs text-slate-500">{record.countryCode} · {record.fieldValue || '-'} · Expires {dateLabel(record.expiryDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {activeTab === 'documents' && (
-                  <div className="space-y-3">
-                    <div className="grid gap-2">
-                      <select value={documentType} onChange={(e) => setDocumentType(e.target.value)} className="select w-full" aria-label="Document type">
-                        {selectedDocumentTypes.map((item) => <option key={item}>{item}</option>)}
-                      </select>
-                      <input type="date" value={documentExpiry} onChange={(e) => setDocumentExpiry(e.target.value)} className="input w-full" aria-label="Document expiry" />
-                      <input type="file" onChange={(e) => setDocumentFile(e.target.files?.[0] ?? null)} className="input w-full" aria-label="Upload document file" />
-                      <button type="button" onClick={uploadDocument} disabled={!documentFile} className="btn-primary justify-center disabled:opacity-50">
-                        <FileUp className="h-4 w-4" />
-                        Upload metadata and file
-                      </button>
-                    </div>
-                    {detail!.documents.map((doc) => (
-                      <div key={doc.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{doc.documentType}</p>
-                        <p className="text-xs text-slate-500">{doc.fileName} · {doc.approvalStatus} · Expires {dateLabel(doc.expiryDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {activeTab === 'history' && (
-                  <Timeline items={detail!.history.map((item) => ({ id: item.id, title: item.eventType, body: `${item.oldValue || '-'} -> ${item.newValue || '-'} · ${item.reason || 'No reason'}`, date: item.createdAtUtc }))} />
-                )}
-                {activeTab === 'transfers' && (
-                  <div className="space-y-3">
-                    <select id="transfer-department-select" value={transferDepartment} onChange={(e) => setTransferDepartment(e.target.value)} className="select w-full" aria-label="Transfer to department">
-                      <option value="">New department</option>
-                      {departments.map((dept) => <option key={dept.id} value={dept.id}>{dept.nameEn}</option>)}
-                    </select>
-                    <input value={transferReason} onChange={(e) => setTransferReason(e.target.value)} className="input w-full" placeholder="Transfer reason" />
-                    <button type="button" onClick={requestTransfer} className="btn-primary justify-center">
-                      <Send className="h-4 w-4" />
-                      Request Transfer
-                    </button>
-                    {detail!.transfers.map((transfer) => (
-                      <div key={transfer.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{transfer.newDepartment || 'Transfer request'}</p>
-                        <p className="text-xs text-slate-500">{transfer.status} · Effective {dateLabel(transfer.effectiveDate)}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                  <p className="mb-2 text-xs font-bold uppercase text-slate-400">Status change</p>
-                  <div className="grid gap-2">
-                    <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as StatusFilter)} className="select w-full" aria-label="New employee status">
-                      {statusOptions.filter(Boolean).map((item) => <option key={item} value={item}>{item}</option>)}
-                    </select>
-                    <input value={statusReason} onChange={(e) => setStatusReason(e.target.value)} className="input w-full" placeholder="Required reason" />
-                    {selectedEmployee.status !== 'Active' && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={activateEmployee}
-                          disabled={statusSaving || activateGateBlocked}
-                          title={activateGateBlocked ? `${activationBlockers} required detail${activationBlockers === 1 ? '' : 's'} missing` : undefined}
-                          className="btn-primary justify-center disabled:opacity-50"
-                        >
-                          <UserRound className="h-4 w-4" />
-                          {statusSaving ? 'Activating...' : 'Activate employee'}
-                        </button>
-                        {activateGateBlocked && (
-                          <p className="text-center text-[11px] text-slate-400">
-                            {activationBlockers} required detail{activationBlockers === 1 ? '' : 's'} missing — complete the checklist above.
-                          </p>
-                        )}
-                      </>
-                    )}
-                    <button type="button" onClick={changeStatus} disabled={!statusReason.trim() || statusSaving} className="btn-secondary justify-center disabled:opacity-40">
-                      <History className="h-4 w-4" />
-                      {statusSaving ? 'Saving...' : 'Save status history'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-red-200 p-3 dark:border-red-500/30">
-                  <p className="mb-2 text-xs font-bold uppercase text-red-400">Danger zone</p>
-                  <button type="button" onClick={deleteEmployee} className="w-full justify-center rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-500/10">
-                    Delete employee record
-                  </button>
-                  <p className="mt-1.5 text-[11px] text-slate-400">Hides the record from all lists and reports. History is kept for audit purposes — this is not a permanent erase.</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>
       </div>
       )}
 
@@ -2536,10 +2410,7 @@ export function EmployeesPage() {
         }}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3 text-sm dark:border-white/10">
             <span className="text-slate-500">{selectedEmployee?.employeeCode}</span>
-            <div className="flex flex-wrap items-center gap-3">
-              {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
-              <button type="button" onClick={closeEditModal} disabled={editSaving} className="text-sm font-semibold text-sapphire underline disabled:opacity-40">{t('Open full profile')}</button>
-            </div>
+            {canEditEmployees && <button type="button" onClick={() => { setEditForm({ ...editOriginal }); setEditNotice(''); }} disabled={editSaving || dirtyEditKeys.length === 0} className="text-sm font-semibold text-slate-500 underline disabled:opacity-40">{t('Revert changes')}</button>}
           </div>
           {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {unavailableEditKeys.length > 0 && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{unavailableEditNotice}</p>}
@@ -2554,7 +2425,7 @@ export function EmployeesPage() {
                 <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>
               )}
               <fieldset disabled={editSaving} className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
-                {editFields.filter((field) => employeeEditStep(field) === index).map((field) => {
+                {editFields.filter((field) => !field.hidden && employeeEditStep(field) === index).map((field) => {
                   if (!canEditField(field)) return (
                     <div key={field.key} className="text-sm">
                       <p className="text-slate-500">{t(field.label)}</p>
@@ -2775,9 +2646,9 @@ export function EmployeesPage() {
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
             <EmployeeAdditionalDetails title="Additional personal details">
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={GENDER_OPTIONS} />
+            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={retainCurrentOption(employeeMasterData.gender, form.gender)} />
             <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
-            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={MARITAL_STATUS_OPTIONS} />
+            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={retainCurrentOption(employeeMasterData.maritalStatus, form.maritalStatus)} />
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2853,13 +2724,15 @@ export function EmployeesPage() {
               onChange={(v) => setField('workEmail', v)}
               type="email"
               placeholder={t('Enter your work email.')}
+              optional
+              info={t('Enter the complete work email address issued by IT, for example name@company.com.')}
               ltr
             />
             <EmployeeAdditionalDetails title="More employment details">
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
-            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={EMPLOYMENT_TYPE_OPTIONS} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
-            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={CONTRACT_TYPE_OPTIONS} />
+            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={retainCurrentOption(employeeMasterData.employmentType, form.employmentType)} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
+            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={retainCurrentOption(employeeMasterData.contractType, form.contractType)} />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
             </EmployeeAdditionalDetails>
           </Section>
@@ -2877,7 +2750,6 @@ export function EmployeesPage() {
             <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code used in the UAE WPS SIF (6-digit code). Saudi bank files take the bank from the IBAN and the approved BIC." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number used in the UAE WPS SIF. Saudi wage files use the employee's own national ID or Iqama number instead." infoKey="employees.molId" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
-            <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
             </EmployeeAdditionalDetails>
           </Section>
 
@@ -2887,6 +2759,14 @@ export function EmployeesPage() {
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
+            {/* A choice of the company's active structures, never free text (an unknown code is refused, 422). The
+                payroll profile's reference follows the choice. */}
+            <SalaryStructureSelect
+              companyId={form.companyId}
+              value={form.salaryBreakdown?.salaryStructureCode ?? ''}
+              retainCurrent={false}
+              onChange={setSalaryStructure}
+            />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
               {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
@@ -2899,7 +2779,6 @@ export function EmployeesPage() {
             <Input label="Mobile allowance" type="number" value={String(form.salaryBreakdown?.mobileAllowance ?? '')} onChange={(v) => setSalaryField('mobileAllowance', v)} />
             <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
             <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
-            <Input label="Salary structure code" value={form.salaryBreakdown?.salaryStructureCode ?? ''} onChange={(v) => setSalaryField('salaryStructureCode', v)} placeholder={selectedGrade ? `GRADE-${selectedGrade.code}` : undefined} />
             </EmployeeAdditionalDetails>
           </Section>
 
@@ -3208,254 +3087,25 @@ function Section({ title, children, wide = false }: { title: string; children: R
   );
 }
 
-// Split a stored work email into its local-part + domain. Blank domain => nothing after the @.
-function splitEmail(value: string): { local: string; domain: string } {
-  const at = (value ?? '').indexOf('@');
-  if (at < 0) return { local: value ?? '', domain: '' };
-  return { local: value.slice(0, at), domain: value.slice(at + 1) };
-}
-
-/**
- * WorkEmailField — the employee work-email widget. The address is {local-part}@{company domain}; the
- * user only ever edits the LOCAL-PART and the domain is a locked, read-only chip (never editable
- * here — it is owned by Setup → Companies). Behaviour:
- *   • Locked-domain mode (company HAS a domain): editable local-part + "@domain" chip. On create
- *     (`autoDerive`) the local-part is auto-derived from the name and, via the server preview, shown
- *     with any tenant-uniqueness suffix (john.smith → john.smith2). The user can override it.
- *   • Manual mode (company has NO domain, edge-7): a full free-text email input + a needs-info hint.
- *     Never blocks create/import.
- * The server (derive-work-email) is authoritative; this only PREVIEWS it. If the endpoint is
- * unavailable it degrades to a local best-effort derivation (no uniqueness suffix) and the commit
- * still reconciles. Auto-derive never overwrites a value the user has touched.
- */
-function WorkEmailField({
-  label, value, onChange, englishName, arabicName, companyId, domain, pattern,
-  suggest = false, excludeEmployeeId, originalValue, info, infoKey,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  englishName: string;
-  arabicName?: string;
-  companyId?: string;
-  domain: string;
-  pattern: string;
-  /**
-   * Offer the derived address as GHOST text while the field is empty. It is a suggestion only:
-   * nothing is saved unless HR accepts it (Tab, or the "Use" button). A blank field is fine.
-   */
-  suggest?: boolean;
-  excludeEmployeeId?: number;
-  originalValue?: string;
-  info?: string;
-  infoKey?: string;
-}) {
-  const { t } = useLocale();
-  const cleanDomain = (domain ?? '').trim().toLowerCase();
-  const manualMode = cleanDomain === '';
-  const { local: localPart } = splitEmail(value);
-  const [touched, setTouched] = useState(false);
-  const [preview, setPreview] = useState<Pick<DeriveWorkEmailResponse, 'status' | 'unique' | 'suggestion'> | null>(null);
-  const [checking, setChecking] = useState(false);
-  // The suggested local-part (ghost text). Shown only while the field is empty; never written on its own.
-  const [ghost, setGhost] = useState('');
-  // Guards a redundant re-derive for the same name/company.
-  const autoKeyRef = useRef('');
-
-  // Keep a typed local-part re-domained to the CURRENT company when the company/domain changes
-  // (multi-company: use the employing company's domain).
-  useEffect(() => {
-    if (manualMode || !touched) return;
-    const parts = splitEmail(value);
-    if (parts.local && parts.domain.toLowerCase() !== cleanDomain) {
-      onChange(assembleWorkEmail(parts.local, cleanDomain));
-    }
-    // Only react to the domain flip; value/onChange are read fresh from the closure.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cleanDomain]);
-
-  // Debounced, server-authoritative with a local fallback, advisory only: a suggestion while the
-  // field is empty, a uniqueness check once something is typed.
-  useEffect(() => {
-    if (manualMode) { setPreview({ status: 'manual-no-domain', unique: true, suggestion: '' }); setGhost(''); return; }
-    const wantSuggestion = suggest && !localPart.trim();
-    if (!wantSuggestion && !localPart.trim()) { setPreview(null); return; }       // empty, no suggestion wanted
-    if (wantSuggestion && !englishName.trim()) { setPreview(null); setGhost(''); autoKeyRef.current = ''; return; }
-    const autoKey = `${englishName}|${arabicName ?? ''}|${companyId ?? ''}|${cleanDomain}|${pattern}`;
-    if (wantSuggestion && autoKey === autoKeyRef.current) return;                  // already suggested for this input
-    if (wantSuggestion) autoKeyRef.current = autoKey;
-
-    let cancelled = false;
-    setChecking(true);
-    const handle = setTimeout(async () => {
-      let res: DeriveWorkEmailResponse;
-      try {
-        res = await employeesApi.deriveWorkEmail({
-          englishName, arabicName, companyId,
-          localPart: wantSuggestion ? undefined : localPart,
-          excludeEmployeeId,
-        });
-      } catch {
-        // Endpoint unavailable → local best-effort mirror (no tenant-uniqueness suffix).
-        const local = wantSuggestion ? deriveWorkEmailLocalPart(englishName, pattern) : localPart;
-        res = {
-          domain: cleanDomain, pattern, localPart: local,
-          workEmail: assembleWorkEmail(local, cleanDomain),
-          unique: true, suggestion: local,
-          status: local ? 'derived' : 'manual-arabic-only',
-        };
-      }
-      if (cancelled) return;
-      setChecking(false);
-      if (wantSuggestion) {
-        const suggested = splitEmail(res.suggestedWorkEmail || res.workEmail || '').local || res.suggestion || res.localPart || '';
-        setGhost(suggested);
-        setPreview(res.status === 'manual-arabic-only' ? { status: res.status, unique: true, suggestion: '' } : null);
-      } else {
-        setPreview({ status: res.status, unique: res.unique, suggestion: res.suggestion });
-      }
-    }, 300);
-    return () => { cancelled = true; setChecking(false); clearTimeout(handle); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [englishName, arabicName, companyId, cleanDomain, pattern, localPart, suggest, manualMode, excludeEmployeeId]);
-
-  const handleLocalChange = (raw: string) => {
-    setTouched(true);
-    const typed = raw.replace(/\s+/g, '');
-    const at = typed.indexOf('@');
-    // "@" + the company's own domain is just the full address: keep the part before it. Any OTHER domain
-    // is kept exactly as typed and refused below (never quietly turned into @company).
-    if (at >= 0 && typed.slice(at + 1).toLowerCase() !== cleanDomain) { onChange(typed); return; }
-    const next = at >= 0 ? typed.slice(0, at) : typed;
-    onChange(next ? assembleWorkEmail(next, cleanDomain) : '');
-  };
-  const wrongDomain = !manualMode ? workEmailDomainProblem(value, cleanDomain) : null;
-
-  const showGhost = suggest && !localPart && !!ghost;
-  const acceptGhost = () => { if (ghost) handleLocalChange(ghost); };
-
-  const changedFromOriginal = originalValue !== undefined && (value ?? '') !== (originalValue ?? '');
-  const typedProblem = wrongDomain ? null : workEmailProblemKey(workEmailLocalProblem(value));
-  const conflict = !manualMode && preview !== null && (preview.status === 'conflict' || preview.unique === false);
-  const arabicOnly = !manualMode && preview?.status === 'manual-arabic-only';
-
-  return (
-    <label className="col-span-full block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">
-        {label}
-        {info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}
-        {changedFromOriginal && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title="Modified" />}
-      </span>
-
-      {manualMode ? (
-        <>
-          <input
-            type="email"
-            aria-label={label}
-            value={value}
-            onChange={(e) => { setTouched(true); onChange(e.target.value); }}
-            placeholder="name@company.com"
-            className="input mt-1.5 w-full"
-            spellCheck={false}
-            autoCapitalize="none"
-            dir="ltr"
-          />
-          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-            {companyId
-              ? 'This company has no work-email domain set — enter the full address manually, or add a domain in Setup → Companies to auto-fill it.'
-              : 'Select a company to auto-build the work email from its domain, or enter the full address manually.'}
-          </p>
-        </>
-      ) : (
-        <>
-          <span dir="ltr" className={`mt-1.5 flex flex-wrap items-stretch overflow-hidden rounded-lg border ${conflict ? 'border-rose-300 dark:border-rose-500/40' : 'border-slate-200 focus-within:border-sapphire dark:border-white/10'}`}>
-            <input
-              type="text"
-              value={wrongDomain ? value : localPart}
-              onChange={(e) => handleLocalChange(e.target.value)}
-              onKeyDown={(e) => {
-                // Tab takes the ghost suggestion (and moves on, as Tab does).
-                if (e.key === 'Tab' && !e.shiftKey && showGhost) acceptGhost();
-              }}
-              placeholder={showGhost ? ghost : undefined}
-              className="min-h-11 min-w-0 flex-[1_0_16ch] border-0 bg-transparent px-2.5 py-2 text-sm outline-none placeholder:text-slate-400 placeholder:italic focus:ring-0"
-              spellCheck={false}
-              autoCapitalize="none"
-              aria-label={label}
-              data-testid="work-email-local-part"
-            />
-            {showGhost && (
-              <button
-                type="button"
-                onClick={(e) => { e.preventDefault(); acceptGhost(); }}
-                className="flex min-h-11 items-center px-2.5 text-xs font-semibold text-sapphire hover:underline"
-                aria-label={t('Use')}
-              >
-                {t('Use')}
-              </button>
-            )}
-            <span
-              className="flex min-h-11 max-w-full items-center gap-1 bg-slate-100 px-2.5 py-2 text-sm font-medium text-slate-600 dark:bg-white/[0.06] dark:text-slate-400"
-              title="Domain is locked to the company. Change it in Setup → Companies."
-            >
-              <Lock className="h-3 w-3 shrink-0 opacity-60" aria-hidden="true" /><span className="min-w-0 break-all">@{cleanDomain}</span>
-            </span>
-          </span>
-
-          {conflict ? (
-            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
-              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-              <span>{localPart}@{cleanDomain} is already used by another employee.</span>
-              {preview?.suggestion && preview.suggestion !== localPart && (
-                <button
-                  type="button"
-                  onClick={() => handleLocalChange(preview.suggestion)}
-                  className="font-semibold text-sapphire underline underline-offset-2"
-                >
-                  Use {preview.suggestion}
-                </button>
-              )}
-            </p>
-          ) : arabicOnly ? (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              Couldn&apos;t derive a Latin local-part from the name — type the part before the @ manually.
-            </p>
-          ) : checking ? (
-            <p className="mt-1 text-xs text-slate-400">Checking availability…</p>
-          ) : null}
-        </>
-      )}
-
-      {wrongDomain && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t('Work email must end in @{domain}.', { domain: wrongDomain })}</p>}
-      {typedProblem && <p role="alert" className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400" data-testid="work-email-problem">{t(typedProblem)}</p>}
-      {suggest && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="work-email-help">{t('This is also how they sign in to KynexOne.')}</p>}
-
-      {changedFromOriginal && originalValue && (
-        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-          This address is also the self-service (ESS) sign-in identity. Changing it updates the HR record only — it does not rename an existing mailbox or login automatically.
-        </p>
-      )}
-    </label>
-  );
-}
 
 // `ltr` marks a field whose CONTENT is an identifier, not prose — an IBAN, an account or
 // routing number, a phone number. Under dir=rtl the bidi algorithm reorders such a mixed
 // letter+digit run and strands the country code at the wrong end; `field-ltr` (see
 // src/styles/index.css) isolates it. It is inert in LTR, so nothing changes in English.
-function Input({ label, value, onChange, inputId, required, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+function Input({ label, value, onChange, inputId, required, optional, type = 'text', placeholder, rtl, ltr, info, infoKey, action }: { label: string; value: string; onChange: (value: string) => void; inputId?: string; required?: boolean; optional?: boolean; type?: string; placeholder?: string; rtl?: boolean; ltr?: boolean; info?: string; infoKey?: string; action?: React.ReactNode }) {
+  const { t } = useLocale();
   const generatedId = useId();
   const controlId = inputId ?? generatedId;
   return (
     <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
-      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
+      <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {optional && <span className="font-normal text-slate-500">({t('Optional')})</span>}{required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       {action ? (
         <span className="mt-1.5 flex items-stretch gap-1.5">
           <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input w-full flex-1${ltr ? ' field-ltr' : ''}`} />
           {action}
         </span>
       ) : (
-        <input id={controlId} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
+        <input id={controlId} aria-label={optional ? label : undefined} type={type} step={type === 'number' ? 'any' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir={rtl ? 'rtl' : undefined} className={`input mt-1.5 w-full${ltr ? ' field-ltr' : ''}`} />
       )}
     </label>
   );

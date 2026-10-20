@@ -102,6 +102,8 @@ public class GradeBenefitDraftControllerTests(PostgresFixture fixture)
 
     private static EmployeesController Controller(ZayraDbContext db, Guid tenant)
     {
+        // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenant).GetAwaiter().GetResult();
         var controller = HrmHierarchyTests.BuildImportControllerInternal(db, tenant);
         var identity = (ClaimsIdentity)controller.User.Identity!;
         identity.AddClaims([new Claim("permission", "employees.write"), new Claim("permission", "employees.sensitive"),

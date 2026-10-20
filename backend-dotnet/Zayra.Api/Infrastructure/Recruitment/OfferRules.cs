@@ -96,9 +96,9 @@ public static class OfferRules
     // ── Send ──────────────────────────────────────────────────────────────────
 
     public static async Task<OfferSendVerdict> EvaluateSendAsync(
-        ZayraDbContext db, OfferLetter offer, Guid? senderUserId, CancellationToken ct)
+        ZayraDbContext db, OfferLetter offer, Guid? senderUserId, CancellationToken ct, bool allowIssued = false)
     {
-        if (offer.Status is not ("Draft" or "Approved")) return OfferSendVerdict.InvalidState;
+        if (offer.Status is not ("Draft" or "Approved") && !(allowIssued && offer.Status == "Sent")) return OfferSendVerdict.InvalidState;
 
         var steps = await db.OfferApprovals.AsNoTracking()
             .Where(a => a.TenantId == offer.TenantId && a.OfferLetterId == offer.Id)
@@ -107,7 +107,7 @@ public static class OfferRules
         if (steps.Any(s => s.Status == "Rejected")) return OfferSendVerdict.ApprovalRejected;
         if (steps.Count == 0)
             return await IsApprovalRequiredAsync(db, offer, ct) ? OfferSendVerdict.ApprovalRequired : OfferSendVerdict.Sendable;
-        if (offer.Status != "Approved" || steps.Any(s => s.Status != "Approved")) return OfferSendVerdict.ApprovalPending;
+        if ((offer.Status != "Approved" && !(allowIssued && offer.Status == "Sent")) || steps.Any(s => s.Status != "Approved")) return OfferSendVerdict.ApprovalPending;
         if (senderUserId is { } sender && steps.Any(s => s.ApproverUserId == sender)) return OfferSendVerdict.SenderIsApprover;
         return OfferSendVerdict.Sendable;
     }
@@ -147,6 +147,16 @@ public static class OfferRules
             .FirstOrDefaultAsync(ct);
     }
 
+    /// <summary>All writers of this revision, without rewriting its original author audit.</summary>
+    public static async Task<Guid[]> TermsWritersAsync(ZayraDbContext db, Guid tenantId, Guid offerId, CancellationToken ct)
+    {
+        var writers = await db.OfferLifecycleEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.OfferId == offerId && e.EventType == "DraftSaved")
+            .Select(e => e.ActorUserId).Distinct().ToListAsync(ct);
+        if (await AuthorAsync(db, tenantId, offerId, ct) is { } author) writers.Add(author);
+        return writers.Distinct().ToArray();
+    }
+
     /// <summary>Active users of the tenant who hold a role that can decide an offer approval.</summary>
     public static IQueryable<Domain.Entities.User> EligibleApprovers(ZayraDbContext db, Guid tenantId)
     {
@@ -163,7 +173,7 @@ public static class OfferRules
         if (approverUserId is not { } approver || approver == Guid.Empty) return OfferApproverVerdict.NoApproverNamed;
         var author = await AuthorAsync(db, tenantId, offerId, ct);
         if (author is null) return OfferApproverVerdict.AuthorUnknown;
-        if (author == approver) return OfferApproverVerdict.ApproverIsAuthor;
+        if ((await TermsWritersAsync(db, tenantId, offerId, ct)).Contains(approver)) return OfferApproverVerdict.ApproverIsAuthor;
         if (!await EligibleApprovers(db, tenantId).AnyAsync(u => u.Id == approver, ct)) return OfferApproverVerdict.NotAnEligibleUser;
         return OfferApproverVerdict.Eligible;
     }

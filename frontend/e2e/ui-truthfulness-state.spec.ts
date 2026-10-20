@@ -101,7 +101,13 @@ test.describe('browserless UI truthfulness contracts', () => {
     for (const claim of ["'Mudad file'", "'ملف مدد'", "'Mudad'", "'مدد'", "'Qiwa'", 'Mudad WPS XML exporter', 'the Mudad \'', 'live sync']) {
       expect(login, `login marketing must not claim ${claim}`).not.toContain(claim);
     }
-    expect(login).toContain("'ANB payroll file'");
+    // The ANB file is generated in ANB's layout but not certified by the bank (SaudiBankExportPanel says so),
+    // so the login must say "ANB-format … uncertified" (and the full sentence "pending ANB certification"),
+    // never a bare "ANB payroll file".
+    expect(login).toContain("'ANB-format file, uncertified'");
+    expect(login).toContain('pending ANB certification');
+    expect(login).not.toContain("'ANB payroll file'");
+    expect(login).not.toContain("'ANB file, WPS fields'");
     expect(login).toContain("'Qiwa data check'");
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Hijri'))).toContain('aware');
     /* These three used to pin Tailwind utilities on the old panel-grid
@@ -176,7 +182,9 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(login).toContain('const busy = loading');
     expect(login).toContain('aria-busy={busy}');
     expect(login).toContain('aria-pressed={showPw}');
-    expect(people).toContain('aria-label={`Open profile for ${employee.fullName}`}');
+    expect(people).toContain('href={employeeWorkspaceHref(employee.id, {');
+    expect(people).toContain('returnTo: buildPeopleReturnTo({ ...directoryQuery.state');
+    expect(people).not.toContain('Open profile for');
     expect(people).toContain('Clear filters');
     expect(approvals).toContain('aria-pressed={queueFilter === key}');
     expect(approvals).not.toContain("alert('Please add a clear rejection reason");
@@ -340,8 +348,11 @@ test.describe('browserless employee search race and payroll currency contracts',
 
   test('the People page seeds search from the URL without keying that effect on the typed value', () => {
     const people = read('src/views/EmployeesPage.tsx');
-    expect(people).toContain("const [search, setSearch] = useState(() => searchParams?.get('search') ?? '');");
-    expect(people).toMatch(/const seeded = searchSeed\.take\(searchParams\?\.get\('search'\) \?\? null\);\n\s+if \(seeded !== undefined\) setSearch\(seeded\);\n\s+\}, \[searchParams, searchSeed\]\);/);
+    const directoryQuery = read('src/hooks/usePeopleDirectoryQuery.ts');
+    expect(people).toContain("const search = directoryQuery.state.search ?? '';");
+    expect(people).toContain('directoryQuery.update({ search: value || undefined, page: undefined, anchor: undefined });');
+    expect(directoryQuery).toContain('parsePeopleDirectoryState(new URLSearchParams(serialized))');
+    expect(directoryQuery).toContain('[serialized]');
     expect(people).not.toContain('searchFromUrl !== search');
     // #128's gate still decides which employee load may write the table.
     expect(people).toContain('await runLatest(employeeLoadGate, () => employeesApi.list({');
@@ -565,7 +576,7 @@ test.describe('browserless payroll payment-readiness contracts', () => {
     expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf('<KpiCard label="Gross Payroll"'));
     expect(payroll).toContain('>Blocks payment</p>');
     expect(payroll).toContain('>Recommended — does not block approval</p>');
-    expect(payroll).toContain('href={`/people?employeeId=${e.employeeId}`}');
+    expect(payroll).toContain("employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })");
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
   });
 });

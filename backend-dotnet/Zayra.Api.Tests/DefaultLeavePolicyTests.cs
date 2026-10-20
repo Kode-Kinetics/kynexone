@@ -138,6 +138,7 @@ public class DefaultLeavePolicyTests
         var tenant = await NewTenantAsync(db, "ksa-basis");
 
         await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant.Id);
 
         var sick = await PolicyAsync(db, tenant.Id, "SICK", "SA");
         sick.WeekendsIncluded.Should().BeTrue(
@@ -176,6 +177,7 @@ public class DefaultLeavePolicyTests
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "ksa-submit");
         await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant.Id);
         var (employee, sickTypeId) = await SeedKsaEmployeeAsync(db, tenant.Id, "SAU");
 
         var service = new LeaveService(db, new ApprovalRouter(db));
@@ -208,6 +210,7 @@ public class DefaultLeavePolicyTests
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "notice");
         await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant.Id);
         var (employee, sickTypeId) = await SeedKsaEmployeeAsync(db, tenant.Id, "SAU");
 
         var service = new LeaveService(db, new ApprovalRouter(db));
@@ -321,6 +324,7 @@ public class DefaultLeavePolicyTests
         await using var db = _fx.CreateDb();
         var tenant = await NewTenantAsync(db, "noclobber-leave");
         await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant.Id);
 
         var annualId = (await PolicyAsync(db, tenant.Id, "ANNUAL", "SA")).Id;
         var annual = await db.LeavePolicies.IgnoreQueryFilters().SingleAsync(p => p.Id == annualId);

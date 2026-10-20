@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.AI;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Organization;
@@ -74,6 +75,7 @@ public class SetupAssistantController : ControllerBase
             if (sourceProblem is not null) return RefuseConfiguration([sourceProblem]);
         }
         var fieldSourceProblems = await ValidateFieldSourcesAsync(tenantId, profile.Configuration?.PolicyFieldSources, ct);
+        fieldSourceProblems.AddRange(await ValidateBinderSourcesAsync(tenantId, profile.Configuration?.PolicySources, ct));
         if (fieldSourceProblems.Count > 0) return RefuseConfiguration(fieldSourceProblems);
         var result = await _assistant.GenerateAsync(new SetupRequester(tenantId, GetUserId(), CallerRole()), profile, ct);
         if (profile.Configuration is not null)
@@ -127,6 +129,8 @@ public class SetupAssistantController : ControllerBase
         req = req with { CountryCode = CountryCodeStandard.NormalizeToIso2(req.CountryCode) ?? (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
         var tenantId = GetTenantId();
         var d = req.Draft;
+        var binderProblems = await ValidateBinderSourcesAsync(tenantId, d.PolicySources, ct);
+        if (binderProblems.Count > 0) return RefuseConfiguration(binderProblems);
         if (d.PolicySource is { } source)
         {
             var sourceProblem = await ValidatePolicySourceAsync(tenantId, source, ct);
@@ -904,9 +908,11 @@ public class SetupAssistantController : ControllerBase
     {
         var errors = new List<string>();
         if (sources is null) return errors;
-        if (sources.Count > 30 || sources.Any(s => s is null)) return ["Extracted source references are invalid."];
-        if (sources.Select(s => s.Target + "." + s.Field).Distinct().Count() != sources.Count)
-            return ["Each extracted field must have one reviewed source reference."];
+        if (sources.Count > 500 || sources.Any(s => s is null)) return ["Extracted source references are invalid."];
+        // A merged array can be supported by several chapters/documents. Each excerpt must
+        // independently remain accessible, unchanged and in bounds; no singleton source shortcut.
+        if (sources.Distinct().Count() != sources.Count)
+            return ["Duplicate extracted source references must be removed."];
         foreach (var group in sources.GroupBy(s => new { s.DocumentId, s.ContentSha256 }))
         {
             var problem = await ValidatePolicySourceAsync(tenantId, new(group.Key.DocumentId, group.Key.ContentSha256), ct);
@@ -917,6 +923,24 @@ public class SetupAssistantController : ControllerBase
                 if (field.Target is null || field.Field is null || !PolicyExtractionService.IsSupportedField(field.Target, field.Field)
                     || field.SourceStart < 0 || field.SourceLength is < 1 or > 4000 || (long)field.SourceStart + field.SourceLength > length)
                     errors.Add("An extracted field source location is invalid. Extract and review the policy again.");
+        }
+        return errors;
+    }
+
+    private async Task<List<string>> ValidateBinderSourcesAsync(Guid tenantId, List<SetupPolicyDocumentSource>? sources, CancellationToken ct)
+    {
+        if (sources is null) return [];
+        if (sources.Count > 50 || sources.Any(s => s is null)
+            || sources.Select(s => s.DocumentId).Distinct().Count() != sources.Count)
+            return ["A policy binder may contain at most 50 distinct documents."];
+        var errors = new List<string>();
+        foreach (var source in sources)
+        {
+            if (string.IsNullOrWhiteSpace(source.Name) || source.Name.Length > 500
+                || source.CharacterCount is < 0 or > PolicyTextParser.MaxTextCharacters)
+            { errors.Add("A policy binder source has invalid metadata."); continue; }
+            var problem = await ValidatePolicySourceAsync(tenantId, new(source.DocumentId, source.ContentSha256), ct);
+            if (problem is not null) errors.Add(problem);
         }
         return errors;
     }
@@ -964,6 +988,14 @@ public class SetupAssistantController : ControllerBase
             company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c =>
                 c.TenantId == tenantId && !c.IsDeleted && c.LegalNameEn.ToUpper() == legalName, ct);
         }
+        // Resolve the actual target first: legacy/single-company setup may identify it by
+        // legal name rather than CompanyId. Every kind of source must belong to that target.
+        var policyIds = (d.PolicySources ?? []).Where(s => s is not null).Select(s => s.DocumentId)
+            .Concat((d.PolicyFieldSources ?? []).Where(s => s is not null).Select(s => s.DocumentId))
+            .Concat(d.PolicySource is { } legacy ? new[] { legacy.DocumentId } : []).Distinct().ToArray();
+        if (policyIds.Length > 0 && await _db.PolicyDocuments.AnyAsync(p => p.TenantId == tenantId
+            && policyIds.Contains(p.Id) && p.CompanyId != null && p.CompanyId != (company == null ? null : company.Id), ct))
+            errors.Add("A source policy belongs to a different company. Select policies for the reviewed legal entity.");
         if (company is not null && (d.LeavePolicies.Count > 0 || d.BenefitPlans is { Count: > 0 }))
         {
             if (CountryCodeStandard.NormalizeToIso2(company.CountryCode) != CountryCodeStandard.NormalizeToIso2(req.CountryCode)

@@ -1,0 +1,120 @@
+<style>
+  .hybrid-intro { max-width: 900px; margin-bottom: 24px; }
+  .hybrid-card { border: 1px solid #cfd8e8; border-radius: 18px; overflow: hidden; background: #fff; box-shadow: 0 20px 50px rgba(30,58,138,.10); }
+  .hybrid-caption { padding: 16px 20px; border-bottom: 1px solid #e4e9f2; display:flex; justify-content:space-between; gap:18px; align-items:flex-start; }
+  .hybrid-caption h3 { margin:0 0 4px; color:#101828; }
+  .hybrid-caption p { margin:0; color:#667085; }
+  .hybrid-tag { color:#1d4ed8; background:#eef3ff; border:1px solid #cfddff; border-radius:999px; padding:6px 9px; font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }
+  .screen { background:#f5f7fb; display:grid; grid-template-columns:126px 1fr; min-height:610px; color:#1d2939; font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+  .app-nav { background:#fbfcfe; border-right:1px solid #dfe5ef; padding:14px 10px; }
+  .brand { font-weight:800; font-size:13px; color:#172554; padding:5px 5px 18px; }
+  .brand b { color:#2563eb; }
+  .nav-label { font-size:6px; color:#98a2b3; text-transform:uppercase; letter-spacing:.12em; padding:10px 7px 4px; }
+  .nav-item { font-size:8px; padding:8px; border-radius:6px; color:#667085; margin:3px 0; }
+  .nav-item.active { color:#2457e6; background:#eaf0ff; font-weight:700; border-left:2px solid #2457e6; }
+  .screen-main { min-width:0; }
+  .topbar { height:44px; background:#fff; border-bottom:1px solid #dfe5ef; display:flex; align-items:center; justify-content:space-between; padding:0 18px; font-size:8px; color:#667085; }
+  .search-mini { border:1px solid #d7deea; border-radius:7px; padding:6px 10px; width:43%; }
+  .canvas { padding:18px; }
+  .title-row { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:13px; }
+  .title-row h4 { margin:0 0 4px; font-size:18px; color:#111827; }
+  .title-row p { margin:0; font-size:8px; color:#667085; }
+  .scope { background:#fff; border:1px solid #dfe5ef; padding:8px 10px; border-radius:8px; font-size:8px; white-space:nowrap; }
+  .scope strong { color:#111827; }
+  .path-switch { display:grid; grid-template-columns:1fr 1fr; background:#fff; border:1px solid #d8e0ed; margin-bottom:12px; }
+  .path { padding:12px 14px 11px; position:relative; min-height:58px; }
+  .path + .path { border-left:1px solid #d8e0ed; }
+  .path.active { background:#f7f9ff; box-shadow:inset 0 -3px 0 #2457e6; }
+  .path .eyebrow { font-size:6px; font-weight:800; color:#2457e6; letter-spacing:.08em; text-transform:uppercase; }
+  .path h5 { margin:4px 0 2px; font-size:10px; color:#111827; }
+  .path p { margin:0; font-size:7px; color:#667085; line-height:1.4; }
+  .plan-bar { background:#172554; color:#fff; display:grid; grid-template-columns:1.5fr repeat(3,.55fr) auto; gap:10px; align-items:center; padding:10px 12px; margin-bottom:11px; }
+  .plan-bar strong { display:block; font-size:9px; }
+  .plan-bar small { display:block; margin-top:2px; font-size:6px; color:#bfcced; }
+  .fact { border-left:1px solid rgba(255,255,255,.18); padding-left:9px; font-size:6px; color:#bfcced; }
+  .fact b { display:block; font-size:11px; color:#fff; margin-bottom:1px; }
+  .draft-pill { color:#172554; background:#f8d477; padding:5px 8px; border-radius:999px; font-weight:800; font-size:6px; }
+  .workspace { display:grid; grid-template-columns:112px minmax(0,1fr) 188px; gap:10px; }
+  .area-index, .domain-canvas, .action-rail { background:#fff; border:1px solid #dfe5ef; min-height:344px; }
+  .area-index { padding:9px; }
+  .area-index h5, .domain-canvas h5, .action-rail h5 { margin:0 0 9px; font-size:9px; color:#111827; }
+  .area-link { font-size:7px; color:#667085; padding:7px 6px; margin-bottom:3px; border-left:2px solid transparent; line-height:1.25; }
+  .area-link.active { color:#2457e6; font-weight:800; background:#edf3ff; border-left-color:#2457e6; }
+  .domain-canvas { padding:12px; background-color:#fbfcfe; background-image:linear-gradient(#eef1f6 1px,transparent 1px),linear-gradient(90deg,#eef1f6 1px,transparent 1px); background-size:18px 18px; }
+  .canvas-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:9px; }
+  .canvas-head p { margin:2px 0 0; color:#667085; font-size:6px; }
+  .legend { display:flex; gap:7px; font-size:6px; color:#667085; white-space:nowrap; }
+  .legend i { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:3px; background:#f59e0b; }
+  .legend i.blue { background:#2457e6; }
+  .legend i.green { background:#16a34a; }
+  .groups { display:grid; gap:8px; }
+  .group { background:rgba(255,255,255,.94); border:1px solid #d6deeb; padding:8px; }
+  .group-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:6px; color:#667085; text-transform:uppercase; letter-spacing:.07em; }
+  .group-title b { color:#344054; }
+  .nodes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .node { background:#fff; border:1px solid #d5ddea; padding:8px; min-height:35px; font-size:6px; color:#667085; position:relative; }
+  .node strong { display:block; color:#1d2939; font-size:8px; margin-bottom:2px; padding-right:10px; }
+  .node::after { content:'›'; position:absolute; right:7px; top:8px; color:#2457e6; font-weight:900; font-size:10px; }
+  .node.blocked { border-color:#f1c36c; box-shadow:inset 3px 0 0 #f59e0b; }
+  .node.review { border-color:#8ba7f1; box-shadow:inset 3px 0 0 #2457e6; }
+  .node.applied { border-color:#86d2aa; box-shadow:inset 3px 0 0 #16a34a; }
+  .action-rail { padding:12px; }
+  .trust { background:#eef3ff; border-left:3px solid #2457e6; color:#344054; padding:8px; font-size:7px; line-height:1.4; margin-bottom:8px; }
+  .task { border-top:1px solid #edf0f5; padding:9px 1px; font-size:7px; color:#667085; }
+  .task b { color:#111827; display:block; margin-bottom:3px; font-size:8px; }
+  .task .meta { color:#98a2b3; font-size:6px; margin-top:3px; }
+  .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#f59e0b; margin-right:4px; }
+  .dot.blue { background:#2457e6; }
+  .dot.green { background:#16a34a; }
+  .button-mini { display:inline-block; margin-top:9px; padding:6px 9px; border-radius:5px; background:#2457e6; color:#fff; font-size:7px; font-weight:800; }
+  .support-strip { margin-top:10px; display:grid; grid-template-columns:repeat(3,1fr); background:#fff; border:1px solid #dfe5ef; }
+  .support-item { padding:9px 11px; font-size:7px; color:#667085; }
+  .support-item + .support-item { border-left:1px solid #e6eaf1; }
+  .support-item b { display:block; color:#344054; font-size:8px; margin-bottom:2px; }
+  .hybrid-note { padding:16px 20px 18px; font-size:13px; color:#475467; line-height:1.5; }
+  .choice-row { margin-top:20px; }
+  @media(max-width:800px){.screen{grid-template-columns:84px 1fr}.workspace{grid-template-columns:1fr}.area-index,.action-rail{display:none}.path-switch,.support-strip{grid-template-columns:1fr}.path+.path,.support-item+.support-item{border-left:0;border-top:1px solid #d8e0ed}.plan-bar{grid-template-columns:1fr auto}.fact{display:none}}
+</style>
+
+<div class="hybrid-intro">
+  <div class="label">Refined direction</div>
+  <h2>C’s operating map, grounded by B’s two clear paths</h2>
+  <p class="subtitle">The landing choice stays simple. After choosing Guided Setup, the user works from a visual map of business areas with factual states and a next-action rail. Configuration Center uses the same map as a direct directory, without draft progress.</p>
+</div>
+
+<div class="hybrid-card">
+  <div class="hybrid-caption"><div><h3>Guided Operating Blueprint</h3><p>Visual enough to orient implementation teams; disciplined enough for daily administration.</p></div><span class="hybrid-tag">C + B hybrid</span></div>
+  <div class="screen">
+    <aside class="app-nav"><div class="brand">Kynex<b>One</b></div><div class="nav-label">Overview</div><div class="nav-item">Dashboard</div><div class="nav-item">Group Overview</div><div class="nav-label">Administration</div><div class="nav-item">User Management</div><div class="nav-item active">Setup</div></aside>
+    <main class="screen-main">
+      <div class="topbar"><div class="search-mini">Search employees, payroll, approvals…</div><div>EN &nbsp; · &nbsp; Evostel Shadow Administrator</div></div>
+      <div class="canvas">
+        <div class="title-row"><div><h4>Setup Studio</h4><p>Prepare reviewed changes or maintain live configuration using the same records and forms.</p></div><div class="scope"><strong>Company:</strong> Evostel ▾</div></div>
+        <div class="path-switch">
+          <div class="path active"><div class="eyebrow">Reviewed change workspace</div><h5>Guided Setup &amp; Major Update</h5><p>Coordinate selected changes. Nothing is applied automatically.</p></div>
+          <div class="path"><div class="eyebrow" style="color:#0f766e">Live configuration maintenance</div><h5>Configuration Center</h5><p>Find one setting and save directly through its standard form.</p></div>
+        </div>
+        <div class="plan-bar"><div><strong>Evostel HR Foundation</strong><small>Initial setup · Stored in this browser · Last saved 6 minutes ago</small></div><div class="fact"><b>8</b>proposed</div><div class="fact"><b>2</b>blockers</div><div class="fact"><b>3</b>applied</div><span class="draft-pill">DRAFT ONLY</span></div>
+        <div class="workspace">
+          <nav class="area-index"><h5>Plan areas</h5><div class="area-link active">Organization &amp; employee data</div><div class="area-link">Recruitment</div><div class="area-link">Time &amp; attendance</div><div class="area-link">Leave &amp; absence</div><div class="area-link">Compensation</div><div class="area-link">Payroll</div><div class="area-link">Performance</div><div class="area-link">Compliance</div></nav>
+          <section class="domain-canvas">
+            <div class="canvas-head"><div><h5>Organization &amp; employee data</h5><p>Choose any task. Visiting a task does not complete it.</p></div><div class="legend"><span><i></i>Blocker</span><span><i class="blue"></i>Review</span><span><i class="green"></i>Applied</span></div></div>
+            <div class="groups">
+              <div class="group"><div class="group-title"><b>Legal entities and structure</b><span>4 tasks</span></div><div class="nodes"><div class="node blocked"><strong>Companies</strong>Scope conflict to resolve</div><div class="node applied"><strong>Branches</strong>2 records applied</div><div class="node review"><strong>Departments</strong>3 proposed changes</div><div class="node"><strong>Designations</strong>Not assessed</div></div></div>
+              <div class="group"><div class="group-title"><b>Workforce definitions</b><span>3 tasks</span></div><div class="nodes"><div class="node review"><strong>Employee Reference Lists</strong>2 values ready for review</div><div class="node"><strong>Grades</strong>Manual configuration</div><div class="node"><strong>Employment records</strong>Related workspace</div><div class="node"><strong>Contract renewals</strong>Related workspace</div></div></div>
+              <div class="group"><div class="group-title"><b>Financial structure</b><span>2 tasks</span></div><div class="nodes"><div class="node"><strong>Cost Centers</strong>Not assessed</div><div class="node blocked"><strong>Budget &amp; Establishment</strong>Permission required</div></div></div>
+            </div>
+          </section>
+          <aside class="action-rail"><h5>Next actions</h5><div class="trust">Draft only. Live configuration changes only after review and an explicit supported Apply or standard form Save.</div><div class="task"><b><span class="dot"></span>Resolve company scope</b>Company information conflicts with the selected Evostel scope.<div class="meta">Organization · Blocker</div></div><div class="task"><b><span class="dot blue"></span>Review reference values</b>Two proposed values have source evidence.<div class="meta">Employee Reference Lists</div></div><div class="task"><b><span class="dot green"></span>Verify applied branches</b>Read-back confirmed two records.<div class="meta">Branches · Applied</div></div><span class="button-mini">Continue next action</span></aside>
+        </div>
+        <div class="support-strip"><div class="support-item"><b>Policy library</b>Sources and publication status</div><div class="support-item"><b>Import organization structure</b>Prepare CSV records</div><div class="support-item"><b>Administration settings</b>System-level controls</div></div>
+      </div>
+    </main>
+  </div>
+  <div class="hybrid-note"><strong>Structural rule:</strong> the blueprint never draws guessed dependency lines or completion percentages. It groups work by business purpose and shows only persisted or directly verified states. Selecting a node opens the existing full-width canonical form.</div>
+</div>
+
+<div class="choice-row options">
+  <div class="option" data-choice="lock-hybrid" onclick="toggleSelect(this)"><div class="letter">✓</div><div class="content"><h3>Use this hybrid</h3><p>Lock C’s blueprint with B’s two-path entry as the Setup Studio direction.</p></div></div>
+  <div class="option" data-choice="revise-hybrid" onclick="toggleSelect(this)"><div class="letter">↻</div><div class="content"><h3>Revise it again</h3><p>Keep the concept but adjust hierarchy, density or terminology.</p></div></div>
+</div>

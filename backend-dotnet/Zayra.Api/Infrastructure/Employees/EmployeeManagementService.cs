@@ -1093,7 +1093,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             TenantId = tenantId,
             EmployeeId = employeeId,
             DocumentType = request.DocumentType.Trim(),
-            DocumentCategory = Clean(request.DocumentCategory),
+            DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(request.DocumentType, request.DocumentCategory),
             FileName = stored.FileName,
             ContentType = stored.ContentType,
             StorageUrl = stored.StorageUrl,
@@ -1306,7 +1306,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
-        if (request.DocumentCategory is not null) doc.DocumentCategory = request.DocumentCategory.Trim();
+        if (request.DocumentCategory is not null || !string.IsNullOrWhiteSpace(request.DocumentType))
+            doc.DocumentCategory = EmployeeDocumentSensitivity.CanonicalCategory(doc.DocumentType,
+                request.DocumentCategory ?? doc.DocumentCategory);
         if (request.IssueDate.HasValue) doc.IssueDate = request.IssueDate;
         if (request.ExpiryDate.HasValue) doc.ExpiryDate = request.ExpiryDate;
         if (request.RenewalReminderDate.HasValue) doc.RenewalReminderDate = request.RenewalReminderDate;
@@ -1549,23 +1551,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
     /// <summary>
-    /// SERVER-AUTHORITATIVE work-email resolution shared by create and update. The modal preview endpoint
-    /// mirrors this exactly (both go through WorkEmailDeriver). Behaviour:
-    ///  - Company has NO email domain (edge-7) → keep whatever was provided (may be blank), NEVER block;
-    ///    a blank surfaces naturally as needs-info via CalculateCompleteness.
-    ///  - Domain present + WorkEmail blank → derive the local part from the name per the company pattern
-    ///    (Arabic-only / unromanizable name → local part "" → left blank for manual entry, never blocked),
-    ///    then auto-suffix on collision (derived values NEVER hard-stop).
-    ///  - Domain present + WorkEmail provided → the domain is server-authoritative: extract the local part
-    ///    and RE-ASSEMBLE on the company domain (a foreign/stale domain is coerced, never persisted), then
-    ///    a collision throws WorkEmailConflictException (the one deliberate stop — never silently duplicate).
-    ///  - Login-identity guard (update only, <see cref="WorkEmailLoginGuard"/>): when the normalized address
-    ///    actually changed, a STAGED (never-activated) login's username follows it in the SAME transaction and
-    ///    its pending invitation is cancelled (a rename that would collide with another login is blocked); an
-    ///    ACTIVATED login is left untouched and the response reports LoginUsernameDiffers. Sets the STRING
-    ///    only — no mailbox is provisioned.
-    /// Collision keys use AuthService.Normalize (Trim + UpperInvariant), the SAME transform the unique
-    /// User.(TenantId, NormalizedEmail) index uses, so two addresses differing only by case are one login.
+    /// Preserve full IT-issued addresses and check tenant-wide duplicates regardless of company preferences.
+    /// Blank remains blank; name/domain/pattern derivation only produces an optional suggestion.
+    /// Unchanged legacy values survive unrelated edits. Staged login renames and activated-login protection
+    /// remain owned by WorkEmailLoginGuard. No mailbox is provisioned.
     /// </summary>
     private async Task<WorkEmailAudit> ResolveWorkEmailAsync(
         Employee employee, EmployeeCreateRequest request, Guid tenantId, string priorWorkEmail, bool isUpdate, RequestContext context, CancellationToken ct)
@@ -1579,13 +1568,14 @@ public class EmployeeManagementService : IEmployeeManagementService
             : null;
         var domain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
 
-        if (!string.IsNullOrWhiteSpace(domain))
+        // Validate changed/new addresses, retaining legacy values on unrelated updates.
+        if (!isUpdate || !string.Equals(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(Clean(request.WorkEmail)),
+                Zayra.Api.Infrastructure.Auth.AuthService.Normalize(priorWorkEmail ?? string.Empty), StringComparison.Ordinal))
         {
-            var pattern = WorkEmailPatterns.Normalize(company!.WorkEmailPattern);
+            var pattern = WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
             var taken = await LoadTenantWorkEmailSetAsync(tenantId, isUpdate ? employee.Id : (int?)null, ct);
             bool IsTaken(string addr) => taken.Contains(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(addr));
-            // Shared authoritative resolution (same code the PATCH edit + preview endpoint use). A wrong domain or a
-            // '+' throws WorkEmailRejectedException (422); a blank stays blank — the derived address is a suggestion.
+            // A blank stays blank; the configured domain/pattern only supplies an optional suggestion.
             var resolvedEmail = WorkEmailDeriver.Resolve(
                 Clean(request.WorkEmail), employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken,
                 out var outcome, out _);
@@ -1593,7 +1583,6 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (outcome == "blank")
                 audit.SuggestedWorkEmail = WorkEmailDeriver.Suggest(employee.EnglishName, employee.ArabicName, domain, pattern, IsTaken);
         }
-        // edge-7 (no domain): employee.WorkEmail keeps the request value (Clean'd in ApplyEmployee); never block.
 
         // A NEW plus-addressed work email is refused; an existing one is left alone until it is changed.
         if (!isUpdate || !string.Equals(Zayra.Api.Infrastructure.Auth.AuthService.Normalize(employee.WorkEmail ?? string.Empty),
@@ -1759,6 +1748,11 @@ public class EmployeeManagementService : IEmployeeManagementService
                 throw new InvalidOperationException($"Designation '{designation.TitleEn}' is eligible only for its configured grade.");
             employee.GradeId ??= designation.GradeId;
         }
+
+        // Pre-save, like the rest of this method, and AFTER the grade is resolved (a designation can supply it), so
+        // the default structure is the grade's and not DIRECT: an unknown or inactive named salary structure is
+        // refused (422) before anything is staged. The writer re-checks as the backstop for its other callers.
+        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary?.SalaryStructureCode, cancellationToken);
 
         if (employee.GradeId is null) return;
 

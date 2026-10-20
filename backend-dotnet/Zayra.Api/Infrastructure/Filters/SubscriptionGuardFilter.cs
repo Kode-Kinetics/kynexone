@@ -8,7 +8,13 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Filters;
 
-public class SubscriptionGuardFilter : IAsyncActionFilter
+/// <summary>
+/// Refuses requests from a suspended, cancelled or expired subscription (402). A resource filter: it runs after
+/// authentication and authorization and BEFORE model binding, so a refused request's body is never read. It moved
+/// with <see cref="FeatureFlagGuardFilter"/> and stays registered first, so a request both would refuse still gets
+/// the subscription answer, as before.
+/// </summary>
+public class SubscriptionGuardFilter : IAsyncResourceFilter
 {
     private static readonly string[] SkippedPrefixes =
     {
@@ -28,7 +34,7 @@ public class SubscriptionGuardFilter : IAsyncActionFilter
         _log = log;
     }
 
-    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    public async Task OnResourceExecutionAsync(ResourceExecutingContext context, ResourceExecutionDelegate next)
     {
         var path = context.HttpContext.Request.Path.Value ?? string.Empty;
 

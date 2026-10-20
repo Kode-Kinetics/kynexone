@@ -23,6 +23,7 @@ using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Jobs;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Invoices;
 using Zayra.Api.Infrastructure.Subscriptions;
@@ -1401,7 +1402,19 @@ public class PlatformController : ControllerBase
             });
         }
 
-        // Audit BEFORE erasure (the audit log row is tenant-scoped but retained as the legal record).
+        try
+        {
+            await OfferArtifactErasure.EraseAsync(_db,
+                HttpContext?.RequestServices?.GetService(typeof(IDocumentStorage)) as IDocumentStorage, tenantId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "Tenant purge of {TenantId} stopped: offer originals could not be confirmed deleted.", tenantId);
+            return Conflict(new { code = "offer_files_not_deleted",
+                message = "Offer original files could not be confirmed deleted, or upload completion is unresolved. Durable metadata was retained. Resolve unfinished uploads before retrying purge." });
+        }
+
+        // Audit BEFORE the remaining erasure (the audit log row is tenant-scoped but retained as the legal record).
         AuditTenant(tenantId, "TenantPurged",
             new { tenantName = name, slug = tenant.Slug },
             new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
@@ -4308,6 +4321,9 @@ public class PlatformController : ControllerBase
         new(FeatureKeys.Engagement,                    "Engagement surveys",                    "Rollout (opt-in)"),
         new(FeatureKeys.Compensation,                  "Merit planning & pay equity",           "Rollout (opt-in)"),
         new(FeatureKeys.ReleaseA,                      "Release A: entitlements & renewals",    "Rollout (opt-in)"),
+        // Off for every tenant by the owner's decision (2026-10-20). Re-enabling is a deliberate platform action; even
+        // then, policy text is never sent to a model (PolicyContentModelGate).
+        new(FeatureKeys.PolicyIntake,                  "Policy intake (upload & parse)",        "Rollout (opt-in)"),
     ];
 
     /// <summary>

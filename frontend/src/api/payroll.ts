@@ -833,8 +833,9 @@ export const payrollApi = {
   reverseRemittance: (runId: string, body: { group: 'GOSI' | 'TAX' | 'LOAN'; reason: string }) =>
     client.post(`/api/payroll/runs/${runId}/remit/reverse`, body).then((r) => r.data),
 
-  listSalaryStructures: () =>
-    client.get<SalaryStructure[]>('/api/payroll/salary-structures').then((r) => r.data),
+  /** With `companyId`, only that company's structures and group-wide ones (no company). */
+  listSalaryStructures: (companyId?: string) =>
+    client.get<SalaryStructure[]>('/api/payroll/salary-structures', { params: companyId ? { companyId } : undefined }).then((r) => r.data),
 
   getSalaryStructure: (id: string) =>
     client.get<SalaryStructure>(`/api/payroll/salary-structures/${id}`).then((r) => r.data),

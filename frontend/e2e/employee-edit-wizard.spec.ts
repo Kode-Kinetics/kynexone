@@ -16,22 +16,24 @@ const initialEmployee = {
   payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', salaryCurrency: 'SAR', payrollGroup: '', paymentMethod: 'BankTransfer', wpsEligible: true, eosbEligible: true },
   passportNumber: 'TEST-PASSPORT-001', passportExpiryDate: '2030-01-31', iqamaNumber: '', gosiReference: '',
   readinessState: 'Ready', activationBlockersCount: 0, profileCompletenessScore: 90, accessState: 'active',
-  complianceRecords: [], documents: [], history: [], transfers: [],
+  complianceRecords: [], documents: [] as Array<{ id: string; documentType: string; fileName: string; approvalStatus: string }>, history: [], transfers: [],
 };
 const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 const salaryBreakdown = { basicSalary: 7000, housingAllowance: 2000, transportAllowance: 300, foodAllowance: 100, mobileAllowance: 50, otherAllowance: 25, fixedDeduction: 10, currency: 'SAR', effectiveDate: '2026-10-01', salaryStructureCode: 'PACKAGE-TEST' };
 type EditBody = { effectiveDate: string; changes: Record<string, unknown> };
-interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; legacySalaryWithNullPackage?: boolean }
+interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean }
 
 async function boot(page: Page, options: BootOptions = {}) {
-  let employee = { ...initialEmployee, ...(options.structuredSalary ? { salaryBreakdown } : options.legacySalaryWithNullPackage ? { salary: 7500, salaryBreakdown: null } : {}) };
+  let employee = { ...initialEmployee, ...(options.structuredSalary ? { salaryBreakdown: { ...salaryBreakdown, ...(options.salaryStructureCode ? { salaryStructureCode: options.salaryStructureCode } : {}) } } : options.legacySalaryWithNullPackage ? { salary: 7500, salaryBreakdown: null } : {}) };
   const writes: Array<{ method: string; body: EditBody }> = [];
+  const documentUploads: string[] = [];
+  let detailReads = 0;
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
     if (message.type() !== 'error') return;
     // The retry fixture deliberately returns one 503; all other browser errors fail the case.
-    if (options.failFirstSave && /Failed to load resource.*503/.test(message.text())) return;
+    if ((options.failFirstSave || options.documentUploadStatus === 503) && /Failed to load resource.*503/.test(message.text())) return;
     errors.push(`console: ${message.text()}`);
   });
   await page.addInitScript(() => {
@@ -41,22 +43,31 @@ async function boot(page: Page, options: BootOptions = {}) {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    const body = request.postData() ? request.postDataJSON() : undefined;
+    const postData = request.postData();
+    const body = postData && (request.headers()['content-type'] ?? '').includes('application/json') ? request.postDataJSON() : undefined;
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
     if (path === '/api/auth/me') return reply({
       id: 'edit-reviewer', tenantId: 'wizard-tenant', tenantSlug: 'wizard-fixture', fullName: 'HR Reviewer',
       roles: [options.readOnly ? 'Auditor' : options.customRole ? 'Custom HR' : 'HR Manager'],
-      permissions: ['employees.read', ...(options.readOnly ? [] : ['employees.write', 'employees.approve']), ...(options.noSensitive || options.readOnly ? [] : ['employees.sensitive'])],
+      permissions: ['employees.read', ...(options.readOnly ? [] : ['employees.write', 'employees.approve', 'employees.documents']), ...(options.noSensitive || options.readOnly ? [] : ['employees.sensitive'])],
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
+    if (path === '/api/admin/master-data/values') return reply([]);
     if (path === '/api/companies') return reply(paged([company]));
     if (path === '/api/branches') return reply(paged([{ id: 'edit-branch', companyId: company.id, nameEn: 'Riyadh', code: 'RYD', isActive: true }]));
     if (path === '/api/departments') return reply(paged([{ id: 'edit-department', nameEn: 'Operations', code: 'OPS', isActive: true }]));
     if (path === '/api/designations') return reply(paged([{ id: 'edit-designation', titleEn: 'Specialist', code: 'SPEC', isActive: true }]));
     if (path === '/api/grades') return reply(paged([{ id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true }]));
     if (path === '/api/organization/cost-centers') return reply(paged([]));
+    if (path === '/api/payroll/salary-structures') return reply([
+      { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
+      { id: 'structure-package', companyId: company.id, code: 'PACKAGE-TEST', name: 'Package test', isActive: true },
+      { id: 'structure-group', companyId: null, code: 'GROUP-STD', name: 'Group standard', isActive: true },
+      { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
+      { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
+    ]);
     if (path === '/api/employees/field-catalog') {
       if (options.catalogResponse && new URL(request.url()).searchParams.get('nationality') === 'GB') return reply(await options.catalogResponse);
       return reply({ countryCode: 'SA', fields: [] });
@@ -67,7 +78,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     }
     if (path === '/api/employees/901' && request.method() !== 'GET') {
       writes.push({ method: request.method(), body });
-      if (options.readOnly || options.customRole) return reply({ message: 'Read-only fixture must never receive an employee mutation.' }, 403);
+      if (options.readOnly) return reply({ message: 'Read-only fixture must never receive an employee mutation.' }, 403);
       if (options.failFirstSave && writes.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
       if (options.approval) {
         const sensitiveFields = Object.keys(body.changes).filter(key => ['salary', 'salaryBreakdown'].includes(key));
@@ -78,7 +89,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       employee = { ...employee, ...body.changes, ...(body.changes.payrollGroup !== undefined ? { payrollProfile: { ...employee.payrollProfile, payrollGroup: body.changes.payrollGroup } } : {}) };
       return reply(employee);
     }
-    if (path === '/api/employees/901') return reply(employee);
+    if (path === '/api/employees/901') { detailReads++; return reply(employee); }
     if (path === '/api/employees') return reply(paged([employee]));
     if (path === '/api/employee-access/summary') return reply({ active: 1 });
     if (path === '/api/employee-access/901') return reply({
@@ -86,19 +97,28 @@ async function boot(page: Page, options: BootOptions = {}) {
       state: 'active', canIssue: false, codeExpiresAtUtc: null, codeIssuedByName: null, lastCodeExpiredAtUtc: null,
       lastSignInAtUtc: '2026-10-01T10:00:00Z', stoppedReason: null, blockedCode: null, blockedReason: null, reasonCode: null,
     });
-    if (path.endsWith('/readiness')) return reply({ employeeId: 901, state: 'Ready', score: 100, progress: { present: 4, requiredTotal: 4 }, policy: { countryCode: 'SA', tier: 'Standard', sources: [] }, blocking: [], payBlocking: [], recommended: [], present: [], expiringSoon: [], disclaimer: 'Synthetic browser fixture.' });
+    if (path.endsWith('/readiness')) return reply({ employeeId: 901, state: options.contractGap ? 'NeedsAttention' : 'Ready', score: options.contractGap ? 80 : 100, progress: { present: options.contractGap ? 4 : 5, requiredTotal: 5 }, policy: { countryCode: 'SA', tier: 'Standard', sources: [] }, blocking: [], payBlocking: [], recommended: options.contractGap ? [{ key: 'doc:Contract', label: 'Contract document', category: 'document', reason: 'recommended', jurisdiction: 'SA', gate: 'activate', fix: { kind: 'document', documentType: 'Contract' } }] : [], present: [], expiringSoon: [], disclaimer: 'Synthetic browser fixture.' });
+    if (path === '/api/employees/901/documents') {
+      if (request.method() === 'GET') return reply(employee.documents);
+      documentUploads.push(postData ?? '');
+      if (options.documentUploadStatus && options.documentUploadStatus !== 201) return reply({ message: 'Document storage unavailable. Try again.' }, options.documentUploadStatus);
+      const uploaded = { id: 'document-upload-fixture', documentType: postData?.includes('Offer letter') ? 'Offer letter' : 'Contract', fileName: 'evostel-demo.docx', approvalStatus: 'Pending' };
+      employee = { ...employee, documents: [uploaded, ...employee.documents] };
+      return reply(uploaded, 201);
+    }
     if (path.includes('/features/') || path === '/api/notifications' || path.endsWith('/documents') || path.endsWith('/history') || path.endsWith('/pay-scale')) return reply([]);
     return reply(paged([]));
   });
-  await page.goto('/people');
-  await expect(page).toHaveURL(/\/people(?:\?|$)/);
+  await page.goto(options.readOnly ? '/people/901?section=personal' : '/people/901/edit?mode=guided&section=personal');
+  await expect(page).toHaveURL(options.readOnly ? /\/people\/901\?section=personal/ : /\/people\/901\/edit/);
   await expect(page).not.toHaveTitle('');
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const dialog = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const dialog = options.readOnly ? page.locator('main.employee-workspace') : page.getByTestId('employee-edit-flow');
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('navigation', { name: 'Employee setup progress' })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Step 1: Profile', exact: true })).toHaveAttribute('aria-current', 'step');
-  return { dialog, writes, errors };
+  if (!options.readOnly) {
+    await expect(dialog.getByRole('navigation', { name: 'Employee setup progress' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Step 1: Profile', exact: true })).toHaveAttribute('aria-current', 'step');
+  }
+  return { dialog, writes, errors, documentUploads, detailReadCount: () => detailReads };
 }
 
 async function next(dialog: Locator, index: number) {
@@ -112,10 +132,33 @@ async function toReview(dialog: Locator, start = 1) {
 
 async function evidence(page: Page, info: TestInfo, name: string) {
   const path = info.outputPath(`${name}-${info.project.name}.png`);
-  await expect(page.locator('[data-employee-step]:visible')).toHaveCSS('opacity', '1');
+  const step = page.locator('[data-employee-step]:visible');
+  if (await step.count()) await expect(step).toHaveCSS('opacity', '1');
   await page.screenshot({ path, fullPage: false, animations: 'disabled', style: 'nextjs-portal { visibility: hidden; }' });
   await info.attach(name, { path, contentType: 'image/png' });
 }
+
+async function reopenEdit(page: Page) {
+  await page.getByRole('link', { name: 'Edit full record', exact: true }).click();
+  const flow = page.getByTestId('employee-edit-flow');
+  await expect(flow).toBeVisible();
+  return flow;
+}
+
+test('email regression: edit preserves the full address across employment review and save', async ({ page }, info) => {
+  const { dialog, writes, errors } = await boot(page);
+  await next(dialog, 1);
+  const input = dialog.getByRole('textbox', { name: 'Work email', exact: true });
+  await expect(input).toHaveValue('alex.it-issued@example.test');
+  await input.fill('alex.updated@external.test');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('alex.updated@external.test');
+  await evidence(page, info, 'full-email-edit-review');
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes[0].body.changes.workEmail).toBe('alex.updated@external.test');
+  expect(errors).toEqual([]);
+});
 
 test('employee name opens a prefilled wizard and review saves only edited fields', async ({ page }, info) => {
   const { dialog, writes, errors } = await boot(page);
@@ -126,9 +169,9 @@ test('employee name opens a prefilled wizard and review saves only edited fields
   await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex M');
   await next(dialog, 1);
   await expect(dialog.getByRole('textbox', { name: /^Job title/ })).toHaveValue('Operations specialist');
-  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued');
+  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.it-issued@example.test');
   await dialog.getByRole('textbox', { name: /^Job title/ }).fill('Senior operations specialist');
-  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.updated-by-it');
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.updated-by-it@example.test');
   await next(dialog, 2);
   await expect(dialog.getByRole('textbox', { name: /^Bank name/ })).toHaveValue('Test Bank');
   await expect(dialog.getByRole('textbox', { name: /^IBAN/ })).toHaveValue('SA0380000000608010167519');
@@ -140,7 +183,7 @@ test('employee name opens a prefilled wizard and review saves only edited fields
   await evidence(page, info, 'edit-review');
   expect(writes).toHaveLength(0);
   await dialog.getByRole('button', { name: 'Edit Employment', exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.updated-by-it');
+  await expect(dialog.getByRole('textbox', { name: 'Work email', exact: true })).toHaveValue('alex.updated-by-it@example.test');
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
   await expect(dialog.getByRole('button', { name: /^Step 6: Review/ })).toHaveAttribute('aria-current', 'step');
   await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
@@ -179,6 +222,12 @@ test('structured salary edits preserve the complete package and persist resumed 
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(dialog.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('7000');
   await expect(dialog.getByRole('spinbutton', { name: /^Housing allowance/ })).toHaveValue('2000');
+  // The structure is a choice of the company's active (or group-wide) structures, never free text; retired ones and
+  // other companies' are not offered.
+  const structure = dialog.getByRole('combobox', { name: /^Salary structure/ });
+  await expect(structure).toHaveValue('PACKAGE-TEST');
+  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Group standard (GROUP-STD) — all companies', 'Operations band (OPS-BAND)', 'Package test (PACKAGE-TEST)']);
+  await expect(dialog.getByRole('textbox', { name: /Salary structure/ })).toHaveCount(0);
   await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
   await dialog.getByRole('spinbutton', { name: /^Housing allowance/ }).fill('2500');
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
@@ -189,13 +238,77 @@ test('structured salary edits preserve the complete package and persist resumed 
   expect(writes).toHaveLength(1);
   expect(writes[0].body.changes).toEqual({ payrollGroup: 'Monthly payroll', salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, housingAllowance: 2500 } });
   expect(writes[0].body.changes).not.toHaveProperty('salary');
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const reopened = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const reopened = await reopenEdit(page);
   await reopened.getByRole('button', { name: /^Step 3: Payroll/ }).click();
   await expect(reopened.getByRole('textbox', { name: /^Payroll group/ })).toHaveValue('Monthly payroll');
   await reopened.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(reopened.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('8000');
   await expect(reopened.getByRole('spinbutton', { name: /^Transport allowance/ })).toHaveValue('300');
+  expect(errors).toEqual([]);
+});
+
+test('choosing another salary structure sends its code with the complete package, and no free-text reference exists', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, approval: true });
+  await dialog.getByRole('button', { name: /^Step 3: Payroll/ }).click();
+  await expect(dialog.getByRole('textbox', { name: /^Salary structure reference/ })).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('combobox', { name: /^Salary structure/ }).selectOption('OPS-BAND');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, salaryStructureCode: 'OPS-BAND' } });
+  expect(errors).toEqual([]);
+});
+
+test('a retired current salary structure is flagged, blocks a salary change until another is chosen, and never blocks other edits', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD', approval: true });
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  const structure = dialog.getByRole('combobox', { name: /^Salary structure/ });
+  await expect(structure).toHaveValue('OPS-OLD');
+  await expect(structure.locator('option:checked')).toHaveText('Retired band (OPS-OLD) — not valid any more, choose another');
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  const save = dialog.getByRole('button', { name: 'Save changes', exact: true });
+  await expect(dialog.getByRole('alert').filter({ hasText: 'no longer valid for this employee' })).toBeVisible();
+  await expect(save).toBeDisabled();
+  expect(writes).toHaveLength(0);
+  // Choosing a valid structure clears the block and sends it with the package.
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await structure.selectOption('OPS-BAND');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: 'OPS-BAND' } });
+  expect(errors).toEqual([]);
+});
+
+test('an edit that does not touch the salary saves even when the current structure is retired', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD' });
+  await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex M');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await expect(dialog.getByRole('combobox', { name: /^Salary structure/ })).toHaveValue('OPS-OLD');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.changes).toEqual({ preferredName: 'Alex M' });
+  expect(errors).toEqual([]);
+});
+
+test('the grade dropdown follows Setup changes while the edit form is open', async ({ page }) => {
+  const { dialog, errors } = await boot(page);
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  const gradeSelect = dialog.getByRole('combobox', { name: 'Grade', exact: true });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'G5']);
+  const grade = { id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true };
+  const rows = [{ ...grade, isActive: false }, { ...grade, id: 'edit-grade-7', code: 'G7', name: 'Principal' }];
+  await page.route('**/api/grades?**', route => route.fulfill({ json: { items: rows, total: rows.length, page: 1, pageSize: 100 } }));
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:grades-changed')));
+  // G5 was retired, G7 added; the employee's current value stays selectable.
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'G7']);
   expect(errors).toEqual([]);
 });
 
@@ -214,8 +327,7 @@ test('sensitive edits retain the existing 202 approval behavior without claiming
   expect(writes).toHaveLength(1);
   expect(writes[0].method).toBe('PUT');
   expect(writes[0].body.changes).toEqual({ preferredName: 'Alex M', salary: 11000 });
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const reopened = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const reopened = await reopenEdit(page);
   await expect(reopened.getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex M');
   await next(reopened, 1);
   await next(reopened, 2);
@@ -236,8 +348,7 @@ test('a legacy salary with no package remains a scalar salary edit requiring app
   expect(writes).toHaveLength(1);
   expect(writes[0].body.changes).toEqual({ salary: 8000 });
   await expect(page.getByText(/Sensitive changes submitted to Approval Center/)).toBeVisible();
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const reopened = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const reopened = await reopenEdit(page);
   await reopened.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(reopened.getByRole('spinbutton', { name: /^Salary\b/ })).toHaveValue('7500');
   expect(errors).toEqual([]);
@@ -259,8 +370,7 @@ test('future salary changes retain their effective date and remain pending appro
   expect(writes).toHaveLength(1);
   expect(writes[0].body).toEqual({ effectiveDate: futureDate, changes: { preferredName: 'Alex M', salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, effectiveDate: futureDate } } });
   await expect(page.getByText(/Sensitive changes submitted to Approval Center/)).toBeVisible();
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const reopened = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const reopened = await reopenEdit(page);
   await expect(reopened.getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex M');
   await reopened.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(reopened.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('7000');
@@ -299,24 +409,62 @@ test('future salary changes cannot include other approval-required changes', asy
   expect(errors).toEqual([]);
 });
 
-test('read-only users see the same steps without edit controls and can open the full profile', async ({ page }, info) => {
+test('read-only users see the record without edit or sensitive controls', async ({ page }, info) => {
   const { dialog, writes, errors } = await boot(page, { readOnly: true });
-  for (let index = 0; index < stepNames.length; index++) {
-    if (index > 0) await next(dialog, index);
-    await expect(dialog.locator('input, select, textarea')).toHaveCount(0);
-    await expect(dialog.getByRole('button', { name: /^Save/ })).toHaveCount(0);
-    await expect(dialog.getByRole('button', { name: /^Edit / })).toHaveCount(0);
-    const bounds = await dialog.boundingBox();
-    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
-    expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-  }
   await expect(dialog).toContainText('Alex Morgan');
+  await expect(dialog.getByRole('link', { name: /Edit/ })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: /^Save/ })).toHaveCount(0);
+  await expect(page.getByText('TEST-PASSPORT-001', { exact: true })).toHaveCount(0);
+  const bounds = await dialog.boundingBox();
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   await evidence(page, info, 'employee-readonly-review');
-  await dialog.getByRole('button', { name: 'Open full profile', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Close employee profile', exact: true })).toBeVisible();
-  await expect(page.getByTestId('employee-access-card')).toBeVisible();
   expect(writes).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('Open full profile returns to the route-owned employee record', async ({ page }) => {
+  const { dialog, detailReadCount, errors } = await boot(page);
+  const before = detailReadCount();
+  await dialog.getByRole('link', { name: 'Open full profile', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Alex Morgan', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Employee record sections' })).toBeVisible();
+  await expect.poll(detailReadCount).toBeGreaterThan(before);
+  expect(errors).toEqual([]);
+});
+
+test('document upload shows success and explains when an offer letter does not close the contract gap', async ({ page }) => {
+  const { dialog, documentUploads, errors } = await boot(page, { contractGap: true });
+  await dialog.getByRole('link', { name: 'Open full profile', exact: true }).click();
+  await page.getByRole('link', { name: 'Compliance & Documents', exact: true }).click();
+  await page.getByRole('link', { name: 'Upload document', exact: true }).click();
+  await page.getByLabel('Document type', { exact: true }).selectOption('Offer letter');
+  await page.getByLabel('Upload document file', { exact: true }).setInputFiles({
+    name: 'evostel-demo.docx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer: Buffer.from('synthetic offer letter'),
+  });
+  await page.getByRole('button', { name: 'Upload Offer letter', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Offer letter uploaded. The Contract document checklist still requires a Contract file.');
+  await expect(page.getByText('evostel-demo.docx', { exact: false })).toBeVisible();
+  expect(documentUploads).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('document upload keeps the selected file and shows the API error so the user can retry', async ({ page }) => {
+  const { dialog, documentUploads, errors } = await boot(page, { documentUploadStatus: 503, contractGap: true });
+  await dialog.getByRole('link', { name: 'Open full profile', exact: true }).click();
+  await page.getByRole('link', { name: 'Compliance & Documents', exact: true }).click();
+  await page.getByRole('link', { name: 'Upload document', exact: true }).click();
+  await page.getByLabel('Document type', { exact: true }).selectOption('Contract');
+  const file = page.getByLabel('Upload document file', { exact: true });
+  await file.setInputFiles({ name: 'evostel-contract.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: Buffer.from('synthetic contract') });
+  await page.getByRole('button', { name: 'Upload Contract', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'The service is temporarily unavailable. Retry in a minute.' })).toBeVisible();
+  await expect(file).toHaveValue(/evostel-contract\.docx$/);
+  await expect(page.getByRole('button', { name: 'Upload Contract', exact: true })).toBeEnabled();
+  expect(documentUploads).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 
@@ -360,13 +508,14 @@ test('writers without sensitive access can edit ordinary fields while payroll an
   expect(errors).toEqual([]);
 });
 
-test('a custom role with write permission remains read-only when the API role gate excludes it', async ({ page }) => {
+test('a custom role with employees.write can review and save ordinary changes', async ({ page }) => {
   const { dialog, writes, errors } = await boot(page, { customRole: true });
-  await expect(dialog.locator('input, select, textarea')).toHaveCount(0);
+  await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Custom-role edit');
   await toReview(dialog);
-  await expect(dialog.getByRole('button', { name: /^Save/ })).toHaveCount(0);
-  await expect(dialog.getByRole('button', { name: /^Edit / })).toHaveCount(0);
-  expect(writes).toHaveLength(0);
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.changes).toEqual({ preferredName: 'Custom-role edit' });
   expect(errors).toEqual([]);
 });
 
@@ -374,12 +523,12 @@ test('invalid work-email changes stop at Employment until corrected', async ({ p
   const { dialog, writes, errors } = await boot(page);
   await next(dialog, 1);
   const email = dialog.getByRole('textbox', { name: 'Work email', exact: true });
-  await email.fill('alex+alias');
+  await email.fill('alex+alias@example.test');
   await dialog.getByRole('button', { name: 'Next: Payroll', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Step 2: Employment', exact: true })).toHaveAttribute('aria-current', 'step');
-  await expect(dialog.getByTestId('work-email-problem')).toContainText(/work email/i);
+  await expect(dialog.getByRole('alert')).toContainText(/work email/i);
   expect(writes).toHaveLength(0);
-  await email.fill('alex.it-issued');
+  await email.fill('alex.it-issued@example.test');
   await next(dialog, 2);
   expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
@@ -388,24 +537,16 @@ test('invalid work-email changes stop at Employment until corrected', async ({ p
 test('cancel protects unsaved changes and discarding restores the saved record on reopen', async ({ page }) => {
   const { dialog, writes, errors } = await boot(page);
   await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Unsaved preferred name');
-  const confirmations: string[] = [];
-  page.once('dialog', async confirmation => {
-    confirmations.push(confirmation.message());
-    await confirmation.dismiss();
-  });
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await dialog.getByRole('link', { name: 'Cancel', exact: true }).click();
+  const confirmation = page.getByRole('dialog', { name: 'Discard changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog.getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Unsaved preferred name');
-  page.once('dialog', async confirmation => {
-    confirmations.push(confirmation.message());
-    await confirmation.accept();
-  });
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await dialog.getByRole('link', { name: 'Cancel', exact: true }).click();
+  await confirmation.getByRole('button', { name: 'Discard and leave', exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-  const reopened = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
+  const reopened = await reopenEdit(page);
   await expect(reopened.getByRole('textbox', { name: /^Preferred name/ })).toHaveValue('Alex');
-  expect(confirmations).toHaveLength(2);
-  expect(confirmations.every(message => /discard.*unsaved/i.test(message))).toBe(true);
   expect(writes).toHaveLength(0);
   expect(errors).toEqual([]);
 });
@@ -413,7 +554,7 @@ test('cancel protects unsaved changes and discarding restores the saved record o
 
 test('a late response for the first row cannot replace or save over the latest employee', async ({ page }) => {
   const { dialog, writes, errors } = await boot(page);
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await dialog.getByRole('link', { name: 'Cancel', exact: true }).click();
   let secondEmployee = { ...initialEmployee, id: 902, employeeCode: 'TEST-902', fullName: 'Blake Carter', englishName: 'Blake Carter', preferredName: 'Blake', workEmail: 'blake.it-issued@example.test' };
   const secondWrites: Array<{ method: string; body: EditBody }> = [];
   let firstRequested = false;
@@ -444,16 +585,14 @@ test('a late response for the first row cannot replace or save over the latest e
     state: 'active', canIssue: false, codeExpiresAtUtc: null, codeIssuedByName: null, lastCodeExpiredAtUtc: null,
     lastSignInAtUtc: '2026-10-01T10:00:00Z', stoppedReason: null, blockedCode: null, blockedReason: null, reasonCode: null,
   } }));
-  await page.reload();
-  await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
+  await page.goto('/people/901/edit?mode=guided&section=personal');
   await expect.poll(() => firstRequested).toBe(true);
-  await page.getByRole('button', { name: 'Open profile for Blake Carter', exact: true }).click();
-  const latest = page.getByRole('dialog').filter({ hasText: 'Blake Carter' });
+  await page.goto('/people/902/edit?mode=guided&section=personal');
+  const latest = page.getByTestId('employee-edit-flow');
   await expect(latest.getByRole('textbox', { name: /^English full name/ })).toHaveValue('Blake Carter');
-  const firstResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/employees/901');
   firstReleased = true;
   releaseFirst();
-  await firstResponse;
+  await page.waitForTimeout(100);
   await expect(latest.getByRole('textbox', { name: /^English full name/ })).toHaveValue('Blake Carter');
   await latest.getByRole('textbox', { name: /^Preferred name/ }).fill('Blake reviewed');
   await toReview(latest);

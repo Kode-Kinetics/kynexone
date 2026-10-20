@@ -64,6 +64,7 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
     {
         await using var db = fx.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         var active = new Employee { TenantId = tenant, EmployeeCode = "BYP-1", FullName = "Existing Active", Status = "Active", CountryCode = "SA", Nationality = "Saudi", JoiningDate = Joined };
         var separated = new Employee { TenantId = tenant, EmployeeCode = "BYP-2", FullName = "Already Terminated", Status = "Terminated", CountryCode = "SA", Nationality = "Saudi", JoiningDate = Joined };
         var control = new Employee { TenantId = tenant, EmployeeCode = "BYP-3", FullName = "Edit Modal Control", Status = "Active", CountryCode = "SA", Nationality = "Saudi", JoiningDate = Joined };
@@ -127,6 +128,7 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
         // let the file's account number and routing code fill the profile beside a DIFFERENT, authoritative IBAN.
         await using var db = fx.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         var emp = new Employee { TenantId = tenant, EmployeeCode = "HOLE-1", FullName = "Profile Iban Only", Status = "Active", JoiningDate = Joined, BankIban = "" };
         db.Employees.Add(emp);
         await db.SaveChangesAsync();
@@ -155,6 +157,7 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
         // and so does the import. Only EXISTING employees are protected by maker-checker.
         await using var db = fx.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         var csv = "EmployeeCode,FullName,BankName,IBAN,AccountNumber,BankRoutingCode,JoiningDate\n"
                   + $"NEW-1,Brand New,First Bank,{FileIban},123456,RTG-1,2024-01-01\n";
         var imported = Json(await HrOfficer(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(csv), default));
@@ -178,6 +181,7 @@ public sealed class EmployeeImportRepairSensitiveFieldsPostgresTests(PostgresFix
     {
         await using var seed = fx.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(seed);
+        await TestApprovalConfig.EnsureDeciderAsync(seed, tenant);
         var a = new Company { TenantId = tenant, LegalNameEn = "Scope A Co", CountryCode = "SA", Jurisdiction = "test", RegistrationNumber = $"A-{Guid.NewGuid():N}"[..20], DefaultCurrency = "SAR", IsActive = true };
         var b = new Company { TenantId = tenant, LegalNameEn = "Scope B Co", CountryCode = "SA", Jurisdiction = "test", RegistrationNumber = $"B-{Guid.NewGuid():N}"[..20], DefaultCurrency = "SAR", IsActive = true };
         seed.Companies.AddRange(a, b);

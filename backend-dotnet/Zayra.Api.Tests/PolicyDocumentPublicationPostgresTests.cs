@@ -56,7 +56,7 @@ public sealed class PolicyDocumentPublicationPostgresTests(PostgresFixture fixtu
             await currentDb.SaveChangesAsync();
         }
         var service = new PolicyDocumentService(staleDb, new NoLlm(), new AiOptions("none", "", "", "", "", "", 4096, true, false),
-            new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+            new Recorder(), NullLogger<PolicyDocumentService>.Instance, PolicyContentNeverLeaves.Instance);
         var controller = new PolicyDocumentController(service, staleDb, new AuditService(staleDb))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(new[] {

@@ -49,7 +49,7 @@ public sealed class PayrollAttendanceMarkCountPostgresTests
             race.Fired.Should().BeTrue("premise: the recompute ran between the load and the mark");
             var refused = result.Should().BeOfType<ObjectResult>().Subject;
             refused.StatusCode.Should().Be(409);
-            Prop<string>(refused.Value!, "error").Should().Be("attendance_changed_during_process");
+            Prop<string>(refused.Value!, "error").Should().Be("payroll_impacts_changed_concurrently");
         }
 
         await using var check = k.NewContext();

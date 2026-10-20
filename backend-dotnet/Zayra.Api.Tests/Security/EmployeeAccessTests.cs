@@ -91,14 +91,14 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
-    public async Task Create_RefusesAWrongDomain_AndAPlusAddress()
+    public async Task Create_AcceptsAnIssuedExternalAddress_AndRefusesAPlusAddress()
     {
         var w = await SeedAsync();
         await using var db = _fx.CreateDb();
-        var refused = await Assert.ThrowsAsync<WorkEmailRejectedException>(() => Employees(db).CreateAsync(
-            w.TenantId, Hire("Noah Hr", "noah@gmail.com", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
-        refused.Code.Should().Be(WorkEmailRejectedException.WrongDomainCode);
-        refused.Message.Should().Be($"Work email must end in @{w.Domain}.");
+        var created = await Employees(db).CreateAsync(
+            w.TenantId, Hire("Noah External", "noah@gmail.com", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default);
+        created.WorkEmail.Should().Be("noah@gmail.com");
+        (await StateAsync(w, created.Id)).Should().Be(EmployeeAccessStates.NotStarted);
         await Assert.ThrowsAsync<WorkEmailPlusAddressException>(() => Employees(db).CreateAsync(
             w.TenantId, Hire("Noah Hr", $"noah+hr@{w.Domain}", w.CompanyId), Ctx(w.HrOfficerId, w.TenantId), default));
         await using var verify = _fx.CreateDb();
@@ -110,10 +110,9 @@ public sealed class EmployeeAccessTests
     {
         var w = await SeedAsync();
         await using var db = _fx.CreateDb();
-        var result = await EmployeesCtl(db, w, w.HrOfficerId).CreateEmployee(Hire("Wrong Domain", "x@elsewhere.test", w.CompanyId), Employees(db), default);
+        var result = await EmployeesCtl(db, w, w.HrOfficerId).CreateEmployee(Hire("Malformed Email", "x@", w.CompanyId), Employees(db), default);
         var body = JsonSerializer.SerializeToElement(Assert.IsType<UnprocessableEntityObjectResult>(result.Result).Value);
-        body.GetProperty("code").GetString().Should().Be("work_email_wrong_domain");
-        body.GetProperty("suggestedWorkEmail").GetString().Should().Be($"x@{w.Domain}");
+        body.GetProperty("code").GetString().Should().Be("work_email_invalid_format");
     }
 
     [Fact]
@@ -187,9 +186,8 @@ public sealed class EmployeeAccessTests
         ids["IMP-B"].WorkEmail.Should().BeEmpty("import no longer derives an address");
         (await StateAsync(w, ids["IMP-A"].Id)).Should().Be(EmployeeAccessStates.NotStarted);
         (await StateAsync(w, ids["IMP-B"].Id)).Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
-        // Import keeps a wrong-domain address (flagged), but no login is ever staged on it.
-        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.EmployeeId == ids["IMP-D"].Id)).Should().BeFalse();
-        (await GetAsync(w, ids["IMP-D"].Id, w.HrOfficerId))!.BlockedCode.Should().Be(EmployeeLoginProvisioner.BlockedCodes.WrongDomain);
+        (await verify.EmployeeUserAccounts.IgnoreQueryFilters().AnyAsync(x => x.EmployeeId == ids["IMP-D"].Id)).Should().BeTrue();
+        (await StateAsync(w, ids["IMP-D"].Id)).Should().Be(EmployeeAccessStates.NotStarted);
     }
 
     [Fact]
@@ -231,14 +229,14 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
-    public async Task ACompanyWithoutADomain_LeavesTheEmployeeBlocked()
+    public async Task ACompanyWithoutADomain_AllowsWelcomeCodeIssuance()
     {
         var w = await SeedAsync();
         var id = await AddEmployeeAsync(w, "someone@nodomain.test", companyId: w.OtherCompanyId);
         var access = await GetAsync(w, id, w.HrOfficerId);
-        access!.State.Should().Be(EmployeeAccessStates.Blocked);
-        access.BlockedCode.Should().Be(EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing);
-        access.CanIssue.Should().BeFalse();
+        access!.State.Should().Be(EmployeeAccessStates.NotStarted);
+        access.BlockedCode.Should().BeNull();
+        access.CanIssue.Should().BeTrue();
     }
 
     // ── States and the list ────────────────────────────────────────────────────────────────────────────
@@ -252,7 +250,7 @@ public sealed class EmployeeAccessTests
         var given = await AddStagedAsync(w, $"given@{w.Domain}");
         var active = await AddStagedAsync(w, $"active@{w.Domain}");
         var stopped = await AddStagedAsync(w, $"stopped@{w.Domain}");
-        var blocked = await AddEmployeeAsync(w, "x@nodomain.test", companyId: w.OtherCompanyId);
+        var blocked = await AddEmployeeAsync(w, "incomplete-address", companyId: w.OtherCompanyId);
 
         var codes = await IssueAsync(w, w.HrOfficerId, [given, active, stopped]);
         codes.Issued.Should().HaveCount(3);
@@ -654,7 +652,13 @@ public sealed class EmployeeAccessTests
     {
         var w = await SeedAsync();
         await using var db = _fx.CreateDb();
-        OrganizationController Org(Guid caller) => new(new OrganizationSetupService(db, new AuditService(db)))
+        // Both company endpoints apply the creation gate; this tenant must be a group to add a company.
+        var tenant = await db.Tenants.IgnoreQueryFilters().SingleAsync(t => t.Id == w.TenantId);
+        tenant.AccountType = TenantAccountTypes.Group;
+        await db.SaveChangesAsync();
+        // The token carries the caller's permissions, as a real one does: both company endpoints check
+        // security.manage on the token before the service re-checks the caller in the database.
+        OrganizationController Org(Guid caller, params string[] permissions) => new(new OrganizationSetupService(db, new AuditService(db)), db)
         {
             ControllerContext = new ControllerContext
             {
@@ -664,7 +668,7 @@ public sealed class EmployeeAccessTests
                     {
                         new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, caller.ToString()),
                         new Claim(ClaimTypes.Role, "HR Manager"),
-                    }, "Test")),
+                    }.Concat(permissions.Select(p => new Claim("permission", p))), "Test")),
                 },
             },
         };
@@ -679,7 +683,7 @@ public sealed class EmployeeAccessTests
         Assert.IsType<ObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update, default)).Result).StatusCode.Should().Be(403);
         Assert.IsType<OkObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update with { EmailDomain = w.Domain }, default)).Result);
         // The security admin may.
-        Assert.IsType<CreatedResult>((await Org(w.AdminId).CreateCompany(request, default)).Result);
+        Assert.IsType<CreatedResult>((await Org(w.AdminId, CompanyEmailDomainRules.SecurityPermission).CreateCompany(request, default)).Result);
     }
 
     [Theory]
@@ -727,7 +731,7 @@ public sealed class EmployeeAccessTests
         await AddEmployeeAsync(w, "");
         var given = await AddStagedAsync(w, $"sum.given@{w.Domain}");
         await AddStagedAsync(w, $"sum.ns@{w.Domain}");
-        var blocked = await AddEmployeeAsync(w, "x@nodomain.test", companyId: w.OtherCompanyId);
+        var blocked = await AddEmployeeAsync(w, "incomplete-address", companyId: w.OtherCompanyId);
         var suspended = await AddStagedAsync(w, $"sum.susp@{w.Domain}");
         await IssueAsync(w, w.HrOfficerId, [given]);
         await using (var db = _fx.CreateDb())
@@ -749,7 +753,7 @@ public sealed class EmployeeAccessTests
         var stoppedDto = await GetAsync(w, suspended, w.HrOfficerId);
         stoppedDto!.StoppedReason.Should().Be("disabled_by_admin");
         var blockedDto = await GetAsync(w, blocked, w.HrOfficerId);
-        blockedDto!.BlockedReason.Should().Be("company_email_domain_missing");
+        blockedDto!.BlockedReason.Should().Be("work_email_invalid_format");
         blockedDto.BlockedReasonText.Should().NotBeNullOrWhiteSpace();
         var left = await AddStagedAsync(w, $"sum.left@{w.Domain}");
         await UpdateEmployeeAsync(left, e => e.Status = "Terminated");
@@ -1288,9 +1292,9 @@ public sealed class EmployeeAccessTests
 
         var dry = await BackfillAsync(w, rows, dryRun: true);
         dry.Saved.Should().Be(0);
-        dry.Matched.Select(m => m.EmployeeCode).Should().BeEquivalentTo(["BF-A"]);
+        dry.Matched.Select(m => m.EmployeeCode).Should().BeEquivalentTo(["BF-A", "BF-B"]);
         dry.NotFound.Should().BeEquivalentTo(["BF-NOPE"]);
-        dry.WrongDomain.Should().ContainSingle(x => x.EmployeeCode == "BF-B" && x.ExpectedDomain == w.Domain);
+        dry.WrongDomain.Should().BeEmpty();
         dry.Conflicts.Select(x => (x.EmployeeCode, x.Reason)).Should().BeEquivalentTo(new[]
         {
             ("BF-C", "duplicate_in_file"), ("BF-D", "duplicate_in_file"), ("BF-E", "username_differs"),
@@ -1298,11 +1302,11 @@ public sealed class EmployeeAccessTests
         (await StateAsync(w, a)).Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
 
         var saved = await BackfillAsync(w, rows, dryRun: false);
-        saved.Saved.Should().Be(1);
+        saved.Saved.Should().Be(2);
         (await StateAsync(w, a)).Should().Be(EmployeeAccessStates.NotStarted);
         await using (var db = _fx.CreateDb())
         {
-            (await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == b)).WorkEmail.Should().BeEmpty();
+            (await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == b)).WorkEmail.Should().Be("beta@elsewhere.test");
             (await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == activeOne)).WorkEmail.Should().Be($"live@{w.Domain}");
         }
         // Idempotent re-run.

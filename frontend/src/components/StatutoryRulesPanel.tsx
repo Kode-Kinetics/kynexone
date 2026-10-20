@@ -11,6 +11,7 @@ import { useT } from '../hooks/useT';
 import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import { Modal } from './Modal';
+import { useSetupEditorState } from './setup/SetupEditorState';
 
 type ScopeFilter = 'all' | 'default' | 'override';
 type RuleStatus = 'Active' | 'Scheduled' | 'Retired';
@@ -83,6 +84,7 @@ export function StatutoryRulesPanel() {
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [decisionError, setDecisionError] = useState('');
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
+  useSetupEditorState(formOpen || (deciding?.action === 'reject' && rejectReason.length > 0));
 
   const loadPending = useCallback(async () => {
     if (!canSeePending) return;

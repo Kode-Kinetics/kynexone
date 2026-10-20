@@ -82,6 +82,12 @@ public class RawSqlExecutionRatchetTests
         // Writes no row. Exercised by MigrationImportSeatLockRaceTests.
         ["Controllers/MigrationImportController.AccessGate.cs"] = 1,
         ["Infrastructure/Finance/FinanceDecisionSerializer.cs"] = 1,
+        // Tenant erasure: `SELECT set_config('app.offer_lifecycle_erasure', {tenantId}, true)`, parameterised and
+        // transaction-local. Writes no row; the offer lifecycle/dispatch/handoff immutability triggers honour it only
+        // for rows whose OLD.tenant_id equals it AND whose tenant is already soft-deleted, so it cannot unlock a live
+        // tenant or another tenant's rows. OfferTenantErasureTests.BothTenantErasurePathsRetainArtifactObligationsOnFailureAndDeleteOnlyTheirTenantOnRetry
+        // proves only the erased tenant's rows go.
+        ["Infrastructure/Recruitment/OfferArtifactErasure.cs"] = 1,
         // Parameterized advisory lock only; key includes tenant + canonical employee. No row writes.
         // Jawazat creation idempotency and company-scope tests cover the governed ticket producer.
         ["Infrastructure/Jawazat/JawazatWorkflowService.cs"] = 1,

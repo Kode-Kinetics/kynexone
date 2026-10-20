@@ -7,6 +7,7 @@ using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
@@ -889,6 +890,12 @@ public class LeaveService : ILeaveService
                     ?? await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
         var firstStep = route.FirstStep;
         var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        // Nobody at all could decide the first step ⇒ refused (typed 422), and this transaction rolls back with
+        // no balance reserved. Its own approver cannot act but Admin/approvals.override can ⇒ that queue, audited.
+        var firstRequester = requestedByUserId ?? employee.UserAccountId;
+        var firstOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, firstStep, firstApprover,
+            new[] { firstRequester }, atSubmission: true, ct);
+        if (firstOverride is not null) firstApprover = firstOverride;
         request.Status = StatusForPendingStep(firstStep);
         var firstApproverEmployeeId = firstApprover.EmployeeId;
         var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
@@ -925,6 +932,8 @@ public class LeaveService : ILeaveService
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
+        if (firstOverride is not null)
+            await LogOverrideRoutingAsync(tenantId, request, firstStep, ct);
         if (statutoryKind is { } declaredKind && IsDeclaredSeparate(request, declaredKind))
             await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "StatutoryEventDeclaredSeparate",
                 string.Empty, $"event_date={request.StatutoryEventDate:yyyy-MM-dd}", request.SeparateEventReason!,
@@ -945,9 +954,10 @@ public class LeaveService : ILeaveService
 
     private async Task<LeaveRequest> ApproveRequestCoreAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct)
     {
-        var request = await _db.LeaveRequests
-            .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
-            ?? throw new InvalidOperationException("Leave request not found.");
+        // The employee's leave lock first, the same one cancellation takes: a cancel racing the final approval
+        // could otherwise delete the pending deductions before this approval inserted its own, leaving an
+        // unpaid-leave deduction behind a cancelled leave.
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
         if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Cannot approve a request with status '{request.Status}'.");
@@ -979,6 +989,16 @@ public class LeaveService : ILeaveService
                 ?? throw new ApprovalRouteInvalidException(tenantId, nameof(LeaveRequest), route.WorkflowId, route.Code,
                     $"step {currentStepNumber} is not final and no step follows it.");
             var nextApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, nextStep, ct);
+            // Mid-chain the earlier approval stands: a next step nobody can decide moves to the override queue.
+            var routedProjection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+                ?? await _db.ApprovalRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == request.Id, ct);
+            var earlierDeciders = await _db.ApprovalDecisions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.ApprovalRequestId == request.Id && d.DecidedByUserId != null)
+                .Select(d => d.DecidedByUserId)
+                .ToListAsync(ct);
+            var nextOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, nextStep, nextApprover,
+                earlierDeciders.Append(routedProjection.RequestedByUserId).Append(approverId).ToArray(), atSubmission: false, ct);
+            if (nextOverride is not null) nextApprover = nextOverride;
             request.Status = StatusForPendingStep(nextStep);
             var nextApproval = BuildPendingApproval(tenantId, requestId, nextStep, nextApprover);
             _db.LeaveApprovals.Add(nextApproval);
@@ -987,6 +1007,8 @@ public class LeaveService : ILeaveService
 
             await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
                 previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
+            if (nextOverride is not null)
+                await LogOverrideRoutingAsync(tenantId, request, nextStep, ct);
             await _db.SaveChangesAsync(ct);
             return request;
         }
@@ -1146,13 +1168,23 @@ public class LeaveService : ILeaveService
     ///
     /// <para>Idempotent under <c>NpgsqlRetryingExecutionStrategy</c>: it asserts a target state
     /// (status is "On leave", the pending absence charge is gone) rather than applying a delta, so a
-    /// retried body reaches the same place. It stages only — the caller's single
-    /// <c>SaveChangesAsync</c> commits it atomically with the approval.</para>
+    /// retried body reaches the same place. It stages everything except the day locks and the
+    /// absence-charge delete, which on a relational provider run immediately inside the approval's
+    /// transaction; the caller's single <c>SaveChangesAsync</c> commits it all atomically.</para>
     /// </summary>
     /// <returns>A human-readable note for the audit line, or empty if there was nothing to do.</returns>
     private async Task<string> ReconcileAttendanceForApprovedLeaveAsync(
         Guid tenantId, LeaveRequest request, CancellationToken ct)
     {
+        // Lock EVERY date of the leave with the attendance day lock (one employee, ascending date: the global order
+        // AttendanceDailyRecordLock documents; nothing holding a day lock ever waits for the leave lock this approval
+        // already holds), and only then look for absent days. Choosing the days from an unlocked read missed a
+        // reprocess still in flight (holding the lock, writing Absent and a pending charge, uncommitted) or one that
+        // committed after that read. Under the locks a reprocess of any leave day either committed before (and is
+        // seen by the query below) or waits until this approval commits (and then sees the approved leave).
+        for (var date = request.StartDate; date <= request.EndDate; date = date.AddDays(1))
+            await AttendanceDailyRecordLock.AcquireInCurrentTransactionAsync(_db, tenantId, request.EmployeeId, date, ct);
+
         var days = await _db.AttendanceDailyRecords
             .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId
                      && d.WorkDate >= request.StartDate && d.WorkDate <= request.EndDate
@@ -1161,30 +1193,51 @@ public class LeaveService : ILeaveService
         if (days.Count == 0) return string.Empty;
 
         var dates = days.Select(d => d.WorkDate).ToList();
-        var impacts = await _db.AttendancePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
-                     && dates.Contains(x.WorkDate)
-                     && x.ImpactType == AttendanceImpactTypes.AbsenceDeduction)
-            .ToListAsync(ct);
         var legacy = await _db.AttendanceRecords
             .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
                      && dates.Contains(x.WorkDate))
             .ToListAsync(ct);
 
-        var cleared = 0;
-        var lockedDates = new List<DateOnly>();
-        var settledDates = new List<DateOnly>();
+        var lockedDates = days.Where(d => d.IsPayrollLocked).Select(d => d.WorkDate).ToList();
+        var candidates = days.Where(d => !d.IsPayrollLocked).ToList();
+        var candidateDates = candidates.Select(d => d.WorkDate).ToList();
 
-        foreach (var day in days)
+        // Clear the candidate days' pending absence charges by the days' NATURAL KEY, in one statement: whatever
+        // charge a day carries now (including one a reprocess replaced, with a new id) is cleared, so an On-leave
+        // day can never keep a pending charge. The status predicate is ON THE DELETE, so a charge a payroll run
+        // marked Processed (payroll takes no day lock) is not removed from under its consumption witness; the one
+        // query after it finds those days, which are reported as settled and left exactly as the run paid them.
+        // The approval runs in a transaction on a relational provider, so this commits with it.
+        HashSet<DateOnly> settled;
+        if (_db.Database.IsRelational())
         {
-            var charge = impacts.FirstOrDefault(x => x.WorkDate == day.WorkDate);
+            if (candidateDates.Count > 0)
+                await _db.AttendancePayrollImpacts
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && candidateDates.Contains(x.WorkDate)
+                             && x.ImpactType == AttendanceImpactTypes.AbsenceDeduction && x.Status != "Processed")
+                    .ExecuteDeleteAsync(ct);
+            settled = (await _db.AttendancePayrollImpacts.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && candidateDates.Contains(x.WorkDate)
+                             && x.ImpactType == AttendanceImpactTypes.AbsenceDeduction && x.Status == "Processed")
+                    .Select(x => x.WorkDate)
+                    .ToListAsync(ct)).ToHashSet();
+        }
+        else
+        {
+            var impacts = await _db.AttendancePayrollImpacts
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId
+                         && candidateDates.Contains(x.WorkDate)
+                         && x.ImpactType == AttendanceImpactTypes.AbsenceDeduction)
+                .ToListAsync(ct);
+            settled = impacts.Where(x => x.Status == "Processed").Select(x => x.WorkDate).ToHashSet();
+            _db.AttendancePayrollImpacts.RemoveRange(impacts.Where(x => x.Status != "Processed" && !settled.Contains(x.WorkDate)));
+        }
 
-            if (day.IsPayrollLocked)
-            {
-                lockedDates.Add(day.WorkDate);
-                continue;
-            }
-            if (charge is not null && charge.Status == "Processed")
+        var cleared = 0;
+        var settledDates = new List<DateOnly>();
+        foreach (var day in candidates)
+        {
+            if (settled.Contains(day.WorkDate))
             {
                 settledDates.Add(day.WorkDate);
                 continue;
@@ -1197,8 +1250,6 @@ public class LeaveService : ILeaveService
             day.LateMinutes = day.EarlyExitMinutes = day.UndertimeMinutes = 0;
             day.ProcessedAtUtc = DateTime.UtcNow;
             day.UpdatedAtUtc = DateTime.UtcNow;
-
-            if (charge is not null) _db.AttendancePayrollImpacts.Remove(charge);
 
             // The legacy attendance_records projection is what the dashboard still reads; leaving it
             // saying "Absent" would keep the day counted against the employee on that screen.
@@ -1438,9 +1489,8 @@ public class LeaveService : ILeaveService
 
     private async Task<LeaveRequest> RejectRequestCoreAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct)
     {
-        var request = await _db.LeaveRequests
-            .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
-            ?? throw new InvalidOperationException("Leave request not found.");
+        // Serialised with cancellation under the employee's leave lock: both release the pending balance.
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
         if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Cannot reject a request with status '{request.Status}'.");
@@ -1479,12 +1529,187 @@ public class LeaveService : ILeaveService
 
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
-        var request = await _db.LeaveRequests
-            .FirstOrDefaultAsync(r => r.Id == requestId && r.TenantId == tenantId, ct)
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, ct);
+
+        // The pending-impact delete below is a set-based DELETE that runs immediately, so it needs the
+        // same transaction as the cancellation's SaveChanges: otherwise a failed save would leave the
+        // leave un-cancelled with its unpaid deduction already gone.
+        return await RunCancellationTransactionAsync(
+            retryCt => CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, retryCt),
+            retryCt => _db.LeaveRequests.AsNoTracking()
+                .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Cancelled", retryCt),
+            ct);
+    }
+
+    /// <summary>
+    /// Approves an employee's request to cancel an approved leave: the leave is cancelled (balance released,
+    /// pending unpaid deduction removed) and the cancellation row records the decision, in ONE transaction.
+    /// The decision used to be a second save after the cancellation had committed, so a failure in between left
+    /// the leave Cancelled and the cancellation Pending forever (re-approving answered "already cancelled",
+    /// rejecting answered 409). Re-checked under the employee's leave lock: the leave must still be awaiting
+    /// this decision, and the cancellation row must still be Pending, so a rejection that committed first stands.
+    /// </summary>
+    public async Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct);
+        // An ambiguous commit is settled by THIS cancellation row's id: an earlier cancellation of the same leave
+        // decided by the same reviewer must not be mistaken for this one.
+        Guid? decidedId = null;
+        return await RunCancellationTransactionAsync(
+            retryCt => ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, cid => decidedId = cid, retryCt),
+            retryCt => IsCancellationDecidedAsync(tenantId, decidedId, "Approved", retryCt),
+            ct);
+    }
+
+    /// <summary>
+    /// Refuses an employee's request to cancel an approved leave: the leave goes back to Approved and the
+    /// cancellation row records the refusal, under the same lock and re-check as
+    /// <see cref="ApproveCancellationAsync"/>, so the two decisions cannot both apply.
+    /// </summary>
+    public async Task<LeaveRequest> RejectCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await RejectCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct);
+        Guid? decidedId = null;
+        return await RunCancellationTransactionAsync(
+            retryCt => RejectCancellationCoreAsync(tenantId, requestId, reviewerName, notes, cid => decidedId = cid, retryCt),
+            retryCt => IsCancellationDecidedAsync(tenantId, decidedId, "Rejected", retryCt),
+            ct);
+    }
+
+    private async Task<bool> IsCancellationDecidedAsync(Guid tenantId, Guid? cancellationId, string decision, CancellationToken ct) =>
+        cancellationId is Guid id && await _db.LeaveCancellationRequests.AsNoTracking()
+            .AnyAsync(c => c.TenantId == tenantId && c.Id == id && c.Status == decision, ct);
+
+    private async Task<LeaveRequest> ApproveCancellationCoreAsync(Guid tenantId, Guid requestId, string reviewerName, string notes,
+        Action<Guid> deciding, CancellationToken ct)
+    {
+        var cancellation = await LockAndLoadPendingCancellationAsync(tenantId, requestId, ct);
+        deciding(cancellation.Id);
+        cancellation.Status = "Approved";
+        cancellation.ReviewedByName = reviewerName;
+        cancellation.ReviewNotes = notes;
+        cancellation.ReviewedAtUtc = DateTime.UtcNow;
+        // Same save, same transaction as the cancellation itself.
+        return await CancelRequestCoreAsync(tenantId, requestId, reviewerName, cancellation.Reason, decidingCancellation: true, ct);
+    }
+
+    private async Task<LeaveRequest> RejectCancellationCoreAsync(Guid tenantId, Guid requestId, string reviewerName, string notes,
+        Action<Guid> deciding, CancellationToken ct)
+    {
+        var cancellation = await LockAndLoadPendingCancellationAsync(tenantId, requestId, ct);
+        deciding(cancellation.Id);
+        var request = await _db.LeaveRequests.FirstAsync(r => r.TenantId == tenantId && r.Id == requestId, ct);
+        cancellation.Status = "Rejected";
+        cancellation.ReviewedByName = reviewerName;
+        cancellation.ReviewNotes = notes;
+        cancellation.ReviewedAtUtc = DateTime.UtcNow;
+        request.Status = "Approved";
+        await _db.SaveChangesAsync(ct);
+        return request;
+    }
+
+    /// <summary>
+    /// Takes the employee's leave lock, then re-reads (fresh, under the lock) the leave and its Pending
+    /// cancellation row. Throws <see cref="LeaveDecisionConflictException"/> when the leave is no longer awaiting a
+    /// cancellation decision: some other decision committed first.
+    /// </summary>
+    private async Task<LeaveCancellationRequest> LockAndLoadPendingCancellationAsync(Guid tenantId, Guid requestId, CancellationToken ct)
+    {
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
+        if (request.Status != "CancellationRequested")
+            throw new LeaveDecisionConflictException(
+                $"A cancellation can only be decided while the leave is awaiting that decision (current: {request.Status}). " +
+                "This cancellation request is stale — the leave has already moved on.");
+        var cancellation = await _db.LeaveCancellationRequests
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.LeaveRequestId == requestId && c.Status == "Pending", ct)
+            ?? throw new LeaveDecisionConflictException("This cancellation request has already been decided.");
+        await ReloadIfTrackedUnchangedAsync(cancellation, ct);
+        return cancellation;
+    }
+
+    /// <summary>
+    /// The employee's leave lock (the one submission and final approval take), then the request re-read under it.
+    /// A request the caller already tracks is RELOADED: EF's identity resolution would otherwise hand back the
+    /// caller's pre-lock copy, and every decision below would be made on a status another writer has since changed.
+    /// </summary>
+    private async Task<LeaveRequest> LockAndReloadRequestAsync(Guid tenantId, Guid requestId, CancellationToken ct)
+    {
+        var employeeId = await _db.LeaveRequests.AsNoTracking()
+            .Where(r => r.Id == requestId && r.TenantId == tenantId)
+            .Select(r => (int?)r.EmployeeId)
+            .FirstOrDefaultAsync(ct)
             ?? throw new InvalidOperationException("Leave request not found.");
+        await LockEmployeeLeaveAsync(tenantId, employeeId, ct);
+        var request = await _db.LeaveRequests.FirstAsync(r => r.Id == requestId && r.TenantId == tenantId, ct);
+        await ReloadIfTrackedUnchangedAsync(request, ct);
+        return request;
+    }
+
+    private async Task ReloadIfTrackedUnchangedAsync(object entity, CancellationToken ct)
+    {
+        var entry = _db.Entry(entity);
+        if (entry.State == EntityState.Unchanged && _db.Database.IsRelational())
+            await entry.ReloadAsync(ct);
+    }
+
+    /// <summary>
+    /// One transaction inside the execution strategy, as Npgsql's retrying strategy requires. A retry starts from a
+    /// clean change tracker; <paramref name="verifySucceeded"/> settles an ambiguous commit from the database.
+    /// </summary>
+    private async Task<LeaveRequest> RunCancellationTransactionAsync(
+        Func<CancellationToken, Task<LeaveRequest>> operation, Func<CancellationToken, Task<bool>> verifySucceeded,
+        CancellationToken ct)
+    {
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var firstAttempt = true;
+        return await strategy.ExecuteInTransactionAsync(
+            async retryCt =>
+            {
+                if (!firstAttempt)
+                    _db.ChangeTracker.Clear();
+                firstAttempt = false;
+                return await operation(retryCt);
+            },
+            verifySucceeded,
+            ct);
+    }
+
+    /// <param name="decidingCancellation">True only when called by <see cref="ApproveCancellationAsync"/>, which has
+    /// already recorded its decision on the Pending cancellation row. A direct cancel passes false.</param>
+    private async Task<LeaveRequest> CancelRequestCoreAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason,
+        bool decidingCancellation, CancellationToken ct)
+    {
+        // Under the employee's leave lock, so a concurrent cancel, cancellation decision or final approval of the
+        // same employee's leave is serialised with this one and the status below is the committed one: two racing
+        // cancels used to both pass the check and both release the balance.
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
         if (request.Status == "Cancelled" || request.Status == "Withdrawn")
             throw new InvalidOperationException("Request is already cancelled or withdrawn.");
+        // A leave awaiting a cancellation decision is decided through that decision (approve or reject the
+        // cancellation request), never cancelled directly: a direct cancel would release the approved days
+        // without the reviewer and leave the Pending cancellation row with nothing left to decide.
+        if (!decidingCancellation && request.Status == "CancellationRequested")
+            throw new LeaveDecisionConflictException(
+                "A cancellation is already awaiting a decision. Approve or reject that cancellation request instead.");
+        // A direct cancel closes any Pending cancellation row of this leave in the same transaction, so no such
+        // row can outlive the leave it asks to cancel.
+        if (!decidingCancellation)
+        {
+            var openCancellations = await _db.LeaveCancellationRequests
+                .Where(c => c.TenantId == tenantId && c.LeaveRequestId == requestId && c.Status == "Pending")
+                .ToListAsync(ct);
+            foreach (var open in openCancellations)
+            {
+                open.Status = "Closed";
+                open.ReviewedByName = cancelledByName;
+                open.ReviewNotes = "Closed: the leave was cancelled directly.";
+                open.ReviewedAtUtc = DateTime.UtcNow;
+            }
+        }
 
         var wasApproved = request.Status is "Approved" or "CancellationRequested";
         var previousStatus = request.Status;
@@ -1498,11 +1723,19 @@ public class LeaveService : ILeaveService
         // Remove any unpaid-leave payroll deduction that has not yet been picked up by a run,
         // so cancelling an approved unpaid leave does not still dock the employee's salary.
         // Already-processed impacts (Status == "Processed") are left for audit integrity.
-        var pendingImpacts = await _db.LeavePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == requestId && x.Status != "Processed")
-            .ToListAsync(ct);
-        if (pendingImpacts.Count > 0)
-            _db.LeavePayrollImpacts.RemoveRange(pendingImpacts);
+        //
+        // The status predicate is ON THE DELETE ITSELF. This used to read the pending rows and then
+        // delete them by key at SaveChanges. A payroll run that marked the row Processed in between
+        // (holding its row lock until commit) made that DELETE wait, then re-check only the key and
+        // delete a CONSUMED impact: the run's consumption witness then named a row that no longer
+        // exists, so a void/reopen had nothing to release. Under READ COMMITTED, Postgres re-evaluates
+        // this WHERE against the run's committed row, so a consumed impact is now left alone.
+        var pendingImpacts = _db.LeavePayrollImpacts
+            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == requestId && x.Status != "Processed");
+        if (_db.Database.IsRelational())
+            await pendingImpacts.ExecuteDeleteAsync(ct);
+        else
+            _db.LeavePayrollImpacts.RemoveRange(await pendingImpacts.ToListAsync(ct));
 
         var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId
             && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString() && x.Status == "Pending", ct);
@@ -2271,9 +2504,39 @@ public class LeaveService : ILeaveService
     /// records its approver type (the label LeaveRequestsController authorises against). An escalated
     /// person step records the HR Manager queue it was escalated to.
     /// </summary>
+    /// <summary>
+    /// The "someone can decide this" check for a leave step (<see cref="IApprovalRouter.CheckDeciderAsync"/>),
+    /// excluding <paramref name="alsoExcluded"/> and every login of the employee on leave. The leave screen
+    /// lets HR Officer decide an "HR" step, so that role counts there. Returns null when the step stands as
+    /// routed, else the override-queue approver to route to. At submission, with nobody even in the override
+    /// queue, throws <see cref="ApprovalNoEligibleDeciderException"/>.
+    /// </summary>
+    private async Task<ResolvedApprover?> EnsureSomeoneCanDecideAsync(Guid tenantId, int employeeId, ApprovalRouteStep step,
+        ResolvedApprover approver, IEnumerable<Guid?> alsoExcluded, bool atSubmission, CancellationToken ct)
+    {
+        var excluded = alsoExcluded.Where(x => x is not null).Select(x => x!.Value).ToHashSet();
+        foreach (var linked in await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, employeeId, ct)) excluded.Add(linked);
+        var alsoAccepted = !approver.Escalated && string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
+            ? new[] { "HR Officer" }
+            : null;
+        var check = await _router.CheckDeciderAsync(tenantId, approver, excluded, alsoAccepted, ct);
+        if (check.Eligible) return null;
+        if (atSubmission && !check.OverrideAvailable)
+            throw new ApprovalNoEligibleDeciderException(tenantId, nameof(LeaveRequest), step.StepOrder, step.StepName, check.Owner, check.NamedPerson);
+        return ApprovalRouter.OverrideQueue(step.ApproverType);
+    }
+
+    private Task LogOverrideRoutingAsync(Guid tenantId, LeaveRequest request, ApprovalRouteStep step, CancellationToken ct)
+        => LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "ApprovalRoutedToOverride",
+            $"step {step.StepOrder}: {step.ApproverType}{(string.IsNullOrWhiteSpace(step.ApproverRole) ? string.Empty : $" ({step.ApproverRole.Trim()})")}",
+            IApprovalRouter.OverrideQueueRole,
+            "Nobody other than the requester, the employee and earlier approvers could decide this step as configured, so it was moved to the Admin queue.",
+            request.EmployeeName, ct);
+
     private static string ResolvedApproverRole(ApprovalRouteStep step, ResolvedApprover approver)
     {
-        if (approver.Escalated) return ApprovalRouter.HrManagerRole;
+        // Escalated: the queue the router sent it to (HR Manager for a person who cannot act; Admin for the override queue).
+        if (approver.Escalated) return string.IsNullOrWhiteSpace(approver.QueueRole) ? ApprovalRouter.HrManagerRole : approver.QueueRole;
         return string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(step.ApproverRole)
             ? step.ApproverRole.Trim()

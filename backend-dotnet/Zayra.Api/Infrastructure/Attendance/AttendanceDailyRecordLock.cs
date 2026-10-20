@@ -34,6 +34,19 @@ public static class AttendanceDailyRecordLock
     public static Task RunAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly workDate, Func<Task> work, CancellationToken ct) =>
         RunUnderAsync(db, Key(tenantId, employeeId, workDate), async () => { await work(); return true; }, ct);
 
+    /// <summary>
+    /// Takes one employee-day lock inside the caller's ALREADY OPEN transaction, held until it ends. For a caller that
+    /// must hold several days at once (leave approval clearing a leave's absent days): take them one employee at a
+    /// time in ascending date order, the global order above. On a non-relational provider (tests) it does nothing.
+    /// </summary>
+    public static async Task AcquireInCurrentTransactionAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly workDate, CancellationToken ct)
+    {
+        if (!db.Database.IsRelational()) return;
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("An attendance day lock taken without a transaction would be released immediately.");
+        await AcquireAsync(db, Key(tenantId, employeeId, workDate), ct);
+    }
+
     /// <summary>Runs <paramref name="work"/> (which must save its own changes) under the tenant's default-policy lock.</summary>
     public static Task<T> RunForDefaultPolicyAsync<T>(ZayraDbContext db, Guid tenantId, Func<Task<T>> work, CancellationToken ct) =>
         RunUnderAsync(db, DefaultPolicyKey(tenantId), work, ct);

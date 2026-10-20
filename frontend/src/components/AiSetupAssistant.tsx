@@ -9,8 +9,12 @@ import type { CompanyDto } from '../api/organization';
 import { tenantAdminApi } from '../api/intelligence';
 import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
+import { usePolicyIntake } from '../lib/policyIntake';
 import { setupAssistantApi, type CompanyProfile, type SetupDraft, type SetupConfiguration } from '../api/setupAssistant';
 import { useCompany } from '../contexts/CompanyContext';
+import { useAuth } from '../contexts/AuthContext';
+import { ConfirmDialog, type ConfirmState } from './ui/ConfirmDialog';
+import { canReviewSavedPreview, readSetupDraft, saveSetupDraft, setupCountryCode, setupDraftStorageKey, setupProfileFingerprint, singleCompanyPolicyId, type SavedSetupPreview } from '../lib/setupDraftLifecycle';
 
 const COUNTRIES = [
   { code: 'SA', label: 'Saudi Arabia' }, { code: 'AE', label: 'United Arab Emirates' },
@@ -78,24 +82,25 @@ const SETUP_STEPS = [
 ];
 const APPROVAL_MODELS = [['DepartmentHead', 'Department head, then HR'], ['SupervisorFirst', 'Supervisor, department head, then HR']];
 
-export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[]; }) {
+export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWorkspace }: { companies?: CompanyDto[]; onOpenLibrary?: () => void; onReturnToWorkspace?: () => void; }) {
   // Release A: grade allowances and benefits are set in Benefits by grade, so the draft's legacy grade pay lines are
   // neither shown nor sent (the server would skip them and say so).
   const releaseA = useReleaseA();
+  // Policy upload, the policy guide and the library appear only while policy intake is on (off by default).
+  const policyIntake = usePolicyIntake();
   const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { accountType, isGroupScope, selectedCompanyId, setSelectedCompany } = useCompany();
-  const requestedCompanyId = searchParams?.get('companyId') ?? '';
+  const { user } = useAuth();
+  const { accountType, isGroupScope, selectedCompanyId, setSelectedCompany, companies: permittedCompanies } = useCompany();
+  // SetupPage consumes the initial deep link. Current authorized context wins
+  // thereafter, including when this visited instance is retained off-screen.
+  const queryCompany = searchParams?.get('companyId');
+  const invalidCompany = queryCompany && !permittedCompanies.some(company => company.id === queryCompany);
+  const requestedCompanyId = invalidCompany ? queryCompany : selectedCompanyId ?? '';
   const requestedCompany = requestedCompanyId
     ? companies.find(company => company.id === requestedCompanyId && company.isActive && company.approvalStatus === 'Active')
     : undefined;
-  useEffect(() => {
-    if (accountType !== 'Group' || !isGroupScope || !requestedCompanyId) return;
-    if (requestedCompany && selectedCompanyId !== requestedCompanyId) {
-      setSelectedCompany(requestedCompanyId);
-    }
-  }, [accountType, isGroupScope, requestedCompany, requestedCompanyId, selectedCompanyId, setSelectedCompany]);
   // Single-company workspaces retain the established setup flow. A Group workspace must bind
   // every draft to an immutable company record before company-owned settings can be edited.
   const targetCompany = accountType === 'Group'
@@ -156,7 +161,18 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const [genNotes, setGenNotes] = useState<string[]>([]);
   const [draft, setDraft] = useState<SetupDraft | null>(null);
   const [draftCompanyId, setDraftCompanyId] = useState<string | null>(null);
+  const [savedPreview, setSavedPreview] = useState<SavedSetupPreview | null>(null);
   const [done, setDone] = useState<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string; }>; } | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmState | null>(null);
+  const [saveStatus, setSaveStatus] = useState('');
+  const [readyScope, setReadyScope] = useState<string | null>(null);
+  const [editorRevision, setEditorRevision] = useState(0);
+  const editorRevisionRef = useRef(0);
+  const persistencePaused = useRef(false);
+  const draftScope = user && !requiresCompanySelection && !requestedCompanyUnavailable
+    ? setupDraftStorageKey(user.tenantId, user.id, targetCompany?.id ?? selectedCompanyId ?? 'workspace') : null;
+  const activeDraftScope = useRef(draftScope);
+  activeDraftScope.current = draftScope;
 
   // The workspace's own country and currency. Setup - Localization is where a tenant states these;
   // reading them here is what stops the draft disagreeing with the rest of the product. An empty
@@ -166,30 +182,20 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     tenantAdminApi.getLocalization()
       .then(loc => {
         if (cancelled) return;
-        const c = (loc?.countryCode ?? '').trim().toUpperCase();
+        const c = setupCountryCode(loc?.countryCode ?? '');
         const cur = (loc?.currencyCode ?? '').trim().toUpperCase();
-        if (c) setCountry(current => current || c);
+        if (c) setCountry(current => current || setupCountryCode(c));
         if (cur) setCurrency(current => current || cur);
         setProfileSource(c || cur ? 'workspace' : 'unstated');
       })
       .catch(() => { if (!cancelled) setProfileSource('unstated'); });
     return () => { cancelled = true; };
-  }, []);
+  }, [draftScope]);
 
   // A setup draft belongs to one immutable company ID. Changing the group switcher changes the
   // target, prefills legal identity from the authoritative company record, and invalidates any
   // draft prepared for the prior company.
-  useEffect(() => {
-    profileRevision.current += 1;
-    setDraft(null);
-    setDraftCompanyId(null);
-    setDone(null);
-    setStep(0);
-    if (!targetCompany) return;
-    setLegalEntityName(targetCompany.legalNameEn);
-    setCountry(targetCompany.countryCode || '');
-    setCurrency(targetCompany.defaultCurrency || '');
-  }, [targetCompany?.id]);
+  // The scope hydration below resets every input, including policy sources, on company changes.
 
   // Company administrators may prepare and apply only records that are company/branch owned.
   // Shared catalogs and workspace defaults stay under the group administrator's baseline.
@@ -200,16 +206,6 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
       attendance: false, payroll: false, holidays: true, governance: false, localization: false, benefits: true,
     });
   }, [canIncludeSharedSetup]);
-
-  useEffect(() => {
-    profileRevision.current += 1;
-    setDraft(null);
-    setDraftCompanyId(null);
-    setError('');
-  }, [country, currency, industry, size, legalEntityName, branchCity, operatingModel, payrollModel,
-    approvalModel, strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
-    notes, workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays, targetCompany?.id,
-    workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage, sections, configuration]);
 
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
@@ -240,7 +236,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
   const sectionCount = 11;
 
   const policyProfile: CompanyProfile = {
-    companyId: targetCompany?.id,
+    companyId: targetCompany?.id ?? singleCompanyPolicyId(accountType, legalEntityName, companies, selectedCompanyId),
     countryCode: country, industry, companySize: size, currencyCode: currency,
     legalEntityName, branchCity, operatingModel, payrollModel, approvalModel,
     strictEntityScope, requireCostCenterForPayroll, requireGradeForApprovalPolicy,
@@ -249,11 +245,12 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     timeZone, defaultLanguage, configuration,
   };
   const acceptProfileSuggestions = (patch: Partial<CompanyProfile>) => {
-    if (patch.countryCode !== undefined) setCountry(patch.countryCode);
+    if (activeDraftScope.current !== draftScope || editorRevisionRef.current !== editorRevision) return;
+    if (!targetCompany && patch.countryCode !== undefined) setCountry(setupCountryCode(patch.countryCode));
     if (patch.industry !== undefined) setIndustry(patch.industry);
     if (patch.companySize !== undefined) setSize(patch.companySize);
-    if (patch.currencyCode !== undefined) setCurrency(patch.currencyCode);
-    if (patch.legalEntityName !== undefined) setLegalEntityName(patch.legalEntityName);
+    if (!targetCompany && patch.currencyCode !== undefined) setCurrency(patch.currencyCode);
+    if (!targetCompany && patch.legalEntityName !== undefined) setLegalEntityName(patch.legalEntityName);
     if (patch.branchCity !== undefined) setBranchCity(patch.branchCity);
     if (patch.operatingModel !== undefined) setOperatingModel(patch.operatingModel);
     if (patch.approvalModel !== undefined) setApprovalModel(patch.approvalModel);
@@ -268,6 +265,104 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     if (patch.payCycle !== undefined) setPayCycle(patch.payCycle);
     if (patch.timeZone !== undefined) setTimeZone(patch.timeZone);
     if (patch.defaultLanguage !== undefined) setDefaultLanguage(patch.defaultLanguage);
+  };
+
+  const resetInputs = (saved?: CompanyProfile) => {
+    setCountry(setupCountryCode(targetCompany?.countryCode ?? saved?.countryCode ?? ''));
+    setCurrency(targetCompany?.defaultCurrency ?? saved?.currencyCode ?? '');
+    setLegalEntityName(targetCompany?.legalNameEn ?? saved?.legalEntityName ?? '');
+    setIndustry(saved?.industry ?? ''); setSize(saved?.companySize ?? '51-200');
+    setBranchCity(saved?.branchCity ?? ''); setOperatingModel(saved?.operatingModel ?? 'Functional');
+    setApprovalModel(saved?.approvalModel ?? 'DepartmentHead');
+    setStrictEntityScope(saved?.strictEntityScope ?? true);
+    setRequireCostCenterForPayroll(saved?.requireCostCenterForPayroll ?? true);
+    setRequireGradeForApprovalPolicy(saved?.requireGradeForApprovalPolicy ?? true);
+    setNotes(saved?.notes ?? ''); setWorkPattern(saved?.workPattern ?? 'SingleDayShift');
+    setWeekendPattern(saved?.weekendPattern ?? 'CountryDefault'); setLeaveYearBasis(saved?.leaveYearBasis ?? 'Calendar');
+    setProbationMonths(saved?.probationMonths ?? 3); setNoticePeriodDays(saved?.noticePeriodDays ?? 30);
+    setWorkforceMix(saved?.workforceMix ?? 'Mixed'); setOvertimeHandling(saved?.overtimeHandling ?? 'PaidOvertime');
+    setAttendanceCapture(saved?.attendanceCapture ?? 'WebCheckIn'); setPayCycle(saved?.payCycle ?? 'Monthly');
+    setTimeZone(saved?.timeZone ?? ''); setDefaultLanguage(saved?.defaultLanguage ?? 'en');
+    setSections({ entity: saved?.sections.entity ?? true, org: canIncludeSharedSetup && (saved?.sections.org ?? true),
+      leave: canIncludeSharedSetup && (saved?.sections.leave ?? true), leavePolicies: saved?.sections.leavePolicies ?? true,
+      shifts: canIncludeSharedSetup && (saved?.sections.shifts ?? true), attendance: canIncludeSharedSetup && (saved?.sections.attendance ?? true),
+      payroll: canIncludeSharedSetup && (saved?.sections.payroll ?? true), holidays: saved?.sections.holidays ?? true,
+      governance: canIncludeSharedSetup && (saved?.sections.governance ?? true), localization: canIncludeSharedSetup && (saved?.sections.localization ?? true), benefits: saved?.sections.benefits ?? true });
+    setConfiguration(saved?.configuration ?? { attendanceMethods: ['WebCheckIn'], overtimeModes: ['PaidOvertime'], grades: null, leavePolicies: null, benefitPlans: [] });
+    setPolicyGuideOpen(false); editorRevisionRef.current += 1; setEditorRevision(editorRevisionRef.current);
+    setDraft(null); setDraftCompanyId(null); setSavedPreview(null); setDone(null); setError('');
+    profileRevision.current += 1;
+  };
+
+  useEffect(() => {
+    persistencePaused.current = false;
+    const saved = draftScope ? readSetupDraft(localStorage, draftScope) : null;
+    resetInputs(saved?.profile);
+    setSavedPreview(saved?.reviewedPreview ?? null);
+    setStep(saved?.step ?? 0);
+    setSaveStatus(saved ? t('Saved draft resumed. Review the saved preview or generate a new one before applying.') : '');
+    setReadyScope(draftScope);
+    // Scope is the immutable tenant, user and company identity. Resetting on every company fetch
+    // would destroy in-progress edits, so only a scope change hydrates stored inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftScope]);
+
+  const profileSnapshot = JSON.stringify(policyProfile);
+  const profileFingerprint = setupProfileFingerprint(policyProfile);
+  const eligibleSavedPreview = canReviewSavedPreview(savedPreview, policyProfile, targetCompany?.id ?? null) ? savedPreview : undefined;
+  const previewToSave = eligibleSavedPreview ? { ...eligibleSavedPreview, draft: draft ?? eligibleSavedPreview.draft } : undefined;
+  const previewSnapshot = JSON.stringify(previewToSave);
+  useEffect(() => {
+    if (!draftScope || readyScope !== draftScope) return;
+    profileRevision.current += 1;
+    setDraft(null); setDraftCompanyId(null); setError('');
+    setSavedPreview(previous => previous?.profileFingerprint === profileFingerprint ? previous : null);
+  }, [profileFingerprint, draftScope, readyScope]);
+  useEffect(() => {
+    if (!draftScope || readyScope !== draftScope || done || persistencePaused.current) return;
+    const persist = () => {
+      if (persistencePaused.current) return;
+      try { saveSetupDraft(localStorage, draftScope, JSON.parse(profileSnapshot) as CompanyProfile, step, previewSnapshot ? JSON.parse(previewSnapshot) as SavedSetupPreview : undefined); }
+      catch { setSaveStatus(t('This browser could not save your draft. Keep this page open; use Save for later to retry.')); }
+    };
+    const timer = window.setTimeout(persist, 350);
+    window.addEventListener('pagehide', persist);
+    return () => { window.clearTimeout(timer); window.removeEventListener('pagehide', persist); persist(); };
+  }, [draftScope, readyScope, profileSnapshot, previewSnapshot, step, done]);
+
+  const saveForLater = () => {
+    if (!draftScope || readyScope !== draftScope) return false;
+    try {
+      persistencePaused.current = false;
+      saveSetupDraft(localStorage, draftScope, policyProfile, step, previewToSave);
+      setSaveStatus(t('Draft and preview edits saved in this browser. Return to Setup Studio to review and continue.'));
+      return true;
+    } catch {
+      setSaveStatus(t('This browser could not save your draft. Your entries remain on this page. Free browser storage and retry before leaving.'));
+      return false;
+    }
+  };
+  const discardDraft = () => setConfirmation({
+    message: t('Discard this setup draft and its saved copy in this browser? Applied company settings and uploaded library documents will not be deleted.'),
+    onConfirm: () => {
+      persistencePaused.current = true;
+      try { if (draftScope) localStorage.removeItem(draftScope); }
+      catch { setSaveStatus(t('The browser could not remove its saved copy. Clear browser storage to discard it.')); return; }
+      resetInputs(); setStep(0); setSaveStatus(t('Draft discarded. Start again when you are ready.'));
+      router.push('/setup?tab=companies');
+    },
+  });
+  const acceptConfiguration = (value: SetupConfiguration) => {
+    if (activeDraftScope.current === draftScope && editorRevisionRef.current === editorRevision) setConfiguration(value);
+  };
+  const reviewSavedPreview = () => {
+    if (!canReviewSavedPreview(savedPreview, policyProfile, targetCompany?.id ?? null)) {
+      setError(t('The saved preview no longer matches these inputs. Generate a new draft before applying.')); return;
+    }
+    setDraft(savedPreview.draft); setDraftCompanyId(savedPreview.companyId);
+    setEngine(savedPreview.engine); setGenNotes(savedPreview.notes); setStep(4);
+    setSaveStatus(t('Saved preview opened for review. Current permissions, policy sources and company settings are checked again when you apply.'));
+    requestAnimationFrame(() => headingRef.current?.focus());
   };
 
   const generate = async () => {
@@ -321,9 +416,10 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
         configuration: { ...configuration, grades: configuration.grades?.map(g => ({ ...g, currency })) ?? configuration.grades, benefitPlans: configuration.benefitPlans?.map(b => ({ ...b, currency, gradeCodes: b.gradeCodes.map(code => code.trim()).filter(Boolean) })) },
       };
       const r = await setupAssistantApi.preview(profile);
-      if (revision !== profileRevision.current || generatedForCompanyId !== (targetCompany?.id ?? null)) return;
+      if (revision !== profileRevision.current || activeDraftScope.current !== draftScope || generatedForCompanyId !== (targetCompany?.id ?? null)) return;
       if (r.configurationVersion !== 1) { setError(t('The setup service needs an update to support these policy settings. Your entries are preserved; no configuration has been applied.')); return; }
       setDraft(r.draft); setDraftCompanyId(generatedForCompanyId); setEngine(r.engine); setGenNotes(r.notes);
+      setSavedPreview({ draft: r.draft, companyId: generatedForCompanyId, profileFingerprint, generatedAt: new Date().toISOString(), engine: r.engine, notes: r.notes });
       requestAnimationFrame(() => headingRef.current?.focus());
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { message?: string; }; }; };
@@ -337,6 +433,9 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
 
   const apply = async () => {
     if (!draft || !legalEntityName.trim()) return;
+    if (!eligibleSavedPreview) {
+      setError(t('The saved preview no longer matches these inputs. Generate a new draft before applying.')); return;
+    }
     if (draftCompanyId !== (targetCompany?.id ?? null)) {
       setError('This draft belongs to a different company. Generate a new draft for the selected company before applying.');
       return;
@@ -344,6 +443,10 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     setApplying(true); setError('');
     try {
       const r = await setupAssistantApi.apply(releaseA ? { ...draft, gradePayComponents: [] } : draft, country, currency, legalEntityName.trim() || undefined, targetCompany?.id);
+      try { if (draftScope) localStorage.removeItem(draftScope); } catch { /* An applied setup is still successful if browser storage is unavailable. */ }
+      if (activeDraftScope.current !== draftScope) return;
+      persistencePaused.current = true;
+      setSavedPreview(null);
       setDone(r);
     } catch (e: unknown) {
       // Keep the draft in state on 403 so an admin can apply the exact reviewed draft.
@@ -403,7 +506,8 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
       <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10" role="alert">
         <h2 className="text-base font-semibold text-amber-950 dark:text-amber-100">This company is not available for setup</h2>
         <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">The link may point to an inactive, removed, or inaccessible company. No other company has been selected in its place.</p>
-        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup&mode=starter', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+        {onReturnToWorkspace && <button type="button" className="btn-secondary mt-4" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>}
       </section>
     );
   }
@@ -413,6 +517,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
     const pendingCompanies = companies.filter(company => !company.isActive || company.approvalStatus !== 'Active');
     return (
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" aria-labelledby="group-setup-heading">
+        {onReturnToWorkspace && <button type="button" className="btn-secondary m-4" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>}
         <div className="border-b border-slate-200 bg-gradient-to-r from-sapphire/[0.07] to-transparent px-5 py-5 dark:border-white/10 dark:from-cyanAccent/[0.07] sm:px-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex min-w-0 items-start gap-3">
@@ -463,7 +568,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
               <p className="mt-1 text-[11px] leading-4 text-slate-500">Configure shared catalogs once, then let each company use them without copying conflicting versions.</p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <Link href="/setup?tab=grades" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Grades</Link>
-                <Link href="/setup?tab=masterData" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Master data</Link>
+                <Link href="/setup?tab=masterData" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Employee Reference Lists</Link>
                 <Link href="/setup?tab=statutoryRules" className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">Statutory rules</Link>
               </div>
             </div>
@@ -491,12 +596,30 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           {t('{count} grade pay line(s) were not saved: grade allowances and benefits are set in Benefits by grade.', { count: done.skipped!.gradePayComponents.count })}
         </p>}
         <button type="button" className="btn-primary mt-6 w-full" onClick={() => { setDone(null); setDraft(null); setPolicyGuideOpen(false); setStep(0); }}>Start another setup</button>
+        {onReturnToWorkspace && <button type="button" className="btn-secondary mt-3" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>}
       </div>
     );
   }
 
   return (
-    <div className="setup-studio overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]">
+    <div className="setup-studio overflow-clip rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-[#0d1225]" onChangeCapture={() => { persistencePaused.current = false; }}>
+      <ConfirmDialog state={confirmation} onCancel={() => setConfirmation(null)} />
+      <div className="setup-draft-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3 dark:border-white/10">
+        <div className="min-w-0 flex-1 text-xs text-slate-600 dark:text-slate-300">
+          <details><summary className="cursor-pointer font-medium">{t('Draft storage details')}</summary>
+            <p className="mt-1">{t('Draft inputs are saved in this browser for this company and user, and cleared on sign-out.')}</p>
+            <p>{t('Preview edits are saved with their original inputs. Open the saved preview explicitly to review it. Changes to inputs require a new preview; nothing is applied automatically.')}</p>
+          </details>
+          {saveStatus && <p role="status" className="mt-1 font-medium">{saveStatus}</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {!draft && eligibleSavedPreview && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={reviewSavedPreview}>{t('Review saved preview')}</button>}
+          <button type="button" className="btn-secondary" disabled={loading || applying} onClick={saveForLater}>{t('Save for later')}</button>
+          {policyIntake && onOpenLibrary && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { if (saveForLater()) onOpenLibrary(); }}>{t('Policy library / updates')}</button>}
+          {onReturnToWorkspace && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { if (saveForLater()) onReturnToWorkspace(); }}>{t('Return to workspace')}</button>}
+          <button type="button" className="btn-secondary" disabled={loading || applying} onClick={discardDraft}>{t('Cancel setup')}</button>
+        </div>
+      </div>
       <div className="grid lg:grid-cols-[200px_minmax(0,1fr)]">
         <aside className="setup-step-rail border-b border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
           <nav aria-label="Company setup steps">
@@ -527,7 +650,11 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                 <Building2 className="h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-900 dark:text-white">Setting up {targetCompany.legalNameEn}</p><p className="text-xs text-slate-500">{targetCompany.countryCode} · {targetCompany.defaultCurrency} · Protected company scope</p></div>
               </div>
-              {accountType === 'Group' && isGroupScope && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { router.replace('/setup?tab=aiSetup', { scroll: false }); setSelectedCompany(null); }}>Change company</button>}
+              {accountType === 'Group' && isGroupScope && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => {
+                // The Setup query hook reconciles the URL after this guarded
+                // context change. A declined change must not queue a URL write.
+                if (saveForLater()) setSelectedCompany(null);
+              }}>Change company</button>}
               {accountType === 'Group' && <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-500/10 dark:text-blue-200">{isGroupScope ? 'Group admin · Company setup' : 'Company administrator'}</span>}
             </div>
           )}
@@ -538,7 +665,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
-              <SetupPolicyEditor profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={setConfiguration} currency={currency} />
+              {policyIntake && <SetupPolicyEditor key={editorRevision} profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={acceptConfiguration} currency={currency} />}
               <div className={policyGuideOpen ? 'hidden' : 'setup-company-grid grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>
@@ -546,7 +673,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                     const name = e.target.value;
                     setLegalEntityName(name);
                     const existing = companies.find(company => company.legalNameEn.trim().toLowerCase() === name.trim().toLowerCase());
-                    if (existing) { setCountry(existing.countryCode || ''); setCurrency(existing.defaultCurrency || ''); }
+                    if (existing) { setCountry(setupCountryCode(existing.countryCode || '')); setCurrency(existing.defaultCurrency || ''); }
                     setDraft(null);
                   }} placeholder="Choose or enter the registered name" />
                   {!targetCompany && <datalist id="setup-legal-entities">{companies.map(company => <option key={company.id} value={company.legalNameEn} />)}</datalist>}
@@ -620,7 +747,7 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Every leave day and overtime hour is counted against this.</span>
                 </label>
               </div>
-              <div className="mt-4"><SetupPolicyEditor area="work" value={configuration} onChange={setConfiguration} currency={currency} /></div>
+              <div className="mt-4"><SetupPolicyEditor area="work" value={configuration} onChange={acceptConfiguration} currency={currency} /></div>
             </div>
             <div hidden={step !== 2}>
               <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.4fr]">
@@ -684,9 +811,9 @@ export function AiSetupAssistant({ companies = [] }: { companies?: CompanyDto[];
                   ))}
                 </div>
               </details>
-              <SetupPolicyEditor area="governance" value={configuration} onChange={setConfiguration} currency={currency} />
+              <SetupPolicyEditor area="governance" value={configuration} onChange={acceptConfiguration} currency={currency} />
             </div>
-            <div hidden={step !== 3}><SetupPolicyEditor area="rewards" value={configuration} onChange={setConfiguration} currency={currency} releaseA={releaseA} /></div>
+            <div hidden={step !== 3}><SetupPolicyEditor area="rewards" value={configuration} onChange={acceptConfiguration} currency={currency} releaseA={releaseA} /></div>
             <div hidden={step !== 4}>
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3 dark:border-white/10">
                 <div className="flex items-start gap-3">

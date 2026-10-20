@@ -1,6 +1,7 @@
 'use client';
+import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
@@ -19,9 +20,11 @@ import { reportsApi } from '../api/reports';
 import { usersApi } from '../api/identity';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
-import { LocaleProvider } from '../contexts/LocaleContext';
 import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
+import { employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { POLICY_INTAKE_FLAG } from '../lib/policyIntake';
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -55,6 +58,7 @@ interface PaletteItem {
 
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
+  const navigationGuard = useNavigationGuard();
   const pathname = usePathname();
   // <main> remounts (and fades in) on navigation. The Self-Service workspace's tabs are one screen:
   // keyed as one, its tab row stays put and keeps keyboard focus when a tab is chosen.
@@ -65,7 +69,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
   const { isFeatureEnabled } = useFeatureFlags();
-  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view') || hasPermission('ess.read'));
+  // ess.read alone opens the assistant only for policy questions, which exist only while policy intake is on.
+  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view')
+    || (isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('ess.read')));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
   const [commandOpen, setCommandOpen] = useState(false);
@@ -79,6 +85,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const [reportResults, setReportResults] = useState<Array<{ key: string; label: string; sublabel: string }>>([]);
   const [searching, setSearching] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const commandTriggerRef = useRef<HTMLButtonElement>(null);
+  const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
 
   const commandItems = useMemo(() => {
     const base = commandNavigationItems
@@ -243,28 +251,31 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const runCommand = (path: string) => {
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(path);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
   const openEmployeeResult = (id: number) => {
+    const path = employeeWorkspaceHref(id, { section: 'overview' });
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/people?employeeId=${id}`);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
   const openUserResult = (searchText: string) => {
+    const path = `/user-management?search=${encodeURIComponent(searchText)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/user-management?search=${encodeURIComponent(searchText)}`);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
   const openReportResult = (key: string) => {
+    const path = `/reports?report=${encodeURIComponent(key)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
-    router.push(`/reports?report=${encodeURIComponent(key)}`);
+    navigationGuard.push(path, commandTriggerRef.current);
     closeCommandPalette();
   };
 
@@ -360,10 +371,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [activeIndex, commandOpen, paletteItems]);
 
+  // overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
+  // silently disabled every position:sticky inside it (the command bar scrolled away).
   return (
-    <LocaleProvider>
-    {/* overflow-x-CLIP, not hidden: `hidden` turns this div into a scroll container, which
-        silently disabled every position:sticky inside it (the command bar scrolled away). */}
     <div className="tenant-app-shell wg-canvas min-h-screen overflow-x-clip text-slate-950 dark:text-white">
       <div className="flex min-h-screen">
         <Sidebar
@@ -375,6 +385,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             localStorage.setItem('sidebar-collapsed', String(next));
             return next;
           })}
+          navigationRestoreTarget={sidebarTriggerRef}
         />
         <div className="min-w-0 flex-1">
           <TopBar
@@ -382,6 +393,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             onToggleTheme={onToggleTheme}
             onOpenSidebar={() => setSidebarOpen(true)}
             onOpenSearch={openCommandPalette}
+            navigationButtonRef={sidebarTriggerRef}
+            searchButtonRef={commandTriggerRef}
           />
           <MfaEnrollmentPrompt
             loadStatus={authApi.mfaStatus}
@@ -391,7 +404,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
           />
           <ResetCodeNotice className="mx-4 mt-4 sm:mx-6 lg:mx-8" />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}>{children}</main>
+          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn />{children}</main>
         </div>
       </div>
 
@@ -582,6 +595,5 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
         </div>
       )}
     </div>
-    </LocaleProvider>
   );
 }

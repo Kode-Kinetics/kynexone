@@ -76,11 +76,23 @@ export interface SetupConfiguration {
   policySourceText?: string;
   policyDocumentId?: string;
   policySourceHash?: string;
-  policyFieldSources?: { documentId: string; contentSha256: string; target: 'configuration' | 'profile'; field: string; sourceStart: number; sourceLength: number }[];
+  /** Draft binder sources; documents remain private until explicitly published. */
+  policySources?: PolicyDraftSource[];
+  /** Client draft checkpoint; not an applied company setting. */
+  policyExtraction?: PolicyExtractionCheckpoint;
+  localOnboardingPreparation?: { sourceSignature: string; results: PolicyExtractionResult[] };
+  policyIntakeText?: string;
+  policyReview?: { drafts: Record<string, PolicyReviewDecision>; history: PolicyReviewRecord[] };
+  policyFieldSources?: { documentId: string; contentSha256: string; target: 'configuration' | 'profile'; field: string; sourceStart: number; sourceLength: number; userCompleted?: boolean }[];
   usePolicySourceForAi?: boolean;
 }
 
+export interface PolicyDraftSource { documentId: string; contentSha256: string; name: string; }
+
 export interface SetupDraft {
+  policySource?: { documentId: string; contentSha256: string } | null;
+  policySources?: PolicyDraftSource[] | null;
+  policyFieldSources?: SetupConfiguration['policyFieldSources'] | null;
   benefitPlans?: DraftBenefitPlan[];
   branches: DraftBranch[];
   departments: DraftDepartment[];
@@ -115,6 +127,9 @@ const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 export function normalizeDraft(raw: unknown): SetupDraft {
   const d = (raw ?? {}) as Partial<SetupDraft>;
   return {
+    policySource: d.policySource,
+    policySources: d.policySources,
+    policyFieldSources: d.policyFieldSources,
     benefitPlans: asArray<DraftBenefitPlan>(d.benefitPlans).map(p => ({ ...p, gradeCodes: asArray<string>(p.gradeCodes) })),
     branches: asArray<DraftBranch>(d.branches),
     departments: asArray<DraftDepartment>(d.departments),
@@ -143,20 +158,52 @@ export function normalizeDraft(raw: unknown): SetupDraft {
   };
 }
 
-export interface PolicyExtractionProposal { target: 'configuration' | 'profile'; field: string; value: unknown; sourceQuote: string; sourceStart: number; sourceLength: number; }
+export interface PolicyExtractionProposal { target: 'configuration' | 'profile'; field: string; value: unknown; sourceQuote: string; sourceStart: number; sourceLength: number; userCompleted?: boolean; reviewKey?: string; }
+export interface PolicyPartialProposal extends PolicyExtractionProposal { missingFields: string[]; }
+export interface PolicyOnboardingTaskProposal {
+  id: string; taskTitle: string; taskDescription: string; category: string;
+  assignedToName: string | null; dueOffsetDays: number | null; isMandatory: boolean | null; condition: string | null;
+  sourceQuote: string; sourceStart: number; sourceLength: number;
+}
+export interface PolicyExtractionCheckpoint {
+  reviewVersion?: number;
+  preparedSetupCount?: number;
+  sourceSignature: string; setupSignature: string; documentIndex: number; chunkIndex: number; complete: boolean;
+  proposals: (PolicyExtractionProposal & { documentId: string; contentSha256: string; sourceName: string })[];
+  partials: (PolicyPartialProposal & { documentId: string; sourceHash: string; sourceName?: string })[];
+  issues: PolicyExtractionIssue[];
+  reviewItems?: PolicyReviewItem[];
+  onboardingTaskDrafts?: (PolicyOnboardingTaskProposal & { documentId: string; contentSha256: string; sourceName: string })[];
+}
+export interface PolicyExtractionIssue { id?: string | null; section: string; kind: 'missing' | 'unsupported' | 'review' | 'info'; message: string; code?: string | null; target?: string | null; field?: string | null; sourceQuote?: string | null; sourceStart?: number | null; sourceLength?: number | null; }
+export interface PolicyRequirement { id: string; section: string; summary: string; capability: string; status: string; sourceClassification: string; sourceQuote: string; sourceStart: number; sourceLength: number; target?: string | null; field?: string | null; missingFields?: string[] | null; }
+export interface PolicyReviewSource { documentId: string; contentSha256: string; sourceName: string; sourceQuote: string; sourceStart: number; sourceLength: number; }
+export interface PolicyReviewItem { id: string; itemType: 'proposal' | 'issue' | 'requirement'; kind: 'supported' | 'incomplete' | 'conflict' | 'unsupported' | 'outOfScope'; section: string; summary: string; sources: PolicyReviewSource[]; target?: string; field?: string; sourceClassification?: string; capability?: string; }
+export type PolicyReviewDisposition = 'Reviewed' | 'NeedsClarification' | 'Deferred' | 'ManualProcess' | 'ProductGap' | 'NotApplicable' | 'Answered';
+export interface PolicyReviewDecision { disposition: PolicyReviewDisposition | ''; comment: string; owner?: string; approvalReference?: string; }
+export interface PolicyReviewRequest extends Omit<PolicyReviewDecision, 'disposition'> { companyId: string; documentId: string; sourceHash: string; itemType: PolicyReviewItem['itemType']; itemKey: string; summary: string; target?: string; field?: string; sourceQuote?: string; sourceStart?: number; sourceLength?: number; disposition: PolicyReviewDisposition; }
+export interface PolicyReviewRecord extends PolicyReviewRequest { id: string; reviewedByUserId: string; reviewedAtUtc: string; }
 export interface PolicyExtractionResult {
   documentId: string; sourceHash: string; provider: string;
   proposals: PolicyExtractionProposal[];
-  issues: { section: string; kind: 'missing' | 'unsupported' | 'review'; message: string }[];
+  partialProposals?: PolicyPartialProposal[];
+  issues: PolicyExtractionIssue[];
+  requirements?: PolicyRequirement[];
+  onboardingTaskDrafts?: PolicyOnboardingTaskProposal[];
   coverage: { section: string; status: string }[];
   message: string;
+  progress?: { chunkIndex: number; chunkCount: number; sourceStart: number; sourceLength: number; totalCharacters: number; nextChunkIndex: number | null; isComplete: boolean };
 }
 
 export const setupAssistantApi = {
-  extractPolicy: (documentId: string, profile: CompanyProfile, signal?: AbortSignal) =>
-    client.post<PolicyExtractionResult>('/api/setup-assistant/policy/extract', { documentId, useAi: true, profile }, { signal }).then(r => r.data),
+  prepareOnboarding: (documentId: string, profile: CompanyProfile, signal?: AbortSignal) =>
+    client.post<PolicyExtractionResult>('/api/setup-assistant/policy/extract', { documentId, useAi: false, profile: serverProfile(profile) }, { signal }).then(r => r.data),
+  savePolicyReview: (body: PolicyReviewRequest, signal?: AbortSignal) => client.post<PolicyReviewRecord>('/api/setup-assistant/policy/reviews', body, { signal }).then(r => r.data),
+  policyReviewHistory: (companyId: string, documentId: string, signal?: AbortSignal) => client.get<PolicyReviewRecord[]>('/api/setup-assistant/policy/reviews', { params: { companyId, documentId }, signal }).then(r => r.data),
+  extractPolicy: (documentId: string, profile: CompanyProfile, signal?: AbortSignal, chunkIndex = 0) =>
+    client.post<PolicyExtractionResult>('/api/setup-assistant/policy/extract', { documentId, useAi: true, profile: serverProfile(profile), chunkIndex }, { signal }).then(r => r.data),
   preview: (profile: CompanyProfile) =>
-    client.post<SetupPreviewResult>('/api/setup-assistant/preview', profile).then(r => ({
+    client.post<SetupPreviewResult>('/api/setup-assistant/preview', serverProfile(profile)).then(r => ({
       draft: normalizeDraft(r.data?.draft),
       notes: asArray<string>(r.data?.notes),
       engine: r.data?.engine ?? '',
@@ -168,6 +215,12 @@ export const setupAssistantApi = {
       '/api/setup-assistant/apply', { draft, countryCode, currencyCode, legalEntityName, companyId },
     ).then(r => r.data),
 };
+
+/** Browser checkpoints are local review state, not AI context or server configuration. */
+function serverProfile(profile: CompanyProfile): CompanyProfile {
+  if (!profile.configuration) return profile;
+  return { ...profile, configuration: { ...profile.configuration, policyExtraction: undefined, policyIntakeText: undefined, policyReview: undefined } };
+}
 
 export interface OrgStructureImportRequest {
   companiesCsv?: string;

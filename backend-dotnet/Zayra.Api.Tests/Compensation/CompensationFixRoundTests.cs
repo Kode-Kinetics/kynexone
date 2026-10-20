@@ -8,6 +8,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Controllers;
 using Zayra.Api.Infrastructure.Audit;
@@ -62,7 +63,7 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
             ctrl.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
             {
                 new Claim("tenant_id", w.Tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, w.UserHr.ToString()),
-                new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "employees.delete"),
+                new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "employees.write"), new Claim("permission", "employees.delete"),
             }, "Test"));
             (await ctrl.Delete(w.ManagerB, default)).Should().BeOfType<NoContentResult>();
         }
@@ -255,6 +256,37 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
             var ok = await svc.ReverseAwardAsync(Hr(w), a1Line, req with { AcknowledgeLockedPeriods = true }, default);
             ok.ReversalStatus.Should().Be(EmployeeChangeStatuses.PendingApproval);
             (await db.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == "compensation.award.reversal_requested" && x.TenantId == w.Tenant)).Metadata.Should().Contain("\"lockedPeriodsAcknowledged\":true");
+        }
+    }
+
+    [Fact]
+    public async Task AReversalNobodyCouldDecide_IsRefusedAsARuleError_AndWritesNoChange()
+    {
+        var w = await SeedAsync(fx);
+        var applied = await AppliedAsync(fx, w);
+        Guid a1Line, a1Change;
+        await using (var db = fx.CreateDb())
+        {
+            var line = await db.CompWorksheetLines.SingleAsync(l => l.CycleId == applied.Id && l.EmployeeId == w.E["A1"] && l.ChangeRequestId != null);
+            (a1Line, a1Change) = (line.Id, line.ChangeRequestId!.Value);
+        }
+        (await RunJobAsync(fx, w.Tenant, a1Change, Effective)).Outcome.Should().Be(EffectiveChangeOutcome.Applied);
+        await using (var db = fx.CreateDb())
+        {
+            // The employee-change workflow goes to a role nobody holds, and nobody holds Admin or approvals.override.
+            var wf = new ApprovalWorkflow { TenantId = w.Tenant, Code = "EMP-CHANGE", Name = "Employee change", EntityName = nameof(EmployeeChangeRequest), IsDefault = true, IsActive = true };
+            wf.Steps.Add(new ApprovalWorkflowStep { TenantId = w.Tenant, WorkflowId = wf.Id, StepOrder = 1, StepName = "Committee", ApproverType = "Role", ApproverRole = "Pay Committee", IsFinalStep = true });
+            db.ApprovalWorkflows.Add(wf);
+            await db.SaveChangesAsync();
+            var before = await db.EmployeeChangeRequests.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.Tenant && x.EmployeeId == w.E["A1"]);
+
+            var refused = await FluentActions.Invoking(() => Service(db).ReverseAwardAsync(Hr(w), a1Line,
+                new ReverseCompAwardRequest(Effective.AddMonths(1), "Awarded in error"), default)).Should().ThrowAsync<CompRuleException>();
+
+            refused.Which.Code.Should().Be(ApprovalNoEligibleDeciderException.ErrorCode);
+            refused.Which.Message.Should().Contain("Pay Committee");
+            (await db.EmployeeChangeRequests.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.Tenant && x.EmployeeId == w.E["A1"])).Should().Be(before);
+            (await db.CompWorksheetLines.AsNoTracking().SingleAsync(l => l.Id == a1Line)).ReversalChangeRequestId.Should().BeNull();
         }
     }
 
