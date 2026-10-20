@@ -1060,6 +1060,46 @@ public class EssSelfServiceW2DTests
         dto.AttendanceToday.FirstInUtc.Should().Be(clockIn);
     }
 
+    /// <summary>
+    /// The team view's "today" is each report's own work date. At 01:00 in Riyadh a night worker (22:00–06:00, rostered
+    /// on the 17th) who clocked in at 22:00 is on the clock for the 17th; the tenant's calendar day (the 18th) showed them
+    /// "Not clocked in". A day worker who clocked in at 00:30 on the 18th is on the 18th.
+    /// </summary>
+    [Fact]
+    public async Task Team_shows_a_night_shift_report_on_the_clock_at_one_in_the_morning_in_riyadh()
+    {
+        using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var manager = SeedEmployee(db, tenantId, "M1");
+        var night = SeedEmployee(db, tenantId, "N1", manager.Id);
+        var day = SeedEmployee(db, tenantId, "D1", manager.Id);
+        db.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = tenantId, CountryCode = "SAU", DefaultTimezone = "Asia/Riyadh" });
+        var shift = new ShiftDefinition { TenantId = tenantId, Code = "NIGHT", Name = "Night", StartTime = new TimeOnly(22, 0), EndTime = new TimeOnly(6, 0), BreakMinutes = 60 };
+        db.ShiftDefinitions.Add(shift);
+        db.ShiftAssignments.Add(new ShiftAssignment
+        {
+            TenantId = tenantId, EmployeeId = night.Id, EmployeeName = night.FullName, ShiftDefinitionId = shift.Id,
+            ShiftName = shift.Name, ShiftCode = shift.Code, AssignedDate = new DateOnly(2026, 8, 17),
+        });
+        var nightIn = new DateTime(2026, 8, 17, 19, 0, 0, DateTimeKind.Utc);  // 22:00 on the 17th in Riyadh
+        var dayIn = new DateTime(2026, 8, 17, 21, 30, 0, DateTimeKind.Utc);   // 00:30 on the 18th in Riyadh
+        db.AttendanceRawEvents.AddRange(
+            new AttendanceRawEvent { TenantId = tenantId, EmployeeId = night.Id, PunchTimestampUtc = nightIn, PunchDirection = "In" },
+            new AttendanceRawEvent { TenantId = tenantId, EmployeeId = day.Id, PunchTimestampUtc = dayIn, PunchDirection = "In" });
+        await db.SaveChangesAsync();
+
+        var oneAm = new DateTime(2026, 8, 17, 22, 0, 0, DateTimeKind.Utc);    // 01:00 on the 18th in Riyadh
+        var result = await Ess(db, new MemoryStorage(), tenantId, manager.Id, clock: new FixedClock(oneAm)).Team(CancellationToken.None);
+        var team = ((IEnumerable<EssTeamMemberDto>)((OkObjectResult)result.Result!).Value!).ToDictionary(t => t.EmployeeCode);
+
+        team["N1"].TodayStatus.Should().Be("Present", "the night worker is on the shift that began at 22:00");
+        team["N1"].StatusSource.Should().Be("raw");
+        team["N1"].CurrentlyActive.Should().BeTrue();
+        team["N1"].ClockInUtc.Should().Be(nightIn);
+        team["D1"].TodayStatus.Should().Be("Present");
+        team["D1"].ClockInUtc.Should().Be(dayIn);
+    }
+
     private sealed class FixedClock(DateTime utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));

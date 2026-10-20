@@ -85,8 +85,8 @@ public class EmployeeSelfServiceController : ControllerBase
         // time zone, and an overnight shift's early hours on the shift's own day), and its punch window. It used to be the
         // UTC date, so at 01:00 in Riyadh the dashboard looked for yesterday's record and showed yesterday's punches.
         var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, cancellationToken);
-        var today = await AttendanceWorkDate.ResolveAsync(_db, tenantId, employeeId, now, timeZone, cancellationToken);
-        var (todayStartUtc, todayEndUtc, _) = await AttendanceWorkDate.WindowAsync(_db, tenantId, employeeId, today, timeZone, cancellationToken);
+        var todayWindows = await AttendanceWorkDate.TodayManyAsync(_db, tenantId, [employeeId], now, timeZone, cancellationToken);
+        var today = todayWindows[employeeId].WorkDate;
         var attendance = await _db.AttendanceDailyRecords.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkDate == today && !x.IsDeleted, cancellationToken);
         // W2-D (S8): a mobile/web punch creates a RAW event only; the daily record appears after HR
         // processing. Until then, expose today's state from the raw punches (not persisted, Id empty)
@@ -94,7 +94,7 @@ public class EmployeeSelfServiceController : ControllerBase
         string? attendanceSource = attendance is null ? null : "processed";
         if (attendance is null)
         {
-            var provisional = (await TodayFromRawEventsAsync(tenantId, new[] { employeeId }, todayStartUtc, todayEndUtc, cancellationToken))
+            var provisional = (await TodayFromRawEventsAsync(tenantId, todayWindows, cancellationToken))
                 .GetValueOrDefault(employeeId);
             if (provisional is not null)
             {
@@ -108,7 +108,7 @@ public class EmployeeSelfServiceController : ControllerBase
                 attendanceSource = "raw";
             }
         }
-        var leaveBalances = await _db.EmployeeLeaveBalances.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == DateTime.UtcNow.Year).ToListAsync(cancellationToken);
+        var leaveBalances = await _db.EmployeeLeaveBalances.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Year == today.Year).ToListAsync(cancellationToken);
         var pendingRequests = await _db.HRRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status != "Closed", cancellationToken);
         var pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status.Contains("Pending"), cancellationToken);
         var documentAlerts = await _db.EmployeeDocuments.AsNoTracking()
@@ -151,7 +151,7 @@ public class EmployeeSelfServiceController : ControllerBase
             {
                 var run = latest!.Run;
                 var salaryAsOf = run is null
-                    ? DateOnly.FromDateTime(DateTime.UtcNow)
+                    ? today
                     : new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
                 var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
                     .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= salaryAsOf)
@@ -1045,10 +1045,6 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
-        // The tenant's calendar day (not the UTC date) and its punch window, as the dashboard and the attendance
-        // processor see it.
-        var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, cancellationToken);
-        var today = TenantTimeZone.LocalDate(timeZone, _clock.GetUtcNow().UtcDateTime);
         var reports = await _db.Employees.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.ManagerEmployeeId == employeeId && x.Id != employeeId
                 && x.Status != EmployeeStatuses.Terminated)
@@ -1056,14 +1052,24 @@ public class EmployeeSelfServiceController : ControllerBase
             .Select(x => new { x.Id, x.EmployeeCode, x.FullName, x.JobTitle, x.Designation, x.Department })
             .ToListAsync(cancellationToken);
         var ids = reports.Select(r => r.Id).ToList();
-        var daily = ids.Count == 0 ? new() : await _db.AttendanceDailyRecords.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.WorkDate == today && !x.IsDeleted)
-            .ToListAsync(cancellationToken);
-        var raw = await TodayFromRawEventsAsync(tenantId, ids,
-            TenantTimeZone.LocalDayStartUtc(timeZone, today), TenantTimeZone.LocalDayStartUtc(timeZone, today.AddDays(1)), cancellationToken);
-        var onLeave = ids.Count == 0 ? new List<int>() : await _db.LeaveRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= today && x.EndDate >= today)
-            .Select(x => x.EmployeeId).Distinct().ToListAsync(cancellationToken);
+        // Each report's "today" is THEIR work date now and its punch window, as on their own dashboard (one shift query
+        // for the team): at 01:00 a night worker is still on the shift that began last evening. It used to be the UTC
+        // date, then briefly the tenant's calendar day, which showed that night worker as "Not clocked in".
+        var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, cancellationToken);
+        var todays = await AttendanceWorkDate.TodayManyAsync(_db, tenantId, ids, _clock.GetUtcNow().UtcDateTime, timeZone, cancellationToken);
+        var workDates = todays.Values.Select(t => t.WorkDate).Distinct().ToList();
+        var daily = ids.Count == 0 ? new() : (await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && workDates.Contains(x.WorkDate) && !x.IsDeleted)
+            .ToListAsync(cancellationToken))
+            .Where(x => todays[x.EmployeeId].WorkDate == x.WorkDate).ToList();
+        var raw = await TodayFromRawEventsAsync(tenantId, todays, cancellationToken);
+        var firstDate = workDates.Count == 0 ? default : workDates.Min();
+        var lastDate = workDates.Count == 0 ? default : workDates.Max();
+        var onLeave = ids.Count == 0 ? new List<int>() : (await _db.LeaveRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= lastDate && x.EndDate >= firstDate)
+            .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate }).ToListAsync(cancellationToken))
+            .Where(x => x.StartDate <= todays[x.EmployeeId].WorkDate && x.EndDate >= todays[x.EmployeeId].WorkDate)
+            .Select(x => x.EmployeeId).Distinct().ToList();
 
         var result = reports.Select(r =>
         {
@@ -1086,19 +1092,24 @@ public class EmployeeSelfServiceController : ControllerBase
     }
 
     /// <summary>
-    /// Today's state per employee from RAW punch events in [startUtc, endUtc) (the caller's "today"). First "In" is
+    /// Today's state per employee from RAW punch events in that employee's own "today" window (work date and
+    /// [StartUtc, EndUtc), from <see cref="AttendanceWorkDate.TodayManyAsync"/>), in one query. First "In" is
     /// the clock-in; if the latest punch is "Out" it is the clock-out, otherwise the person is on the
     /// clock. Worked minutes are summed over In→Out pairs.
     /// </summary>
-    private async Task<Dictionary<int, ProvisionalAttendance>> TodayFromRawEventsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds,
-        DateTime start, DateTime end, CancellationToken ct)
+    private async Task<Dictionary<int, ProvisionalAttendance>> TodayFromRawEventsAsync(Guid tenantId,
+        IReadOnlyDictionary<int, (DateOnly WorkDate, DateTime StartUtc, DateTime EndUtc)> windows, CancellationToken ct)
     {
-        if (employeeIds.Count == 0) return new();
-        var ids = employeeIds.Cast<int?>().ToList();
-        var events = await _db.AttendanceRawEvents.AsNoTracking()
+        if (windows.Count == 0) return new();
+        var ids = windows.Keys.Cast<int?>().ToList();
+        var start = windows.Values.Min(w => w.StartUtc);
+        var end = windows.Values.Max(w => w.EndUtc);
+        var events = (await _db.AttendanceRawEvents.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
             .Select(x => new { x.EmployeeId, x.PunchTimestampUtc, x.PunchDirection })
-            .ToListAsync(ct);
+            .ToListAsync(ct))
+            .Where(x => x.EmployeeId is int id && windows.TryGetValue(id, out var w) && x.PunchTimestampUtc >= w.StartUtc && x.PunchTimestampUtc < w.EndUtc)
+            .ToList();
         var result = new Dictionary<int, ProvisionalAttendance>();
         foreach (var group in events.Where(e => e.EmployeeId.HasValue).GroupBy(e => e.EmployeeId!.Value))
         {

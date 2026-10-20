@@ -175,6 +175,30 @@ public static class AttendanceWorkDate
             d => shifts.TryGetValue((p.EmployeeId, d), out var s) ? s : null)).ToList();
     }
 
+    /// <summary>
+    /// Each employee's work date at <paramref name="nowUtc"/> — the day a punch made now is given — and that day's punch
+    /// window, with ONE shift query for all of them. What "today" means on a self-service screen: at 01:00 a night worker
+    /// is still on the shift that started yesterday evening.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<int, (DateOnly WorkDate, DateTime StartUtc, DateTime EndUtc)>> TodayManyAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<int> employeeIds, DateTime nowUtc, TimeZoneInfo timeZone, CancellationToken ct)
+    {
+        if (employeeIds.Count == 0) return new Dictionary<int, (DateOnly, DateTime, DateTime)>();
+        // The punch's local date -4 .. +2 covers both the date rule and the resulting day's window (day-2 .. day+1).
+        var localDate = TenantTimeZone.LocalDate(timeZone, nowUtc);
+        var dates = Enumerable.Range(-4, 7).Select(localDate.AddDays).ToList();
+        var shifts = await ShiftsAsync(db, tenantId, employeeIds, dates, ct);
+        var result = new Dictionary<int, (DateOnly, DateTime, DateTime)>();
+        foreach (var employeeId in employeeIds.Distinct())
+        {
+            DayShift? On(DateOnly d) => shifts.TryGetValue((employeeId, d), out var s) ? s : null;
+            var workDate = Resolve(nowUtc, timeZone, On);
+            var (start, end) = WindowUtc(workDate, On, timeZone);
+            result[employeeId] = (workDate, start, end);
+        }
+        return result;
+    }
+
     /// <summary><paramref name="date"/>'s window and its own shift (one query).</summary>
     public static async Task<(DateTime StartUtc, DateTime EndUtc, DayShift? Shift)> WindowAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, TimeZoneInfo timeZone, CancellationToken ct)
