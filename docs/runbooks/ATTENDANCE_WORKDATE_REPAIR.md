@@ -160,11 +160,14 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
      - Once HR has resolved a difference, **the same difference is not raised again**, so nobody makes a second
        adjustment for it. A *different* difference opens a new exception. The signature is stored as a `[sig:…]`
        tag at the end of `details`, and automatic closes are marked `[auto-resolved: …]`.
-     - **Voiding or reopening** the run closes the open exceptions for the employees and month it covered.
+     - **Voiding or reopening** the run recomputes every day with an open exception in the month it covered, in the
+       same transaction. That recompute is what closes the exception: the day's deductions are pending again, with
+       what the day says now.
    - **Known gap:** the application has no screen or endpoint to resolve an attendance exception yet. Until one
      exists, HR's "resolve" is a manual, audited data correction.
-   - **If the run is later voided or reopened**, the restore hands the paid impacts back as `PendingPayroll` with the
-     amounts that were **paid**, not the recomputed ones. Reprocess those days before the replacement run.
+   - **If the run is later voided or reopened**, days with an open exception are recomputed automatically (above).
+     Any other pending impact that no longer matches its day blocks the next Process with
+     `ERR_ATTENDANCE_IMPACT_STALE` (see "Payroll's attendance check" below).
 4. **Unpaid periods** (every affected impact is still `PendingPayroll` and no payroll run covers the dates yet):
    repair with a **range run over D..D+1 for the one employee**. Use `POST /api/attendance/process` (or
    `process/async`) with body `{ "fromDate": "<D>", "toDate": "<D+1>", "employeeId": <id> }`.
@@ -228,6 +231,28 @@ These are intended results of the one-boundary model. They are not defects, but 
   day is recomputed and the deductions are raised once. The `MissingPunch` exception then closes as
   `[auto-resolved: …]`. On a paid day the completed pair raises no deduction; any difference is flagged as
   `PaidAttendanceChanged`, as above.
+
+## Payroll's attendance check
+
+Before Process takes the period's pending attendance impacts, it compares each one with what its day now implies
+under today's rules: the punches that belong to the day, the pairing, and the deductions the record implies. If any
+day differs, Process refuses with `ERR_ATTENDANCE_IMPACT_STALE` and saves nothing.
+
+- **Payroll → Validation** lists the days and offers **Recompute these days**. The API equivalents are
+  `GET /api/payroll/runs/{id}/attendance-reconciliation` and `POST /api/payroll/runs/{id}/attendance/recompute-stale`.
+- The recompute uses the day processor. A day with no raw punches (a migration import) only has its deductions
+  re-derived from its record.
+- Paid days, payroll-locked days, and days with neither a record nor a punch are not judged.
+
+This covers rows written before the fix: Out-only days with a pending 480-minute absence, In-only days with a
+pending late deduction, and days dated by a non-Riyadh stored zone for a Saudi tenant. **No deploy-time mass
+rewrite is needed or wanted.** Each open month is recomputed, day by day, when payroll first meets it.
+
+Held late and early-exit minutes on missing-punch days are listed on the same panel. Each run also warns about them
+with `WARN_MISSING_PUNCH_HELD`, which never blocks.
+
+If attendance changes between the moment Process loads the impacts and the moment it marks them, the run rolls back
+with `attendance_changed_during_process` (409). Process it again.
 
 ## Known limitations
 
