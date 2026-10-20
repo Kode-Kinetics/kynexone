@@ -409,19 +409,13 @@ public class LeaveRequestsController : ControllerBase
         var reviewer = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Approver";
         try
         {
-            var leave = await _leaveService.CancelRequestAsync(tenantId.Value, id, reviewer, cancellation.Reason, ct);
-            // Re-resolved by key: a transient retry inside CancelRequestAsync clears the change tracker,
-            // which would detach the row read above and silently drop this decision. Returns the same
-            // tracked instance when no retry happened.
-            var cancellationId = cancellation.Id;
-            cancellation = await _db.LeaveCancellationRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == cancellationId, ct);
-            cancellation.Status = "Approved";
-            cancellation.ReviewedByName = reviewer;
-            cancellation.ReviewNotes = req.Notes ?? string.Empty;
-            cancellation.ReviewedAtUtc = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct);
+            // The leave's cancellation and this decision commit in ONE transaction, re-checked under the
+            // employee's leave lock (see LeaveService.ApproveCancellationAsync). The decision used to be a
+            // second save after the cancellation committed: a failure in between stranded it Pending forever.
+            var leave = await _leaveService.ApproveCancellationAsync(tenantId.Value, id, reviewer, req.Notes ?? string.Empty, ct);
             return Ok(leave);
         }
+        catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -462,12 +456,14 @@ public class LeaveRequestsController : ControllerBase
                         + $"the leave has already moved on."
             });
 
-        cancellation.Status = "Rejected";
-        cancellation.ReviewedByName = User.Identity?.Name ?? "Approver";
-        cancellation.ReviewNotes = req.Notes ?? string.Empty;
-        cancellation.ReviewedAtUtc = DateTime.UtcNow;
-        leave.Status = "Approved";
-        await _db.SaveChangesAsync(ct);
+        // The checks above are the fast path; the service repeats them under the employee's leave lock, so a
+        // concurrent approval of the same cancellation and this refusal cannot both apply.
+        try
+        {
+            leave = await _leaveService.RejectCancellationAsync(tenantId.Value, id, User.Identity?.Name ?? "Approver",
+                req.Notes ?? string.Empty, ct);
+        }
+        catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
         return Ok(LeaveRequestStateDto.Project(leave));
     }
 

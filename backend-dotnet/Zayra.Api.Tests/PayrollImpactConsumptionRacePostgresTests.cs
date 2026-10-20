@@ -342,11 +342,6 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
     // ── Choreography ─────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Runs <c>between</c> once, right after the run's first read of <c>table</c> has executed (the snapshot the run
-    /// computes pay from is taken) and before the run goes on to compute and mark — the exact window in which an
-    /// unsynchronised writer can replace the rows it loaded.
-    /// </summary>
-    /// <summary>
     /// Runs <c>before</c> once, immediately before the first command containing <c>marker</c> is sent (so the
     /// writer has already read what it will act on, but its write has not reached the server yet).
     /// </summary>
@@ -378,6 +373,11 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
         }
     }
 
+    /// <summary>
+    /// Runs <c>between</c> once, right after the run's first read of <c>table</c> has executed (the snapshot the run
+    /// computes pay from is taken) and before the run goes on to compute and mark — the exact window in which an
+    /// unsynchronised writer can replace the rows it loaded.
+    /// </summary>
     private sealed class AfterFirstRead(string table, Func<Task> between) : DbCommandInterceptor
     {
         private int _fired;
