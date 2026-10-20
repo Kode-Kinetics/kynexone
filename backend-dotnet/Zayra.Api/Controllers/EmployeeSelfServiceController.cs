@@ -238,7 +238,7 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             var nextLeave = await _db.LeaveRequests.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
-                         && x.Status == "Approved" && x.StartDate > today)
+                         && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate > today)
                 .OrderBy(x => x.StartDate)
                 .FirstOrDefaultAsync(cancellationToken);
             if (nextLeave is not null)
@@ -596,7 +596,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
 
-        var start = from ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var start = from ?? await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, cancellationToken);
         var end = to ?? start.AddDays(28);
 
         // Strictly scoped to the caller's own EmployeeId — an employee can never see another's roster.
@@ -657,8 +657,8 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
-        var start = from ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30));
-        var end = to ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var start = from ?? (await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, cancellationToken)).AddDays(-30);
+        var end = to ?? await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, cancellationToken);
         return Ok(await _db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted && x.WorkDate >= start && x.WorkDate <= end)
             .OrderByDescending(x => x.WorkDate)
@@ -816,7 +816,7 @@ public class EmployeeSelfServiceController : ControllerBase
             return BadRequest(new { message = RestrictedEmployeeDocumentTypes.SelfServiceRefusal });
         var documentNumber = form.DocumentNumber?.Trim();
         if (documentNumber is { Length: > 64 }) return BadRequest(new { message = "documentNumber must be at most 64 characters." });
-        if (form.ExpiryDate is { } expiry && expiry < DateOnly.FromDateTime(DateTime.UtcNow))
+        if (form.ExpiryDate is { } expiry && expiry < await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, cancellationToken))
             return BadRequest(new { message = "expiryDate must not be in the past." });
         if (form.File is null) return BadRequest(new { message = "A file is required." });
         if (form.File.Length > EssUploadPolicy.MaxDocumentBytes) return BadRequest(new { message = "The file exceeds the 10 MB limit." });
@@ -1066,7 +1066,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var firstDate = workDates.Count == 0 ? default : workDates.Min();
         var lastDate = workDates.Count == 0 ? default : workDates.Max();
         var onLeave = ids.Count == 0 ? new List<int>() : (await _db.LeaveRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= lastDate && x.EndDate >= firstDate)
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate <= lastDate && x.EndDate >= firstDate)
             .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate }).ToListAsync(cancellationToken))
             .Where(x => x.StartDate <= todays[x.EmployeeId].WorkDate && x.EndDate >= todays[x.EmployeeId].WorkDate)
             .Select(x => x.EmployeeId).Distinct().ToList();

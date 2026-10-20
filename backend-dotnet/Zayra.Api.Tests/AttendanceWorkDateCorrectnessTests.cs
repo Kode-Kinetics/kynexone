@@ -212,10 +212,15 @@ public class AttendanceWorkDateCorrectnessTests
         (await check.AttendanceDailyRecords.CountAsync()).Should().Be(2, "one day each, the day each person punched");
     }
 
-    // ── (3) the legacy mobile punch uses the tenant's work date ──────────────────────────────────────────
+    // ── (3) the legacy mobile punch is retired ──────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// /api/mobile/attendance/punch wrote the daily record directly, around the day processor, the impacts and the
+    /// payroll lock. The app clocks in through /api/attendance/punch/mobile; the old route now answers 410 and writes
+    /// nothing.
+    /// </summary>
     [Fact]
-    public async Task LegacyMobilePunch_AtOneInTheMorningInRiyadh_IsDatedTheRiyadhDay()
+    public async Task TheLegacyMobilePunch_IsGone_AndWritesNothing()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -223,33 +228,13 @@ public class AttendanceWorkDateCorrectnessTests
         SeedRiyadh(db, tenantId);
         await db.SaveChangesAsync();
 
-        // 2026-09-15 22:00 UTC = 2026-09-16 01:00 in Riyadh.
         var result = await MobilePunchAsync(db, tenantId, employee.Id, "In", new DateTime(2026, 9, 15, 22, 0, 0, DateTimeKind.Utc));
 
-        result.Should().BeOfType<OkObjectResult>();
-        (await db.AttendanceDailyRecords.SingleAsync()).WorkDate.Should().Be(new DateOnly(2026, 9, 16),
-            "01:00 in Riyadh is the 16th there; the UTC date (the 15th) is another day's record and lock key");
-    }
-
-    [Fact]
-    public async Task LegacyMobilePunch_FollowsTheOvernightShiftRule_LikeThePunchPath()
-    {
-        await using var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-        var employee = AddEmployee(db, tenantId);
-        var shiftDate = new DateOnly(2026, 9, 15);
-        SeedRiyadh(db, tenantId);
-        SeedNightShift(db, tenantId, employee, shiftDate);
-        await db.SaveChangesAsync();
-
-        // In at 22:30 local on the 15th; Out at 03:30 local on the 16th (00:30 UTC on the 16th).
-        await MobilePunchAsync(db, tenantId, employee.Id, "In", new DateTime(2026, 9, 15, 19, 30, 0, DateTimeKind.Utc));
-        await MobilePunchAsync(db, tenantId, employee.Id, "Out", new DateTime(2026, 9, 16, 0, 30, 0, DateTimeKind.Utc));
-
-        var daily = await db.AttendanceDailyRecords.ToListAsync();
-        daily.Select(d => d.WorkDate).Should().Equal([shiftDate], "both punches belong to the 15 Sep night shift");
-        daily[0].FirstInUtc.Should().NotBeNull();
-        daily[0].LastOutUtc.Should().NotBeNull();
+        var gone = result.Should().BeOfType<ObjectResult>().Subject;
+        gone.StatusCode.Should().Be(410);
+        System.Text.Json.JsonSerializer.Serialize(gone.Value).Should().Contain("legacy_punch_retired").And.Contain("Update the KynexOne app");
+        (await db.AttendanceDailyRecords.AnyAsync()).Should().BeFalse();
+        (await db.AttendanceRawEvents.AnyAsync()).Should().BeFalse();
     }
 
     // ── (4) one definition: the date a punch is given is the day whose window counts it ───────────────────
@@ -566,39 +551,6 @@ public class AttendanceWorkDateCorrectnessTests
         Figures(ingested).Should().BeEquivalentTo(Figures(punched), "the same punches under the same policy are the same day");
     }
 
-    /// <summary>
-    /// The legacy mobile punch (/api/mobile/attendance/punch) wrote the daily record directly and no raw event, so the
-    /// next recompute of that day (HR's range run, a regularization, the processing job) found no punch, wiped the in and
-    /// out, and raised an absence deduction for a day the employee worked.
-    /// </summary>
-    [Fact]
-    public async Task LegacyMobilePunch_SurvivesALaterRecompute_BecauseItRecordsARawEvent()
-    {
-        await using var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-        var employee = AddEmployee(db, tenantId);
-        SeedRiyadh(db, tenantId);
-        await db.SaveChangesAsync();
-        var clockIn = RiyadhToUtc(Weekday, 9, 0);
-        var clockOut = RiyadhToUtc(Weekday, 17, 0);
-
-        (await MobilePunchAsync(db, tenantId, employee.Id, "In", clockIn)).Should().BeOfType<OkObjectResult>();
-        (await MobilePunchAsync(db, tenantId, employee.Id, "Out", clockOut)).Should().BeOfType<OkObjectResult>();
-
-        var raw = await db.AttendanceRawEvents.OrderBy(x => x.PunchTimestampUtc).ToListAsync();
-        raw.Select(x => (x.PunchTimestampUtc, x.PunchDirection)).Should().Equal([(clockIn, "In"), (clockOut, "Out")]);
-        raw.Should().OnlyContain(x => x.EmployeeId == employee.Id && x.DeviceId == null);
-
-        await ProcessAsync(db, tenantId, employee.Id, Weekday);
-
-        var daily = await db.AttendanceDailyRecords.SingleAsync();
-        daily.FirstInUtc.Should().Be(clockIn, "the recompute counts the legacy punch's own raw event");
-        daily.LastOutUtc.Should().Be(clockOut);
-        daily.MissingPunch.Should().BeFalse();
-        daily.TotalWorkedMinutes.Should().Be(8 * 60 - 60);
-        (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == "Absence deduction")).Should().BeFalse();
-    }
-
     /// <summary>HR's daily list with no dates ends on the TENANT's today: at 01:00 in Riyadh that is not the UTC date.</summary>
     [Fact]
     public async Task DailyList_WithNoDates_EndsOnTheTenantsToday_NotTheUtcDate()
@@ -629,7 +581,6 @@ public class AttendanceWorkDateCorrectnessTests
     [Theory]
     [InlineData("Web")]
     [InlineData("Device")]
-    [InlineData("Mobile")]
     [InlineData("Range")]
     [InlineData("Correction")]
     public async Task ASaudiTenantWithNoStoredTimeZone_DatesA1amRiyadhPunchTheRiyadhDay_OnEveryPath(string path)
@@ -665,9 +616,6 @@ public class AttendanceWorkDateCorrectnessTests
                     (await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                         [new DeviceIngestPunch(employee.EmployeeCode, OneAmRiyadhOnThe16th, "In", null, null, null, null, null, null)],
                         AutoProcess: true), "127.0.0.1", default))!.Processed.Should().Be(1);
-                    break;
-                case "Mobile":
-                    (await MobilePunchAsync(db, tenantId, employee.Id, "In", OneAmRiyadhOnThe16th)).Should().BeOfType<OkObjectResult>();
                     break;
                 case "Range":
                     await ProcessAsync(db, tenantId, employee.Id, The16th.AddDays(-1), The16th);

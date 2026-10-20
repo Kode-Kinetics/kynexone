@@ -175,15 +175,24 @@ test('company_actions_menu_keyboard_escape_and_confirmations_preserve_records', 
   await page.keyboard.press('Shift+Tab');
   await expect(menu).toHaveCount(0);
   await expect(row.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  // Confirmations use the app's translated dialog, never the browser's native confirm(); cancelling writes nothing.
   const prompts: string[] = [];
   page.on('dialog', async dialog => { prompts.push(dialog.message()); await dialog.dismiss(); });
-  for (const action of ['Suspend', 'Delete company']) {
+  const confirmations: Array<[string, string, string]> = [
+    ['Suspend', 'Suspend company', 'Suspend Workspace Fixture LLC?'],
+    ['Delete company', 'Delete company', 'Delete this company? This cannot be undone.'],
+  ];
+  for (const [action, title, message] of confirmations) {
     if (info.project.use.isMobile) await trigger.tap(); else await trigger.click();
     const item = menu.getByRole('menuitem', { name: action, exact: true });
     if (info.project.use.isMobile) await item.tap(); else await item.click();
     await expect(menu).toHaveCount(0);
+    const dialog = page.getByRole('dialog', { name: title, exact: true });
+    await expect(dialog).toContainText(message);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
   }
-  expect(prompts).toEqual(['Suspend Workspace Fixture LLC?', 'Delete this company? This cannot be undone.']);
+  expect(prompts).toEqual([]);
   expect(writes).toEqual([]);
   await trigger.click();
   const box = await menu.boundingBox();

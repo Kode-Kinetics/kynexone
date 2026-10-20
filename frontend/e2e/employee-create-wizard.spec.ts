@@ -255,7 +255,7 @@ test('employee fields use active Master Data values and configured defaults', as
     isSystemDefined: false,
     isActive: true,
   });
-  const { dialog, errors } = await boot(page, {
+  const { dialog, creates, errors } = await boot(page, {
     masterData: {
       Gender: [value('gender', 'FEMALE', 'Female', 1), value('gender', 'NON_BINARY', 'Non-Binary', 2)],
       MaritalStatus: [value('marital', 'SINGLE', 'Single', 1), value('marital', 'SEPARATED', 'Separated', 2)],
@@ -275,10 +275,15 @@ test('employee fields use active Master Data values and configured defaults', as
   const employmentType = dialog.getByRole('combobox', { name: /^Employment type/ });
   const contractType = dialog.getByRole('combobox', { name: 'Contract type', exact: true });
   await expect(employmentType.locator('option')).toHaveText(['Select', 'Full-Time', 'Seasonal']);
-  await expect(employmentType).toHaveValue('Seasonal');
+  // The form stores the value's code and shows its label; the configured defaults are preselected by code.
+  await expect(employmentType).toHaveValue('SEASONAL');
   await expect(contractType.locator('option')).toHaveText(['Select', 'Limited Term', 'Unlimited Term']);
-  await expect(contractType).toHaveValue('Limited Term');
+  await expect(contractType).toHaveValue('LIMITED');
   await evidence(page, info, 'master-data-employee-fields');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ employmentType: 'SEASONAL', contractType: 'LIMITED' });
   expect(errors).toEqual([]);
 });
 

@@ -44,6 +44,9 @@ import type {
 } from '../api/attendance';
 import { employeesApi } from '../api/employees';
 import { SelfieViewerModal } from '../components/attendance/SelfieViewerModal';
+import { AttendanceExceptionsPanel } from '../components/attendance/AttendanceExceptionsPanel';
+import { useT } from '../hooks/useT';
+import { msg } from '../i18n/translations';
 import { useLocale } from '../contexts/LocaleContext';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
@@ -56,7 +59,7 @@ import {
   type AttendanceLoadErrors,
 } from '../lib/attendanceLoadState';
 
-type TabKey = 'dashboard' | 'devices' | 'raw' | 'processing' | 'regularization' | 'reports' | 'ai';
+type TabKey = 'dashboard' | 'devices' | 'raw' | 'processing' | 'regularization' | 'exceptions' | 'reports' | 'ai';
 type KvPair = { key: string; value: string };
 
 interface DeviceFormState {
@@ -143,6 +146,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof Activity }> = [
   { key: 'raw', label: 'Raw Punch Logs', icon: Database },
   { key: 'processing', label: 'Processing', icon: RefreshCw },
   { key: 'regularization', label: 'Regularization', icon: ShieldCheck },
+  { key: 'exceptions', label: msg('Exceptions'), icon: AlertTriangle },
   { key: 'reports', label: 'Reports', icon: FileSpreadsheet },
   { key: 'ai', label: 'Insights', icon: Lightbulb },
 ];
@@ -161,6 +165,7 @@ export function AttendancePage() {
   // (AttendanceController). Read-only attendance roles (HR Assistant, payroll, managers, auditors)
   // used to be offered these and only ever got a 403.
   const { user, hasPermission } = useAuth();
+  const t = useT();
   const canManageSources = hasPermission('attendance.bulk_import');
   const canProcess = hasPermission('attendance.write');
   // Recording attendance FOR an employee: attendance.write (or attendance.kiosk at the kiosk), as the server
@@ -482,7 +487,7 @@ export function AttendancePage() {
       )}
 
       <RovingTabList
-        items={tabs.map(({ key, label, icon }) => ({ id: key, label, icon }))}
+        items={tabs.map(({ key, label, icon }) => ({ id: key, label: key === 'exceptions' ? t(label) : label, icon }))}
         activeId={activeTab}
         onChange={setActiveTab}
         idPrefix="attendance"
@@ -672,6 +677,8 @@ export function AttendancePage() {
           </Panel>
         </div>
       )}
+
+      {activeTab === 'exceptions' && <AttendanceExceptionsPanel />}
 
       {activeTab === 'reports' && (
         <div className="grid gap-5 xl:grid-cols-2">

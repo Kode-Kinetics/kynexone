@@ -108,6 +108,19 @@ internal sealed class AttendancePayrollPostgresKit
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// Marks the kit's own run as a processed recurring-pay run with a slip for the employee, so its month counts as paid.
+    /// The kit's run, not a second one: a second run for the same company and month breaks the period's unique index the
+    /// moment anything (the company backfill) gives it the company.
+    /// </summary>
+    public async Task MarkRunPaidAsync()
+    {
+        await using var db = Factory();
+        await db.PayrollRuns.IgnoreQueryFilters().Where(r => r.Id == Run.Id).ExecuteUpdateAsync(x => x.SetProperty(r => r.Status, "Processed"));
+        db.PayrollSlips.Add(new PayrollSlip { TenantId = TenantId, CompanyId = Company.Id, RunId = Run.Id, EmployeeId = Employee.Id, Status = "Processed" });
+        await db.SaveChangesAsync();
+    }
+
     public ZayraDbContext NewContext() => Factory();
 
     public PayrollController Payroll(ZayraDbContext db)

@@ -41,14 +41,15 @@ public class AttendanceController : ControllerBase
 
     [HttpGet("dashboard")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
-    public Task<AttendanceDashboardDto> Dashboard([FromQuery] DateOnly? date, CancellationToken ct) =>
-        _attendance.DashboardAsync(RequireTenant(), date ?? DateOnly.FromDateTime(DateTime.UtcNow), ct);
+    public async Task<AttendanceDashboardDto> Dashboard([FromQuery] DateOnly? date, CancellationToken ct) =>
+        await _attendance.DashboardAsync(RequireTenant(), date ?? await TenantClock.TodayForAsync(_db, RequireTenant(), ct), ct);
 
     [HttpGet("today")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
     public async Task<IActionResult> Today(CancellationToken ct)
     {
-        var date = DateOnly.FromDateTime(DateTime.UtcNow);
+        // The tenant's day, not the UTC one: before 03:00 in Riyadh "today" was still yesterday's figures.
+        var date = await TenantClock.TodayForAsync(_db, RequireTenant(), ct);
         var summary = await _attendance.DashboardAsync(RequireTenant(), date, ct);
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }
@@ -231,6 +232,37 @@ public class AttendanceController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
         return await _attendance.GetDailyAsync(RequireTenant(), from, to, singleId, status, page, pageSize, ct, setFilter);
+    }
+
+    /// <summary>HR's attendance exceptions (missing punches, paid days that changed, imported days with punches).</summary>
+    [HttpGet("exceptions")]
+    [HasPermission("attendance.read")]
+    public async Task<PagedResult<AttendanceExceptionDto>> Exceptions([FromQuery] string? state, [FromQuery] string? type, [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        var (singleId, setFilter) = scope.Constrain(employeeId);
+        return await _attendance.GetExceptionsAsync(RequireTenant(), state, type, from, to, singleId, page, pageSize, ct, setFilter);
+    }
+
+    /// <summary>Resolves one exception; the reason is required and kept with it.</summary>
+    [HttpPost("exceptions/{id:guid}/resolve")]
+    [HasPermission("attendance.write")]
+    public async Task<IActionResult> ResolveException(Guid id, [FromBody] ResolveAttendanceExceptionRequest req, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        // A by-id write: a restricted caller may resolve only exceptions of employees in their scope (Constrain's
+        // fallback to the caller's own id is for lists, not for this).
+        IReadOnlyCollection<int>? setFilter = scope.IsUnrestricted ? null : (scope.AllowedEmployeeIds?.ToList() ?? new List<int>());
+        try
+        {
+            var resolvedBy = User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? GetUserId()?.ToString() ?? "HR";
+            var resolved = await _attendance.ResolveExceptionAsync(RequireTenant(), id, req.Reason, resolvedBy, Context(), ct, setFilter);
+            return resolved is null ? NotFound() : Ok(resolved);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpGet("monthly")]

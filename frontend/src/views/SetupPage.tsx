@@ -84,6 +84,7 @@ import { resolveSetupArea } from '../lib/setupAreas';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
+import { useConfirm } from '../components/gl/glUi';
 import { useReleaseA } from '../lib/releaseA';
 import Link from 'next/link';
 
@@ -142,6 +143,7 @@ function InfoRow({ label, value, detail }: { label: string; value: string; detai
 
 function CompaniesTab() {
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
   const { accountType, isGroupScope, setSelectedCompany } = useCompany();
@@ -298,7 +300,7 @@ function CompaniesTab() {
     setFieldErrors((current) => (current[key] ? { ...current, [key]: undefined } : current));
   };
   const deleteCompany = async (id: string) => {
-    if (!confirm('Delete this company? This cannot be undone.')) return;
+    if (!(await confirm({ title: t('Delete company'), message: t('Delete this company? This cannot be undone.'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await companiesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -308,7 +310,13 @@ function CompaniesTab() {
   // is lost when that route folds into Setup. Reproduces the last-active-company guard.
   const toggleStatus = async (c: CompanyDto) => {
     const action = c.isActive ? 'Suspend' : 'Reactivate';
-    if (!confirm(`${action} ${c.tradeName || c.legalNameEn}?`)) return;
+    const name = c.tradeName || c.legalNameEn;
+    if (!(await confirm({
+      title: c.isActive ? t('Suspend company') : t('Reactivate company'),
+      message: c.isActive ? t('Suspend {name}?', { name }) : t('Reactivate {name}?', { name }),
+      confirmLabel: c.isActive ? t('Suspend') : t('Reactivate'),
+      tone: c.isActive ? 'danger' : 'primary',
+    }))) return;
     setToggling(c.id);
     try { await companiesApi.setStatus(c.id, !c.isActive); load(); }
     catch (e: unknown) {
@@ -341,12 +349,12 @@ function CompaniesTab() {
         </div>
       )}
       <TableShell
-        columns={['Legal Name', 'Trade Name', 'Country', 'Currency', 'Status']}
+        columns={[msg('Legal Name'), msg('Trade Name'), msg('Country'), msg('Currency'), msg('Status')]}
         onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openNew : undefined}
-        addLabel="Add Company"
+        addLabel={msg('Add Company')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel="No companies yet"
+        emptyLabel={msg('No companies yet')}
         actions={canWrite ? (
           <ImportExportToolbar
             entityName="Companies"
@@ -546,6 +554,7 @@ function CompaniesTab() {
           </FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -553,6 +562,8 @@ function CompaniesTab() {
 // ─── Branches ────────────────────────────────────────────────────────────────
 
 function BranchesTab({ companies }: { companies: CompanyDto[] }) {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<BranchDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCompany, setFilterCompany] = useState('');
@@ -580,19 +591,19 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   };
 
   const handleSave = async () => {
-    if (!form.nameEn.trim() || !form.code.trim()) { setError('Name and code are required'); return; }
+    if (!form.nameEn.trim() || !form.code.trim()) { setError(t('Name and code are required')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await branchesApi.update(editing.id, form);
       else await branchesApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); }
   };
 
   const f = (key: keyof BranchRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
   const deleteBranch = async (id: string) => {
-    if (!confirm('Delete this branch?')) return;
+    if (!(await confirm({ title: t('Delete branch'), message: t('Delete this branch?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await branchesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -605,16 +616,16 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   return (
     <>
       <TableShell
-        columns={['Code', 'Name', 'Company', 'City', 'Head Office', 'Status']}
+        columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
         onAdd={openNew}
-        addLabel="Add Branch"
+        addLabel={msg('Add Branch')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel="No branches yet"
+        emptyLabel={msg('No branches yet')}
         filter={
           companies.length > 0 ? (
-            <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="select" title="Filter by company">
-              <option value="">All Group Companies</option>
+            <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="select" title={t('Filter by company')}>
+              <option value="">{t('All Group Companies')}</option>
               {companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}
             </select>
           ) : undefined
@@ -637,10 +648,10 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(b)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteBranch(b.id)} disabled={deleting === b.id} aria-label="Delete branch" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(b)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteBranch(b.id)} disabled={deleting === b.id} aria-label={t('Delete branch')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
@@ -650,57 +661,58 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
       <Modal
         isOpen={modalOpen}
-        title={editing ? 'Edit Branch' : 'Add Branch'}
+        title={editing ? t('Edit Branch') : t('Add Branch')}
         onClose={() => setModalOpen(false)}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
       >
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Company" required>
+          <FormField label={t('Company')} required>
             <select value={form.companyId} onChange={(e) => f('companyId', e.target.value)} className="select w-full">
-              <option value="">Select company</option>
+              <option value="">{t('Select company')}</option>
               {companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}
             </select>
           </FormField>
-          <FormField label="Code" required>
+          <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-01" />
           </FormField>
-          <FormField label="Name (EN)" required>
+          <FormField label={t('Name (EN)')} required>
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Dubai Head Office" />
           </FormField>
-          <FormField label="Name (AR)">
+          <FormField label={t('Name (AR)')}>
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
             </div>
           </FormField>
-          <FormField label="Country" required>
+          <FormField label={t('Country')} required>
             <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
           </FormField>
-          <FormField label="City" required>
+          <FormField label={t('City')} required>
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
           </FormField>
-          <FormField label="Time Zone" required>
+          <FormField label={t('Time Zone')} required>
             <input type="text" value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="input w-full" placeholder="America/New_York" />
           </FormField>
-          <FormField label="Status">
+          <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
+              <option value="true">{t('Active')}</option>
+              <option value="false">{t('Inactive')}</option>
             </select>
           </FormField>
           <div className="col-span-2 flex items-center gap-2">
             <input type="checkbox" id="isHQ" checked={form.isHeadOffice} onChange={(e) => f('isHeadOffice', e.target.checked)} className="h-4 w-4 accent-sapphire" />
-            <label htmlFor="isHQ" className="text-sm font-medium text-slate-700 dark:text-slate-300">This is the head office</label>
+            <label htmlFor="isHQ" className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('This is the head office')}</label>
           </div>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -708,6 +720,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 // ─── Departments ─────────────────────────────────────────────────────────────
 
 function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -734,19 +748,19 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   };
 
   const handleSave = async () => {
-    if (!form.nameEn.trim() || !form.code.trim()) { setError('Name and code are required'); return; }
+    if (!form.nameEn.trim() || !form.code.trim()) { setError(t('Name and code are required')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await departmentsApi.update(editing.id, form);
       else await departmentsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); }
   };
 
   const f = (key: keyof DepartmentRequest, v: string | boolean | number | undefined) => setForm((x) => ({ ...x, [key]: v }));
   const deleteDept = async (id: string) => {
-    if (!confirm('Delete this department?')) return;
+    if (!(await confirm({ title: t('Delete department'), message: t('Delete this department?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await departmentsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -755,12 +769,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   return (
     <>
       <TableShell
-        columns={['Code', 'Name', 'Status']}
+        columns={[msg('Code'), msg('Name'), msg('Status')]}
         onAdd={openNew}
-        addLabel="Add Department"
+        addLabel={msg('Add Department')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel="No departments yet"
+        emptyLabel={msg('No departments yet')}
         actions={
           <ImportExportToolbar
             entityName="Departments"
@@ -776,10 +790,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{d.nameEn}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteDept(d.id)} disabled={deleting === d.id} aria-label="Delete department" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteDept(d.id)} disabled={deleting === d.id} aria-label={t('Delete department')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
@@ -789,43 +803,44 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
       <Modal
         isOpen={modalOpen}
-        title={editing ? 'Edit Department' : 'Add Department'}
+        title={editing ? t('Edit Department') : t('Add Department')}
         onClose={() => setModalOpen(false)}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
       >
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required>
+          <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="ENG" />
           </FormField>
-          <FormField label="Name (EN)" required>
+          <FormField label={t('Name (EN)')} required>
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Engineering" />
           </FormField>
-          <FormField label="Name (AR)">
+          <FormField label={t('Name (AR)')}>
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
             </div>
           </FormField>
-          <FormField label="Cost Center">
+          <FormField label={t('Cost Center')}>
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
-              <option value="">None</option>
+              <option value="">{t('None')}</option>
               {costCenters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </FormField>
-          <FormField label="Status">
+          <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
+              <option value="true">{t('Active')}</option>
+              <option value="false">{t('Inactive')}</option>
             </select>
           </FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -833,6 +848,8 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 // ─── Designations ─────────────────────────────────────────────────────────────
 
 function DesignationsTab({ grades }: { grades: GradeDto[] }) {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<DesignationDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -859,19 +876,19 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   };
 
   const handleSave = async () => {
-    if (!form.titleEn.trim() || !form.code.trim()) { setError('Title and code are required'); return; }
+    if (!form.titleEn.trim() || !form.code.trim()) { setError(t('Title and code are required')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await designationsApi.update(editing.id, form);
       else await designationsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); }
   };
 
   const f = (key: keyof DesignationRequest, v: string | boolean | undefined) => setForm((x) => ({ ...x, [key]: v }));
   const deleteDesig = async (id: string) => {
-    if (!confirm('Delete this designation?')) return;
+    if (!(await confirm({ title: t('Delete designation'), message: t('Delete this designation?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await designationsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -880,12 +897,12 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   return (
     <>
       <TableShell
-        columns={['Code', 'Title', 'Job Grade', 'Manager Role', 'Status']}
+        columns={[msg('Code'), msg('Title'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
         onAdd={openNew}
-        addLabel="Add Designation"
+        addLabel={msg('Add Designation')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel="No designations yet"
+        emptyLabel={msg('No designations yet')}
         actions={
           <ImportExportToolbar
             entityName="Designations"
@@ -900,13 +917,13 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{d.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{d.titleEn}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{d.jobGrade || '—'}</td>
-            <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">Manager</span> : '—'}</td>
+            <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{t('Manager')}</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteDesig(d.id)} disabled={deleting === d.id} aria-label="Delete designation" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteDesig(d.id)} disabled={deleting === d.id} aria-label={t('Delete designation')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
@@ -916,56 +933,57 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
 
       <Modal
         isOpen={modalOpen}
-        title={editing ? 'Edit Designation' : 'Add Designation'}
+        title={editing ? t('Edit Designation') : t('Add Designation')}
         onClose={() => setModalOpen(false)}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
       >
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required>
+          <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="SWE-L3" />
           </FormField>
-          <FormField label="Title (EN)" required>
+          <FormField label={t('Title (EN)')} required>
             <input type="text" value={form.titleEn} onChange={(e) => f('titleEn', e.target.value)} className="input w-full" placeholder="Software Engineer" />
           </FormField>
-          <FormField label="Title (AR)">
+          <FormField label={t('Title (AR)')}>
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={form.titleEn} onSuggest={(s) => f('titleAr', s)} />
             </div>
           </FormField>
-          <FormField label="Job Grade">
+          <FormField label={t('Job Grade')}>
             <input type="text" value={form.jobGrade ?? ''} onChange={(e) => f('jobGrade', e.target.value)} className="input w-full" placeholder="L3" />
           </FormField>
-          <FormField label="Grade / Band">
+          <FormField label={t('Grade / Band')}>
             <select value={form.gradeId ?? ''} onChange={(e) => f('gradeId', e.target.value || undefined)} className="select w-full">
-              <option value="">None</option>
+              <option value="">{t('None')}</option>
               {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
           </FormField>
-          <FormField label="Job Level">
+          <FormField label={t('Job Level')}>
             <input type="text" value={form.jobLevel ?? ''} onChange={(e) => f('jobLevel', e.target.value)} className="input w-full" placeholder="Officer" />
           </FormField>
-          <FormField label="Job Description">
-            <textarea value={form.jobDescription ?? ''} onChange={(e) => f('jobDescription', e.target.value)} className="input min-h-24 w-full" placeholder="Core responsibilities and scope" />
+          <FormField label={t('Job Description')}>
+            <textarea value={form.jobDescription ?? ''} onChange={(e) => f('jobDescription', e.target.value)} className="input min-h-24 w-full" placeholder={t('Core responsibilities and scope')} />
           </FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="isMgr" checked={form.isManagerRole} onChange={(e) => f('isManagerRole', e.target.checked)} className="h-4 w-4 accent-sapphire" />
-            <label htmlFor="isMgr" className="text-sm font-medium text-slate-700 dark:text-slate-300">Manager role</label>
+            <label htmlFor="isMgr" className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Manager role')}</label>
           </div>
-          <FormField label="Status">
+          <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
+              <option value="true">{t('Active')}</option>
+              <option value="false">{t('Inactive')}</option>
             </select>
           </FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -977,6 +995,7 @@ function GradesTab() {
   // not shown for editing and never written (the API refuses them with 409); the rows are kept and importable there.
   const benefitsByGrade = useReleaseA();
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1009,8 +1028,8 @@ function GradesTab() {
     } catch { /* empty pay scale */ }
   };
   const handleSave = async () => {
-    if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
-    if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
+    if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
+    if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError(t('Min salary cannot exceed max salary')); return; }
     setSaving(true); setError('');
     // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
     // scale write then fails.
@@ -1020,12 +1039,12 @@ function GradesTab() {
       gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
   const deleteGrade = async (id: string) => {
-    if (!confirm('Delete this grade?')) return;
+    if (!(await confirm({ title: t('Delete grade'), message: t('Delete this grade?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await gradesApi.remove(id); load(); notifyGradesChanged(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1036,7 +1055,7 @@ function GradesTab() {
 
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'Band', 'Level', 'Pay Range', 'Status']} onAdd={openNew} addLabel="Add Grade" loading={loading} empty={items.length === 0} emptyLabel="No grades yet"
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={items.length === 0} emptyLabel={msg('No grades yet')}
         actions={
           <ImportExportToolbar
             entityName="Grades"
@@ -1055,35 +1074,35 @@ function GradesTab() {
             <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(g)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteGrade(g.id)} disabled={deleting === g.id} aria-label="Delete grade" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(g)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteGrade(g.id)} disabled={deleting === g.id} aria-label={t('Delete grade')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? 'Edit Grade' : 'Add Grade'} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
-            <FormField label="Level"><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
+            <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
+            <FormField label={t('Level')}><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
           </div>
-          <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
+          <FormField label={t('Name')} required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="Professional Grade 5" /></FormField>
           <FormField label={t('Name (Arabic, optional)')}><input dir="rtl" lang="ar" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" placeholder="الدرجة المهنية 5" /></FormField>
-          <FormField label="Band"><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
+          <FormField label={t('Band')}><input value={form.band ?? ''} onChange={(e) => f('band', e.target.value)} className="input w-full" placeholder="Professional" /></FormField>
 
           {/* Pay scale band */}
           <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">Pay Scale</p>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{t('Pay Scale')}</p>
             <div className="grid grid-cols-4 gap-2">
-              <FormField label="Min"><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
-              <FormField label="Mid"><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
-              <FormField label="Max"><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
-              <FormField label="Currency"><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
+              <FormField label={t('Min')}><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label={t('Mid')}><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label={t('Max')}><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
+              <FormField label={t('Currency')}><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
             </div>
             {benefitsByGrade
               ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
@@ -1091,15 +1110,17 @@ function GradesTab() {
               : <PayScaleEditor components={payScale} onChange={setPayScale} />}
           </div>
 
-          <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
+          <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
 
 /** Editable grid of benefit/earning lines that make up a grade's standard package. */
 function PayScaleEditor({ components, onChange }: { components: GradePayScaleComponentRequest[]; onChange: (c: GradePayScaleComponentRequest[]) => void }) {
+  const t = useT();
   const update = (i: number, patch: Partial<GradePayScaleComponentRequest>) =>
     onChange(components.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
   const remove = (i: number) => onChange(components.filter((_, idx) => idx !== i));
@@ -1111,23 +1132,23 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
   return (
     <div className="mt-3">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Benefit components</span>
-        <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ Add component</button>
+        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">{t('Benefit components')}</span>
+        <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ {t('Add component')}</button>
       </div>
       {components.length === 0 ? (
-        <p className="py-2 text-xs text-slate-400">No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.</p>
+        <p className="py-2 text-xs text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
       ) : (
         <div className="space-y-1.5">
           {components.map((c, i) => (
             <div key={i} className="grid grid-cols-12 items-center gap-1.5">
-              <input aria-label="Component code" value={c.componentCode} onChange={(e) => update(i, { componentCode: e.target.value })} className="input col-span-2 h-8 text-xs" placeholder="BASIC" />
-              <input aria-label="Component name" value={c.componentName} onChange={(e) => update(i, { componentName: e.target.value })} className="input col-span-3 h-8 text-xs" placeholder="Basic" />
-              <select aria-label="Component type" title="Component type" value={c.componentType} onChange={(e) => update(i, { componentType: e.target.value })} className="select col-span-2 h-8 text-xs"><option>Earning</option><option>Benefit</option><option>Deduction</option></select>
-              <select aria-label="Calculation type" title="Calculation type" value={c.calculationType} onChange={(e) => update(i, { calculationType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Fixed">Fixed</option><option value="PercentOfBasic">% of Basic</option></select>
+              <input aria-label={t('Component code')} value={c.componentCode} onChange={(e) => update(i, { componentCode: e.target.value })} className="input col-span-2 h-8 text-xs" placeholder="BASIC" />
+              <input aria-label={t('Component name')} value={c.componentName} onChange={(e) => update(i, { componentName: e.target.value })} className="input col-span-3 h-8 text-xs" placeholder={t('Basic')} />
+              <select aria-label={t('Component type')} title={t('Component type')} value={c.componentType} onChange={(e) => update(i, { componentType: e.target.value })} className="select col-span-2 h-8 text-xs"><option>{t('Earning')}</option><option>{t('Benefit')}</option><option>{t('Deduction')}</option></select>
+              <select aria-label={t('Calculation type')} title={t('Calculation type')} value={c.calculationType} onChange={(e) => update(i, { calculationType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Fixed">{t('Fixed')}</option><option value="PercentOfBasic">{t('% of Basic')}</option></select>
               {c.calculationType === 'PercentOfBasic'
-                ? <input aria-label="Percentage of basic" type="number" value={c.percentage} onChange={(e) => update(i, { percentage: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="%" />
-                : <input aria-label="Amount" type="number" value={c.amount} onChange={(e) => update(i, { amount: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="Amount" />}
-              <button type="button" onClick={() => remove(i)} aria-label="Remove component" className="col-span-1 grid h-8 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:text-rose-500 dark:border-white/10"><Trash2 className="h-3.5 w-3.5" /></button>
+                ? <input aria-label={t('Percentage of basic')} type="number" value={c.percentage} onChange={(e) => update(i, { percentage: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="%" />
+                : <input aria-label={t('Amount')} type="number" value={c.amount} onChange={(e) => update(i, { amount: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder={t('Amount')} />}
+              <button type="button" onClick={() => remove(i)} aria-label={t('Remove component')} className="col-span-1 grid h-8 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:text-rose-500 dark:border-white/10"><Trash2 className="h-3.5 w-3.5" /></button>
             </div>
           ))}
         </div>
@@ -1139,6 +1160,8 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
 // ─── Cost Centers ───────────────────────────────────────────────────────────
 
 function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<CostCenterDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1164,18 +1187,18 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
     setModalOpen(true);
   };
   const handleSave = async () => {
-    if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
+    if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await costCentersApi.update(editing.id, form);
       else await costCentersApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); }
   };
   const f = (key: keyof CostCenterRequest, v: string | boolean | undefined) => setForm((x) => ({ ...x, [key]: v }));
   const deleteCostCenter = async (id: string) => {
-    if (!confirm('Delete this cost center?')) return;
+    if (!(await confirm({ title: t('Delete cost center'), message: t('Delete this cost center?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await costCentersApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1184,7 +1207,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'Company', 'Status']} onAdd={openNew} addLabel="Add Cost Center" loading={loading} empty={items.length === 0} emptyLabel="No cost centers yet"
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={items.length === 0} emptyLabel={msg('No cost centers yet')}
         actions={
           <ImportExportToolbar
             entityName="Cost Centers"
@@ -1201,25 +1224,26 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(c.companyId)}</td>
             <td className="px-4 py-3"><ActiveBadge active={c.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteCostCenter(c.id)} disabled={deleting === c.id} aria-label="Delete cost center" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteCostCenter(c.id)} disabled={deleting === c.id} aria-label={t('Delete cost center')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? 'Edit Cost Center' : 'Add Cost Center'} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Cost Center') : t('Add Cost Center')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Company"><select value={form.companyId ?? ''} onChange={(e) => f('companyId', e.target.value || undefined)} className="select w-full"><option value="">None</option>{companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></FormField>
-          <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="HR-OPS" /></FormField>
-          <FormField label="Name" required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="HR Operations" /></FormField>
-          <FormField label="Status"><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">Active</option><option value="false">Inactive</option></select></FormField>
+          <FormField label={t('Company')}><select value={form.companyId ?? ''} onChange={(e) => f('companyId', e.target.value || undefined)} className="select w-full"><option value="">{t('None')}</option>{companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></FormField>
+          <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="HR-OPS" /></FormField>
+          <FormField label={t('Name')} required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="HR Operations" /></FormField>
+          <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -1228,6 +1252,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 
 function MasterDataTab() {
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [types, setTypes] = useState<MasterDataType[]>([]);
   const [values, setValues] = useState<MasterDataValue[]>([]);
   const [selectedType, setSelectedType] = useState<MasterDataType | null>(null);
@@ -1275,14 +1300,14 @@ function MasterDataTab() {
     setError(''); setTypeModal(true);
   };
   const saveType = async () => {
-    if (!typeForm.nameEn.trim() || !typeForm.code.trim()) { setError('Code and name are required'); return; }
+    if (!typeForm.nameEn.trim() || !typeForm.code.trim()) { setError(t('Code and name are required.')); return; }
     setSaving(true); setError('');
     try {
       if (editingType) await masterDataApi.updateType(editingType.id, typeForm);
       else await masterDataApi.createType({ code: typeForm.code, nameEn: typeForm.nameEn, nameAr: typeForm.nameAr, description: typeForm.description, allowCustomValues: typeForm.allowCustomValues });
       setTypeModal(false); loadTypes();
       if (editingType && selectedType?.id === editingType.id) setSelectedType({ ...selectedType, ...typeForm });
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
 
@@ -1297,18 +1322,24 @@ function MasterDataTab() {
     setError(''); setValueModal(true);
   };
   const saveValue = async () => {
-    if (!selectedType || !valueForm.valueEn.trim() || !valueForm.code.trim()) { setError('Code and value are required'); return; }
+    if (!selectedType || !valueForm.valueEn.trim() || !valueForm.code.trim()) { setError(t('Code and value are required.')); return; }
     setSaving(true); setError('');
     try {
       if (editingValue) await masterDataApi.updateValue(editingValue.id, { ...valueForm });
       else await masterDataApi.createValue(selectedType.id, { code: valueForm.code, valueEn: valueForm.valueEn, valueAr: valueForm.valueAr, sortOrder: valueForm.sortOrder, isDefault: valueForm.isDefault });
       setValueModal(false); loadValues(selectedType.id);
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const deleteValue = async (v: MasterDataValue) => {
     if (v.isSystemDefined) return;
-    if (!confirm(`Delete "${v.valueEn}"?`)) return;
+    const ok = await confirm({
+      title: t('Delete value'),
+      message: t('Delete "{value}"? Employees who already hold this value keep it, but it can no longer be chosen.', { value: v.valueEn }),
+      confirmLabel: t('Delete'),
+      tone: 'danger',
+    });
+    if (!ok) return;
     try { await masterDataApi.deleteValue(v.id); if (selectedType) loadValues(selectedType.id); } catch (e) { notifyApiError(e); }
   };
 
@@ -1318,13 +1349,13 @@ function MasterDataTab() {
       <div className="w-full shrink-0 md:w-72">
         <div className="surface p-3">
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Types</span>
-            <button type="button" onClick={openNewType} className="btn-primary h-7 px-2 text-xs"><Plus className="h-3 w-3" /> New</button>
+            <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{t('Types')}</span>
+            <button type="button" onClick={openNewType} className="btn-primary h-7 px-2 text-xs"><Plus className="h-3 w-3" /> {t('New type')}</button>
           </div>
           {loading ? (
             <div className="flex justify-center py-8"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
           ) : types.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-400">No types yet</p>
+            <p className="py-6 text-center text-xs text-slate-400">{t('No types yet')}</p>
           ) : (
             <ul className="space-y-0.5">
               {types.map((type) => (
@@ -1340,8 +1371,8 @@ function MasterDataTab() {
                     <div className="flex items-center gap-1">
                       {!type.isActive && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
                       {!type.isSystemDefined && (
-                        <button type="button" aria-label="Edit type" onClick={(e) => { e.stopPropagation(); openEditType(type); }} className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-slate-200 dark:hover:bg-white/10">
-                          <Pencil className="h-3 w-3" />
+                        <button type="button" aria-label={t('Edit {name}', { name: type.nameEn })} onClick={(e) => { e.stopPropagation(); openEditType(type); }} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-white/10">
+                          <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}
                         </button>
                       )}
                       <ChevronRight className="h-3 w-3 opacity-40" />
@@ -1358,7 +1389,7 @@ function MasterDataTab() {
       <div className="min-w-0 flex-1">
         {!selectedType ? (
           <div className="surface flex h-full items-center justify-center">
-            <p className="text-sm text-slate-400">Select a type to manage values</p>
+            <p className="text-sm text-slate-400">{t('Select a type to manage values')}</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -1367,14 +1398,14 @@ function MasterDataTab() {
                 <h3 className="font-semibold text-slate-900 dark:text-white">{selectedType.nameEn}</h3>
                 <p className="text-xs text-slate-400">{selectedType.description || selectedType.code}</p>
               </div>
-              <button type="button" onClick={openNewValue} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> Add Value</button>
+              <button type="button" onClick={openNewValue} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> {t('Add value')}</button>
             </div>
             <div className="surface overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {['Code', 'Value (EN)', 'Value (AR)', 'Sort', 'Default', 'Status', ''].map((h) => (
-                      <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                    {[msg('Code'), msg('Value (English)'), msg('Value (Arabic)'), msg('Sort order'), msg('Default'), msg('Status'), msg('Actions')].map((h) => (
+                      <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{t(h)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1382,19 +1413,19 @@ function MasterDataTab() {
                   {valuesLoading ? (
                     <tr><td colSpan={7} className="py-8 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
                   ) : values.length === 0 ? (
-                    <tr><td colSpan={7} className="py-8 text-center text-slate-400 text-sm">No values yet</td></tr>
+                    <tr><td colSpan={7} className="py-8 text-center text-slate-400 text-sm">{t('No values yet')}</td></tr>
                   ) : values.map((v) => (
                     <tr key={v.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{v.code}</td>
                       <td className="px-4 py-2.5 font-medium text-slate-900 dark:text-white">{v.valueEn}</td>
                       <td className="px-4 py-2.5 text-slate-500 dark:text-slate-400" dir="rtl">{v.valueAr}</td>
                       <td className="px-4 py-2.5 text-slate-500">{v.sortOrder}</td>
-                      <td className="px-4 py-2.5">{v.isDefault ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">Default</span> : '—'}</td>
+                      <td className="px-4 py-2.5">{v.isDefault ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{t('Default')}</span> : '—'}</td>
                       <td className="px-4 py-2.5"><ActiveBadge active={v.isActive} /></td>
                       <td className="px-4 py-2.5">
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                          <button type="button" onClick={() => openEditValue(v)} className="btn-secondary h-6 px-2 text-xs"><Pencil className="h-3 w-3" /></button>
-                          {!v.isSystemDefined && <button type="button" onClick={() => deleteValue(v)} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">✕</button>}
+                        <div className="flex gap-1">
+                          <button type="button" onClick={() => openEditValue(v)} aria-label={t('Edit {name}', { name: v.valueEn })} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                          {!v.isSystemDefined && <button type="button" onClick={() => deleteValue(v)} aria-label={t('Delete {name}', { name: v.valueEn })} className={DELETE_ROW_BUTTON}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}</button>}
                         </div>
                       </td>
                     </tr>
@@ -1407,48 +1438,56 @@ function MasterDataTab() {
       </div>
 
       {/* Type Modal */}
-      <Modal isOpen={typeModal} title={editingType ? 'Edit Type' : 'New Type'} onClose={() => setTypeModal(false)}
-        footer={<><button type="button" onClick={() => setTypeModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={saveType} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={typeModal} title={editingType ? t('Edit type') : t('New type')} onClose={() => setTypeModal(false)}
+        footer={<><button type="button" onClick={() => setTypeModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={saveType} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
-          <FormField label="Name (EN)" required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Name (AR)">
+          <FormField label={t('Code')} required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
+          <FormField label={t('Name (English)')} required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Name (Arabic)')}>
             <div className="flex items-stretch gap-1.5">
               <input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={typeForm.nameEn} kind="organization-label" onSuggest={(s) => setTypeForm(x => ({ ...x, nameAr: s }))} />
             </div>
           </FormField>
-          <FormField label="Description"><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Description')}><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="allowCustom" checked={typeForm.allowCustomValues} onChange={(e) => setTypeForm(x => ({ ...x, allowCustomValues: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
-            <label htmlFor="allowCustom" className="text-sm text-slate-700 dark:text-slate-300">Allow custom values</label>
+            <label htmlFor="allowCustom" className="text-sm text-slate-700 dark:text-slate-300">{t('Allow custom values')}</label>
           </div>
           {editingType && <FormField label={t('Status')}><select aria-label={t('Status')} value={typeForm.isActive ? 'true' : 'false'} onChange={(e) => setTypeForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
 
       {/* Value Modal */}
-      <Modal isOpen={valueModal} title={editingValue ? 'Edit Value' : 'New Value'} onClose={() => setValueModal(false)}
-        footer={<><button type="button" onClick={() => setValueModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={saveValue} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={valueModal} title={editingValue ? t('Edit value') : t('New value')} onClose={() => setValueModal(false)}
+        footer={<><button type="button" onClick={() => setValueModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={saveValue} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Code" required><input value={valueForm.code} onChange={(e) => setValueForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="UAE" /></FormField>
-          <FormField label="Value (EN)" required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Value (AR)">
+          <FormField label={t('Code')} required>
+            <input value={valueForm.code} onChange={(e) => setValueForm(x => ({ ...x, code: e.target.value }))} className="input w-full disabled:bg-slate-50 disabled:text-slate-500 dark:disabled:bg-white/5" placeholder="UAE" disabled={!!editingValue} aria-describedby="value-code-hint" />
+            <p id="value-code-hint" className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {editingValue
+                ? t('Employee records store this code, so it cannot change. Rename the value instead; existing records follow the new name.')
+                : t('Employee records store this code. Choose it carefully: it cannot be changed later.')}
+            </p>
+          </FormField>
+          <FormField label={t('Value (English)')} required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Value (Arabic)')}>
             <div className="flex items-stretch gap-1.5">
               <input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={valueForm.valueEn} kind="organization-label" onSuggest={(s) => setValueForm(x => ({ ...x, valueAr: s }))} />
             </div>
           </FormField>
-          <FormField label="Sort Order"><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
+          <FormField label={t('Sort order')}><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="isDefault" checked={valueForm.isDefault} onChange={(e) => setValueForm(x => ({ ...x, isDefault: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
-            <label htmlFor="isDefault" className="text-sm text-slate-700 dark:text-slate-300">Default value</label>
+            <label htmlFor="isDefault" className="text-sm text-slate-700 dark:text-slate-300">{t('Default value')}</label>
           </div>
           {editingValue && <FormField label={t('Status')}><select aria-label={t('Status')} value={valueForm.isActive ? 'true' : 'false'} onChange={(e) => setValueForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
+      {confirmDialog}
     </div>
   );
 }
@@ -1456,6 +1495,8 @@ function MasterDataTab() {
 // ─── Numbering Rules ──────────────────────────────────────────────────────────
 
 function NumberingRulesTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<NumberingRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1484,15 +1525,15 @@ function NumberingRulesTab() {
     setError(''); setModalOpen(true);
   };
   const save = async () => {
-    if (!form.entityType.trim() || !form.prefix.trim()) { setError('Entity type and prefix are required'); return; }
+    if (!form.entityType.trim() || !form.prefix.trim()) { setError(t('Entity type and prefix are required')); return; }
     setSaving(true); setError('');
     try { await numberingRulesApi.upsert(form); setModalOpen(false); load(); }
-    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
   const deleteRule = async (id: string) => {
-    if (!confirm('Delete this numbering rule?')) return;
+    if (!(await confirm({ title: t('Delete numbering rule'), message: t('Delete this numbering rule?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await numberingRulesApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1509,20 +1550,20 @@ function NumberingRulesTab() {
 
   return (
     <>
-      <TableShell columns={['Entity Type', 'Prefix', 'Preview', 'Padding', 'Reset Yearly', '']}
-        onAdd={openNew} addLabel="New Rule" loading={loading} empty={items.length === 0} emptyLabel="No rules defined">
+      <TableShell columns={[msg('Entity Type'), msg('Prefix'), msg('Preview'), msg('Padding'), msg('Reset Yearly'), '']}
+        onAdd={openNew} addLabel={msg('New Rule')} loading={loading} empty={items.length === 0} emptyLabel={msg('No rules defined')}>
         {items.map((r) => (
           <tr key={r.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.entityType}</td>
             <td className="px-4 py-3 font-mono text-xs text-slate-500">{r.prefix}</td>
             <td className="px-4 py-3 font-mono text-xs text-sapphire">{preview(r)}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.paddingLength}</td>
-            <td className="px-4 py-3">{r.resetYearly ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-600">Yes</span> : '—'}</td>
+            <td className="px-4 py-3">{r.resetYearly ? <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-600">{t('Yes')}</span> : '—'}</td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(r)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteRule(r.id)} disabled={deleting === r.id} aria-label="Delete rule" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(r)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteRule(r.id)} disabled={deleting === r.id} aria-label={t('Delete rule')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
@@ -1530,31 +1571,32 @@ function NumberingRulesTab() {
         ))}
       </TableShell>
       <Modal isOpen={modalOpen} title={editing ? `Edit Rule — ${editing.entityType}` : 'New Numbering Rule'} onClose={() => setModalOpen(false)}
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Entity Type" required>
+          <FormField label={t('Entity Type')} required>
             <input value={form.entityType} onChange={(e) => f('entityType', e.target.value)} className="input w-full" placeholder="Employee" disabled={!!editing} />
           </FormField>
-          <FormField label="Prefix" required>
+          <FormField label={t('Prefix')} required>
             <input value={form.prefix} onChange={(e) => f('prefix', e.target.value)} className="input w-full" placeholder="EMP" />
           </FormField>
-          <FormField label="Suffix">
+          <FormField label={t('Suffix')}>
             <input value={form.suffix} onChange={(e) => f('suffix', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="Separator">
+          <FormField label={t('Separator')}>
             <input value={form.separator} onChange={(e) => f('separator', e.target.value)} className="input w-full" placeholder="-" maxLength={3} />
           </FormField>
-          <FormField label="Padding Length">
+          <FormField label={t('Padding Length')}>
             <input type="number" value={form.paddingLength} onChange={(e) => f('paddingLength', Number(e.target.value))} className="input w-full" min={1} max={10} />
           </FormField>
           <div className="col-span-2 flex gap-6">
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.includeYear} onChange={(e) => f('includeYear', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Include Year</label>
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.includeMonth} onChange={(e) => f('includeMonth', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Include Month</label>
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.resetYearly} onChange={(e) => f('resetYearly', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Reset Yearly</label>
+            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.includeYear} onChange={(e) => f('includeYear', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Include Year')}</label>
+            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.includeMonth} onChange={(e) => f('includeMonth', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Include Month')}</label>
+            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.resetYearly} onChange={(e) => f('resetYearly', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Reset Yearly')}</label>
           </div>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -1562,6 +1604,7 @@ function NumberingRulesTab() {
 // ─── System Settings ──────────────────────────────────────────────────────────
 
 function SystemSettingsTab() {
+  const t = useT();
   const [items, setItems] = useState<SystemSetting[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCat, setFilterCat] = useState('');
@@ -1592,20 +1635,20 @@ function SystemSettingsTab() {
     setError(''); setModalOpen(true);
   };
   const save = async () => {
-    if (!form.category.trim() || !form.settingKey.trim()) { setError('Category and key are required'); return; }
+    if (!form.category.trim() || !form.settingKey.trim()) { setError(t('Category and key are required')); return; }
     setSaving(true); setError('');
     try { await systemSettingsApi.upsert(form); setModalOpen(false); load(); }
-    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
 
   return (
     <>
-      <TableShell columns={['Category', 'Key', 'Value', 'Type', '']} onAdd={openNew} addLabel="New Setting"
-        loading={loading} empty={items.length === 0} emptyLabel="No settings"
+      <TableShell columns={[msg('Category'), msg('Key'), msg('Value'), msg('Type'), '']} onAdd={openNew} addLabel={msg('New Setting')}
+        loading={loading} empty={items.length === 0} emptyLabel={msg('No settings')}
         filter={
           <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} className="select">
-            <option value="">All Categories</option>
+            <option value="">{t('All Categories')}</option>
             {categories.map((c) => <option key={c}>{c}</option>)}
           </select>
         }>
@@ -1616,24 +1659,24 @@ function SystemSettingsTab() {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300 max-w-xs truncate">{s.settingValue || '—'}</td>
             <td className="px-4 py-3 text-slate-400 text-xs">{s.dataType}</td>
             <td className="px-4 py-3">
-              {!s.isReadOnly && <button type="button" onClick={() => openEdit(s)} className="btn-secondary h-7 px-2 text-xs opacity-0 group-hover:opacity-100"><Pencil className="h-3 w-3" /> Edit</button>}
+              {!s.isReadOnly && <button type="button" onClick={() => openEdit(s)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>}
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? 'Edit Setting' : 'New Setting'} onClose={() => setModalOpen(false)}
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Setting') : t('New Setting')} onClose={() => setModalOpen(false)}
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Category" required><input value={form.category} onChange={(e) => setForm(x => ({ ...x, category: e.target.value }))} className="input w-full" placeholder="HR" /></FormField>
-          <FormField label="Key" required><input value={form.settingKey} onChange={(e) => setForm(x => ({ ...x, settingKey: e.target.value }))} className="input w-full" placeholder="PROBATION_DAYS" /></FormField>
-          <FormField label="Value"><input value={form.settingValue} onChange={(e) => setForm(x => ({ ...x, settingValue: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Data Type">
+          <FormField label={t('Category')} required><input value={form.category} onChange={(e) => setForm(x => ({ ...x, category: e.target.value }))} className="input w-full" placeholder="HR" /></FormField>
+          <FormField label={t('Key')} required><input value={form.settingKey} onChange={(e) => setForm(x => ({ ...x, settingKey: e.target.value }))} className="input w-full" placeholder="PROBATION_DAYS" /></FormField>
+          <FormField label={t('Value')}><input value={form.settingValue} onChange={(e) => setForm(x => ({ ...x, settingValue: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Data Type')}>
             <select value={form.dataType} onChange={(e) => setForm(x => ({ ...x, dataType: e.target.value }))} className="select w-full">
               {['string', 'number', 'boolean', 'json'].map((t) => <option key={t}>{t}</option>)}
             </select>
           </FormField>
-          <FormField label="Description"><input value={form.description} onChange={(e) => setForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Description')}><input value={form.description} onChange={(e) => setForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
         </div>
       </Modal>
     </>
@@ -1643,6 +1686,7 @@ function SystemSettingsTab() {
 // ─── GCC Settings ────────────────────────────────────────────────────────────
 
 function GCCSettingsTab() {
+  const t = useT();
   const [items, setItems] = useState<GCCComplianceSetting[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1678,7 +1722,7 @@ function GCCSettingsTab() {
   const save = async () => {
     setSaving(true); setError('');
     try { await gccSettingsApi.upsert(form as GCCComplianceSetting & { countryCode: string }); setModalOpen(false); load(); }
-    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
@@ -1687,24 +1731,24 @@ function GCCSettingsTab() {
     <>
       <div className="space-y-4">
         <div className="flex justify-end">
-          <button type="button" onClick={openNew} className="btn-primary"><Plus className="h-4 w-4" /> Add Country Config</button>
+          <button type="button" onClick={openNew} className="btn-primary"><Plus className="h-4 w-4" /> {t('Add Country Config')}</button>
         </div>
         {loading ? <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
-          : items.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-400">No GCC settings configured</div>
+          : items.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-400">{t('No GCC settings configured')}</div>
           : (
             <div className="grid gap-4 sm:grid-cols-2">
               {items.map((s) => (
                 <div key={s.id} className="surface p-4 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-900 dark:text-white text-lg">{s.countryCode}</span>
-                    <button type="button" onClick={() => openEdit(s)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
+                    <button type="button" onClick={() => openEdit(s)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
                   </div>
                   <div className="grid grid-cols-2 gap-1 text-xs">
                     <span className="text-slate-400">EOSB</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.eosbEnabled ? `${s.eosbYears1To5Rate}× / ${s.eosbYearsAbove5Rate}×` : 'Disabled'}</span>
                     <span className="text-slate-400">WPS</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.wpsEnabled ? s.wpsAgentId || 'Enabled' : 'Disabled'}</span>
-                    <span className="text-slate-400">Work Week</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.workWeek}</span>
-                    <span className="text-slate-400">Weekend</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.weekendDays}</span>
-                    <span className="text-slate-400">Visa Alert</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.visaTrackingEnabled ? `${s.visaAlertDays} days` : 'Off'}</span>
+                    <span className="text-slate-400">{t('Work Week')}</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.workWeek}</span>
+                    <span className="text-slate-400">{t('Weekend')}</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.weekendDays}</span>
+                    <span className="text-slate-400">{t('Visa Alert')}</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.visaTrackingEnabled ? `${s.visaAlertDays} days` : 'Off'}</span>
                   </div>
                 </div>
               ))}
@@ -1713,34 +1757,34 @@ function GCCSettingsTab() {
       </div>
 
       <Modal isOpen={modalOpen} title={editing ? `GCC Settings — ${editing.countryCode}` : 'New Country Config'} onClose={() => setModalOpen(false)} size="lg"
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
-          <FormField label="Work Week"><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
-          <FormField label="Weekend Days"><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
+          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
+          <FormField label={t('Work Week')}><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
+          <FormField label={t('Weekend Days')}><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
 
           <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">EOSB</div>
-          <label className="col-span-2 flex items-center gap-2"><input type="checkbox" checked={form.eosbEnabled ?? false} onChange={(e) => f('eosbEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Enable EOSB</label>
-          <FormField label="Years 1-5 Rate"><input type="number" step="0.1" value={form.eosbYears1To5Rate ?? 0.5} onChange={(e) => f('eosbYears1To5Rate', Number(e.target.value))} className="input w-full" /></FormField>
-          <FormField label="Years 5+ Rate"><input type="number" step="0.1" value={form.eosbYearsAbove5Rate ?? 1} onChange={(e) => f('eosbYearsAbove5Rate', Number(e.target.value))} className="input w-full" /></FormField>
-          <FormField label="Min Years"><input type="number" value={form.eosbMinYears ?? 1} onChange={(e) => f('eosbMinYears', Number(e.target.value))} className="input w-full" /></FormField>
+          <label className="col-span-2 flex items-center gap-2"><input type="checkbox" checked={form.eosbEnabled ?? false} onChange={(e) => f('eosbEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable EOSB')}</label>
+          <FormField label={t('Years 1-5 Rate')}><input type="number" step="0.1" value={form.eosbYears1To5Rate ?? 0.5} onChange={(e) => f('eosbYears1To5Rate', Number(e.target.value))} className="input w-full" /></FormField>
+          <FormField label={t('Years 5+ Rate')}><input type="number" step="0.1" value={form.eosbYearsAbove5Rate ?? 1} onChange={(e) => f('eosbYearsAbove5Rate', Number(e.target.value))} className="input w-full" /></FormField>
+          <FormField label={t('Min Years')}><input type="number" value={form.eosbMinYears ?? 1} onChange={(e) => f('eosbMinYears', Number(e.target.value))} className="input w-full" /></FormField>
 
-          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">WPS / SIF</div>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.wpsEnabled ?? false} onChange={(e) => f('wpsEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Enable WPS</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.sifEnabled ?? false} onChange={(e) => f('sifEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Enable SIF</label>
-          <FormField label="WPS Agent ID"><input value={form.wpsAgentId ?? ''} onChange={(e) => f('wpsAgentId', e.target.value)} className="input w-full" /></FormField>
-          <FormField label="MOL Code"><input value={form.wpsMolCode ?? ''} onChange={(e) => f('wpsMolCode', e.target.value)} className="input w-full" /></FormField>
+          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">{t('WPS / SIF')}</div>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.wpsEnabled ?? false} onChange={(e) => f('wpsEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable WPS')}</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.sifEnabled ?? false} onChange={(e) => f('sifEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable SIF')}</label>
+          <FormField label={t('WPS Agent ID')}><input value={form.wpsAgentId ?? ''} onChange={(e) => f('wpsAgentId', e.target.value)} className="input w-full" /></FormField>
+          <FormField label={t('MOL Code')}><input value={form.wpsMolCode ?? ''} onChange={(e) => f('wpsMolCode', e.target.value)} className="input w-full" /></FormField>
 
-          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">Documents & Compliance</div>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.visaTrackingEnabled ?? false} onChange={(e) => f('visaTrackingEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Visa Tracking</label>
-          <FormField label="Visa Alert Days"><input type="number" value={form.visaAlertDays ?? 30} onChange={(e) => f('visaAlertDays', Number(e.target.value))} className="input w-full" /></FormField>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.iqamaRequired ?? false} onChange={(e) => f('iqamaRequired', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Iqama Required</label>
-          <FormField label="Iqama Alert Days"><input type="number" value={form.iqamaAlertDays ?? 30} onChange={(e) => f('iqamaAlertDays', Number(e.target.value))} className="input w-full" /></FormField>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.emiratesIdRequired ?? false} onChange={(e) => f('emiratesIdRequired', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Emirates ID Required</label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={form.ramadanHoursEnabled ?? false} onChange={(e) => f('ramadanHoursEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> Ramadan Hours</label>
-          <FormField label="Ramadan Reduced Hrs/Day"><input type="number" value={form.ramadanReducedHoursPerDay ?? 2} onChange={(e) => f('ramadanReducedHoursPerDay', Number(e.target.value))} className="input w-full" /></FormField>
+          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">{t('Documents & Compliance')}</div>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.visaTrackingEnabled ?? false} onChange={(e) => f('visaTrackingEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Visa Tracking')}</label>
+          <FormField label={t('Visa Alert Days')}><input type="number" value={form.visaAlertDays ?? 30} onChange={(e) => f('visaAlertDays', Number(e.target.value))} className="input w-full" /></FormField>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.iqamaRequired ?? false} onChange={(e) => f('iqamaRequired', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Iqama Required')}</label>
+          <FormField label={t('Iqama Alert Days')}><input type="number" value={form.iqamaAlertDays ?? 30} onChange={(e) => f('iqamaAlertDays', Number(e.target.value))} className="input w-full" /></FormField>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.emiratesIdRequired ?? false} onChange={(e) => f('emiratesIdRequired', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Emirates ID Required')}</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={form.ramadanHoursEnabled ?? false} onChange={(e) => f('ramadanHoursEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Ramadan Hours')}</label>
+          <FormField label={t('Ramadan Reduced Hrs/Day')}><input type="number" value={form.ramadanReducedHoursPerDay ?? 2} onChange={(e) => f('ramadanReducedHoursPerDay', Number(e.target.value))} className="input w-full" /></FormField>
         </div>
       </Modal>
     </>
@@ -1750,6 +1794,8 @@ function GCCSettingsTab() {
 // ─── Fiscal Years ─────────────────────────────────────────────────────────────
 
 function FiscalYearsTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<FiscalYear[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1768,20 +1814,20 @@ function FiscalYearsTab() {
   useEffect(() => { load(); }, [load]);
 
   const save = async () => {
-    if (!form.startDate || !form.endDate) { setError('Start and end dates are required'); return; }
+    if (!form.startDate || !form.endDate) { setError(t('Start and end dates are required')); return; }
     setSaving(true); setError('');
     try { await fiscalYearsApi.create(form); setModalOpen(false); load(); }
     catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to create fiscal year.'); }
     finally { setSaving(false); }
   };
   const closeFY = async (id: string) => {
-    if (!confirm('Close this fiscal year? This cannot be undone.')) return;
+    if (!(await confirm({ title: t('Close fiscal year'), message: t('Close this fiscal year? This cannot be undone.'), confirmLabel: t('Close year'), tone: 'danger' }))) return;
     setClosing(id);
     try { await fiscalYearsApi.close(id); load(); } catch { /**/ }
     finally { setClosing(null); }
   };
   const deleteFY = async (id: string) => {
-    if (!confirm('Delete this fiscal year?')) return;
+    if (!(await confirm({ title: t('Delete fiscal year'), message: t('Delete this fiscal year?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await fiscalYearsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1791,25 +1837,25 @@ function FiscalYearsTab() {
 
   return (
     <>
-      <TableShell columns={['Year', 'Start', 'End', 'Status', 'Current', '']} onAdd={() => { setForm({ year: new Date().getFullYear(), startDate: '', endDate: '' }); setError(''); setModalOpen(true); }}
-        addLabel="New Fiscal Year" loading={loading} empty={items.length === 0} emptyLabel="No fiscal years">
+      <TableShell columns={[msg('Year'), msg('Start'), msg('End'), msg('Status'), msg('Current'), '']} onAdd={() => { setForm({ year: new Date().getFullYear(), startDate: '', endDate: '' }); setError(''); setModalOpen(true); }}
+        addLabel={msg('New Fiscal Year')} loading={loading} empty={items.length === 0} emptyLabel={msg('No fiscal years')}>
         {items.map((fy) => (
           <tr key={fy.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fy.year}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fy.startDate}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fy.endDate}</td>
             <td className="px-4 py-3"><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor(fy.status)}`}>{fy.status}</span></td>
-            <td className="px-4 py-3">{fy.isCurrent ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">Current</span> : '—'}</td>
+            <td className="px-4 py-3">{fy.isCurrent ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{t('Current')}</span> : '—'}</td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+              <div className="flex items-center gap-1">
                 {fy.status === 'Open' && (
                   <button type="button" onClick={() => closeFY(fy.id)} disabled={closing === fy.id} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
-                    {closing === fy.id ? '…' : 'Close'}
+                    {closing === fy.id ? '…' : t('Close year')}
                   </button>
                 )}
                 {!fy.isCurrent && (
-                  <button type="button" onClick={() => deleteFY(fy.id)} disabled={deleting === fy.id} aria-label="Delete fiscal year" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                    <Trash2 className="h-3.5 w-3.5" />
+                  <button type="button" onClick={() => deleteFY(fy.id)} disabled={deleting === fy.id} aria-label={t('Delete fiscal year')} className={DELETE_ROW_BUTTON}>
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                   </button>
                 )}
               </div>
@@ -1817,15 +1863,16 @@ function FiscalYearsTab() {
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title="New Fiscal Year" onClose={() => setModalOpen(false)}
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Create'}</button></>}>
+      <Modal isOpen={modalOpen} title={t('New Fiscal Year')} onClose={() => setModalOpen(false)}
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Create'}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Year" required><input type="number" value={form.year} onChange={(e) => setForm(x => ({ ...x, year: Number(e.target.value) }))} className="input w-full" /></FormField>
-          <FormField label="Start Date" required><input type="date" value={form.startDate} onChange={(e) => setForm(x => ({ ...x, startDate: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="End Date" required><input type="date" value={form.endDate} onChange={(e) => setForm(x => ({ ...x, endDate: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Year')} required><input type="number" value={form.year} onChange={(e) => setForm(x => ({ ...x, year: Number(e.target.value) }))} className="input w-full" /></FormField>
+          <FormField label={t('Start Date')} required><input type="date" value={form.startDate} onChange={(e) => setForm(x => ({ ...x, startDate: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('End Date')} required><input type="date" value={form.endDate} onChange={(e) => setForm(x => ({ ...x, endDate: e.target.value }))} className="input w-full" /></FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -1833,6 +1880,8 @@ function FiscalYearsTab() {
 // ─── Locations ────────────────────────────────────────────────────────────────
 
 function LocationsTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1858,19 +1907,19 @@ function LocationsTab() {
     setError(''); setModalOpen(true);
   };
   const save = async () => {
-    if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
+    if (!form.code.trim() || !form.nameEn.trim()) { setError(t('Code and name are required')); return; }
     setSaving(true); setError('');
     const body = { ...form, latitude: form.latitude ? Number(form.latitude) : undefined, longitude: form.longitude ? Number(form.longitude) : undefined, geofenceRadiusMeters: form.geofenceRadiusMeters ? Number(form.geofenceRadiusMeters) : undefined };
     try {
       if (editing) await locationsApi.update(editing.id, body);
       else await locationsApi.create(body);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string) => setForm(x => ({ ...x, [key]: v }));
   const deleteLocation = async (id: string) => {
-    if (!confirm('Delete this location?')) return;
+    if (!(await confirm({ title: t('Delete location'), message: t('Delete this location?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await locationsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1878,8 +1927,8 @@ function LocationsTab() {
 
   return (
     <>
-      <TableShell columns={['Code', 'Name', 'City', 'Country', 'Geofence', 'Status', '']} onAdd={openNew} addLabel="Add Location"
-        loading={loading} empty={items.length === 0} emptyLabel="No locations"
+      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
+        loading={loading} empty={items.length === 0} emptyLabel={msg('No locations')}
         actions={
           <ImportExportToolbar
             entityName="Locations"
@@ -1898,33 +1947,34 @@ function LocationsTab() {
             <td className="px-4 py-3 text-slate-500 text-xs">{l.geofenceRadiusMeters ? `${l.geofenceRadiusMeters}m` : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={l.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(l)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteLocation(l.id)} disabled={deleting === l.id} aria-label="Delete location" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(l)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteLocation(l.id)} disabled={deleting === l.id} aria-label={t('Delete location')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? 'Edit Location' : 'Add Location'} onClose={() => setModalOpen(false)} size="lg"
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Location') : t('Add Location')} onClose={() => setModalOpen(false)} size="lg"
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Code" required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
-          <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
-          <FormField label="Name (AR)"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
-          <FormField label="Country" required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
-          <FormField label="City"><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
-          <FormField label="Postal Code"><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
-          <FormField label="Address"><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
+          <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
+          <FormField label={t('Name (EN)')} required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
+          <FormField label={t('Name (AR)')}><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
+          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
+          <FormField label={t('City')}><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
+          <FormField label={t('Postal Code')}><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
+          <FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
           <div />
-          <FormField label="Latitude"><input type="number" step="any" value={form.latitude} onChange={(e) => f('latitude', e.target.value)} className="input w-full" placeholder="25.2048" /></FormField>
-          <FormField label="Longitude"><input type="number" step="any" value={form.longitude} onChange={(e) => f('longitude', e.target.value)} className="input w-full" placeholder="55.2708" /></FormField>
-          <FormField label="Geofence Radius (m)"><input type="number" value={form.geofenceRadiusMeters} onChange={(e) => f('geofenceRadiusMeters', e.target.value)} className="input w-full" placeholder="100" /></FormField>
+          <FormField label={t('Latitude')}><input type="number" step="any" value={form.latitude} onChange={(e) => f('latitude', e.target.value)} className="input w-full" placeholder="25.2048" /></FormField>
+          <FormField label={t('Longitude')}><input type="number" step="any" value={form.longitude} onChange={(e) => f('longitude', e.target.value)} className="input w-full" placeholder="55.2708" /></FormField>
+          <FormField label={t('Geofence Radius (m)')}><input type="number" value={form.geofenceRadiusMeters} onChange={(e) => f('geofenceRadiusMeters', e.target.value)} className="input w-full" placeholder="100" /></FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -1932,6 +1982,8 @@ function LocationsTab() {
 // ─── Notification Templates ───────────────────────────────────────────────────
 
 function NotificationTemplatesTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<NotificationTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterChannel, setFilterChannel] = useState('');
@@ -1955,23 +2007,23 @@ function NotificationTemplatesTab() {
     setForm({ code: '', eventType: '', channel: 'Email', subjectEn: '', subjectAr: '', bodyEn: '', bodyAr: '', variables: '' });
     setError(''); setModalOpen(true);
   };
-  const openEdit = (t: NotificationTemplate) => {
-    setEditing(t);
-    setForm({ code: t.code, eventType: t.eventType, channel: t.channel, subjectEn: t.subjectEn, subjectAr: t.subjectAr, bodyEn: t.bodyEn, bodyAr: t.bodyAr, variables: t.variables });
+  const openEdit = (tpl: NotificationTemplate) => {
+    setEditing(tpl);
+    setForm({ code: tpl.code, eventType: tpl.eventType, channel: tpl.channel, subjectEn: tpl.subjectEn, subjectAr: tpl.subjectAr, bodyEn: tpl.bodyEn, bodyAr: tpl.bodyAr, variables: tpl.variables });
     setError(''); setModalOpen(true);
   };
   const save = async () => {
-    if (!form.code.trim() || !form.eventType.trim() || !form.bodyEn.trim()) { setError('Code, event type and body (EN) are required'); return; }
+    if (!form.code.trim() || !form.eventType.trim() || !form.bodyEn.trim()) { setError(t('Code, event type and body (EN) are required')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await notificationTemplatesApi.update(editing.id, form);
       else await notificationTemplatesApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
+    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const deleteTemplate = async (id: string) => {
-    if (!confirm('Delete this notification template?')) return;
+    if (!(await confirm({ title: t('Delete notification template'), message: t('Delete this notification template?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
     try { await notificationTemplatesApi.delete(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
@@ -1979,50 +2031,51 @@ function NotificationTemplatesTab() {
 
   return (
     <>
-      <TableShell columns={['Code', 'Event Type', 'Channel', 'Subject (EN)', 'Status', '']} onAdd={openNew} addLabel="New Template"
-        loading={loading} empty={items.length === 0} emptyLabel="No templates"
+      <TableShell columns={[msg('Code'), msg('Event Type'), msg('Channel'), msg('Subject (EN)'), msg('Status'), '']} onAdd={openNew} addLabel={msg('New Template')}
+        loading={loading} empty={items.length === 0} emptyLabel={msg('No templates')}
         filter={
           <select value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)} className="select">
-            <option value="">All Channels</option>
+            <option value="">{t('All Channels')}</option>
             {['Email', 'SMS', 'InApp', 'WhatsApp'].map((c) => <option key={c}>{c}</option>)}
           </select>
         }>
-        {items.map((t) => (
-          <tr key={t.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-            <td className="px-4 py-3 font-mono text-xs text-slate-500">{t.code}</td>
-            <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{t.eventType}</td>
-            <td className="px-4 py-3"><span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{t.channel}</span></td>
-            <td className="px-4 py-3 text-slate-600 dark:text-slate-300 max-w-xs truncate">{t.subjectEn || '—'}</td>
-            <td className="px-4 py-3"><ActiveBadge active={t.isActive} /></td>
+        {items.map((tpl) => (
+          <tr key={tpl.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+            <td className="px-4 py-3 font-mono text-xs text-slate-500">{tpl.code}</td>
+            <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{tpl.eventType}</td>
+            <td className="px-4 py-3"><span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{tpl.channel}</span></td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300 max-w-xs truncate">{tpl.subjectEn || '—'}</td>
+            <td className="px-4 py-3"><ActiveBadge active={tpl.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
-                <button type="button" onClick={() => openEdit(t)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" /> Edit</button>
-                <button type="button" onClick={() => deleteTemplate(t.id)} disabled={deleting === t.id} aria-label="Delete template" className="grid h-7 w-7 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 dark:border-white/10 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                  <Trash2 className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => openEdit(tpl)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => deleteTemplate(tpl.id)} disabled={deleting === tpl.id} aria-label={t('Delete template')} className={DELETE_ROW_BUTTON}>
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
               </div>
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? 'Edit Template' : 'New Template'} onClose={() => setModalOpen(false)} size="lg"
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Template') : t('New Template')} onClose={() => setModalOpen(false)} size="lg"
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Code" required><input value={form.code} onChange={(e) => setForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="LEAVE_APPROVED" /></FormField>
-          <FormField label="Event Type" required><input value={form.eventType} onChange={(e) => setForm(x => ({ ...x, eventType: e.target.value }))} className="input w-full" placeholder="LeaveApproved" /></FormField>
-          <FormField label="Channel" required>
+          <FormField label={t('Code')} required><input value={form.code} onChange={(e) => setForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="LEAVE_APPROVED" /></FormField>
+          <FormField label={t('Event Type')} required><input value={form.eventType} onChange={(e) => setForm(x => ({ ...x, eventType: e.target.value }))} className="input w-full" placeholder="LeaveApproved" /></FormField>
+          <FormField label={t('Channel')} required>
             <select value={form.channel} onChange={(e) => setForm(x => ({ ...x, channel: e.target.value }))} className="select w-full">
               {['Email', 'SMS', 'InApp', 'WhatsApp'].map((c) => <option key={c}>{c}</option>)}
             </select>
           </FormField>
-          <FormField label="Variables"><input value={form.variables} onChange={(e) => setForm(x => ({ ...x, variables: e.target.value }))} className="input w-full" placeholder="{{employeeName}},{{leaveType}}" /></FormField>
-          <FormField label="Subject (EN)"><input value={form.subjectEn} onChange={(e) => setForm(x => ({ ...x, subjectEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Subject (AR)"><input value={form.subjectAr} onChange={(e) => setForm(x => ({ ...x, subjectAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
-          <FormField label="Body (EN)" required><textarea value={form.bodyEn} onChange={(e) => setForm(x => ({ ...x, bodyEn: e.target.value }))} className="input w-full min-h-28" /></FormField>
-          <FormField label="Body (AR)"><textarea value={form.bodyAr} onChange={(e) => setForm(x => ({ ...x, bodyAr: e.target.value }))} className="input w-full min-h-28" dir="rtl" /></FormField>
+          <FormField label={t('Variables')}><input value={form.variables} onChange={(e) => setForm(x => ({ ...x, variables: e.target.value }))} className="input w-full" placeholder="{{employeeName}},{{leaveType}}" /></FormField>
+          <FormField label={t('Subject (EN)')}><input value={form.subjectEn} onChange={(e) => setForm(x => ({ ...x, subjectEn: e.target.value }))} className="input w-full" /></FormField>
+          <FormField label={t('Subject (AR)')}><input value={form.subjectAr} onChange={(e) => setForm(x => ({ ...x, subjectAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
+          <FormField label={t('Body (EN)')} required><textarea value={form.bodyEn} onChange={(e) => setForm(x => ({ ...x, bodyEn: e.target.value }))} className="input w-full min-h-28" /></FormField>
+          <FormField label={t('Body (AR)')}><textarea value={form.bodyAr} onChange={(e) => setForm(x => ({ ...x, bodyAr: e.target.value }))} className="input w-full min-h-28" dir="rtl" /></FormField>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -2264,6 +2317,9 @@ function EmailConfigTab() {
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
+/** Row actions are always visible and always say what they do (never an icon alone, never hover-only). */
+const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
+
 function TableShell({
   columns, onAdd, addLabel, loading, empty, emptyLabel, filter, actions, children,
 }: {
@@ -2280,6 +2336,8 @@ function TableShell({
   actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  // Callers pass msg('…') keys; translated here so every Setup table reads in the user's language.
+  const t = useT();
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2288,8 +2346,8 @@ function TableShell({
           {actions}
           {onAdd && (
             <button type="button" onClick={onAdd} className="btn-primary">
-              <Plus className="h-4 w-4" />
-              {addLabel}
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              {addLabel ? t(addLabel) : null}
             </button>
           )}
         </div>
@@ -2299,12 +2357,12 @@ function TableShell({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {columns.map((col) => (
-                  <th key={col} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                    {col}
+                {columns.map((col, index) => (
+                  <th key={col || index} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    {col ? t(col) : <span className="sr-only">{t('Actions')}</span>}
                   </th>
                 ))}
-                <th className="w-20 px-4 py-3" />
+                <th className="w-20 px-4 py-3"><span className="sr-only">{t('Actions')}</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -2318,7 +2376,7 @@ function TableShell({
               {!loading && empty && (
                 <tr>
                   <td colSpan={columns.length + 1} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">
-                    {emptyLabel}
+                    {t(emptyLabel)}
                   </td>
                 </tr>
               )}
@@ -2332,10 +2390,11 @@ function TableShell({
 }
 
 function ActiveBadge({ active }: { active: boolean }) {
+  const t = useT();
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20' : 'bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-slate-500'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emeraldZ' : 'bg-slate-400'}`} />
-      {active ? 'Active' : 'Inactive'}
+      {active ? t('Active') : t('Inactive')}
     </span>
   );
 }

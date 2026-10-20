@@ -432,7 +432,7 @@ public sealed partial class MigrationImportController : ControllerBase
                     "roles" => await UpsertRoleAsync(row, tenantId, ct),
                     "users" => await UpsertUserAsync(row, tenantId, ct),
                     "leaveBalances" => await UpsertLeaveBalanceAsync(row, tenantId, cutover, ct),
-                    "attendanceDaily" => await UpsertAttendanceAsync(row, tenantId, ct),
+                    "attendanceDaily" => await UpsertAttendanceIsolatedAsync(row, tenantId, ct),
                     "employeeHistory" => await UpsertEmployeeHistoryAsync(row, tenantId, ct),
                     "payrollOpeningBalances" => await UpsertPayrollOpeningBalanceAsync(row, tenantId, cutover, result, ct),
                     "benefitsEnrollments" => await UpsertBenefitsEnrollmentAsync(row, tenantId, result, ct),
@@ -705,6 +705,38 @@ public sealed partial class MigrationImportController : ControllerBase
     /// baseline is resolved through the same <see cref="KsaWorkingHoursBaselineService"/> the
     /// processor uses, so an imported Ramadan absence costs the Art. 98 six-hour day, not eight.</para>
     /// </summary>
+    /// <summary>
+    /// One imported day, under the same per-(tenant, employee, work date) lock every attendance writer takes, in its own
+    /// transaction, so a punch, a range run or a correction racing the import cannot interleave with it, and the day's
+    /// impact replacement (a delete then inserts) commits or rolls back with the record.
+    /// </summary>
+    private async Task<string> UpsertAttendanceIsolatedAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
+    {
+        if (!_db.Database.IsRelational()) return await UpsertAttendanceAsync(row, tenantId, ct);
+        var employee = await Employee(row, tenantId, ct);
+        var date = DateReq(row, "WorkDate");
+        var known = _db.ChangeTracker.Entries().Select(e => e.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
+        var attempt = 0;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // A retried attempt starts from the state before this row: what the failed attempt added is dropped (the
+            // batch and earlier rows stay tracked, which a blanket ChangeTracker.Clear would lose).
+            if (attempt++ > 0)
+                foreach (var entry in _db.ChangeTracker.Entries().Where(e => !known.Contains(e.Entity)).ToList())
+                    entry.State = EntityState.Detached;
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var action = string.Empty;
+            await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, date, async () =>
+            {
+                action = await UpsertAttendanceAsync(row, tenantId, ct);
+                await _db.SaveChangesAsync(ct);
+            }, ct);
+            await tx.CommitAsync(ct);
+            return action;
+        });
+    }
+
     private async Task<string> UpsertAttendanceAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct); var date = DateReq(row, "WorkDate");
@@ -714,6 +746,9 @@ public sealed partial class MigrationImportController : ControllerBase
         // The processor sets both from the resolved Employee; imported rows used to show blank
         // Department and Branch beside processed rows for the same person, in the same grid.
         item.Department = employee.Department; item.Branch = employee.Branch;
+        // Marks the day as imported: the day processor keeps these values (they have no raw punches here) and only
+        // re-derives the deductions, until an approved correction replaces them.
+        item.ManualCorrectionStatus = AttendanceDerivedArtifacts.ImportedRecord;
         if (created) _db.AttendanceDailyRecords.Add(item);
         await AttendanceDerivedArtifacts.SyncAsync(
             _db, tenantId, employee.CompanyId, item,
@@ -729,9 +764,12 @@ public sealed partial class MigrationImportController : ControllerBase
     /// </summary>
     private async Task<int> ResolveAbsenceMinutesAsync(Guid tenantId, Employee employee, DateOnly date, CancellationToken ct)
     {
-        var policy = await _db.AttendancePolicies.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct);
-        var standardMinutes = policy?.StandardWorkMinutes ?? AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes;
+        // The policy that governs THIS employee's day, by the processor's own rule (the explicit assignment, then the
+        // branch / department / grade tier): it used to be whichever active policy the database returned first.
+        var policies = await _db.AttendancePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(ct);
+        var standardMinutes = policies.Count == 0
+            ? AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes
+            : AttendanceService.ResolveAttendancePolicy(employee, policies).StandardWorkMinutes;
 
         var countryCode = employee.CompanyId is Guid companyId
             ? await ScopedBypass.TenantWide(_db.Companies, tenantId,

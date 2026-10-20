@@ -167,7 +167,7 @@ public class MobileController : ControllerBase
 
         var upcomingLeave = await _db.LeaveRequests
             .Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId
-                && r.Status == "Approved" && r.StartDate > today)
+                && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate > today)
             .OrderBy(r => r.StartDate)
             .Select(r => new { r.LeaveTypeName, r.StartDate, r.EndDate, r.TotalDays })
             .FirstOrDefaultAsync(ct);
@@ -185,109 +185,21 @@ public class MobileController : ControllerBase
 
     // ── Attendance Punch ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// RETIRED: the legacy mobile punch. The KynexOne app clocks in through <c>POST /api/attendance/punch/mobile</c>
+    /// (mobile/src/api/services.ts), which runs the server-side geofence and selfie decision, records the raw event and
+    /// processes the day with the one day processor. This route wrote the daily record directly (it bypassed the day
+    /// processor, the impacts and the payroll lock) and nothing calls it. It now answers 410 Gone and writes nothing,
+    /// so an outdated client is told plainly what to do instead of being half-served.
+    /// </summary>
     [HttpPost("attendance/punch")]
-    public async Task<IActionResult> Punch([FromBody] MobilePunchRequest req, CancellationToken ct)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-
-        // Punch is always recorded for the CALLER — a client cannot punch in/out as a colleague
-        // by setting req.EmployeeId (attendance fraud / IDOR).
-        var employeeId = await ResolveCallerEmployeeIdAsync(tenantId.Value, ct);
-        if (employeeId is null) return Forbid();
-
-        // Selfie attendance v2: this legacy route carries no location and no selfie, so it must not become a way round
-        // the server-side geofence or a tenant's selfie requirement. It applies the same decision as punch/* and is
-        // refused whenever that decision needs something this request cannot carry.
-        var decision = await _verification.EvaluatePunchAsync(
-            tenantId.Value, employeeId.Value, null, new PunchLocation(null, null, null, null), PunchChannel.SelfMobileLegacy, ct);
-        if (decision.Refusal is { } refusal)
-            return BadRequest((refusal.Code == AttendanceRefusals.LocationRequired.Code ? AttendanceRefusals.LegacyPunchNeedsLocation : refusal).Body);
-
-        var nowUtc = _clock.GetUtcNow().UtcDateTime;
-        // The work date by THE rule every other punch path uses (AttendanceWorkDate: tenant-local date, overnight shift's
-        // early-morning punch on the shift's day) — it is also the daily-record lock key. This used to be the UTC date,
-        // so for a Riyadh tenant a punch between 00:00 and 03:00 local was written to yesterday, under a different lock
-        // from ingest and processing.
-        var today = await AttendanceWorkDate.ResolveAsync(_db, tenantId.Value, employeeId.Value, nowUtc,
-            await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId.Value, ct), ct);
-
-        // Race-safe like AttendanceService.PunchAsync: two first-of-day punches used to both insert the daily record and
-        // the loser got an unhandled 23505 (a 500). Under the per-(tenant, employee, work date) lock the second one finds
-        // and updates the first's row.
-        AttendanceDailyRecord existing = null!;
-        await AttendanceDailyRecordLock.RunAsync(_db, tenantId.Value, employeeId.Value, today, async () =>
+    public Task<IActionResult> Punch([FromBody] MobilePunchRequest req, CancellationToken ct) =>
+        Task.FromResult<IActionResult>(StatusCode(StatusCodes.Status410Gone, new
         {
-            existing = await _db.AttendanceDailyRecords
-                .FirstOrDefaultAsync(a => a.TenantId == tenantId
-                    && a.EmployeeId == employeeId
-                    && a.WorkDate == today, ct)
-                ?? _db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
-                {
-                    TenantId = tenantId.Value,
-                    EmployeeId = employeeId.Value,
-                    WorkDate = today,
-                    Status = "Present"
-                }).Entity;
-
-            // The punch is ALSO recorded as a raw event, as every other punch path records it: the day's recompute (HR's
-            // range run, a regularization, the processing job, a later device punch) rebuilds the day from raw events
-            // only, so without one it found nothing, wiped this in/out and raised an absence deduction for a worked day.
-            // The response and the direct update below are unchanged.
-            if (req.Direction is "In" or "Out")
-            {
-                var employeeCode = await _db.Employees.AsNoTracking()
-                    .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-                    .Select(e => e.EmployeeCode).FirstOrDefaultAsync(ct) ?? string.Empty;
-                var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;
-                var raw = new AttendanceRawEvent
-                {
-                    TenantId = tenantId.Value,
-                    EmployeeId = employeeId.Value,
-                    EmployeeCode = employeeCode,
-                    Source = "Mobile (legacy)",
-                    PunchTimestampUtc = nowUtc,
-                    PunchDirection = req.Direction,
-                    IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
-                    VerificationMethod = decision.Verification.Method,
-                    CreatedBy = userId,
-                };
-                _db.AttendanceRawEvents.Add(raw);
-                _db.AttendanceAuditLogs.Add(new AttendanceAuditLog
-                {
-                    TenantId = tenantId.Value, UserId = userId, Action = "attendance.raw_event.created",
-                    EntityName = "AttendanceRawEvent", EntityId = raw.Id.ToString(), MetadataJson = "{}",
-                });
-            }
-
-            if (req.Direction == "In")
-            {
-                existing.FirstInUtc = nowUtc;
-                existing.Status = "Present";
-            }
-            else if (req.Direction == "Out")
-            {
-                existing.LastOutUtc = nowUtc;
-                if (existing.FirstInUtc.HasValue && existing.LastOutUtc.HasValue)
-                {
-                    var worked = existing.LastOutUtc.Value - existing.FirstInUtc.Value;
-                    existing.TotalWorkedMinutes = worked.TotalMinutes > 0 ? (int)worked.TotalMinutes : 0;
-                }
-            }
-
-            await _db.SaveChangesAsync(ct);
-        }, ct);
-        return Ok(new
-        {
-            employeeId,
-            direction = req.Direction,
-            timestamp = nowUtc,
-            status = existing.Status,
-            checkIn = existing.FirstInUtc,
-            checkOut = existing.LastOutUtc,
-            workedMinutes = existing.TotalWorkedMinutes
-        });
-    }
+            error = "legacy_punch_retired",
+            code = "legacy_punch_retired",
+            message = "This way of clocking in has been retired. Update the KynexOne app, or clock in from Self-Service.",
+        }));
 
     // ── Leave (mobile) ───────────────────────────────────────────────────────
 

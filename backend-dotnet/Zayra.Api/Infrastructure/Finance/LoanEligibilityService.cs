@@ -4,6 +4,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Infrastructure.Finance;
 
@@ -144,7 +145,14 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         if (policy.RequireProbationCompleted && !(employee.ConfirmationDate <= today
             || (employee.ProbationEndDate.HasValue && employee.ProbationEndDate.Value < today)))
             Refuse("Probation", "Probation must be completed before applying.");
-        if (contracts.Length > 0 && !contracts.Contains(employee.ContractType, StringComparer.OrdinalIgnoreCase)) Refuse("ContractType", "The employee's contract type is not eligible.");
+        if (contracts.Length > 0)
+        {
+            // The employee may hold the contract-type code (UNLIMITED) or, on an older row, its label; the policy
+            // lists whatever HR typed. Compare by meaning through the tenant's reference list.
+            var contractTypes = await ReferenceList.LoadAsync(db, tid, ReferenceList.ContractTypeType, ct);
+            if (!contracts.Any(allowed => contractTypes.Same(allowed, employee.ContractType)))
+                Refuse("ContractType", "The employee's contract type is not eligible.");
+        }
         if (!methods.Contains(repaymentMethod, StringComparer.Ordinal)) Refuse("RepaymentMethod", "The repayment method is not permitted by company policy.");
         if (!frequencies.Contains(repaymentFrequency, StringComparer.Ordinal)) Refuse("RepaymentFrequency", "The repayment frequency is not permitted by company policy.");
         if (preview)
