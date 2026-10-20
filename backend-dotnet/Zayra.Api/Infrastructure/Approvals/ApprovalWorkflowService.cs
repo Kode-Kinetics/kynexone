@@ -258,6 +258,28 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     }
 
     /// <summary>
+    /// The values behind an employee-change approval: per field, what is on file and what is proposed. Only for a
+    /// caller who could decide the request right now — the same <see cref="CanDecideRequestAsync"/> the decision
+    /// runs, separation-of-duties bars included — so the subject, the requester and anyone the step is not routed
+    /// to get nothing (null ⇒ 404, the request's existence is not confirmed). The employee read is company-scoped.
+    /// </summary>
+    public async Task<EmployeeChangeDetailDto?> GetEmployeeChangeDetailAsync(Guid tenantId, Guid approvalRequestId, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.TenantId is Guid callerTenant && callerTenant != tenantId) return null;
+        var approval = await _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == approvalRequestId, cancellationToken);
+        if (approval is null
+            || !string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase)
+            || !Guid.TryParse(approval.EntityId, out var changeId))
+            return null;
+        if (!await CanDecideRequestAsync(approval, context, cancellationToken)) return null;
+        var change = await _db.EmployeeChangeRequests.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == changeId, cancellationToken);
+        if (change is null) return null;
+        return await EmployeeChangeDetail.BuildAsync(_db, approval, change, context.Permissions ?? Array.Empty<string>(), cancellationToken);
+    }
+
+    /// <summary>
     /// The requester takes back their own pending employee change. Only the requester may, only while it
     /// is pending, and only for <see cref="EmployeeChangeRequest"/>: other entities (leave, timesheets,
     /// offers…) own a state machine of their own and are cancelled from their own screen, so closing the

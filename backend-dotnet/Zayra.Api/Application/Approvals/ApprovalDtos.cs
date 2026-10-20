@@ -175,3 +175,17 @@ public static class ApprovalMappings
         decision.DecidedByUserId,
         decision.DecidedAtUtc);
 }
+
+/// <summary>One field of a pending employee change: the value on file now and the value proposed (masked per viewer).</summary>
+public record EmployeeChangeFieldDto(string Key, string Label, string? CurrentValue, string? ProposedValue, bool Masked);
+
+/// <summary>Before → after for an employee-change approval, for the person deciding it.</summary>
+public record EmployeeChangeDetailDto(
+    Guid ApprovalRequestId,
+    Guid ChangeRequestId,
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    DateOnly EffectiveDate,
+    string ChangeStatus,
+    IReadOnlyList<EmployeeChangeFieldDto> Fields);

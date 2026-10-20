@@ -9,6 +9,7 @@ import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
+import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
@@ -1407,6 +1408,7 @@ const en: Dict = {
   ...glSetup.en,
   ...glErp.en,
   ...glApiKeys.en,
+  ...approvalChanges.en,
   ...compensation.en,
   // Engagement surveys — see ./engagement.
   ...engagement.en,
@@ -2797,6 +2799,7 @@ const ar: Dict = {
   ...glSetup.ar,
   ...glErp.ar,
   ...glApiKeys.ar,
+  ...approvalChanges.ar,
   ...compensation.ar,
   ...engagement.ar,
   ...glEosb.ar,

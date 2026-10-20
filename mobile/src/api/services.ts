@@ -1518,6 +1518,15 @@ function toApprovalOutcome(r: any, fallbackStatus: string): ApprovalOutcome {
   };
 }
 
+/** One field of a pending employee change: on file now → proposed (already masked by the server). */
+export type EmployeeChangeField = {
+  key: string;
+  label: string;
+  currentValue: string | null;
+  proposedValue: string | null;
+  masked: boolean;
+};
+
 export const approvalsApi = {
   async getPendingApprovals(): Promise<ApprovalItem[]> {
     // The whole pending queue, page by page: an approver used to see only the first 50.
@@ -1658,6 +1667,23 @@ export const approvalsApi = {
   /** GET /api/leave/requests/{id} — dates, days and reason for a leave approval card. */
   async getLeaveFacts(leaveRequestId: string): Promise<LeaveFacts | null> {
     return mapLeaveFacts(await apiGet<any>(`/leave/requests/${leaveRequestId}`));
+  },
+
+  /**
+   * GET /approval-requests/{id}/change-detail — before → after for an employee change, per field. Answered only
+   * to someone who may decide the request now (404 otherwise); identity and bank numbers arrive masked to their
+   * last 4, pay masked unless the viewer has pay access. Values are shown exactly as the server sends them.
+   */
+  async getEmployeeChangeDetail(approvalId: string): Promise<EmployeeChangeField[]> {
+    const r = await apiGet<any>(`/approval-requests/${approvalId}/change-detail`);
+    const fields: any[] = Array.isArray(r?.fields) ? r.fields : [];
+    return fields.map((x) => ({
+      key: String(x?.key ?? ''),
+      label: String(x?.label ?? x?.key ?? ''),
+      currentValue: x?.currentValue == null ? null : String(x.currentValue),
+      proposedValue: x?.proposedValue == null ? null : String(x.proposedValue),
+      masked: x?.masked === true,
+    }));
   },
 
   async getLeaveContext(leaveRequestId: string): Promise<{
