@@ -380,6 +380,72 @@ public class AccessManagementScopeTests
         (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == w.TenantId && u.Email == email)).Should().BeFalse();
     }
 
+    private async Task<Guid> SeedCompanyBGrantAsync(World w)
+    {
+        await using var db = _fx.CreateDb();
+        var grant = new UserEntityAccess
+        {
+            TenantId = w.TenantId, UserId = w.UserB, CompanyId = w.CompanyB,
+            GrantMode = EntityGrantModes.SelectedCompanies, Role = "HR"
+        };
+        db.UserEntityAccesses.Add(grant);
+        await db.SaveChangesAsync();
+        return grant.Id;
+    }
+
+    private static IReadOnlyCollection<EntityGrantDto> Grants(Microsoft.AspNetCore.Mvc.ActionResult<IReadOnlyCollection<EntityGrantDto>> result) =>
+        (IReadOnlyCollection<EntityGrantDto>)((Microsoft.AspNetCore.Mvc.OkObjectResult)result.Result!).Value!;
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_ListsAndCreatesEntityGrantsForAnyCompany()
+    {
+        var w = await SeedWorld();
+        var grantB = await SeedCompanyBGrantAsync(w);
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+
+        Grants(await Controller(db, w.TenantId, callerId, w.CompanyA, null).ListEntityGrants(null, CancellationToken.None))
+            .Select(g => g.Id).Should().Contain(grantB, "the switcher narrows reads of data, not a group admin's view of access grants");
+
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>();
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UnlinkedAdmin, null, "HR", EntityGrantModes.AllCurrentCompanies), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_CannotListOrGrantOutsideTheirCompanies()
+    {
+        var w = await SeedWorld();
+        var grantB = await SeedCompanyBGrantAsync(w);
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var scope = new[] { w.CompanyA };
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            var listed = Grants(await Controller(db, w.TenantId, callerId, selected, scope).ListEntityGrants(null, CancellationToken.None));
+            listed.Select(g => g.Id).Should().NotContain(grantB);
+            listed.Should().OnlyContain(g => g.CompanyId == w.CompanyA);
+
+            (await Controller(db, w.TenantId, callerId, selected, scope).CreateEntityGrant(
+                    new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>("Company B is outside this admin's grant");
+            (await Controller(db, w.TenantId, callerId, selected, scope).CreateEntityGrant(
+                    new CreateEntityGrantRequest(w.UserA, null, "HR", EntityGrantModes.AllCurrentCompanies), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>("an all-company grant is wider than this admin's own");
+        }
+        db.ChangeTracker.Clear();
+        (await db.UserEntityAccesses.IgnoreQueryFilters().CountAsync(g => g.TenantId == w.TenantId && g.UserId == w.UserA))
+            .Should().Be(0);
+
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, scope).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UserA, w.CompanyA, "HR"), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>("granting within their own company still works");
+    }
+
     private async Task<World> SeedWorld()
     {
         await using var db = _fx.CreateDb();

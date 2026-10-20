@@ -1010,7 +1010,9 @@ public class AccessController : ControllerBase
         var scope = this.GetEntityScope();
         var query = _db.UserEntityAccesses.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.IsActive);
-        if (!scope.IsGroupLevel)
+        // Judged on the grant: a group administrator sees every grant whichever company the switcher
+        // selects; a company-scoped administrator only grants for the companies they hold.
+        if (!this.HasGroupEntityScope())
         {
             var accessible = scope.AccessibleCompanyIds.ToList();
             query = query.Where(e =>
@@ -1052,7 +1054,9 @@ public class AccessController : ControllerBase
         // PRIVILEGE CEILING: company access is access; nobody widens the company scope of a user above them.
         try { await _accessManagement.AssertMayChangeUserAccessAsync(tenantId.Value, request.UserId, GetContext(), cancellationToken); }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.entity_grant_created", "User", request.UserId.ToString()); }
-        if (!scope.IsGroupLevel)
+        // A group grant may grant any company of the tenant (or all of them) whichever company the
+        // switcher selects; a company-scoped administrator only a company within their own grant.
+        if (!this.HasGroupEntityScope())
         {
             if (grantMode != EntityGrantModes.SelectedCompanies)
                 return Forbid();
