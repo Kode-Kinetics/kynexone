@@ -4770,6 +4770,7 @@ public partial class PayrollController : ControllerBase
                 paymentBatchesDeleted = batchIds.Count,
                 opState.LoansRestored, opState.AdvancesRestored, opState.InstallmentsReopened,
                 opState.ImpactsReleased, opState.AdjustmentsReleased,
+                attendanceDaysAlreadyAdjusted = opState.AttendanceDaysAlreadyAdjusted,
                 consumptionWitnessed = opState.WitnessRowCount > 0,
                 loanRestores = opState.LoanRestoreDetail,
             };

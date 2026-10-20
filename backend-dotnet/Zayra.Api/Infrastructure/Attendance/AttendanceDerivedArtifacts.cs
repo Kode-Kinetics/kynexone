@@ -357,6 +357,9 @@ public static class AttendanceDerivedArtifacts
         return end < 0 ? null : details[(at + SignatureTag.Length)..end];
     }
 
+    /// <summary>True when a resolved <see cref="PaidAttendanceChanged"/> exception was closed by HR, not automatically.</summary>
+    public static bool WasResolvedByHr(string details) => !details.Contains(AutoResolvedTag, StringComparison.Ordinal);
+
     /// <summary>The exception's description for people: its details without the stored signature or close note.</summary>
     public static string DescribePaidAttendanceChange(string details)
     {

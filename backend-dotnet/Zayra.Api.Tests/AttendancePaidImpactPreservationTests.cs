@@ -398,6 +398,40 @@ public sealed class AttendancePaidImpactVoidRestorePostgresTests
         (await OpenFlagCountAsync(k)).Should().Be(0);
     }
 
+    [Fact]
+    public async Task ReopeningARunWhoseDayHrAlreadyAdjusted_ListsThatDay_WithoutBlocking()
+    {
+        var k = await AttendancePayrollPostgresKit.CreateAsync(_fx.CreateDb);
+        var punchIn = await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 9, 30), "In", processed: false);
+        await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 18, 0), "Out", processed: false);
+        await ProcessAttendanceAsync(k);
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
+        await using (var db = k.NewContext())
+        {
+            (await db.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.Id == punchIn.Id)).PunchTimestampUtc =
+                AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 9, 50);
+            await db.SaveChangesAsync();
+        }
+        await ProcessAttendanceAsync(k);
+        await using (var db = k.NewContext())
+        {
+            // HR made the payroll adjustment and resolved the flag.
+            (await db.AttendanceExceptions.IgnoreQueryFilters().SingleAsync(x => x.TenantId == k.TenantId
+                && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged)).IsResolved = true;
+            await db.SaveChangesAsync();
+        }
+
+        await using var reopenDb = k.NewContext();
+        var ok = (await k.Payroll(reopenDb).ReopenRun(k.Run.Id, new Zayra.Api.Controllers.PayrollReasonRequest("re-run the month"), default))
+            .Should().BeOfType<OkObjectResult>("listing never blocks").Subject;
+        var listed = System.Text.Json.JsonSerializer.SerializeToElement(ok.Value).GetProperty("attendanceDaysAlreadyAdjusted");
+        listed.GetArrayLength().Should().Be(1);
+        listed[0].GetProperty("employeeId").GetInt32().Should().Be(k.Employee.Id);
+        listed[0].GetProperty("workDate").GetString().Should().Be("2026-08-18");
+        listed[0].GetProperty("note").GetString().Should().Contain("check it before re-running");
+    }
+
     private static async Task ProcessAttendanceAsync(AttendancePayrollPostgresKit k)
     {
         await using var db = k.NewContext();
