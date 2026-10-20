@@ -31,4 +31,12 @@ public static class EmployeeChangeStatuses
     /// writing this one now would put back an older value. Terminal; an audit row names the change that won.
     /// </summary>
     public const string Superseded = "Superseded";
+
+    /// <summary>
+    /// Closed without being applied: on its effective date it had to go back for review, and nobody other than the
+    /// person it is about could ever decide that review (no holder of the workflow's role, no Admin or
+    /// approvals.override). Terminal — the effective-date job does not retry it daily; the reason says what to fix,
+    /// and the change is submitted again once someone can decide it.
+    /// </summary>
+    public const string Blocked = "Blocked";
 }

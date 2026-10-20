@@ -582,6 +582,64 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task AReReviewNobodyCouldDecide_BlocksTheChange_WithAReason_AndIsNotRetriedDaily()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+        await using (var db = fx.CreateDb())
+        {
+            (await db.Employees.SingleAsync(x => x.Id == employeeId)).Status = "Terminated";
+            await db.SaveChangesAsync();
+            // The only HR Manager leaves, and nobody holds Admin or approvals.override: the re-review has no decider.
+            await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, tenant));
+        }
+
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+        clock.Advance(TimeSpan.FromDays(1));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var verify = fx.CreateDb();
+        (await ProfileAsync(verify, tenant, employeeId)).Iban.Should().Be(OldIban);
+        var change = await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId);
+        change.Status.Should().Be(EmployeeChangeStatuses.Blocked);
+        change.RejectionReason.Should().Contain("nobody can decide one").And.Contain("HR Manager");
+        (await SingleAuditAsync(tenant, changeId, EffectiveChangeJobHandler.BlockedAction)).Metadata.Should().Contain("no_eligible_decider");
+        (await verify.ApprovalRequests.CountAsync(a => a.TenantId == tenant && a.EntityId == changeId.ToString())).Should().Be(1, "only the original approval; no re-review was created");
+    }
+
+    [Fact]
+    public async Task AReReviewWhoseRoleIsEmpty_GoesToTheAdminQueue_WithTheOverrideAuditRow()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        await using var sp = BuildInstance(clock, new RecordingNotifications());
+        var (tenant, employeeId) = await SeedAsync();
+        var changeId = await RequestAndApproveAsync(tenant, employeeId, UtcToday.AddDays(1), "bankIban", NewIban);
+        await using (var db = fx.CreateDb())
+        {
+            (await db.Employees.SingleAsync(x => x.Id == employeeId)).Status = "Terminated";
+            await db.SaveChangesAsync();
+            await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, tenant));
+            await TestApprovalConfig.EnsureDeciderAsync(db, tenant, "Admin");
+        }
+
+        clock.Advance(TimeSpan.FromDays(2));
+        await sp.GetRequiredService<EffectiveChangeScheduler>().EnqueueDueAsync(default);
+        await DrainAsync(sp, tenant);
+
+        await using var verify = fx.CreateDb();
+        (await verify.EmployeeChangeRequests.SingleAsync(x => x.Id == changeId)).Status.Should().Be(EmployeeChangeStatuses.PendingApproval);
+        var review = await verify.ApprovalRequests.Where(a => a.TenantId == tenant && a.EntityId == changeId.ToString() && a.Status == "Pending").SingleAsync();
+        review.CurrentApproverRole.Should().Be("Admin");
+        (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tenant && a.Action == "approval.routed_to_override" && a.EntityId == review.Id.ToString()))
+            .Should().BeTrue();
+    }
+
+    [Fact]
     public async Task DeletedEmployee_IsCancelled_AndAudited()
     {
         var clock = new ManualClock(DateTimeOffset.UtcNow);
