@@ -300,8 +300,15 @@ public class ApprovalSeparationOfDutiesGapTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var approver = Guid.NewGuid();
+        // The decider must still be an eligible approver (an active HR Manager) when deciding.
+        var approverRole = new Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        var approverUser = new User { TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head", Status = "Active", IsActive = true };
+        approverUser.UserRoles.Add(new UserRole { UserId = approverUser.Id, RoleId = approverRole.Id, Role = approverRole });
+        db.AddRange(approverRole, approverUser);
+        var approver = approverUser.Id;
         var applicationId = Guid.NewGuid();
+        var application = new JobApplication { Id = applicationId, TenantId = tenantId, CandidateName = "Layla Hassan", JobTitle = "Engineer", Stage = "OfferExtended", StageOrder = 5, Status = "Active" };
+        db.JobApplications.Add(application);
         var offer = new OfferLetter
         {
             TenantId = tenantId, ApplicationId = applicationId, CandidateName = "Layla Hassan", OfferedJobTitle = "Engineer",
@@ -309,11 +316,12 @@ public class ApprovalSeparationOfDutiesGapTests
         };
         var stepOne = new OfferApproval { TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId, StepOrder = 1, ApproverName = "Head", ApproverUserId = approver, Status = "Approved" };
         var stepTwo = new OfferApproval { TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId, StepOrder = 2, ApproverName = "Head", ApproverUserId = approver };
+        OfferWorkflowTestSupport.SeedFrozenManaged(db, offer, application);
         db.AddRange(offer, stepOne, stepTwo);
         await db.SaveChangesAsync();
 
-        var result = await WithPrincipal(new OffersController(db, new GapNoLetters(), new RecruitmentService(db)), tenantId, approver, "HR Manager")
-            .DecideApproval(offer.Id, stepTwo.Id, new DecideApprovalRequest("Approved", "again"), CancellationToken.None);
+        var result = await WithPrincipal(new OffersController(db, new GapNoLetters(), new RecruitmentService(db), OfferWorkflowTestSupport.Lifecycle(db), OfferWorkflowTestSupport.Artifacts(db)), tenantId, approver, "HR Manager")
+            .DecideApproval(offer.Id, stepTwo.Id, new DecideApprovalRequest("Approved", "again", offer.Version), CancellationToken.None);
 
         var refused = Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status403Forbidden, refused.StatusCode);
@@ -336,18 +344,21 @@ public class ApprovalSeparationOfDutiesGapTests
         };
         approver.UserRoles.Add(new UserRole { UserId = approver.Id, RoleId = role.Id, Role = role });
         var applicationId = Guid.NewGuid();
+        var application = new JobApplication { Id = applicationId, TenantId = tenantId, CandidateName = "Layla Hassan", JobTitle = "Engineer", Stage = "OfferExtended", StageOrder = 5, Status = "Active" };
+        db.JobApplications.Add(application);
         var offer = new OfferLetter
         {
             TenantId = tenantId, ApplicationId = applicationId, CandidateName = "Layla Hassan", OfferedJobTitle = "Engineer",
             OfferedDepartment = "Technology", StartDate = new DateOnly(2026, 11, 1), Status = "PendingApproval",
         };
         var approved = new OfferApproval { TenantId = tenantId, OfferLetterId = offer.Id, ApplicationId = applicationId, StepOrder = 1, ApproverName = "Head of Eng", ApproverUserId = approver.Id, Status = "Approved" };
+        OfferWorkflowTestSupport.SeedFrozenManaged(db, offer, application);
         db.AddRange(role, approver, offer, approved);
         db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(tenantId, offer.Id, OfferRules.CreatedAction, author, "Author"));
         await db.SaveChangesAsync();
-        var controller = WithPrincipal(new OffersController(db, new GapNoLetters(), new RecruitmentService(db)), tenantId, author, "HR Manager");
+        var controller = WithPrincipal(new OffersController(db, new GapNoLetters(), new RecruitmentService(db), OfferWorkflowTestSupport.Lifecycle(db), OfferWorkflowTestSupport.Artifacts(db)), tenantId, author, "HR Manager");
 
-        var result = await controller.AddApproval(offer.Id, new AddOfferApprovalRequest("Head of Eng", approver.Id, "HR Manager"), CancellationToken.None);
+        var result = await controller.AddApproval(offer.Id, new AddOfferApprovalRequest("Head of Eng", approver.Id, "HR Manager", offer.Version), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         JsonSerializer.Serialize(conflict.Value).Should().Contain("offer_approver_already_named");

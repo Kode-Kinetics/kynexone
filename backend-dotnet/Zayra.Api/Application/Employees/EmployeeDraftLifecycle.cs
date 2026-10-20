@@ -60,12 +60,13 @@ public static class EmployeeDraftAuditActions
     public static readonly string[] Decisions = { Activated, Rejected, Cancelled };
 
     public const string Updated = "employee.draft_updated";
+    public const string CompensationUpdated = "employee.draft_compensation_updated";
     public const string DocumentAttached = "employee.document_uploaded";
     public const string DocumentUploaded = "employee.document_file_uploaded";
 
     /// <summary>Changes to a draft's content. Whoever made one is a maker of the hire. Each is written
     /// in the same save as the change it records.</summary>
-    public static readonly string[] Edits = { Updated, DocumentAttached, DocumentUploaded };
+    public static readonly string[] Edits = { Updated, CompensationUpdated, DocumentAttached, DocumentUploaded };
 }
 
 /// <summary>
@@ -129,7 +130,9 @@ public sealed record EmployeeDraftListItemDto(
     string? DecidedByName,
     string? DecisionReason,
     int? ActivatedEmployeeId,
-    string? ActivatedEmployeeCode);
+    string? ActivatedEmployeeCode,
+    string? OfferPlacementProvenance = null,
+    string? OfferCompensationGuidance = null);
 
 public sealed record EmployeeDraftStatusCounts(int AwaitingApproval, int Draft, int Activated, int Rejected, int Cancelled);
 

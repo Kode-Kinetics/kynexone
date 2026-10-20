@@ -4,6 +4,8 @@ import path from 'node:path';
 import * as ts from 'typescript';
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import { messageArgs } from '../src/i18n/message';
+import { offerLetterArabic } from '../src/i18n/offerLetter';
+import { offerLifecycleArabic } from '../src/i18n/offerLifecycle';
 
 /**
  * i18n ratchet — Arabic coverage may only go UP.
@@ -244,11 +246,25 @@ function scanSources(): Scan {
 
 // ── Dictionaries ─────────────────────────────────────────────────────────────
 
-const en = LOCALE_DICTS.en;
-const ar = LOCALE_DICTS.ar;
+// Offer surfaces keep their domain copy in dedicated dictionaries so template authors can
+// reason about document language separately from the shell. The ratchet checks both sources.
+const offerEnglish = (dictionary: Record<string, string>) =>
+  Object.fromEntries(Object.keys(dictionary).map((key) => [key, key])) as Record<string, string>;
+const en = { ...LOCALE_DICTS.en, ...offerEnglish(offerLetterArabic), ...offerEnglish(offerLifecycleArabic) };
+const ar = { ...LOCALE_DICTS.ar, ...offerLetterArabic, ...offerLifecycleArabic };
+
+/** Enum-like values are labels, not sentence fragments. */
+const ENUM_KEYS = new Set([
+  'copy', 'hidden', 'left', 'center', 'right', 'justify', 'portrait', 'landscape',
+  'From', 'To',
+  'company name', 'candidate name', 'job title', 'department', 'start date', 'issue date',
+  'response deadline', 'basic salary', 'housing allowance', 'transport allowance',
+  'other allowances', 'gross salary', 'currency', 'probation months', 'offer reference',
+]);
 
 function isFragmentKey(key: string): boolean {
   if (NAMESPACED.test(key)) return false;
+  if (ENUM_KEYS.has(key)) return false;
   return /^[a-z]/.test(key) || /^\s|\s$/.test(key) || /[:,]$/.test(key) || /^(of|for|in|vs|and|or|to|by|at|on|from|with|d)$/i.test(key);
 }
 

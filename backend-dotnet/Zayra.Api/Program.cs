@@ -419,6 +419,12 @@ builder.Services.AddScoped<IHrLetterIssuer, HrLetterIssuer>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
+builder.Services.AddScoped<OfferArtifactService>();
+builder.Services.AddScoped<OfferLifecycleService>();
+builder.Services.AddScoped<OfferDispatchService>();
+builder.Services.AddScoped<OfferMailReadinessService>();
+builder.Services.AddHostedService<OfferDispatchWorker>();
+builder.Services.AddScoped<OfferHistoryQueryService>();
 builder.Services.AddScoped<IPerformanceService, PerformanceService>();
 builder.Services.AddScoped<ILeaveService, LeaveService>();
 // WAVE 1 B1 — THE authoritative entity-scope resolver. Registered before every consumer so that

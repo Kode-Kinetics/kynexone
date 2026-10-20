@@ -1405,12 +1405,12 @@ public sealed class EmployeeLoginLinkTests
     }
 
     /// <summary>
-    /// A coerced-domain work-email edit commits as ONE unit: the new address, its audit rows and its
+    /// An IT-issued work-email edit commits as ONE unit: the new address, its audit rows and its
     /// employee.work_email_changed (setter) row. A failure later in the same edit (here: the staged login's new
     /// username would collide with another login) leaves no trace — the address never commits without its setter.
     /// </summary>
     [Fact]
-    public async Task ACoercedWorkEmailEdit_CommitsTheAddressAndItsSetterTogether_OrNotAtAll()
+    public async Task AnExternalWorkEmailEdit_CommitsTheAddressAndItsSetterTogether_OrNotAtAll()
     {
         var w = await SeedAsync();
         await using (var db = _fixture.CreateRetryingDb())
@@ -1421,6 +1421,7 @@ public sealed class EmployeeLoginLinkTests
         }
         var domain = $"acme-{w.TenantId:N}.test";
         var oldEmail = $"old.name@{domain}";
+        const string issuedEmail = "new.name@elsewhere.test";
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, oldEmail);
         var staged = Guid.NewGuid();
         await using (var db = _fixture.CreateRetryingDb())
@@ -1430,10 +1431,10 @@ public sealed class EmployeeLoginLinkTests
                 Id = staged, TenantId = w.TenantId, Email = oldEmail, NormalizedEmail = AuthService.Normalize(oldEmail), FullName = "Staged",
                 PasswordHash = "unreachable", Status = "Invited", AccessMode = AccessModes.NoLogin, IsActive = false, IsEmailConfirmed = false,
             });
-            // Another login already owns the address the edit will be coerced to.
+            // Another login already owns the IT-issued external address.
             db.Users.Add(new User
             {
-                TenantId = w.TenantId, Email = $"new.name@{domain}", NormalizedEmail = AuthService.Normalize($"new.name@{domain}"),
+                TenantId = w.TenantId, Email = issuedEmail, NormalizedEmail = AuthService.Normalize(issuedEmail),
                 FullName = "Other", PasswordHash = "x", Status = "Active", IsActive = true,
             });
             db.EmployeeUserAccounts.Add(new EmployeeUserAccount
@@ -1444,14 +1445,13 @@ public sealed class EmployeeLoginLinkTests
             await db.SaveChangesAsync();
         }
 
-        // UPDATED (employee-access contract §3: a foreign domain is refused, never coerced). A foreign-domain PATCH is
-        // refused (422 work_email_wrong_domain) and commits NOTHING: no work-email change, no setter row.
+        // An incomplete address is refused without a work-email change or setter row.
         await using (var db = _fixture.CreateRetryingDb())
         {
             var refused = Assert.IsType<UnprocessableEntityObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
                 new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
-                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@elsewhere.test") }), default));
-            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be("work_email_wrong_domain");
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement("new.name@") }), default));
+            JsonSerializer.SerializeToElement(refused.Value).GetProperty("code").GetString().Should().Be("work_email_invalid_format");
         }
         await using (var verify = _fixture.CreateRetryingDb())
         {
@@ -1460,15 +1460,15 @@ public sealed class EmployeeLoginLinkTests
                 && x.Action == AccessManagementService.WorkEmailChangedAction)).Should().BeFalse();
         }
 
-        // The same-domain edit to new.name@acme… collides with another login: refused, and nothing is committed part-way.
+        // The complete external address collides with another login: nothing is committed part-way.
         await using (var db = _fixture.CreateRetryingDb())
             Assert.IsType<UnprocessableEntityObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
                 new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
-                    new() { ["workEmail"] = JsonSerializer.SerializeToElement($"new.name@{domain}") }), default));
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement(issuedEmail) }), default));
         await using (var verify = _fixture.CreateRetryingDb())
         {
             (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be(oldEmail,
-                "a refused edit must not have committed the coerced address part-way");
+                "a refused edit must not have committed the address part-way");
             (await verify.AuditLogs.IgnoreQueryFilters().AnyAsync(x => x.EntityName == "Employee" && x.EntityId == employeeId.ToString()
                 && (x.Action == AccessManagementService.WorkEmailChangedAction || x.Action == "employee.work_email_domain_coerced"))).Should().BeFalse();
         }
@@ -1484,18 +1484,17 @@ public sealed class EmployeeLoginLinkTests
         await using (var db = _fixture.CreateRetryingDb())
             Assert.IsType<OkObjectResult>(await Employees(db, w).UpdateEmployee(employeeId,
                 new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date),
-                    new() { ["workEmail"] = JsonSerializer.SerializeToElement($"new.name@{domain}") }), default));
+                    new() { ["workEmail"] = JsonSerializer.SerializeToElement(issuedEmail) }), default));
         await using (var verify = _fixture.CreateRetryingDb())
         {
-            (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be($"new.name@{domain}");
+            (await verify.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == employeeId)).WorkEmail.Should().Be(issuedEmail);
             var setter = await WorkEmailSetterRule.GetAsync(verify, w.TenantId, employeeId, default);
             setter!.ActorUserId.Should().Be(w.AdminId);
             // Atomicity of the accepted PATCH: the address and its employee.work_email_changed row committed together.
             // Metadata is a json column; compare in memory.
             (await verify.AuditLogs.IgnoreQueryFilters().Where(x => x.EntityName == "Employee" && x.EntityId == employeeId.ToString()
                     && x.Action == AccessManagementService.WorkEmailChangedAction).Select(x => x.Metadata).ToListAsync())
-                .Count(m => m != null && m.Contains($"new.name@{domain}")).Should().Be(1);
-            // A foreign domain is now refused outright (422 work_email_wrong_domain), so nothing is ever coerced.
+                .Count(m => m != null && m.Contains(issuedEmail)).Should().Be(1);
         }
     }
 

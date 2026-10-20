@@ -4,6 +4,16 @@ public record EmailAttachment(string FileName, byte[] Data, string ContentType);
 
 public interface IEmailService
 {
+    Task<EffectiveEmailSender> GetEffectiveSenderAsync(Guid tenantId, CancellationToken ct = default)
+        => Task.FromResult(new EffectiveEmailSender(false, "Unavailable", "None", null, null, "", false));
+
+    // Fail closed for implementations that do not support sender-bound delivery. In particular,
+    // older SendAsync fakes cannot fabricate accepted evidence for a managed offer.
+    Task<EmailDeliveryResult> DeliverAsync(Guid tenantId, string reviewedSenderFingerprint, string toAddress,
+        string toName, string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null,
+        CancellationToken cancellationToken = default)
+        => throw new EmailTransportException("offer_sender_binding_unavailable", false);
+
     Task SendAsync(string toAddress, string toName, string subject, string htmlBody, IReadOnlyList<EmailAttachment>? attachments = null, CancellationToken cancellationToken = default);
     /// <summary>Returns true when SMTP is configured and email delivery will be attempted.</summary>
     Task<bool> IsConfiguredAsync(CancellationToken cancellationToken = default);

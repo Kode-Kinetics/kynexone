@@ -12,7 +12,8 @@ public sealed record ParsedPolicyText(string Text, string ContentSha256);
 public static class PolicyTextParser
 {
     public const int MaxFileBytes = 20 * 1024 * 1024;
-    public const int MaxTextCharacters = 200_000;
+    public const int MaxTextCharacters = 5_000_000;
+    public const int MaxPdfPages = 2_000;
 
     public static ParsedPolicyText Extract(Stream content, string fileName, string mimeType, CancellationToken ct = default)
     {
@@ -32,13 +33,13 @@ public static class PolicyTextParser
         {
             ct.ThrowIfCancellationRequested();
             if (text.Length + value.Length + 1 > MaxTextCharacters)
-                throw new InvalidDataException("Policy text exceeds 200,000 characters. Split the document into smaller policies.");
+                throw new InvalidDataException("Policy text exceeds the 5,000,000-character limit per document.");
             text.AppendLine(value);
         }
         if (ext == ".pdf")
         {
             using var pdf = PdfDocument.Open(bytes);
-            if (pdf.NumberOfPages > 500) throw new InvalidDataException("PDF exceeds 500 pages.");
+            if (pdf.NumberOfPages > MaxPdfPages) throw new InvalidDataException("PDF exceeds 2,000 pages per document.");
             foreach (var page in pdf.GetPages()) Append(page.Text);
         }
         else if (ext == ".docx")
@@ -62,7 +63,7 @@ public static class PolicyTextParser
             while ((read = reader.Read(chars, 0, chars.Length)) > 0)
             {
                 ct.ThrowIfCancellationRequested();
-                if (text.Length + read > MaxTextCharacters) throw new InvalidDataException("Policy text exceeds 200,000 characters.");
+                if (text.Length + read > MaxTextCharacters) throw new InvalidDataException("Policy text exceeds the 5,000,000-character limit per document.");
                 text.Append(chars, 0, read);
             }
         }

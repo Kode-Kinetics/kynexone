@@ -11,6 +11,8 @@ const apiUrl =
   'http://localhost:5117';
 
 const nextConfig: NextConfig = {
+  // Isolated local QA may run beside the existing dev server without sharing its build cache.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   poweredByHeader: false,
   outputFileTracingRoot: __dirname,
   // Self-hosting (frontend/Dockerfile): emit .next/standalone/server.js with only the traced
@@ -18,6 +20,10 @@ const nextConfig: NextConfig = {
   // The /api rewrite below is resolved at BUILD time, so a self-hosted image must be built with
   // NEXT_PUBLIC_API_BASE_URL pointing at its API.
   output: 'standalone',
+  // A bounded policy section can take 90s (primary extraction + focused projection).
+  // Keep the local/self-hosted rewrite alive through that backend budget plus transport
+  // overhead. This does not extend deployment ingress limits or retry failed POSTs.
+  experimental: { proxyTimeout: 120_000 },
 
   async rewrites() {
     return [

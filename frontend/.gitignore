@@ -1,5 +1,6 @@
 .vercel
 .next
+.next-offer-designer
 *.tsbuildinfo
 .env.local
 .env.*.local

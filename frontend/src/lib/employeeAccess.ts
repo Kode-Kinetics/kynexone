@@ -195,6 +195,8 @@ export function skipReasonKey(reasonCode: string | null | undefined): string | n
 
 /** Work-email refusals the create / edit / backfill saves can return (422 `error` or `code`). */
 export const WORK_EMAIL_ERROR_KEYS: Record<string, string> = {
+  work_email_conflict: 'This email is already used by another employee.',
+  work_email_invalid_format: 'Enter the complete work email address issued by IT, for example name@company.com.',
   work_email_plus_address: "Work email can't contain '+'.",
   work_email_invalid_characters: 'Work email can only use English letters, numbers, dots, dashes and underscores before the @.',
   work_email_wrong_domain: 'Work email must end in @{domain}.',
@@ -202,8 +204,9 @@ export const WORK_EMAIL_ERROR_KEYS: Record<string, string> = {
 
 export function workEmailErrorCode(e: unknown): string | null {
   const res = (e as { response?: { status?: number; data?: { error?: string; code?: string } } })?.response;
-  if (res?.status !== 422) return null;
+  if (!res || (res.status !== 422 && res.status !== 409)) return null;
   const code = res.data?.error ?? res.data?.code;
+  if (res.status === 409 && code !== 'work_email_conflict') return null;
   return code && code in WORK_EMAIL_ERROR_KEYS ? code : null;
 }
 
@@ -222,10 +225,15 @@ export const DEFAULT_CONFLICT_KEY = 'This email is already used by another emplo
  * sentence; anything but English letters, digits, dots, dashes and underscores is refused. Returns
  * the 422 code it matches, or null. Blank is fine (a work email is optional).
  */
-export function workEmailLocalProblem(email: string | null | undefined): 'work_email_plus_address' | 'work_email_invalid_characters' | null {
+export function workEmailLocalProblem(email: string | null | undefined): 'work_email_plus_address' | 'work_email_invalid_characters' | 'work_email_invalid_format' | null {
   const value = (email ?? '').trim();
   if (!value) return null;
-  const local = value.includes('@') ? value.slice(0, value.indexOf('@')) : value;
+  if (value.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'work_email_invalid_format';
+  const [local, domain] = value.split('@');
+  if (local.length > 64 || local.startsWith('.') || local.endsWith('.') || local.includes('..') ||
+      domain.split('.').some(label => label.length > 63 || !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label))) {
+    return 'work_email_invalid_format';
+  }
   if (local.includes('+')) return 'work_email_plus_address';
   return /^[A-Za-z0-9._-]*$/.test(local) ? null : 'work_email_invalid_characters';
 }
@@ -247,14 +255,3 @@ export const BLOCKED_REASON_KEYS: Record<string, string> = {
   email_belongs_to_existing_login: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
   email_belongs_to_former_employee: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
 };
-
-/**
- * The work email typed with a domain other than the company's: refused, never quietly re-domained.
- * Returns the domain HR must use, or null when the address is fine (or has no domain yet).
- */
-export function workEmailDomainProblem(email: string | null | undefined, domain: string | null | undefined): string | null {
-  const want = (domain ?? '').trim().toLowerCase();
-  const value = (email ?? '').trim();
-  if (!want || !value.includes('@')) return null;
-  return value.slice(value.indexOf('@') + 1).toLowerCase() === want ? null : want;
-}

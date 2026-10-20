@@ -14,11 +14,16 @@ const PAGE_SIZE = 25;
  * soft-deleted) with directory + lifecycle metadata only — no salary, bank, or identity fields,
  * and no mutating affordances. Records are retained for statutory audit (7 years).
  */
-export function ExEmployeesTable() {
+interface ExEmployeesTableProps {
+  search: string;
+  page: number;
+  onSearchChange(value: string): void;
+  onPageChange(value: number): void;
+}
+
+export function ExEmployeesTable({ search, page, onSearchChange, onPageChange }: ExEmployeesTableProps) {
   const [rows, setRows] = useState<ExEmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -42,11 +47,6 @@ export function ExEmployeesTable() {
     load();
   }, [load]);
 
-  // Reset to the first page whenever the search term changes.
-  useEffect(() => {
-    setPage(1);
-  }, [search]);
-
   const fmt = (d?: string) => (d ? new Date(d).toLocaleDateString() : '-');
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -62,7 +62,7 @@ export function ExEmployeesTable() {
           <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => onSearchChange(e.target.value)}
             className="input w-full ps-9"
             placeholder="Search former employee code, name, email"
           />
@@ -120,7 +120,7 @@ export function ExEmployeesTable() {
           <div className="flex gap-1">
             <button
               type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => onPageChange(Math.max(1, page - 1))}
               disabled={page === 1}
               className="btn-secondary h-7 px-2 text-xs disabled:opacity-40"
             >
@@ -128,7 +128,7 @@ export function ExEmployeesTable() {
             </button>
             <button
               type="button"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
               disabled={page === totalPages}
               className="btn-secondary h-7 px-2 text-xs disabled:opacity-40"
             >

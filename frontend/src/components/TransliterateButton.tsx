@@ -1,6 +1,7 @@
 'use client';
 
 import type { LocaleCode } from '../i18n/translations';
+import type { TransliterateKind } from '../api/localization';
 import { useTransliterate } from '../hooks/useTransliterate';
 
 /**
@@ -17,6 +18,7 @@ export function TransliterateButton({
   onSuggest,
   className,
   label,
+  kind,
 }: {
   /** English source text to transliterate (e.g. the "Name (EN)" field value). */
   source: string;
@@ -26,12 +28,14 @@ export function TransliterateButton({
   onSuggest: (suggestion: string) => void;
   className?: string;
   label?: string;
+  /** Selects a safe context-specific suggestion strategy. */
+  kind?: TransliterateKind;
 }) {
   const { suggest, isTranslating } = useTransliterate();
   const canSuggest = source.trim().length >= 2 && !isTranslating;
 
   const handleClick = async () => {
-    const { suggestion } = await suggest(source, target);
+    const { suggestion } = await suggest(source, target, kind);
     if (suggestion) onSuggest(suggestion);
   };
 
@@ -40,7 +44,9 @@ export function TransliterateButton({
       type="button"
       disabled={!canSuggest}
       onClick={handleClick}
-      title="Suggest an Arabic transliteration from the English text. You can edit it afterwards."
+      title={kind === 'organization-label'
+        ? 'Suggest reviewed Arabic wording from the English text. You can edit it afterwards.'
+        : 'Suggest an Arabic transliteration from the English text. You can edit it afterwards.'}
       className={
         className ??
         'shrink-0 whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5'

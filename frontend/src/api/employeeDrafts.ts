@@ -1,5 +1,8 @@
 import client from './client';
 import type { EmployeeDetail } from './employees';
+import type { OfferCompensation } from './offerLifecycle';
+export interface OfferCompensationDisposition { code: string; action: string; payrollField?: string | null; processName?: string | null; reason?: string | null }
+export interface OfferCompensationHandoff { acceptedOfferId: string | null; sourceCompanyId: string | null; state: string; version: number; snapshot: OfferCompensation | null; dispositions: OfferCompensationDisposition[]; effectiveDate: string | null; confirmedAtUtc: string | null; blockers: string[]; placementCompanyId: string | null; placementProvenance: string; placementGuidance: string }
 
 /**
  * New-hire drafts: the step between an accepted offer (or a manually prepared hire) and an
@@ -18,6 +21,8 @@ export type EmployeeDraftStatus =
 export type EmployeeDraftFilter = 'awaiting' | 'open' | 'all' | EmployeeDraftStatus;
 
 export interface EmployeeDraftListItem {
+  offerPlacementProvenance?: string | null;
+  offerCompensationGuidance?: string | null;
   id: string;
   status: EmployeeDraftStatus | string;
   currentStep: string;
@@ -105,6 +110,9 @@ export interface EmployeeDraftReview {
 }
 
 export const employeeDraftsApi = {
+  offerCompensation: (id: string) => client.get<OfferCompensationHandoff>(`/api/employees/drafts/${id}/offer-compensation`).then(r => r.data),
+  saveOfferCompensation: (id: string, expectedVersion: number, dispositions: OfferCompensationDisposition[], confirm: boolean) =>
+    client.put<OfferCompensationHandoff>(`/api/employees/drafts/${id}/offer-compensation`, { expectedVersion, dispositions: dispositions.map(({ code, action, payrollField, processName, reason }) => ({ code, action, payrollField, processName, reason })), confirm }).then(r => r.data),
   list: (params: { status?: EmployeeDraftFilter; search?: string; page?: number; pageSize?: number } = {}) =>
     client.get<EmployeeDraftListResponse>('/api/employees/drafts', { params }).then((r) => r.data),
 

@@ -46,7 +46,7 @@ const contracts = [
     signedByEmployeeAtUtc: null, signedByHrName: 'HR Lead', signedByHrAtUtc: '2026-10-06T08:00:00Z', fileUrl: '', createdAtUtc: '2026-10-06T08:00:00Z', updatedAtUtc: null },
 ];
 
-async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: unknown, path = `/people?employeeId=${EMP_ID}`) {
+async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: unknown, path = `/people/${EMP_ID}?section=pay-benefits&panel=package`) {
   const confirmBodies: unknown[] = [];
   const proposeBodies: { path: string; body: unknown }[] = [];
   await page.addInitScript(([l]) => {
@@ -86,13 +86,11 @@ async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: 
     return json(p.endsWith('s') ? [] : {});
   });
   await page.goto(path);
-  if (path.startsWith('/people'))
-    await page.getByRole('button', { name: locale === 'ar' ? 'الباقة' : 'Package', exact: true }).click({ timeout: 30_000 });
   return { errors, confirmBodies, proposeBodies };
 }
 
 async function noRawCodes(page: Page) {
-  const text = await page.locator('main').innerText();
+  const text = await page.locator('main').last().innerText();
   expect(text, 'a reason code reached the screen').not.toMatch(/ENTITLEMENT_|PACKAGE_|GRADE_MISSING/);
   expect(text, 'an unfilled {placeholder} reached the screen').not.toMatch(/\{[a-z]+\}/);
 }
@@ -172,7 +170,7 @@ for (const locale of ['en', 'ar'] as const) {
     const proposeRow = page.getByTestId('contract-benefits-k-propose');
     const reviewRow = page.getByTestId('contract-benefits-k-review');
     await expect(proposeRow.getByText(T.awaiting)).toBeVisible({ timeout: 30_000 });
-    await expect(reviewRow.getByRole('link', { name: T.review })).toHaveAttribute('href', '/people?employeeId=2&tab=package');
+    await expect(reviewRow.getByRole('link', { name: T.review })).toHaveAttribute('href', '/people/2?section=pay-benefits&panel=package');
     await expect(proposeRow.getByRole('link', { name: T.review })).toHaveCount(0);
     await noRawCodes(page);
     if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/r2-register-${locale}-${test.info().project.name}.png`, fullPage: true });

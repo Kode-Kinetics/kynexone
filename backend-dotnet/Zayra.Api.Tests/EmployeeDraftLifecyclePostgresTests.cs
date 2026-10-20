@@ -487,6 +487,7 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         var accessor = new HttpContextAccessor();
         await using var scopedDb = _fixture.CreateDbWithAccessor(accessor);
         var checker = Employees(scopedDb, seeded.TenantId, Guid.NewGuid(), companies: new[] { seeded.CompanyId });
+        ((ClaimsIdentity)checker.User.Identity!).AddClaims([new Claim("permission", "employees.read"), new Claim("permission", "employees.documents")]);
         accessor.HttpContext = checker.HttpContext;
 
         Ok(await checker.GetDraft(offerDraft, CancellationToken.None)).DocumentCount.Should().Be(1);
@@ -504,6 +505,7 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         var accessor = new HttpContextAccessor();
         await using var scopedDb = _fixture.CreateDbWithAccessor(accessor);
         var checker = Employees(scopedDb, seeded.TenantId, Guid.NewGuid(), companies: new[] { seeded.CompanyId });
+        ((ClaimsIdentity)checker.User.Identity!).AddClaims([new Claim("permission", "employees.read"), new Claim("permission", "employees.documents")]);
         accessor.HttpContext = checker.HttpContext;
 
         (await checker.DownloadDocument(documentId, CancellationToken.None)).Should().NotBeOfType<FileContentResult>();
@@ -937,7 +939,7 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         return new Seeded(tenantId, company.Id, draft.Id, maker, Guid.NewGuid());
     }
 
-    private static EmployeesController Employees(
+    internal static EmployeesController Employees(
         ZayraDbContext db, Guid tenantId, Guid userId, string role = "HR Manager", Guid[]? companies = null,
         bool canApprove = true, Zayra.Api.Application.Auth.IAuditService? auditService = null,
         IDraftHireMakers? hireMakers = null)

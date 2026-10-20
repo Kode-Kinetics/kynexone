@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSetupEditorState } from './setup/SetupEditorState';
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Plus, ShieldCheck, Trash2, Building2 } from 'lucide-react';
 import { planningApi } from '../api/planning';
 import { establishmentApi, type MatrixLevelCell, type MatrixRow, type StaffingLevelDto } from '../api/establishment';
@@ -196,6 +197,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     return e.approved !== r.approvedHeadcount || e.budget !== r.monthlyBudgetAmount
       || (e.costCenterId ?? null) !== r.costCenterId || levelChangesFor(r).length > 0;
   };
+  useSetupEditorState(rows.some(isDirty) || !!newCc.code || !!newCc.name || !!pendingMode);
 
   const beginSave = (r: MatrixRow) => {
     const e = editFor(r);

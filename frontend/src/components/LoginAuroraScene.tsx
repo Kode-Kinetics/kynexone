@@ -79,6 +79,16 @@ attribute vec2 a_position;
 void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
 `;
 
+/**
+ * This scene intentionally uses GLSL ES 1.00 syntax (`attribute`,
+ * `gl_FragColor`). A WebGL2 context only accepts GLSL ES 3.00 shaders, so
+ * asking for WebGL2 first produces a driver-dependent compile failure before
+ * the existing 2D fallback can take over.
+ */
+export function loginAuroraModes(fallback: boolean) {
+  return fallback ? (['2d'] as const) : (['webgl', '2d'] as const);
+}
+
 /** The aurora field, emitted twice: 4 octaves for open space, 2 for the
  *  interior of the glass (dropping high octaves *is* a low-pass blur, and it
  *  costs three quarters less than a poisson tap set). */
@@ -685,7 +695,7 @@ export function LoginAuroraScene({
     // A canvas that has handed out a WebGL context can never hand out a 2D one,
     // so the fallback remounts the element (see the `key` below) as well as
     // narrowing the mode list.
-    modes: fallback ? (['2d'] as const) : (['webgl2', 'webgl', '2d'] as const),
+    modes: loginAuroraModes(fallback),
     // 1.5, not 2: B's per-channel refraction and A's march are both fill-rate
     // bound, and a field this soft shows nothing at 2x that it does not at 1.5x.
     maxDpr: 1.5,

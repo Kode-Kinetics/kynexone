@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KynexOne Setup Separation Prototype</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0" rel="stylesheet">
+  <style>
+    :root{--blue:#1f56e6;--blue-50:#eef4ff;--ink:#111827;--muted:#64748b;--line:#dbe3ef;--bg:#f2f6fc;--panel:#fff;--green:#0caa72}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:#dfe7f3;font-size:14px}
+    button{font:inherit;color:inherit}.material-symbols-outlined{font-size:18px;line-height:1;font-variation-settings:'OPSZ' 20,'wght' 400,'FILL' 0,'GRAD' 0}
+    .prototype-note{height:44px;display:flex;align-items:center;justify-content:center;gap:12px;background:#0f172a;color:#e2e8f0;font-size:13px}
+    .prototype-note strong{color:#fff}.shell{height:calc(100vh - 44px);min-height:740px;display:grid;grid-template-columns:242px 1fr;grid-template-rows:60px 1fr;background:var(--bg);overflow:hidden}
+    .sidebar{grid-row:1/3;background:#fff;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{height:60px;display:flex;align-items:center;padding:0 22px;border-bottom:1px solid #edf1f6;font-size:18px;font-weight:700}.brand span{color:var(--blue)}
+    .nav{padding:17px 12px;overflow:auto}.nav-label{margin:0 10px 8px;color:#64748b;font-size:10px;font-weight:700;letter-spacing:.13em}.nav-item{display:flex;align-items:center;gap:11px;width:100%;height:36px;padding:0 11px;border:0;border-radius:8px;background:transparent;color:#53627a;text-align:left}.nav-item.active{background:#eaf1ff;color:var(--blue);box-shadow:inset 3px 0 var(--blue)}.nav-item.section{margin-top:12px;color:#334155;font-size:10px;font-weight:700;letter-spacing:.11em}.profile{margin-top:auto;border-top:1px solid var(--line);padding:14px 18px}.profile b{display:block;font-size:13px}.profile small{color:var(--muted)}
+    .topbar{grid-column:2;height:60px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 26px}.search{width:min(470px,42vw);height:36px;border:1px solid var(--line);border-radius:9px;display:flex;align-items:center;gap:9px;padding:0 12px;color:#64748b}.pill{height:36px;border:1px solid var(--line);border-radius:9px;background:#fff;padding:0 12px;display:flex;align-items:center;gap:7px;color:#475569}.account{margin-left:auto}
+    .main{grid-column:2;overflow:auto;background:linear-gradient(115deg,#edf3fb 0%,#f8faff 58%,#f1f5fb 100%)}.page{padding:30px 34px 46px;min-width:850px}.page h1{font-size:26px;line-height:1.2;margin:0 0 7px;letter-spacing:-.035em}.subtitle{margin:0;color:#5f6f87;font-size:15px}
+    .slider-wrap{position:relative;margin:22px 0 20px;border-bottom:1px solid var(--line);padding-bottom:14px}.slider{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:0 38px}.slider::-webkit-scrollbar{display:none}.slider button{flex:0 0 auto;height:40px;border:0;border-radius:9px;background:#f7f9fc;padding:0 14px;display:flex;align-items:center;gap:8px;font-weight:600;color:#405069}.slider button.active{background:var(--blue);color:#fff;box-shadow:0 6px 14px #1f56e633}.slider-arrow{position:absolute;top:0;width:32px;height:40px;border:1px solid var(--line);border-radius:9px;background:#fff;display:grid;place-items:center;z-index:2}.slider-arrow.left{left:0}.slider-arrow.right{right:0}
+    .workspace{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 1px 2px #0f172a08;min-height:560px;overflow:hidden}.workspace-head{height:68px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:12px}.workspace-head .context{font-size:12px;color:#64748b}.workspace-head .actions{margin-left:auto;display:flex;gap:8px}.btn{height:38px;padding:0 15px;border-radius:9px;border:1px solid var(--line);background:#fff;font-weight:600;color:#4b5b72}.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 4px 10px #1f56e630}
+    .guide-layout{display:grid;grid-template-columns:285px 1fr;min-height:570px}.guided-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;margin-bottom:16px}.progress-step{min-height:54px;border:1px solid var(--line);border-radius:9px;padding:9px;background:#fff;color:#64748b;font-size:11px;line-height:1.25}.progress-step b{display:flex;align-items:center;gap:6px;color:#405069;font-size:12px}.progress-step i{width:20px;height:20px;border:1px solid #cbd5e1;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:10px}.progress-step.active{background:#e8efff;border-color:#a9c1ff}.progress-step.active b{color:var(--blue)}.progress-step.active i{background:var(--blue);border-color:var(--blue);color:#fff}
+    .guide-main{padding:20px 24px}.company-banner{height:62px;border:1px solid #b8ceff;border-radius:11px;background:#f7faff;display:flex;align-items:center;padding:0 18px;gap:11px}.company-banner .change{margin-left:auto}.badge{margin-left:auto;border-radius:999px;background:#dbe8ff;color:var(--blue);padding:6px 10px;font-size:11px;font-weight:700}.guide-main h2{font-size:21px;margin:20px 0}.policy{border:1px solid #a9c4ff;border-radius:11px;background:#f7faff;display:flex;align-items:center;padding:16px 18px;gap:12px}.policy .policy-actions{margin-left:auto;display:flex;gap:8px}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px 20px;margin-top:18px}.field label{display:block;margin-bottom:7px;font-weight:600;color:#405069}.input{height:39px;border:1px solid #d5deeb;border-radius:8px;display:flex;align-items:center;padding:0 12px;color:#334155;background:#fff}.input.placeholder{color:#8794a8}.help{margin-top:6px;color:#74839a;font-size:11px;line-height:1.35}.guide-footer{display:flex;align-items:center;margin-top:20px;padding-top:16px;border-top:1px solid var(--line);color:#718198}.guide-footer .btn{margin-left:auto}
+    .maintenance-workspace{min-height:570px}.maintenance-layout{display:grid;grid-template-columns:285px 1fr;min-height:570px}.area-menu{border-right:1px solid var(--line);background:#fbfcfe;padding:14px 16px;max-height:calc(100vh - 330px);min-height:570px;overflow-y:auto;scrollbar-gutter:stable}.area-title{padding:6px 10px 9px;font-weight:700;color:#334155}.menu-group{padding:12px 10px 5px;color:#8390a4;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}.area-menu button{display:flex;align-items:center;width:100%;min-height:40px;border:0;border-radius:9px;background:transparent;padding:7px 12px;text-align:left;color:#405069;font-weight:500;line-height:1.25}.area-menu button.active{background:#e5edff;color:var(--blue);font-weight:700}.area-menu button .material-symbols-outlined{margin-left:auto;font-size:16px;flex:0 0 auto}.setup-map{max-height:690px}.maintenance-main{padding:26px 28px}.maintenance-top{padding-bottom:20px;border-bottom:1px solid var(--line)}.maintenance-top h2{font-size:23px;margin:0 0 8px}.maintenance-top p{margin:0;color:#65758d}.maintenance-context{margin:16px 0 0;color:#65758d;line-height:1.55}.section-kicker{margin:20px 0 10px;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase}.reference-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:18px}.types{border:1px solid var(--line);border-radius:12px;overflow:hidden}.types-head{display:flex;align-items:center;padding:13px 14px;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;color:#64748b}.types-head .btn{margin-left:auto;height:32px}.type{height:45px;border:0;border-bottom:1px solid #edf1f6;background:#fff;width:100%;padding:0 14px;display:flex;align-items:center}.type.active{background:#e9f0ff;color:var(--blue);font-weight:700}.type span:last-child{margin-left:auto}.data-head{display:flex;align-items:center;margin-bottom:10px}.data-head h3{margin:0;font-size:18px}.data-head small{display:block;color:#77869b;margin-top:3px}.data-head .btn{margin-left:auto}.table{border:1px solid var(--line);border-radius:12px;overflow:hidden}.row{display:grid;grid-template-columns:1fr 1.2fr 1fr .55fr .75fr .8fr;align-items:center;min-height:48px;padding:0 16px;border-bottom:1px solid #edf1f6}.row:last-child{border-bottom:0}.row.head{min-height:40px;background:#f8fafc;color:#5f6f87;font-size:11px;font-weight:700}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#6d7d94}.status{display:inline-flex;align-items:center;gap:5px;color:var(--green);background:#e9fbf4;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:700;width:max-content}.dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+    .hidden{display:none!important}
+    @media(max-width:1100px){.shell{grid-template-columns:190px 1fr}.sidebar .nav-item{font-size:12px}.page{padding-inline:22px}.maintenance-layout{grid-template-columns:240px 1fr}.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.reference-layout{grid-template-columns:230px 1fr}.row{grid-template-columns:1fr 1.2fr .7fr .7fr}.row>*:nth-child(3),.row>*:nth-child(4){display:none}}
+  </style>
+</head>
+<body>
+  <div class="prototype-note"><strong>Prototype only — no production changes</strong><span>Use the top slider to compare first-time setup with ongoing administration.</span></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">Kynex<span>One</span></div>
+      <div class="nav">
+        <div class="nav-label">OVERVIEW</div>
+        <button class="nav-item"><span class="material-symbols-outlined">speed</span>Dashboard</button>
+        <button class="nav-item"><span class="material-symbols-outlined">apartment</span>Group Overview</button>
+        <button class="nav-item"><span class="material-symbols-outlined">account_circle</span>Self-Service</button>
+        <button class="nav-item section">HR &amp; TIME</button><button class="nav-item section">FINANCE &amp; TALENT</button><button class="nav-item section">INSIGHTS &amp; REPORTS</button>
+        <button class="nav-item section">ADMINISTRATION</button>
+        <button class="nav-item"><span class="material-symbols-outlined">verified_user</span>Compliance Profiles</button>
+        <button class="nav-item"><span class="material-symbols-outlined">account_balance</span>Tax Policies</button>
+        <button class="nav-item"><span class="material-symbols-outlined">headset_mic</span>Request Center</button>
+        <button class="nav-item"><span class="material-symbols-outlined">check_box</span>Approvals</button>
+        <button class="nav-item"><span class="material-symbols-outlined">key</span>User Management</button>
+        <button class="nav-item"><span class="material-symbols-outlined">shield</span>Saudi Compliance</button>
+        <button class="nav-item"><span class="material-symbols-outlined">description</span>GOSI Filing</button>
+        <button class="nav-item"><span class="material-symbols-outlined">tune</span>Tenant Admin</button>
+        <button class="nav-item active"><span class="material-symbols-outlined">manage_accounts</span>Setup</button>
+        <button class="nav-item"><span class="material-symbols-outlined">database</span>Opening Balances</button>
+      </div>
+      <div class="profile"><b>Zack Khan</b><small>Admin</small></div>
+    </aside>
+    <header class="topbar"><div class="search"><span class="material-symbols-outlined">search</span>Search employees, payroll, approvals...</div><button class="pill"><span class="material-symbols-outlined">language</span>EN</button><button class="pill"><span class="material-symbols-outlined">apartment</span>Evostel Policy Shadow — Local</button><button class="pill account">Zack Khan · Admin</button></header>
+    <main class="main">
+      <div class="page">
+        <h1>Setup &amp; Administration</h1>
+        <p class="subtitle">Set up a new organization once, then maintain its configuration whenever your business changes.</p>
+        <div class="slider-wrap">
+          <button class="slider-arrow left" aria-label="Scroll setup menu left" onclick="slideMenu(-1)"><span class="material-symbols-outlined">chevron_left</span></button>
+          <div class="slider" id="setupSlider">
+            <button class="active" data-view="guided" onclick="showView('guided',this)"><span class="material-symbols-outlined">wand_stars</span>Setup Studio</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">upload</span>Import organization</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">account_balance</span>Cost Centres &amp; Budget</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">apartment</span>Companies</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">conversion_path</span>Branches</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">layers</span>Departments</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">sell</span>Designations</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">workspace_premium</span>Grades</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">database</span>Employee Reference Lists</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">tag</span>Numbering</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">settings</span>System Settings</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">public</span>GCC Settings</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">verified_user</span>Statutory Rules</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">calendar_month</span>Fiscal Years</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">location_on</span>Locations</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">account_balance</span>GL &amp; rates</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">notifications</span>Notifications</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">mail</span>Email / SMTP</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">assignment</span>Audit Logs</button>
+            <button data-view="maintenance" onclick="showView('maintenance',this)"><span class="material-symbols-outlined">policy</span>Policy library</button>
+          </div>
+          <button class="slider-arrow right" aria-label="Scroll setup menu right" onclick="slideMenu(1)"><span class="material-symbols-outlined">chevron_right</span></button>
+        </div>
+
+        <section id="guidedView" class="workspace">
+          <div class="workspace-head"><div><b>Draft storage details</b><div class="context">First-time organization setup · Draft only until reviewed and applied</div></div><div class="actions"><button class="btn">Save for later</button><button class="btn">Policy library / updates</button><button class="btn">Cancel setup</button></div></div>
+          <div class="guide-layout">
+            <aside class="area-menu setup-map" aria-label="Complete setup configuration map">
+              <div class="area-title">Configuration map</div>
+              <div class="menu-group">Business and people</div>
+              <button class="active">Organization and core HR<span class="material-symbols-outlined">chevron_right</span></button>
+              <button>Recruitment<span class="material-symbols-outlined">chevron_right</span></button><button>Onboarding and confirmation<span class="material-symbols-outlined">chevron_right</span></button><button>Time and attendance<span class="material-symbols-outlined">chevron_right</span></button><button>Leave and absence<span class="material-symbols-outlined">chevron_right</span></button><button>Compensation and benefits<span class="material-symbols-outlined">chevron_right</span></button><button>Payroll<span class="material-symbols-outlined">chevron_right</span></button><button>Performance and talent<span class="material-symbols-outlined">chevron_right</span></button><button>Learning and development<span class="material-symbols-outlined">chevron_right</span></button><button>Employee services and relations<span class="material-symbols-outlined">chevron_right</span></button><button>Offboarding and settlement<span class="material-symbols-outlined">chevron_right</span></button><button>Compliance and statutory administration<span class="material-symbols-outlined">chevron_right</span></button>
+              <div class="menu-group">Platform administration</div>
+              <button>Access, roles and approvals<span class="material-symbols-outlined">chevron_right</span></button><button>System, localization and numbering<span class="material-symbols-outlined">chevron_right</span></button><button>Communications and notifications<span class="material-symbols-outlined">chevron_right</span></button><button>Data import and opening balances<span class="material-symbols-outlined">chevron_right</span></button><button>Integrations and connected services<span class="material-symbols-outlined">chevron_right</span></button><button>Policy, audit and governance<span class="material-symbols-outlined">chevron_right</span></button>
+            </aside>
+            <div class="guide-main">
+              <div class="guided-progress" aria-label="Guided setup progress">
+                <div class="progress-step active"><b><i>1</i>Company details</b>Organization foundation</div><div class="progress-step"><b><i>2</i>Working week</b>Time and leave</div><div class="progress-step"><b><i>3</i>People &amp; pay</b>Pay and approvals</div><div class="progress-step"><b><i>4</i>Grades &amp; benefits</b>Rewards structure</div><div class="progress-step"><b><i>5</i>Review &amp; create</b>Validate and apply</div>
+              </div>
+              <div class="company-banner"><span class="material-symbols-outlined" style="color:var(--blue)">apartment</span><div><b>Setting up Evostel Policy Shadow — Local</b><div class="context">SA · SAR · Protected company scope</div></div><button class="btn change">Change company</button><span class="badge">Group admin · Company setup</span></div>
+              <h2>Start with your company</h2>
+              <div class="policy"><span class="material-symbols-outlined" style="color:var(--blue)">description</span><div><b>Start from your existing HR policy</b><div class="context">Upload a whole HR binder or add its chapters as separate documents.</div></div><div class="policy-actions"><button class="btn primary">Add your HR policy</button><button class="btn">How this works</button></div></div>
+              <div class="form-grid">
+                <div class="field"><label>Legal entity name *</label><div class="input">Evostel Policy Shadow — Local</div><div class="help">Locked to the company selected for this setup.</div></div>
+                <div class="field"><label>Industry *</label><div class="input placeholder">e.g. Construction, Retail, Healthcare</div></div>
+                <div class="field"><label>Country *</label><div class="input">Saudi Arabia</div><div class="help">Used to propose statutory defaults and public holidays.</div></div>
+                <div class="field"><label>Currency *</label><div class="input">SAR</div><div class="help">Every salary band is drafted in this currency.</div></div>
+                <div class="field"><label>Company size</label><div class="input">51-200 employees</div></div>
+                <div class="field"><label>Suggested head office city</label><div class="input placeholder">e.g. Riyadh</div></div>
+                <div class="field"><label>Working language</label><div class="input">English</div></div>
+                <div class="field"><label>Time zone</label><div class="input">Match the country</div><div class="help">Used for dates and times across your workspace.</div></div>
+              </div>
+              <div class="guide-footer"><span>Step 1 of 5</span><button class="btn primary">Continue →</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="maintenanceView" class="workspace maintenance-workspace hidden">
+          <div class="maintenance-layout">
+            <aside class="area-menu">
+              <div class="area-title">Workspace overview</div>
+              <div class="menu-group">Business and people</div>
+              <button class="active">Organization and core HR<span class="material-symbols-outlined">chevron_right</span></button>
+              <button>Recruitment<span class="material-symbols-outlined">chevron_right</span></button><button>Onboarding and confirmation<span class="material-symbols-outlined">chevron_right</span></button><button>Time and attendance<span class="material-symbols-outlined">chevron_right</span></button><button>Leave and absence<span class="material-symbols-outlined">chevron_right</span></button><button>Compensation and benefits<span class="material-symbols-outlined">chevron_right</span></button><button>Payroll<span class="material-symbols-outlined">chevron_right</span></button><button>Performance and talent<span class="material-symbols-outlined">chevron_right</span></button><button>Learning and development<span class="material-symbols-outlined">chevron_right</span></button><button>Employee services and relations<span class="material-symbols-outlined">chevron_right</span></button><button>Offboarding and settlement<span class="material-symbols-outlined">chevron_right</span></button><button>Compliance and statutory administration<span class="material-symbols-outlined">chevron_right</span></button>
+              <div class="menu-group">Platform administration</div>
+              <button>Access, roles and approvals<span class="material-symbols-outlined">chevron_right</span></button><button>System, localization and numbering<span class="material-symbols-outlined">chevron_right</span></button><button>Communications and notifications<span class="material-symbols-outlined">chevron_right</span></button><button>Data import and opening balances<span class="material-symbols-outlined">chevron_right</span></button><button>Integrations and connected services<span class="material-symbols-outlined">chevron_right</span></button><button>Policy, audit and governance<span class="material-symbols-outlined">chevron_right</span></button>
+            </aside>
+            <div class="maintenance-main">
+              <div class="maintenance-top"><h2>Organization and core HR</h2><p>Company structure, employee reference lists, employment records and contracts.</p><div class="maintenance-context">This workspace is for ongoing administration after setup. Each setting opens directly, keeps its own Save action, and never reruns the initial setup wizard.</div></div>
+              <div class="section-kicker">Employee Reference Lists · Tenant-wide controls</div>
+              <div class="reference-layout">
+                <div class="types"><div class="types-head">TYPES <button class="btn primary">+ New</button></div><button class="type">Contract Type<span>›</span></button><button class="type active">Employment Type<span>›</span></button><button class="type">Gender<span>›</span></button><button class="type">Marital Status<span>›</span></button></div>
+                <div><div class="data-head"><div><h3>Employment Type</h3><small>EmploymentType</small></div><button class="btn primary">+ Add Value</button></div><div class="table"><div class="row head"><span>CODE</span><span>VALUE (EN)</span><span>VALUE (AR)</span><span>SORT</span><span>DEFAULT</span><span>STATUS</span></div><div class="row"><span class="code">FULL_TIME</span><b>Full-Time</b><span>دوام كامل</span><span>1</span><span class="badge">Default</span><span class="status"><i class="dot"></i>Active</span></div><div class="row"><span class="code">PART_TIME</span><b>Part-Time</b><span>دوام جزئي</span><span>2</span><span>—</span><span class="status"><i class="dot"></i>Active</span></div><div class="row"><span class="code">CONTRACT</span><b>Contract</b><span>عقد</span><span>3</span><span>—</span><span class="status"><i class="dot"></i>Active</span></div><div class="row"><span class="code">TEMPORARY</span><b>Temporary</b><span>مؤقت</span><span>4</span><span>—</span><span class="status"><i class="dot"></i>Active</span></div></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script>
+    function showView(view,button){document.querySelectorAll('.slider button[data-view]').forEach(b=>b.classList.remove('active'));button.classList.add('active');document.getElementById('guidedView').classList.toggle('hidden',view!=='guided');document.getElementById('maintenanceView').classList.toggle('hidden',view!=='maintenance');}
+    function slideMenu(direction){document.getElementById('setupSlider').scrollBy({left:direction*520,behavior:'smooth'});}
+  </script>
+</body>
+</html>

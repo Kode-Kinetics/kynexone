@@ -139,12 +139,19 @@ public class RecruitmentService : IRecruitmentService
 
     // ── Onboarding conversion ──────────────────────────────────────────────────
 
-    public async Task<OfferAcceptanceResult> AcceptOfferAsync(
+    public Task<OfferAcceptanceResult> AcceptOfferAsync(
         Guid tenantId,
         Guid offerId,
         Guid requestedByUserId,
         string performedByName,
-        CancellationToken ct = default)
+        CancellationToken ct = default) => AcceptOfferCoreAsync(tenantId, offerId, requestedByUserId, performedByName, null, ct);
+
+    internal Task<OfferAcceptanceResult> AcceptOfferResponseAsync(OfferActor actor, Guid offerId,
+        OfferResponseRequest response, CancellationToken ct) =>
+        AcceptOfferCoreAsync(actor.TenantId, offerId, actor.UserId, actor.Name, response, ct);
+
+    private async Task<OfferAcceptanceResult> AcceptOfferCoreAsync(Guid tenantId, Guid offerId,
+        Guid requestedByUserId, string performedByName, OfferResponseRequest? response, CancellationToken ct)
     {
         // One statement, so one snapshot. Reading the offer and then the application separately let a
         // concurrent acceptance commit in between: the loser saw a Sent offer on a Hired application
@@ -257,13 +264,41 @@ public class RecruitmentService : IRecruitmentService
                 var tx = await _db.Database.BeginTransactionAsync(ct);
                 try
                 {
+                    var lockedApp = await OfferApplicationBoundary.LockAsync(_db, tenantId, app.CompanyId, app.Id, ct);
+                    var currentOffer = await _db.OfferLetters.AsNoTracking()
+                        .SingleOrDefaultAsync(o => o.Id == offerId && o.TenantId == tenantId && o.CompanyId == app.CompanyId, ct);
+                    if (lockedApp is null || currentOffer is null)
+                    {
+                        await tx.RollbackAsync(ct);
+                        outcome = Result(OfferAcceptanceOutcome.NotFound, offerId, app.Id, null, "Offer not found.");
+                        return;
+                    }
+                    if (currentOffer.Status == "Accepted" && lockedApp.OnboardingDraftId.HasValue)
+                    {
+                        await tx.RollbackAsync(ct);
+                        outcome = await ResolveReplayAsync(tenantId, offerId, ct);
+                        return;
+                    }
+                    if (response is not null && currentOffer.Status != "Accepted")
+                    {
+                        OfferApplicationBoundary.RequireVersion(currentOffer, response.ExpectedVersion);
+                        await OfferLifecycleService.RequireResponseEligibleAsync(_db, currentOffer, lockedApp, response, ct);
+                    }
+                    var blocked = AcceptanceBlocked(currentOffer, lockedApp);
+                    if (blocked is not null)
+                    {
+                        await tx.RollbackAsync(ct);
+                        outcome = Result(OfferAcceptanceOutcome.InvalidOfferState, offerId, app.Id, null, blocked);
+                        return;
+                    }
                     if (!recoveringLegacyAcceptance)
                     {
                         var offerWon = await _db.OfferLetters
                             .Where(o => o.Id == offerId && o.TenantId == tenantId && o.Status == "Sent")
                             .ExecuteUpdateAsync(setters => setters
                                 .SetProperty(o => o.Status, "Accepted")
-                                .SetProperty(o => o.AcceptedAtUtc, DateTime.UtcNow), ct);
+                                .SetProperty(o => o.Version, o => o.Version + 1)
+                                .SetProperty(o => o.AcceptedAtUtc, response == null ? DateTime.UtcNow : response.OccurredAtUtc), ct);
 
                         if (offerWon != 1)
                         {
@@ -280,6 +315,7 @@ public class RecruitmentService : IRecruitmentService
                             && a.Status == (recoveringLegacyAcceptance ? "Hired" : "Active"))
                         .ExecuteUpdateAsync(setters => setters
                             .SetProperty(a => a.OnboardingDraftId, draft.Id)
+                            .SetProperty(a => a.Version, a => a.Version + 1)
                             .SetProperty(a => a.Stage, "Hired")
                             .SetProperty(a => a.StageOrder, 6)
                             .SetProperty(a => a.Status, "Hired")
@@ -305,8 +341,11 @@ public class RecruitmentService : IRecruitmentService
                             throw new InvalidOperationException("The job opening disappeared during offer acceptance.");
                     }
 
+                    CaptureAcceptedCompensation(draft, currentOffer);
                     AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
                         draft, recoveringLegacyAcceptance);
+                    if (response is not null && !recoveringLegacyAcceptance)
+                        OfferLifecycleService.AddResponseEvent(_db, new(tenantId, currentOffer.CompanyId, requestedByUserId, performedByName), currentOffer, response);
                     await _db.SaveChangesAsync(ct);
                     await tx.CommitAsync(ct);
 
@@ -322,6 +361,7 @@ public class RecruitmentService : IRecruitmentService
                     // Never let a failing rollback mask the original error: the strategy has to
                     // see the real exception to classify it as transient. Dispose still releases.
                     try { await tx.RollbackAsync(CancellationToken.None); } catch { /* connection already gone */ }
+                    _db.ChangeTracker.Clear();
                     throw;
                 }
                 finally
@@ -343,6 +383,14 @@ public class RecruitmentService : IRecruitmentService
         if (trackedOffer.Status == "Accepted" && trackedApp.OnboardingDraftId.HasValue)
             return Result(OfferAcceptanceOutcome.AlreadyAccepted, offerId, app.Id, trackedApp.OnboardingDraftId,
                 "Offer was already accepted; the existing onboarding draft was returned.");
+        if (response is not null && trackedOffer.Status != "Accepted")
+        {
+            OfferApplicationBoundary.RequireVersion(trackedOffer, response.ExpectedVersion);
+            await OfferLifecycleService.RequireResponseEligibleAsync(_db, trackedOffer, trackedApp, response, ct);
+        }
+        var blockedInMemory = AcceptanceBlocked(trackedOffer, trackedApp);
+        if (blockedInMemory is not null)
+            return Result(OfferAcceptanceOutcome.InvalidOfferState, offerId, app.Id, null, blockedInMemory);
         if (!recoveringLegacyAcceptance && (trackedOffer.Status != "Sent" || trackedApp.Status != "Active"))
             return Result(OfferAcceptanceOutcome.InvalidOfferState, offerId, app.Id, trackedApp.OnboardingDraftId,
                 "Offer or application state changed before acceptance.");
@@ -352,18 +400,23 @@ public class RecruitmentService : IRecruitmentService
         if (!recoveringLegacyAcceptance)
         {
             trackedOffer.Status = "Accepted";
-            trackedOffer.AcceptedAtUtc = DateTime.UtcNow;
+            trackedOffer.Version++;
+            trackedOffer.AcceptedAtUtc = response?.OccurredAtUtc ?? DateTime.UtcNow;
             trackedOpening.FilledCount++;
             if (trackedOpening.FilledCount >= trackedOpening.HeadCount) trackedOpening.Status = "Closed";
         }
         trackedApp.Stage = "Hired";
+        trackedApp.Version++;
         trackedApp.StageOrder = 6;
         trackedApp.Status = "Hired";
         trackedApp.HiredAtUtc ??= DateTime.UtcNow;
         trackedApp.StageChangedAtUtc ??= DateTime.UtcNow;
         trackedApp.OnboardingDraftId = draft.Id;
+        CaptureAcceptedCompensation(draft, trackedOffer);
         AddAcceptanceRecords(tenantId, offerId, app.Id, requestedByUserId, performedByName,
             draft, recoveringLegacyAcceptance);
+        if (response is not null && !recoveringLegacyAcceptance)
+            OfferLifecycleService.AddResponseEvent(_db, new(tenantId, trackedOffer.CompanyId, requestedByUserId, performedByName), trackedOffer, response);
         await _db.SaveChangesAsync(ct);
         return Result(
             recoveringLegacyAcceptance ? OfferAcceptanceOutcome.AlreadyAccepted : OfferAcceptanceOutcome.Accepted,
@@ -371,6 +424,35 @@ public class RecruitmentService : IRecruitmentService
             recoveringLegacyAcceptance
                 ? "Recovered the existing accepted offer's missing onboarding draft."
                 : "Offer accepted and onboarding started.");
+    }
+
+    private static void CaptureAcceptedCompensation(EmployeeDraft draft, OfferLetter offer)
+    {
+        draft.AcceptedOfferId = offer.Id;
+        draft.AcceptedOfferCompanyId = offer.CompanyId;
+        draft.AcceptedOfferCompensationJson = offer.CompensationSnapshotJson;
+        draft.OfferCompensationVersion = 1;
+        draft.Salary = offer.BasicSalary;
+        draft.JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+    }
+
+    private static string? AcceptanceBlocked(OfferLetter offer, JobApplication app)
+    {
+        if (app.OfferReservationId is not null)
+            return "This application has an unresolved offer delivery. Cancel or reconcile it before recording a response.";
+        if (offer.Status != "Accepted" && (offer.SupersededAtUtc is not null
+            || (app.CurrentIssuedOfferId is not null && app.CurrentIssuedOfferId != offer.Id)))
+            return "This offer is no longer the current issued revision.";
+        if (offer.SeriesId is not null && offer.Status != "Accepted")
+        {
+            if (offer.SupersededAtUtc is not null || app.CurrentIssuedOfferId != offer.Id)
+                return "This offer is no longer the current issued revision.";
+            if (offer.ResponseDeadline is null || offer.ResponseDeadline <= DateTime.UtcNow)
+                return "The frozen offer response deadline has passed. Create a revision to extend it.";
+            if (offer.FrozenAtUtc is null || offer.ArtifactId is null)
+                return "The original offer document has not been finalized.";
+        }
+        return null;
     }
 
     private void AddAcceptanceRecords(

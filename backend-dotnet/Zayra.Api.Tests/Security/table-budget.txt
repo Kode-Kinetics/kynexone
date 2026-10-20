@@ -239,7 +239,15 @@ NotificationTemplates
 Notifications
 NumberingRules
 OfferApprovals
+# OFR — managed offer lifecycle: revisions, immutable history, frozen PDFs, leased delivery, company policy, templates
+OfferArtifacts
+OfferCompanyPolicies
+OfferDispatchAttempts
+OfferDispatches
+OfferLetterTemplates
 OfferLetters
+OfferLifecycleEvents
+OfferSeries
 OnboardingChecklistTemplateTasks
 OnboardingChecklists
 OnboardingTasks

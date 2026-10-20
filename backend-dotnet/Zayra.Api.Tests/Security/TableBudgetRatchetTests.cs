@@ -123,7 +123,15 @@ public class TableBudgetRatchetTests
         // (potential + performance snapshot, generated 9-box cell, immutable once calibrated), SuccessionSlateVersions
         // (immutable hashed snapshots, approval-routed), DevelopmentPlans and DevelopmentPlanActions (linked to
         // learning_assignments / EmployeeGoal). Retention: 3 years after employment ends, then anonymised (SuccessionRetentionJob).
-        DeclaredDbSets().Should().HaveCount(366,
+        // OFR — managed offer lifecycle (docs/superpowers/plans/2026-10-19-offer-lifecycle.md; owner HR / recruitment).
+        // Seven tables, 366 -> 373. offer_letters keeps one row per revision, but nothing existing could hold:
+        // OfferSeries (revision numbering per application), OfferLifecycleEvents (immutable who/why/when history,
+        // trigger-guarded), OfferArtifacts (frozen PDF hash, size and storage key: proof of exactly what was issued),
+        // OfferDispatches + OfferDispatchAttempts (idempotent, leased email delivery and per-attempt outcome evidence),
+        // OfferCompanyPolicies (per-company currency precision and required pay components) and OfferLetterTemplates
+        // (reusable letter designs). Retention: kept with the job application; removed by whole-tenant erasure
+        // (OfferArtifactErasure). No per-candidate retention job yet — P2 follow-up.
+        DeclaredDbSets().Should().HaveCount(373,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

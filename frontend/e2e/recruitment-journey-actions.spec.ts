@@ -41,7 +41,7 @@ test.describe('Recruitment — hire journey actions', () => {
     expect(HIRE_THROUGH_OFFER_HINT).toMatch(/accept the offer/i);
   });
 
-  test('approved and unapproved-draft offers can be sent, from both places that send', () => {
+  test('approved and unapproved-draft offers open the lifecycle workspace from both entry points', () => {
     expect(canSendOffer('Draft')).toBe(true);
     expect(canSendOffer('Approved')).toBe(true);
     for (const status of ['PendingApproval', 'Sent', 'Accepted', 'Declined', 'Expired']) {
@@ -49,11 +49,16 @@ test.describe('Recruitment — hire journey actions', () => {
     }
 
     const source = recruitmentPage();
-    // The drawer's Send also waits for the API's verdict for this user (approval, maker-checker).
-    expect(source).toContain('{canSendOffer(offer.status) && approvalContext?.canSend && (');
-    expect(source).toContain('{canSendOffer(o.status) && (');
-    // The Offers tab surfaces a refusal (e.g. "an approver rejected this offer") instead of swallowing it.
-    expect(source).toMatch(/try \{ await offersApi\.send\(id\); load\(\); \} catch \(e\) \{ notifyApiError\(e\); \}/);
+    // The application drawer and the offer register both open the same revision workspace.
+    expect(source).toContain('navigationGuard.push(offerWorkspacePath(offer.id))');
+    expect(source).toContain('navigationGuard.push(offerWorkspacePath(created.id))');
+    expect(source).toContain('<OfferHistoryRegister key={companyVersion} />');
+    const workspace = read('src/components/recruitment/OfferWorkspace.tsx');
+    expect(workspace).toContain("allowed('issue') &&");
+    expect(workspace).toContain('<OfferSendDialog');
+    const send = read('src/components/recruitment/OfferSendDialog.tsx');
+    expect(send).toContain("t('Send email')");
+    expect(send).toContain("t('Record external sending')");
   });
 
   test('an offer shows the one approval step the signed-in user can take', () => {

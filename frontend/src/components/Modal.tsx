@@ -12,6 +12,8 @@ interface ModalProps {
   footer?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'wizard';
   headerContent?: React.ReactNode;
+  closeDisabled?: boolean;
+  closeLabel?: string;
 }
 
 const sizeClass = {
@@ -22,15 +24,20 @@ const sizeClass = {
   wizard: 'max-w-4xl',
 };
 
-export function Modal({ isOpen, title, onClose, children, footer, headerContent, size = 'md' }: ModalProps) {
+export function Modal({ isOpen, title, onClose, children, footer, headerContent, size = 'md', closeDisabled = false, closeLabel = 'Close' }: ModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
+  const closeDisabledRef = useRef(closeDisabled);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    closeDisabledRef.current = closeDisabled;
+  }, [closeDisabled]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -45,7 +52,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
       if (dialogs.item(dialogs.length - 1) !== dialogRef.current) return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        onCloseRef.current();
+        if (!closeDisabledRef.current) onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !dialogRef.current) return;
@@ -54,7 +61,11 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
         )
       ).filter((item) => !item.hasAttribute('aria-hidden') && !item.closest('[inert]') && item.getClientRects().length > 0);
-      if (focusable.length === 0) return;
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (e.shiftKey && document.activeElement === first) {
@@ -88,7 +99,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-midnight/55 backdrop-blur-md"
-        onClick={onClose}
+        onClick={() => { if (!closeDisabled) onClose(); }}
         aria-hidden="true"
       />
 
@@ -98,6 +109,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        tabIndex={-1}
         className={`relative flex w-full ${sizeClass[size]} max-h-[calc(100vh-1rem)] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-[#f8fbff] shadow-[0_26px_70px_rgba(15,23,42,0.28),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/5 dark:border-white/10 dark:bg-[#0D1221] dark:shadow-[0_28px_80px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)] dark:ring-white/5`}
       >
         {/* Header */}
@@ -107,7 +119,8 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
             ref={closeButtonRef}
             type="button"
             onClick={onClose}
-            aria-label="Close"
+            disabled={closeDisabled}
+            aria-label={closeLabel}
             className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200/80 bg-white text-slate-400 shadow-[0_4px_12px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] transition hover:-translate-y-px hover:text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:hover:text-white"
           >
             <X className="h-4 w-4" />

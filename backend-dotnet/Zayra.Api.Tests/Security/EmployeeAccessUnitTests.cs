@@ -66,18 +66,15 @@ public sealed class EmployeeAccessUnitTests
         WorkEmailPlusAddressException.IsPlusAddressed(email).Should().Be(plus);
 
     [Fact]
-    public void Resolve_NeverSavesADerivedAddress_AndRefusesAWrongDomain()
+    public void Resolve_NeverSavesADerivedAddress_AndPreservesAnIssuedExternalAddress()
     {
         static bool NotTaken(string _) => false;
         WorkEmailDeriver.Resolve("", "Noah Williams", null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out var outcome, out _)
             .Should().BeEmpty();
         outcome.Should().Be("blank");
         WorkEmailDeriver.Suggest("Noah Williams", null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken).Should().Be("noah.williams@acme.sa");
-        WorkEmailDeriver.Resolve("noah", null, null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out _, out _).Should().Be("noah@acme.sa");
-        var wrong = Assert.Throws<WorkEmailRejectedException>(() =>
-            WorkEmailDeriver.Resolve("noah@gmail.com", null, null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out _, out _));
-        wrong.Code.Should().Be("work_email_wrong_domain");
-        wrong.Message.Should().Be("Work email must end in @acme.sa.");
+        WorkEmailDeriver.Resolve("noah@gmail.com", null, null, "acme.sa", WorkEmailPatterns.FirstLast, NotTaken, out _, out _)
+            .Should().Be("noah@gmail.com");
     }
 
     [Fact]
@@ -97,8 +94,9 @@ public sealed class EmployeeAccessUnitTests
 
         EmployeeAccessStates.Evaluate(F(email: ""), now).State.Should().Be(EmployeeAccessStates.WaitingForWorkEmail);
         EmployeeAccessStates.Evaluate(F(), now).State.Should().Be(EmployeeAccessStates.NotStarted);
-        EmployeeAccessStates.Evaluate(F(domain: ""), now).BlockedCode.Should().Be("company_email_domain_missing");
-        EmployeeAccessStates.Evaluate(F(email: "a@other.sa"), now).BlockedCode.Should().Be("work_email_wrong_domain");
+        EmployeeAccessStates.Evaluate(F(domain: ""), now).State.Should().Be(EmployeeAccessStates.NotStarted);
+        EmployeeAccessStates.Evaluate(F(email: "a@other.sa"), now).State.Should().Be(EmployeeAccessStates.NotStarted);
+        EmployeeAccessStates.Evaluate(F(email: "a"), now).BlockedCode.Should().Be("work_email_invalid_format");
         EmployeeAccessStates.Evaluate(F(owner: "email_belongs_to_existing_login"), now).State.Should().Be(EmployeeAccessStates.Blocked);
         EmployeeAccessStates.Evaluate(F(link: activeLink, login: activeLogin), now).State.Should().Be(EmployeeAccessStates.Active);
         EmployeeAccessStates.Evaluate(F(link: liveCodeLink, login: activeLogin), now).State.Should().Be(EmployeeAccessStates.CodeGiven, "a live reset code outranks active");

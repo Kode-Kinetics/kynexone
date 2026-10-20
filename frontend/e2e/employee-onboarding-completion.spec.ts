@@ -57,6 +57,7 @@ async function boot(page: Page, options: Options = {}) {
       companies: [{ id: company.id, name: company.legalNameEn, code: 'TEST', countryCode: 'SA', isActive: true }],
     });
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
+    if (path === '/api/admin/master-data/values') return reply([]);
     if (path === '/api/companies') return reply(paged([company]));
     if (['/api/branches', '/api/departments', '/api/designations', '/api/grades', '/api/organization/cost-centers'].includes(path)) return reply(paged([]));
     if (path === '/api/employees/field-catalog') return reply({ countryCode: 'SA', fields: [] });
@@ -95,16 +96,13 @@ async function boot(page: Page, options: Options = {}) {
     if (path.includes('/features/') || path === '/api/notifications' || path.endsWith('/documents') || path.endsWith('/history') || path.endsWith('/pay-scale')) return reply([]);
     return reply(paged([]));
   });
-  await page.goto(isEmployee ? '/ess/onboarding' : '/people');
-  await expect(page).toHaveURL(isEmployee ? /\/ess\/onboarding(?:\?|$)/ : /\/people(?:\?|$)/);
+  await page.goto(isEmployee ? '/ess/onboarding' : '/people/901?section=access-onboarding');
+  await expect(page).toHaveURL(isEmployee ? /\/ess\/onboarding(?:\?|$)/ : /\/people\/901\?section=access-onboarding/);
   await expect(page).not.toHaveTitle('');
   if (isEmployee) await expect(page.getByRole('heading', { name: 'My employee details', exact: true })).toBeVisible();
   else {
-    await page.getByRole('button', { name: 'Open profile for Alex Morgan', exact: true }).click();
-    const dialog = page.getByRole('dialog').filter({ hasText: 'Alex Morgan' });
-    await dialog.getByRole('button', { name: 'Open full profile', exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Close employee profile', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Alex Morgan', exact: true })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Employee record sections' })).toBeVisible();
   }
   return { errors, calls, advisoryProbes, profileSubmissions, uploads };
 }
@@ -143,6 +141,7 @@ for (const decision of ['approve', 'reject'] as const) {
     expect(calls).toHaveLength(0);
     await action.click();
     await expect(handoff.getByRole('status')).toHaveText(decision === 'approve' ? 'Employee details approved' : 'Returned to employee for correction');
+    await page.getByRole('navigation', { name: 'Employee record sections' }).getByRole('link', { name: 'Personal', exact: true }).click();
     const preferredName = page.locator('dl > div').filter({ has: page.locator('dt').filter({ hasText: /^Preferred name$/ }) });
     await expect(preferredName.getByRole('definition')).toHaveText(decision === 'approve' ? 'Alex submitted' : 'Alex');
     expect(calls).toEqual([{ path: `/api/ess/profile-change-requests/${requestId}/${decision}`, method: 'POST', body: { notes: 'Please verify the contact details.' } }]);

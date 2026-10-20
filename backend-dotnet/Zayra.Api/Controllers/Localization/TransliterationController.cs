@@ -31,14 +31,22 @@ public class TransliterationController : ControllerBase
         var text = req?.Text ?? string.Empty;
         var kind = string.IsNullOrWhiteSpace(req?.Kind) ? "generic" : req.Kind.Trim();
         var personName = string.Equals(kind, "person-name", StringComparison.OrdinalIgnoreCase);
-        if (!personName && !string.Equals(kind, "generic", StringComparison.OrdinalIgnoreCase))
-            return BadRequest(new { error = "unsupported_transliteration_kind", message = "Choose generic or person-name suggestions." });
+        var organizationLabel = string.Equals(kind, "organization-label", StringComparison.OrdinalIgnoreCase);
+        if (!personName && !organizationLabel && !string.Equals(kind, "generic", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "unsupported_transliteration_kind", message = "Choose generic, person-name, or organization-label suggestions." });
         if (personName)
         {
             if (text.Length > 200)
                 return BadRequest(new { error = "person_name_too_long", message = "Personal names must be 200 characters or fewer." });
             var personSuggestion = _svc.ToArabicPersonName(text);
             return Ok(new { suggestion = personSuggestion, requiresManualEntry = string.IsNullOrEmpty(personSuggestion) });
+        }
+        if (organizationLabel)
+        {
+            if (text.Length > 200)
+                return BadRequest(new { error = "organization_label_too_long", message = "Organization labels must be 200 characters or fewer." });
+            var organizationSuggestion = _svc.ToArabicOrganizationLabel(text);
+            return Ok(new { suggestion = organizationSuggestion, requiresManualEntry = string.IsNullOrEmpty(organizationSuggestion) });
         }
 
         if (text.Length > 200) text = text[..200]; // bound the work; names are short

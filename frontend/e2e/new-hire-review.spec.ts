@@ -94,7 +94,7 @@ test.describe('New hires — the screen uses those rules', () => {
     expect(source).toContain('nextDraftAction(row)');
     expect(source).toContain('approveDisabledReason(');
     expect(source).toContain('rejectionReasonError(reason)');
-    expect(source).toContain('disabled={!!deciding || !!disabledReason}');
+    expect(source).toContain('disabled={!!deciding || handoffBusy || !!disabledReason}');
   });
 
   test('a load failure renders an error with a retry, not "nothing waiting"', () => {
