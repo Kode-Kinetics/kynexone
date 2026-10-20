@@ -4778,10 +4778,6 @@ public partial class PayrollController : ControllerBase
             // together. A separate save would let the chain record a reopen the transaction abandoned.
             await PayrollAudit("payroll.run.reopened", "PayrollRun", id.ToString(), payload, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            // 5. The days the run had paid and that changed since are recomputed now that it no longer pays them (the
-            //    coverage check reads the saved Draft status and deleted slips), in this transaction: the re-run then
-            //    deducts what each day says now, not what the reopened run had deducted.
-            await svc.RecomputeUnpaidAttendanceAsync(tenantId, id, opState, cancellationToken);
             await tx.CommitAsync(cancellationToken);
         });
 

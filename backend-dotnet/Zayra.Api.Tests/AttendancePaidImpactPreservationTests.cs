@@ -309,68 +309,108 @@ public sealed class AttendancePaidImpactVoidRestorePostgresTests
     public AttendancePaidImpactVoidRestorePostgresTests(PostgresFixture fx) => _fx = fx;
 
     [Fact]
-    public async Task AfterReprocessingAPaidDay_ReopeningTheRun_RecomputesTheDay_SoTheReRunDeductsWhatTheDayNowSays()
+    public async Task AfterReprocessingAPaidDay_ReopeningTheRun_LeavesTheFlagOpen_TheReRunIsRefusedUntilTheDayIsRecomputed()
     {
-        // Paid: 20 late minutes. After payroll the In punch moves to 09:50 (40 late minutes) and HR reprocesses: the
-        // paid impact stays at 20 and a flag is raised. Reopening the run used to release the impact AS PAID (20) and
-        // close the flag saying the day "is recomputed" when nothing recomputed it, so the re-run deducted 20.
-        var (tenantId, employeeId, run) = await SeedPaidLateDayAsync();
-        await ReprocessWithInPunchAtAsync(tenantId, employeeId, 9, 50);
+        // Paid at 20 late minutes through the real Process. After payroll the In punch moves to 09:50 (40 late minutes)
+        // and HR reprocesses: the paid impact stays at 20 and a flag is raised. Reopening releases the impact AS PAID (20)
+        // and recomputes nothing (that was unbounded inside the reopen's transaction); the re-run must not deduct 20.
+        var k = await AttendancePayrollPostgresKit.CreateAsync(_fx.CreateDb);
+        var punchIn = await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 9, 30), "In", processed: false);
+        await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 18, 0), "Out", processed: false);
+        await ProcessAttendanceAsync(k);
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
+        (await k.ImpactsAsync()).Should().ContainSingle().Which.Status.Should().Be("Processed", "premise: paid");
 
-        await using (var db = _fx.CreateDb())
+        await using (var db = k.NewContext())
         {
-            var kit = await GlPostingKit.CreateAsync(_fx.CreateDb, tenantId);
-            (await kit.Payroll(db).ReopenRun(run.Id, new Zayra.Api.Controllers.PayrollReasonRequest("punch corrected after payroll"), default))
-                .Should().BeOfType<OkObjectResult>();
+            (await db.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.Id == punchIn.Id)).PunchTimestampUtc =
+                AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 9, 50);
+            await db.SaveChangesAsync();
         }
+        await ProcessAttendanceAsync(k);
+        (await OpenFlagCountAsync(k)).Should().Be(1, "premise: the paid day is flagged");
 
-        await using var verify = _fx.CreateDb();
-        var impacts = await verify.AttendancePayrollImpacts.IgnoreQueryFilters().Where(x => x.TenantId == tenantId).ToListAsync();
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).ReopenRun(k.Run.Id, new Zayra.Api.Controllers.PayrollReasonRequest("punch corrected after payroll"), default))
+                .Should().BeOfType<OkObjectResult>();
+        (await OpenFlagCountAsync(k)).Should().Be(1, "the reopen recomputes nothing, so it cannot claim the day matches");
+        (await k.ImpactsAsync()).Should().ContainSingle().Which.Minutes.Should().Be(20, "released as paid");
+
+        await using (var db = k.NewContext())
+        {
+            var refused = (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+            AttendancePayrollPostgresKit.Prop<string>(refused.Value!, "code").Should().Be(AttendanceImpactReconciliation.StaleCode,
+                "a released impact carries the paid minutes, not what the day says now");
+        }
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).RecomputeStaleAttendance(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
+
+        var impacts = await k.ImpactsAsync();
         impacts.Should().ContainSingle("one late deduction for the day, never the paid one plus a new one");
-        impacts[0].Status.Should().Be("PendingPayroll", "the reopened run no longer pays the day");
-        impacts[0].Minutes.Should().Be(40, "the re-run must deduct what the day says now, not what the undone run paid");
-        var flag = await verify.AttendanceExceptions.IgnoreQueryFilters()
-            .SingleAsync(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged);
-        flag.IsResolved.Should().BeTrue("the day was recomputed, so nothing is left for a payroll adjustment");
+        impacts[0].Status.Should().Be("PendingPayroll");
+        impacts[0].Minutes.Should().Be(40, "the re-run deducts what the day says now");
+        (await OpenFlagCountAsync(k)).Should().Be(0, "the recompute closed the flag: nothing is left for a payroll adjustment");
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
-    public async Task AfterAPaidDayBecomesAbsent_VoidingTheRun_RaisesTheAbsenceForTheReplacementRun()
+    public async Task AfterAPaidDayBecomesAbsent_VoidingTheRun_LeavesItForTheReplacementRunsCheck_WhichRaisesTheAbsence()
     {
-        Guid tenantId;
-        int employeeId;
-        var run = new PayrollRun { Year = 2026, Month = 8, Status = "Processed", IncludesRecurringPay = true };
-        await using (var db = _fx.CreateDb())
+        var k = await AttendancePayrollPostgresKit.CreateAsync(_fx.CreateDb);
+        await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 9, 0), "In", processed: false);
+        await k.PunchAsync(AttendancePayrollPostgresKit.Utc(AttendancePayrollPostgresKit.Day, 18, 0), "Out", processed: false);
+        await ProcessAttendanceAsync(k); // a clean day: no impacts
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
+
+        // Both punches were another employee's: the paid day is now Absent. Flagged, not deducted.
+        await using (var db = k.NewContext())
+            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == k.TenantId).ExecuteDeleteAsync();
+        await ProcessAttendanceAsync(k);
+        (await k.ImpactsAsync()).Should().BeEmpty("premise: paid");
+        (await OpenFlagCountAsync(k)).Should().Be(1);
+
+        await using (var db = k.NewContext())
+            (await new PayrollVoidService(db).VoidAsync(k.Run.Id, k.TenantId, null, "test", "wrong punches", default)).IsVoided.Should().BeTrue();
+        (await OpenFlagCountAsync(k)).Should().Be(1, "the void recomputes nothing");
+
+        PayrollRun replacement;
+        await using (var db = k.NewContext())
         {
-            tenantId = await PostgresFixture.SeedMinimalTenant(db);
-            employeeId = AttendancePaidImpactPreservationTests.AddEmployee(db, tenantId).Id;
-            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "In", 9, 0);
-            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "Out", 18, 0);
-            await db.SaveChangesAsync();
-            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId); // a clean day: no impacts
-            run.TenantId = tenantId;
-            db.PayrollRuns.Add(run);
-            db.PayrollSlips.Add(new PayrollSlip { TenantId = tenantId, RunId = run.Id, EmployeeId = employeeId, Status = "Processed" });
+            replacement = new PayrollRun
+            {
+                TenantId = k.TenantId, CompanyId = k.Company.Id, Year = k.Run.Year, Month = k.Run.Month, Status = "Draft", IncludesRecurringPay = true,
+            };
+            db.PayrollRuns.Add(replacement);
             await db.SaveChangesAsync();
         }
-        await using (var db = _fx.CreateDb())
-        {
-            // Both punches were another employee's: the paid day is now Absent. Flagged, not deducted.
-            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == tenantId).ExecuteDeleteAsync();
-            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId);
-            (await db.AttendancePayrollImpacts.IgnoreQueryFilters().AnyAsync(x => x.TenantId == tenantId)).Should().BeFalse("premise: paid");
-        }
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).Process(replacement.Id, default)).Should().BeOfType<UnprocessableEntityObjectResult>()
+                .Which.Value.Should().Match(v => AttendancePayrollPostgresKit.Prop<string>(v!, "code") == AttendanceImpactReconciliation.StaleCode);
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).RecomputeStaleAttendance(replacement.Id, default)).Should().BeOfType<OkObjectResult>();
 
-        await using (var db = _fx.CreateDb())
-            (await new PayrollVoidService(db).VoidAsync(run.Id, tenantId, null, "test", "wrong punches", default)).IsVoided.Should().BeTrue();
-
-        await using var verify = _fx.CreateDb();
-        var absence = await verify.AttendancePayrollImpacts.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId);
+        var absence = (await k.ImpactsAsync()).Should().ContainSingle().Subject;
         absence.ImpactType.Should().Be(AttendanceImpactTypes.AbsenceDeduction, "the voided run paid a day that was not worked");
         absence.Status.Should().Be("PendingPayroll");
-        (await verify.AttendanceExceptions.IgnoreQueryFilters()
-                .SingleAsync(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged))
-            .IsResolved.Should().BeTrue();
+        (await OpenFlagCountAsync(k)).Should().Be(0);
+    }
+
+    private static async Task ProcessAttendanceAsync(AttendancePayrollPostgresKit k)
+    {
+        await using var db = k.NewContext();
+        await AttendanceService.ForRecompute(db).ProcessAsync(k.TenantId,
+            new ProcessAttendanceRequest(AttendancePayrollPostgresKit.Day, AttendancePayrollPostgresKit.Day, k.Employee.Id),
+            new RequestContext(null, null, Guid.NewGuid(), k.TenantId), default);
+    }
+
+    private static async Task<int> OpenFlagCountAsync(AttendancePayrollPostgresKit k)
+    {
+        await using var db = k.NewContext();
+        return await db.AttendanceExceptions.IgnoreQueryFilters().CountAsync(x => x.TenantId == k.TenantId
+            && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved);
     }
 
     [Fact]

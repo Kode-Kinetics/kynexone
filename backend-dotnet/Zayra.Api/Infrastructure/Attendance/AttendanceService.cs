@@ -888,9 +888,10 @@ public class AttendanceService : IAttendanceService
     public static AttendanceService ForRecompute(ZayraDbContext db) => new(db, RecomputeOnlyNotifications.Instance, RecomputeOnlyHttpClients.Instance);
 
     /// <summary>
-    /// Recomputes exactly the given employee-days with the day processor every punch path uses. Inside the caller's open
-    /// transaction (a payroll void or reopen) every day's lock is taken in that transaction and held until it commits;
-    /// without one, each day is its own transaction, like a range run. Days are taken in the global lock order (employee,
+    /// Recomputes exactly the given employee-days with the day processor every punch path uses. Each day is its own
+    /// transaction under its lock, like a range run, and the change tracker is cleared after every day, so any number of
+    /// days holds one lock and one day's rows at a time. It must not be called inside a caller's transaction (that would
+    /// hold every day's lock until commit). Days are taken in the global lock order (employee,
     /// then date), so no cycle can form with a punch or a range run. A payroll-locked day is skipped. Any non-deleted
     /// employee is recomputed (a Suspended or Offboarded employee's final month too, as a correction approval does).
     /// </summary>
@@ -901,6 +902,9 @@ public class AttendanceService : IAttendanceService
         RequestContext context, string reason, CancellationToken ct, IReadOnlySet<(int EmployeeId, DateOnly WorkDate)>? impactsOnly = null)
     {
         if (days.Count == 0) return 0;
+        if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("Recompute attendance days outside a transaction: each day commits on its own.");
+        _db.ChangeTracker.Clear();
         var employeeIds = days.Select(d => d.EmployeeId).Distinct().ToList();
         var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, RecomputeEmployeeJustification).AsNoTracking()
             .Where(e => employeeIds.Contains(e.Id) && !e.IsDeleted).ToListAsync(ct);
@@ -928,8 +932,10 @@ public class AttendanceService : IAttendanceService
                     await _db.SaveChangesAsync(ct);
                     done = true;
                 }, ct);
+                _db.ChangeTracker.Clear();
                 if (done) recomputed.Add(new { employeeId = employee.Id, workDate = day, impactsOnly = impactsOnly?.Contains((employee.Id, day)) == true });
             }
+            _db.ChangeTracker.Clear();
         }
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", "days",
             JsonSerializer.Serialize(new { reason, days = recomputed }), ct);

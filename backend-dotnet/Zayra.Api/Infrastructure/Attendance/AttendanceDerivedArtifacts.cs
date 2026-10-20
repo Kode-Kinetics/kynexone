@@ -118,8 +118,8 @@ public static class AttendanceDerivedArtifacts
     /// <para>The exception's lifecycle (no schema change: its signature is a tag in <c>Details</c>): one open exception
     /// per day, re-worded as the difference changes; closed automatically when the day matches what was paid again;
     /// never re-raised for a difference HR already resolved (that would invite a second adjustment), but raised again
-    /// when the difference changes; and, when the run that paid the day is voided or reopened, closed by the recompute of
-    /// the day that the void or reopen runs (<c>PayrollVoidService.RecomputeUnpaidAttendanceAsync</c>), once the day's
+    /// when the difference changes; and, when the run that paid the day is voided or reopened, left open by the undo and
+    /// closed by the next recompute of the day (the stale-attendance recompute the next Process asks for), once the day's
     /// deductions are pending again with what it now says.</para>
     /// </summary>
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the

@@ -160,14 +160,14 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
      - Once HR has resolved a difference, **the same difference is not raised again**, so nobody makes a second
        adjustment for it. A *different* difference opens a new exception. The signature is stored as a `[sig:…]`
        tag at the end of `details`, and automatic closes are marked `[auto-resolved: …]`.
-     - **Voiding or reopening** the run recomputes every day with an open exception in the month it covered, in the
-       same transaction. That recompute is what closes the exception: the day's deductions are pending again, with
-       what the day says now.
+     - **Voiding or reopening** the run leaves these exceptions open and recomputes nothing. The released impacts
+       carry the minutes that were **paid**, so the next Process of the month refuses with
+       `ERR_ATTENDANCE_IMPACT_STALE`. **Recompute these days** then recomputes each day in its own transaction and
+       closes its exception: the day's deductions are pending again, with what the day says now.
    - **Known gap:** the application has no screen or endpoint to resolve an attendance exception yet. Until one
      exists, HR's "resolve" is a manual, audited data correction.
-   - **If the run is later voided or reopened**, days with an open exception are recomputed automatically (above).
-     Any other pending impact that no longer matches its day blocks the next Process with
-     `ERR_ATTENDANCE_IMPACT_STALE` (see "Payroll's attendance check" below).
+   - **If the run is later voided or reopened**, every released impact that no longer matches its day blocks the next
+     Process with `ERR_ATTENDANCE_IMPACT_STALE` until it is recomputed (see "Payroll's attendance check" below).
 4. **Unpaid periods** (every affected impact is still `PendingPayroll` and no payroll run covers the dates yet):
    repair with a **range run over D..D+1 for the one employee**. Use `POST /api/attendance/process` (or
    `process/async`) with body `{ "fromDate": "<D>", "toDate": "<D+1>", "employeeId": <id> }`.
