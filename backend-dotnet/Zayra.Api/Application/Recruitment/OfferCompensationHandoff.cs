@@ -152,6 +152,8 @@ public static class OfferCompensationHandoff
             problems.Add("Compensation confirmation is missing or stale. Review the current placement, date and dispositions and confirm again.");
         return new(problems, fingerprint, problems.Count > 0 ? null : new(
             amounts["BasicSalary"], amounts["HousingAllowance"], amounts["TransportAllowance"], amounts["FoodAllowance"],
-            amounts["MobileAllowance"], amounts["OtherAllowance"], 0m, draft.PayrollProfileCode, date, snapshot.Currency));
+            // No structure code: the offer names none, and draft.PayrollProfileCode is the payroll GROUP — passing it
+            // here put hires on a structure named after their payroll group. Blank → the grade's / direct default.
+            amounts["MobileAllowance"], amounts["OtherAllowance"], 0m, null, date, snapshot.Currency));
     }
 }
