@@ -29,14 +29,38 @@ public class SelfRequestedApprovalTests
     private static readonly DateOnly Today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
 
     [Fact]
-    public async Task TheRequesterIsToldWhy_AndThatNobodyElseCanApprove_WhenTheyAreTheOnlyAdmin()
+    public async Task ASoleAdmin_IsRefusedAtSubmission_WithTheRoleToFill_AndNothingIsQueued()
     {
+        // Before: the request was created and sat for ever, marked "nobody else can approve it". Now nobody but the
+        // requester could ever decide it, so it is refused up front (422) naming the role to fill — maker-checker
+        // unchanged: the requester still cannot approve their own change.
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
         var employee = await AddEmployeeAsync(db, tenant);
 
+        var result = await SubmitRawAsync(db, tenant, requester, employee.Id, "salary", 15000);
+
+        var refused = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        JsonSerializer.Serialize(refused.Value).Should().Contain("Nobody can approve this yet").And.Contain("HR Manager");
+        (await db.ApprovalRequests.CountAsync()).Should().Be(0);
+        (await db.EmployeeChangeRequests.SingleAsync()).Status.Should().Be(EmployeeChangeStatuses.Cancelled,
+            "no change may linger as PendingApproval with no approval behind it");
+        (await db.Employees.SingleAsync()).Salary.Should().Be(10000m, "a refused change is never applied");
+    }
+
+    [Fact]
+    public async Task TheRequesterIsToldWhy_AndThatNobodyElseCanApprove_WhenTheOtherApproverLeavesAfterSubmission()
+    {
+        await using var db = CreateDb();
+        var (tenant, adminRole) = await SeedTenantAsync(db);
+        var requester = await AddUserAsync(db, tenant, adminRole);
+        var colleague = await AddUserAsync(db, tenant, adminRole);
+        var employee = await AddEmployeeAsync(db, tenant);
+
         await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
+        (await db.Users.SingleAsync(u => u.Id == colleague)).IsActive = false;
+        await db.SaveChangesAsync();
         var item = await SingleListedAsync(db, tenant, requester);
 
         item.CanDecide.Should().BeFalse("maker-checker is unchanged");
@@ -69,10 +93,10 @@ public class SelfRequestedApprovalTests
         await AddUserAsync(db, tenant, adminRole, isActive: false);
         var employee = await AddEmployeeAsync(db, tenant);
 
-        await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
-        var item = await SingleListedAsync(db, tenant, requester);
+        var result = await SubmitRawAsync(db, tenant, requester, employee.Id, "salary", 15000);
 
-        item.DecisionBlockedReason.Should().Contain("No other active user can approve it");
+        result.Should().BeOfType<UnprocessableEntityObjectResult>("an inactive admin cannot decide, so nobody could");
+        (await db.ApprovalRequests.CountAsync()).Should().Be(0);
     }
 
     [Fact]
@@ -99,6 +123,7 @@ public class SelfRequestedApprovalTests
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
+        await AddUserAsync(db, tenant, adminRole);   // someone else can decide it
         var employee = await AddEmployeeAsync(db, tenant);
 
         var first = await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
@@ -116,6 +141,7 @@ public class SelfRequestedApprovalTests
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
+        await AddUserAsync(db, tenant, adminRole);   // someone else can decide it
         var employee = await AddEmployeeAsync(db, tenant);
 
         await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
@@ -130,6 +156,7 @@ public class SelfRequestedApprovalTests
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
+        await AddUserAsync(db, tenant, adminRole);   // someone else can decide it
         var employee = await AddEmployeeAsync(db, tenant);
 
         await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
@@ -147,6 +174,7 @@ public class SelfRequestedApprovalTests
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
+        await AddUserAsync(db, tenant, adminRole);   // someone else can decide it
         var employee = await AddEmployeeAsync(db, tenant);
 
         await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
@@ -223,12 +251,15 @@ public class SelfRequestedApprovalTests
 
     private static async Task<object> SubmitAsync(ZayraDbContext db, Guid tenant, Guid user, int employeeId, string field, object value)
     {
-        var result = await CreateController(db, tenant, user).UpdateEmployee(
+        var result = await SubmitRawAsync(db, tenant, user, employeeId, field, value);
+        return result.Should().BeOfType<AcceptedResult>().Subject.Value!;
+    }
+
+    private static Task<IActionResult> SubmitRawAsync(ZayraDbContext db, Guid tenant, Guid user, int employeeId, string field, object value) =>
+        CreateController(db, tenant, user).UpdateEmployee(
             employeeId,
             new EmployeeUpdateRequest(Today, new() { [field] = JsonSerializer.SerializeToElement(value) }),
             CancellationToken.None);
-        return result.Should().BeOfType<AcceptedResult>().Subject.Value!;
-    }
 
     private static ApprovalWorkflowService Service(ZayraDbContext db) => new(db, new AuditService(db));
 

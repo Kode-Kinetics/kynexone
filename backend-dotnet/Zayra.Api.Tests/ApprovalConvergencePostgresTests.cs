@@ -73,6 +73,9 @@ public sealed class ApprovalConvergencePostgresTests
         };
         db.AddRange(leaveType, manager, hr);
         await db.SaveChangesAsync();
+        // The line manager and the HR manager can sign in (routing only sends a step to someone who can act).
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, hrUserId, "HR Manager");
 
         var employee = new Employee
         {

@@ -12,7 +12,10 @@ public record ApprovalWorkflowDto(
     IReadOnlyCollection<ApprovalWorkflowStepDto> Steps,
     Guid? DepartmentId = null,
     Guid? GradeId = null,
-    bool IsDefault = false);
+    bool IsDefault = false,
+    // On create/update only: steps nobody could decide today (a role with no active holder, a named approver
+    // with no active login). The save still succeeds; requests are refused or moved to the Admin queue until fixed.
+    IReadOnlyList<string>? Warnings = null);
 
 public record ApprovalWorkflowStepDto(
     Guid Id,

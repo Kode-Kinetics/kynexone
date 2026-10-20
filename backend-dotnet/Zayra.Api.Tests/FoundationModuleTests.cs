@@ -29,6 +29,9 @@ public class FoundationModuleTests
         var managerContext = new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Manager"], []);
         var hrContext = new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["HR Manager"], []);
 
+        // Each step's role has an active holder (routing refuses a request nobody could decide).
+        foreach (var deciderRole in new[] { "Manager", "HR Manager", "Payroll Manager" }) await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, deciderRole);
+
         var request = await service.CreateRequestAsync(tenantId, new CreateApprovalRequest(workflow.Id, "EmployeeTransferRequest", "TR-1", "Transfer Sara"), requesterContext, CancellationToken.None);
         var afterManager = await service.DecideAsync(tenantId, request.Id, new ApprovalDecisionRequest("Approve", "ok"), managerContext, CancellationToken.None);
         var afterHr = await service.DecideAsync(tenantId, request.Id, new ApprovalDecisionRequest("Approve", "ok"), hrContext, CancellationToken.None);
@@ -52,6 +55,9 @@ public class FoundationModuleTests
         var requesterId = Guid.NewGuid();
         var requesterContext = new RequestContext("127.0.0.1", "tests", requesterId, tenantId, ["HR Manager"], []);
 
+        // Each step's role has an active holder (routing refuses a request nobody could decide).
+        foreach (var deciderRole in new[] { "Manager", "HR Manager", "Payroll Manager" }) await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, deciderRole);
+
         var request = await service.CreateRequestAsync(tenantId, new CreateApprovalRequest(workflow.Id, "SetupChange", "S-1", "Apply setup"), requesterContext, CancellationToken.None);
         var act = async () => await service.DecideAsync(tenantId, request.Id, new ApprovalDecisionRequest("Approve", "self"), requesterContext, CancellationToken.None);
 
@@ -70,6 +76,8 @@ public class FoundationModuleTests
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
         var service = new ApprovalWorkflowService(db, new AuditService(db));
+        // Each step's role has an active holder (routing refuses a request nobody could decide).
+        foreach (var deciderRole in new[] { "Manager", "HR Manager", "Payroll Manager" }) await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, deciderRole);
         var request = await service.CreateRequestAsync(tenantId, new CreateApprovalRequest(workflow.Id, "Payroll", "P-1", "Approve payroll"), new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["HR Officer"], []), CancellationToken.None);
 
         var act = async () => await service.DecideAsync(tenantId, request.Id, new ApprovalDecisionRequest("Approve", "wrong role"), new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["HR Manager"], []), CancellationToken.None);
@@ -89,6 +97,8 @@ public class FoundationModuleTests
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
         var service = new ApprovalWorkflowService(db, new AuditService(db));
+        // Each step's role has an active holder (routing refuses a request nobody could decide).
+        foreach (var deciderRole in new[] { "Manager", "HR Manager", "Payroll Manager" }) await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, deciderRole);
         var request = await service.CreateRequestAsync(tenantId, new CreateApprovalRequest(workflow.Id, "Any", "A-1", "Any approval"), new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Employee"], []), CancellationToken.None);
 
         var act = async () => await service.DecideAsync(tenantId, request.Id, new ApprovalDecisionRequest("Maybe", "invalid"), new RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId, ["Manager"], []), CancellationToken.None);

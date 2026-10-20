@@ -105,7 +105,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         _db.ApprovalWorkflows.Add(workflow);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("approval.workflow_created", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null, cancellationToken);
-        return workflow.ToDto();
+        return workflow.ToDto() with { Warnings = await UndecidableStepWarningsAsync(tenantId, workflow, cancellationToken) };
     }
 
     public async Task<ApprovalWorkflowDto?> UpdateWorkflowAsync(Guid tenantId, Guid id, ApprovalWorkflowRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -136,7 +136,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         Apply(workflow, request, tenantId);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("approval.workflow_updated", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null, cancellationToken);
-        return workflow.ToDto();
+        return workflow.ToDto() with { Warnings = await UndecidableStepWarningsAsync(tenantId, workflow, cancellationToken) };
     }
 
     public async Task<PagedResult<ApprovalRequestDto>> GetRequestsAsync(Guid tenantId, string? status, string? entityName, int page, int pageSize, CancellationToken cancellationToken)
@@ -490,11 +490,17 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             {
                 approval.CurrentStepOrder = hrStep.StepOrder;
                 await RouteCurrentStepAsync(approval, hrStep, cancellationToken);
+                firstStep = hrStep;
             }
         }
+        // Nobody at all could decide it ⇒ refused here (typed 422), before anything is written. The routed
+        // approver cannot act but Admin/approvals.override can ⇒ it goes to that queue, audited below.
+        var overrideRouting = await EnsureSomeoneCanDecideAsync(approval, firstStep, atCreate: true, currentDeciderUserId: null, cancellationToken);
         _db.ApprovalRequests.Add(approval);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null, cancellationToken);
+        if (overrideRouting is not null)
+            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
         return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
@@ -590,6 +596,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             throw new InvalidOperationException($"Current step requires approver role '{step.ApproverRole}'.");
 
         var normalizedDecision = requestedDecision.Equals("Reject", StringComparison.OrdinalIgnoreCase) ? "Rejected" : "Approved";
+        string? overrideRouting = null;
         var approvalDecision = new ApprovalDecision
         {
             TenantId = tenantId,
@@ -657,6 +664,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                     $"step {step.StepOrder} is not final and no step follows it.");
             approval.CurrentStepOrder = nextStep.StepOrder;
             await RouteCurrentStepAsync(approval, nextStep, cancellationToken);
+            // Mid-chain the earlier approval stands: a next step nobody can decide moves to the override queue.
+            overrideRouting = await EnsureSomeoneCanDecideAsync(approval, nextStep, atCreate: false, context.UserId, cancellationToken);
         }
 
         try
@@ -677,6 +686,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
         await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
             JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
+        if (overrideRouting is not null)
+            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
         // SUC: after the commit, the slate's own audit row and the decision notice to its submitter. No-op for anything else.
         await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.AfterCommitAsync(_db, _audit, _http?.HttpContext?.RequestServices, approval,
             normalizedDecision, context, cancellationToken);
@@ -700,6 +711,39 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         foreach (var role in roles)
             if (!matches.Any(x => x.Name.ToUpper() == role && x.Permissions.Contains("employees.approve") && x.Permissions.Contains("approvals.decide")))
                 throw new InvalidOperationException($"Benefit approver role '{role}' must be active and hold both employees.approve and approvals.decide. Configure the role's authority before using it in this workflow.");
+    }
+
+    /// <summary>
+    /// One sentence per step nobody could decide today: a Role or HR step whose role has no active holder, or a
+    /// SpecificEmployee step whose employee has no active login. Person steps resolved through the reporting
+    /// lines (manager, department head...) depend on each employee and are checked when a request is routed.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> UndecidableStepWarningsAsync(Guid tenantId, ApprovalWorkflow workflow, CancellationToken ct)
+    {
+        var warnings = new List<string>();
+        foreach (var step in workflow.Steps.OrderBy(x => x.StepOrder))
+        {
+            var type = string.IsNullOrWhiteSpace(step.ApproverType) ? "ROLE" : step.ApproverType.Trim().ToUpperInvariant();
+            var roleName = Clean(step.ApproverRole);
+            ResolvedApprover? approver = type switch
+            {
+                "ROLE" => new ResolvedApprover("Role", roleName, null, null, string.Empty, false),
+                "HR" => new ResolvedApprover("HR", ApprovalRouter.HrManagerRole, null, null, string.Empty, false),
+                "SPECIFICEMPLOYEE" when step.SpecificEmployeeId is int employeeId =>
+                    await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted)
+                        .Select(e => new ResolvedApprover("SpecificEmployee", roleName, e.Id, e.UserAccountId, e.FullName, false))
+                        .FirstOrDefaultAsync(ct),
+                _ => null,
+            };
+            if (approver is null) continue;
+            var check = await _router.CheckDeciderAsync(tenantId, approver, Array.Empty<Guid>(), null, ct);
+            if (check.Eligible) continue;
+            var label = $"Step {step.StepOrder} ('{Clean(step.StepName)}')";
+            warnings.Add(check.NamedPerson
+                ? $"{label} goes to {check.Owner}, who has no active login. Give them a login, or name someone else."
+                : $"{label} goes to the {check.Owner} role, which no active user holds. Assign someone to {check.Owner} in User Management, or change the step.");
+        }
+        return warnings;
     }
 
     internal static void EnsureRoleStepsNameARole(ApprovalWorkflowRequest request)
@@ -788,6 +832,59 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         approval.CurrentApproverName = approver.Name;
         if (string.IsNullOrWhiteSpace(approval.CurrentApproverRole)) approval.CurrentApproverRole = approver.QueueRole;
         approval.CurrentQueue = $"{approval.CurrentApproverType}:{approver.Name}";
+    }
+
+    /// <summary>The audit action written when a step is moved to the override queue because its own approver cannot act.</summary>
+    internal const string OverrideRoutedAction = "approval.routed_to_override";
+
+    /// <summary>
+    /// The "someone can decide this" check on the step <paramref name="approval"/> is routed to (see
+    /// <see cref="IApprovalRouter.CheckDeciderAsync"/>). Excludes the requester, every login of the subject,
+    /// every earlier decider and the person deciding now — the separation-of-duties bars, so a step nobody but
+    /// a barred user could decide counts as undecidable. Returns null when the step stands as routed; otherwise
+    /// moves it to the override queue and returns the audit metadata to write after the commit. At submission,
+    /// when not even the override queue has anyone, throws <see cref="ApprovalNoEligibleDeciderException"/>.
+    /// </summary>
+    private async Task<string?> EnsureSomeoneCanDecideAsync(ApprovalRequest approval, ApprovalWorkflowStep step, bool atCreate,
+        Guid? currentDeciderUserId, CancellationToken cancellationToken)
+    {
+        var excluded = new HashSet<Guid>();
+        if (approval.RequestedByUserId is Guid requester) excluded.Add(requester);
+        if (currentDeciderUserId is Guid current) excluded.Add(current);
+        foreach (var decision in approval.Decisions)
+            if (decision.DecidedByUserId is Guid decider) excluded.Add(decider);
+        if (approval.RequestedForEmployeeId is int subjectId)
+            foreach (var linked in await SubjectUserIdsAsync(approval.TenantId, subjectId, cancellationToken)) excluded.Add(linked);
+
+        var routed = new ResolvedApprover(approval.CurrentApproverType, approval.CurrentApproverRole, approval.CurrentApproverEmployeeId,
+            approval.CurrentApproverUserId, approval.CurrentApproverName, false);
+        var check = await _router.CheckDeciderAsync(approval.TenantId, routed, excluded, null, cancellationToken);
+        if (check.Eligible) return null;
+        if (atCreate && !check.OverrideAvailable)
+            throw new ApprovalNoEligibleDeciderException(approval.TenantId, approval.EntityName, step.StepOrder, Clean(step.StepName), check.Owner, check.NamedPerson);
+
+        var now = DateTime.UtcNow;
+        approval.CurrentApproverEmployeeId = null;
+        approval.CurrentApproverUserId = null;
+        approval.CurrentApproverName = string.Empty;
+        approval.CurrentApproverType = "Role";
+        approval.CurrentApproverRole = IApprovalRouter.OverrideQueueRole;
+        approval.CurrentQueue = $"Role:{IApprovalRouter.OverrideQueueRole}";
+        approval.EscalatedToRole = IApprovalRouter.OverrideQueueRole;
+        approval.EscalatedAtUtc = now;
+        return JsonSerializer.Serialize(new
+        {
+            stepOrder = step.StepOrder,
+            stepName = Clean(step.StepName),
+            routedTo = check.Owner,
+            namedPerson = check.NamedPerson,
+            reason = check.NamedPerson ? "named_approver_has_no_active_login" : "role_has_no_eligible_holder",
+            movedTo = IApprovalRouter.OverrideQueueRole,
+            atSubmission = atCreate,
+            // Mid-chain with nobody in the override queue either: it still moves there (the earlier approval
+            // stands), and this flag is what an operator searches for.
+            overrideQueueEmpty = !check.OverrideAvailable,
+        });
     }
 
     private static ApprovalRouteStep ToRouteStep(ApprovalWorkflowStep step)

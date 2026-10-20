@@ -449,6 +449,8 @@ public class EmployeeApplierParityTests
 
     private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId, Guid userId)
     {
+        // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
         var audit = new AuditService(db);
         var controller = new EmployeesController(
             db, new Pbkdf2PasswordHasher(), audit, new FakeDocs(), new FakeNotifications(), new FakeHijri(),

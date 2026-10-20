@@ -7,6 +7,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 using ApprovalDecisionRequest = Zayra.Api.Application.Approvals.ApprovalDecisionRequest;
 
@@ -84,6 +85,8 @@ public class ApprovalAnyStepAuthorityTests
         var managerUserId = Guid.NewGuid();
         var manager = new Employee { TenantId = tenantId, EmployeeCode = "MGR-1", FullName = "Line Manager", Status = "Active", UserAccountId = managerUserId, JoiningDate = DateTime.UtcNow.AddYears(-3) };
         db.Employees.Add(manager);
+        // The line manager has an active login (a manager without one cannot act, so the step would go to HR).
+        db.Users.Add(new User { Id = managerUserId, TenantId = tenantId, Email = "mgr@example.test", NormalizedEmail = "MGR@EXAMPLE.TEST", FullName = "Line Manager", IsActive = true });
         await db.SaveChangesAsync();
         var (approvalId, subjectId) = await StartChangeAsync(db, tenantId, DefaultEmployeeChangeWorkflow(tenantId), manager.Id);
 
@@ -167,6 +170,9 @@ public class ApprovalAnyStepAuthorityTests
         db.Employees.Add(subject);
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // Someone other than the requester and the subject can decide each step (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "Manager", "approvals.decide", "manager.approve");
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "HR Manager");
         var requester = Guid.NewGuid();
         var change = new EmployeeChangeRequest
         {

@@ -561,6 +561,8 @@ public class HrmHierarchyTests
 
     private static EmployeesController BuildImportController(ZayraDbContext db, Guid tenantId)
     {
+        // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
         var controller = new EmployeesController(
             db,
             new Pbkdf2PasswordHasher(),

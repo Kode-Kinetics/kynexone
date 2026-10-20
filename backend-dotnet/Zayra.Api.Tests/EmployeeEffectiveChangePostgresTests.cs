@@ -784,6 +784,8 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
     {
         await using var db = fx.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
+        // Someone besides the requester can decide the change (routing refuses a request nobody could decide).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         if (timeZone is not null)
             db.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = tenant, DefaultTimezone = timeZone });
         var employee = new Employee

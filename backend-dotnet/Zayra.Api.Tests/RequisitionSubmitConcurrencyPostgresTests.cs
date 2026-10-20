@@ -39,6 +39,7 @@ public class RequisitionSubmitConcurrencyPostgresTests
         await using (var seed = _fx.CreateDb())
         {
             tenantId = await PostgresFixture.SeedMinimalTenant(seed);
+            await TestApprovalConfig.EnsureDeciderAsync(seed, tenantId);
             var wf = new ApprovalWorkflow
             {
                 TenantId = tenantId, Code = "REQ-RACE", Name = "Requisition Approval",

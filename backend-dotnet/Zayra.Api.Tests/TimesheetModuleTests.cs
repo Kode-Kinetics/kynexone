@@ -612,6 +612,8 @@ public sealed class TimesheetModuleTests
             db.ApprovalWorkflows.Add(workflow);
         }
         await db.SaveChangesAsync();
+        // Someone besides the employee can decide the HR step (routing refuses a request nobody could decide).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tid);
 
         // A fixed Sunday well clear of "today", so a test can never straddle a real week boundary.
         return new Scenario(tid, company.Id, employee.Id, employeeUserId,
