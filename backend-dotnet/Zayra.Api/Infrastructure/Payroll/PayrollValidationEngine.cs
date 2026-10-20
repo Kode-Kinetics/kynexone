@@ -67,6 +67,13 @@ public static class PayrollValidationEngine
     /// adjustment for HR, not something the run itself will deduct.
     /// </summary>
     public const string PaidAttendanceChanged = "WARN_PAID_ATTENDANCE_CHANGED";
+
+    /// <summary>
+    /// Warning, never blocks: an employee has days this period with a missing punch whose late / early-exit minutes are
+    /// held, not deducted, until the punches are corrected (<c>AttendanceDerivedArtifacts.IsHalfPair</c>). So the run
+    /// says out loud what it is not deducting, and HR can correct the punches before it is approved.
+    /// </summary>
+    public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
     public static List<PayrollValidationResult> Run(PayrollValidationContext ctx)
@@ -603,6 +610,19 @@ public static class PayrollValidationEngine
 
         // ── Rule 10b: attendance this period changed after payroll paid it ─────
         // WARN only — the run never deducts it (paid days raise no new impacts); HR settles it with an adjustment.
+        foreach (var group in ctx.HeldMissingPunchDays.GroupBy(d => d.EmployeeId).OrderBy(g => g.Key))
+        {
+            var heldDays = group.OrderBy(d => d.WorkDate).ToList();
+            var late = heldDays.Sum(d => d.LateMinutes);
+            var early = heldDays.Sum(d => d.EarlyExitMinutes);
+            var dates = string.Join(", ", heldDays.Take(10).Select(d => d.WorkDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)))
+                + (heldDays.Count > 10 ? $" and {heldDays.Count - 10} more" : string.Empty);
+            Warn(MissingPunchHeld,
+                $"{CodeFor(group.Key)}: {heldDays.Count} day(s) with a missing punch ({dates}). {late} late and {early} early-exit " +
+                "minutes are held, not deducted by this run, until the punches are corrected. Correct the punches (Attendance → " +
+                "Corrections) and process again if they should be deducted this month.", group.Key);
+        }
+
         foreach (var change in ctx.UnresolvedPaidAttendanceChanges)
             Warn(PaidAttendanceChanged,
                 $"Attendance for employee {CodeFor(change.EmployeeId)} on {change.WorkDate:yyyy-MM-dd} changed after payroll paid it: " +
@@ -811,6 +831,13 @@ public sealed record PayrollValidationContext(
     /// and by /validate, which replaces the stored results wholesale.
     /// </summary>
     public IReadOnlyList<PaidAttendanceChange> UnresolvedPaidAttendanceChanges { get; init; } = Array.Empty<PaidAttendanceChange>();
+
+    /// <summary>
+    /// Half-pair days this period whose late / early-exit minutes are held (the <see cref="PayrollValidationEngine.MissingPunchHeld"/>
+    /// warning). MUST be populated identically by Process and /validate, which replaces the findings wholesale.
+    /// </summary>
+    public IReadOnlyList<Zayra.Api.Infrastructure.Attendance.HeldAttendanceDay> HeldMissingPunchDays { get; init; } =
+        Array.Empty<Zayra.Api.Infrastructure.Attendance.HeldAttendanceDay>();
 
     /// <summary>
     /// The EffectiveFrom date of the most recent system-default GOSI rate rules.

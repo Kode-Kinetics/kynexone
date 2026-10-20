@@ -18,7 +18,8 @@ const STALE_REASONS: Record<string, string> = {
 /**
  * The run's attendance check before Process. Stale days (ERR_ATTENDANCE_IMPACT_STALE) block Process: their pending
  * deductions no longer match their punches, and the one action is to recompute exactly those days. The server finds
- * the days again when asked; the browser names none.
+ * the days again when asked; the browser names none. Held days (WARN_MISSING_PUNCH_HELD) never block: their late and
+ * early-exit minutes are not deducted until the missing punch is corrected, and are listed so HR can act on them.
  */
 export function AttendanceReconciliationPanel({ runId, onRecomputed }: { runId: string; onRecomputed?: () => void }) {
   const t = useT();
@@ -61,6 +62,7 @@ export function AttendanceReconciliationPanel({ runId, onRecomputed }: { runId: 
   }
   if (!data || !data.consumesAttendance) return null;
   const stale = data.stale;
+  const held = data.held;
 
   return (
     <div className="space-y-3" data-testid="attendance-reconciliation">
@@ -110,6 +112,39 @@ export function AttendanceReconciliationPanel({ runId, onRecomputed }: { runId: 
         </div>
       )}
       {outcome && <p className="text-sm text-emerald-700 dark:text-emerald-400" role="status">{outcome}</p>}
+      {held.dayCount > 0 && (
+        <div className="surface space-y-2 px-5 py-4" data-testid="attendance-held">
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            {t('{days} day(s) for {employees} employee(s) have a missing punch. {late} late and {early} early-exit minutes are held, not deducted, until the punches are corrected.', { days: held.dayCount, employees: held.employeeCount, late: held.lateMinutes, early: held.earlyExitMinutes })}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {t('This does not block the run. To deduct them this month, correct the punches in Attendance and process the run again.')}
+          </p>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-xs font-medium text-slate-600 dark:text-slate-300">{t('Show the days')}</summary>
+            <table className="mt-2 w-full text-start text-xs">
+              <thead>
+                <tr className="text-slate-500">
+                  <th className="py-1 text-start font-medium">{t('Employee')}</th>
+                  <th className="py-1 text-start font-medium">{t('Date')}</th>
+                  <th className="py-1 text-end font-medium">{t('Late minutes held')}</th>
+                  <th className="py-1 text-end font-medium">{t('Early-exit minutes held')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {held.days.map(d => (
+                  <tr key={`${d.employeeId}-${d.workDate}`} className="border-t border-slate-100 dark:border-white/5">
+                    <td className="py-1">{d.employeeName ?? d.employeeCode ?? `#${d.employeeId}`}</td>
+                    <td className="py-1">{f.date(d.workDate)}</td>
+                    <td className="py-1 text-end tabular-nums">{f.number(d.lateMinutes)}</td>
+                    <td className="py-1 text-end tabular-nums">{f.number(d.earlyExitMinutes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      )}
       {actionError && <p className="text-sm text-rose-700 dark:text-rose-400" role="alert">{actionError}</p>}
     </div>
   );

@@ -17,6 +17,10 @@ const en: Record<string, string> = {
   'Show the days': 'Show the days',
   'Why': 'Why',
   'Review attendance and recompute': 'Review attendance and recompute',
+  '{days} day(s) for {employees} employee(s) have a missing punch. {late} late and {early} early-exit minutes are held, not deducted, until the punches are corrected.': '{days} day(s) for {employees} employee(s) have a missing punch. {late} late and {early} early-exit minutes are held, not deducted, until the punches are corrected.',
+  'This does not block the run. To deduct them this month, correct the punches in Attendance and process the run again.': 'This does not block the run. To deduct them this month, correct the punches in Attendance and process the run again.',
+  'Late minutes held': 'Late minutes held',
+  'Early-exit minutes held': 'Early-exit minutes held',
 };
 
 const ar: Record<string, string> = {
@@ -35,6 +39,10 @@ const ar: Record<string, string> = {
   'Show the days': 'عرض الأيام',
   'Why': 'السبب',
   'Review attendance and recompute': 'مراجعة الحضور وإعادة الاحتساب',
+  '{days} day(s) for {employees} employee(s) have a missing punch. {late} late and {early} early-exit minutes are held, not deducted, until the punches are corrected.': 'لدى {employees} من الموظفين {days} من الأيام فيها بصمة ناقصة. دقائق التأخير ({late}) والانصراف المبكر ({early}) معلّقة، ولا تُخصم حتى تُصحَّح البصمات.',
+  'This does not block the run. To deduct them this month, correct the punches in Attendance and process the run again.': 'لا يمنع ذلك معالجة المسير. لخصمها هذا الشهر، صحّح البصمات في الحضور ثم عالج المسير مرة أخرى.',
+  'Late minutes held': 'دقائق التأخير المعلّقة',
+  'Early-exit minutes held': 'دقائق الانصراف المبكر المعلّقة',
 };
 
 export const payrollAttendance = { en, ar };

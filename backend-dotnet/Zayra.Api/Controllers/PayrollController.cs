@@ -3147,6 +3147,8 @@ public partial class PayrollController : ControllerBase
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
             UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
                 tenantId, periodStart, periodEnd, employeeIdsForRun, cancellationToken),
+            HeldMissingPunchDays = await AttendanceImpactReconciliation.FindHeldDaysAsync(
+                _db, tenantId, employeeIdsForRun, periodStart, periodEnd, cancellationToken),
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
@@ -4153,6 +4155,8 @@ public partial class PayrollController : ControllerBase
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
             UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
                 tenantId, valPeriodStart, valPeriodEnd, employeeIdsForValidation, cancellationToken),
+            HeldMissingPunchDays = await AttendanceImpactReconciliation.FindHeldDaysAsync(
+                _db, tenantId, employeeIdsForValidation, valPeriodStart, valPeriodEnd, cancellationToken),
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
             GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
