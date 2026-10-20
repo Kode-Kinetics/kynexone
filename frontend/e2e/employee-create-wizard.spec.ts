@@ -87,6 +87,11 @@ async function boot(page: Page, options: MockOptions = {}) {
       { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
       { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
     ]));
+    if (path === '/api/payroll/salary-structures') return reply([
+      { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
+      { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
+      { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
+    ]);
     if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
     if (path === '/api/localization/transliterate') {
       transliterations.push(body);
@@ -542,6 +547,10 @@ test('retains entered values across Back and review edits and submits the existi
   await dialog.getByLabel('Housing allowance', { exact: true }).fill('2000');
   await dialog.getByLabel('Fixed deduction', { exact: true }).fill('100');
   await dialog.getByLabel('Effective date', { exact: true }).fill('2026-10-15');
+  // A choice of the company's active structures — never free text; other companies' and retired ones are not offered.
+  const structure = dialog.getByRole('combobox', { name: 'Salary structure', exact: true });
+  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Operations band (OPS-BAND)']);
+  await structure.selectOption('OPS-BAND');
   await evidence(page, info, 'salary');
   await next(dialog, 4);
   await dialog.getByLabel(/^Passport number/i).fill('TEST-PASSPORT-001');
@@ -560,8 +569,8 @@ test('retains entered values across Back and review edits and submits the existi
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
     branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
-    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
-    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
+    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true, salaryStructureReference: 'OPS-BAND' },
+    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR', salaryStructureCode: 'OPS-BAND' },
   });
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
   expect(creates[0]).not.toHaveProperty('acknowledgeDuplicate');

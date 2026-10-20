@@ -13,15 +13,29 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
 {
     private readonly EmployeeDraftCreateHttpFixture _fx;
     public EmployeeAdvancedResumeHttpTests(EmployeeDraftCreateHttpFixture fixture) => _fx = fixture;
-    private static object Salary(decimal basic = 4000m, string effectiveDate = "2026-01-01") => new
+    private static object Salary(decimal basic = 4000m, string effectiveDate = "2026-01-01", string structure = "RESUME") => new
     {
         basicSalary = basic, housingAllowance = 1000m, transportAllowance = 400m, foodAllowance = 100m,
         mobileAllowance = 50m, otherAllowance = 200m, fixedDeduction = 25m,
-        salaryStructureCode = "RESUME", effectiveDate, currency = "SAR",
+        salaryStructureCode = structure, effectiveDate, currency = "SAR",
     };
+
+    /// <summary>A named structure must exist before an employee can be put on it (an unknown code is refused, 422).</summary>
+    private async Task EnsureResumeStructureAsync()
+    {
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        if (await db.SalaryStructures.AnyAsync(s => s.TenantId == _fx.TenantId && s.Code == "RESUME" && !s.IsDeleted)) return;
+        db.SalaryStructures.Add(new Zayra.Api.Models.SalaryStructure
+        {
+            TenantId = _fx.TenantId, Code = "RESUME", Name = "Resume structure", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1),
+        });
+        await db.SaveChangesAsync();
+    }
 
     private async Task<int> CreateAsync()
     {
+        await EnsureResumeStructureAsync();
         using var response = await _fx.SendAsync(HttpMethod.Post, "/api/employees", new
         {
             englishName = $"Resume {Guid.NewGuid():N}", salaryBreakdown = Salary(),
@@ -72,6 +86,25 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
     }
 
     [Fact]
+    public async Task CreateWithAnUnknownSalaryStructure_Is422_AndCreatesNothing()
+    {
+        var name = $"Unknown structure {Guid.NewGuid():N}";
+        using var response = await _fx.SendAsync(HttpMethod.Post, "/api/employees", new
+        {
+            englishName = name, salaryBreakdown = Salary(structure: "TYPO-STRUCTURE"),
+            payrollProfile = new { salaryCurrency = "SAR", paymentMethod = "Cash" },
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("error").GetString().Should().Be("unknown_salary_structure");
+        body.GetProperty("salaryStructureCode").GetString().Should().Be("TYPO-STRUCTURE");
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        (await db.SalaryStructures.CountAsync(s => s.TenantId == _fx.TenantId && s.Code == "TYPO-STRUCTURE")).Should().Be(0);
+        (await db.Employees.CountAsync(e => e.TenantId == _fx.TenantId && e.EnglishName == name)).Should().Be(0);
+    }
+
+    [Fact]
     public async Task SalaryAndPayrollRequireSensitivePermissionAndSalaryProjectionIsMasked()
     {
         var id = await CreateAsync();
@@ -95,6 +128,7 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
     [InlineData("fractional-cent")]
     [InlineData("date-mismatch")]
     [InlineData("future-mixed")]
+    [InlineData("unknown-structure")]
     public async Task InvalidSalaryCannotQueueApprovalOrPartiallyApplyOrdinaryFields(string mode)
     {
         var id = await CreateAsync();
@@ -105,6 +139,7 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
         if (mode == "overflow") changes["salaryBreakdown"] = Salary(decimal.MaxValue);
         if (mode == "gross-limit") changes["salaryBreakdown"] = Salary(9999999999m);
         if (mode == "fractional-cent") changes["salaryBreakdown"] = Salary(4000.001m);
+        if (mode == "unknown-structure") changes["salaryBreakdown"] = Salary(5000, structure: "NOT-A-STRUCTURE");
         var effectiveDate = "2026-01-01";
         if (mode == "date-mismatch") changes["salaryBreakdown"] = Salary(5000, "2026-02-01");
         if (mode == "future-mixed")

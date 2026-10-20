@@ -2931,6 +2931,7 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (UnknownSalaryStructureException ex) { return UnprocessableEntity(new { error = UnknownSalaryStructureException.ErrorCode, code = UnknownSalaryStructureException.ErrorCode, salaryStructureCode = ex.StructureCode, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -3734,6 +3735,11 @@ public class EmployeesController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { message = ex.Message });
+        }
+        catch (UnknownSalaryStructureException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(new { error = UnknownSalaryStructureException.ErrorCode, code = UnknownSalaryStructureException.ErrorCode, salaryStructureCode = ex.StructureCode, message = ex.Message });
         }
         catch (WorkEmailPlusAddressException)
         {

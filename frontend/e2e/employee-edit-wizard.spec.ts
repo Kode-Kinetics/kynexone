@@ -61,6 +61,12 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/designations') return reply(paged([{ id: 'edit-designation', titleEn: 'Specialist', code: 'SPEC', isActive: true }]));
     if (path === '/api/grades') return reply(paged([{ id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true }]));
     if (path === '/api/organization/cost-centers') return reply(paged([]));
+    if (path === '/api/payroll/salary-structures') return reply([
+      { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
+      { id: 'structure-group', companyId: null, code: 'GROUP-STD', name: 'Group standard', isActive: true },
+      { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
+      { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
+    ]);
     if (path === '/api/employees/field-catalog') {
       if (options.catalogResponse && new URL(request.url()).searchParams.get('nationality') === 'GB') return reply(await options.catalogResponse);
       return reply({ countryCode: 'SA', fields: [] });
@@ -215,7 +221,12 @@ test('structured salary edits preserve the complete package and persist resumed 
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(dialog.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('7000');
   await expect(dialog.getByRole('spinbutton', { name: /^Housing allowance/ })).toHaveValue('2000');
-  await expect(dialog.getByLabel(/^Salary structure code/)).toHaveCount(0);
+  // The structure is a choice of the company's active (or group-wide) structures, never free text; the code the
+  // employee is on today stays selected even though it is not offered any more.
+  const structure = dialog.getByRole('combobox', { name: /^Salary structure/ });
+  await expect(structure).toHaveValue('PACKAGE-TEST');
+  await expect(structure.locator('option')).toHaveText(['Default for the grade', /^PACKAGE-TEST \(PACKAGE-TEST\) — current/, 'Group standard (GROUP-STD) — all companies', 'Operations band (OPS-BAND)']);
+  await expect(dialog.getByRole('textbox', { name: /Salary structure/ })).toHaveCount(0);
   await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
   await dialog.getByRole('spinbutton', { name: /^Housing allowance/ }).fill('2500');
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
@@ -232,6 +243,20 @@ test('structured salary edits preserve the complete package and persist resumed 
   await reopened.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(reopened.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('8000');
   await expect(reopened.getByRole('spinbutton', { name: /^Transport allowance/ })).toHaveValue('300');
+  expect(errors).toEqual([]);
+});
+
+test('choosing another salary structure sends its code with the complete package, and no free-text reference exists', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, approval: true });
+  await dialog.getByRole('button', { name: /^Step 3: Payroll/ }).click();
+  await expect(dialog.getByRole('textbox', { name: /^Salary structure reference/ })).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('combobox', { name: /^Salary structure/ }).selectOption('OPS-BAND');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, salaryStructureCode: 'OPS-BAND' } });
   expect(errors).toEqual([]);
 });
 

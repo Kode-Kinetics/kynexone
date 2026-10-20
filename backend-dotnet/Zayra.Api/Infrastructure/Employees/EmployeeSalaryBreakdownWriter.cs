@@ -42,21 +42,25 @@ public static class EmployeeSalaryBreakdownWriter
         // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
         if (GrossSalary(salary) <= 0) return;
 
+        var structureCode = Clean(request?.SalaryStructureCode);
+        if (string.IsNullOrWhiteSpace(structureCode))
+            structureCode = DefaultStructureCode(grade);
+        var structure = await FindStructureAsync(db, employee, structureCode, cancellationToken);
+        // Refuse rather than guess, BEFORE anything is staged: an explicitly named structure that does not exist is a
+        // typo or a structure from another company, not a request to invent one. Only the blank → DIRECT / GRADE-x
+        // default may be created here (that is the "no structure chosen" path, and it has always been safe).
+        if (structure is null && !IsDefaultStructureCode(structureCode, grade))
+            throw new UnknownSalaryStructureException(structureCode);
+
         var replaced = await db.EmployeeSalaryStructures
             .Where(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && x.IsActive && x.EffectiveDate == effectiveDate)
             .ToListAsync(cancellationToken);
+        var previousStructureCodes = await (from activeRow in db.EmployeeSalaryStructures
+                                            join activeStructure in db.SalaryStructures on activeRow.SalaryStructureId equals activeStructure.Id
+                                            where activeRow.TenantId == employee.TenantId && activeRow.EmployeeId == employee.Id && activeRow.IsActive
+                                            select activeStructure.Code).Distinct().ToListAsync(cancellationToken);
         foreach (var prior in replaced) prior.IsActive = false;
 
-        var structureCode = Clean(request?.SalaryStructureCode);
-        if (string.IsNullOrWhiteSpace(structureCode))
-            structureCode = grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
-        // The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import uses,
-        // so company B's new hire is never attached to company A's structure lines.
-        var structure = await db.SalaryStructures
-            .Where(x => x.TenantId == employee.TenantId && x.Code == structureCode && !x.IsDeleted
-                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
-            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
-            .FirstOrDefaultAsync(cancellationToken);
         if (structure is null)
         {
             // Currency, most specific first: what the operator typed, then the grade's, then the
@@ -118,6 +122,60 @@ public static class EmployeeSalaryBreakdownWriter
         db.EmployeeSalaryStructures.Add(assignment);
         employee.Salary = GrossSalary(salary);
         employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
+        await MirrorStructureReferenceAsync(db, employee, structure.Code, previousStructureCodes, cancellationToken);
+    }
+
+    /// <summary>The code a salary gets when no structure is chosen: the grade's, or DIRECT for a gradeless employee.</summary>
+    public static string DefaultStructureCode(Grade? grade) => grade is null ? DirectSalaryStructureCode : $"GRADE-{grade.Code}";
+
+    private static bool IsDefaultStructureCode(string code, Grade? grade) =>
+        string.Equals(code, DefaultStructureCode(grade), StringComparison.Ordinal);
+
+    /// <summary>
+    /// The employing company's own structure first, then a group-wide one (CompanyId null): the same rule the import
+    /// uses, so company B's new hire is never attached to company A's structure lines. Inactive (superseded) versions
+    /// still match, so an employee already on one can keep it; the forms only OFFER active structures.
+    /// </summary>
+    public static Task<SalaryStructure?> FindStructureAsync(ZayraDbContext db, Employee employee, string code, CancellationToken cancellationToken) =>
+        db.SalaryStructures
+            .Where(x => x.TenantId == employee.TenantId && x.Code == code && !x.IsDeleted
+                && (x.CompanyId == employee.CompanyId || x.CompanyId == null))
+            .OrderByDescending(x => x.CompanyId == employee.CompanyId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// Refuses an explicitly named structure that does not exist for the employee's company (or group-wide). Blank, or
+    /// the employee's own default code, is always accepted: the writer creates that one.
+    /// </summary>
+    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, string? requestedCode, CancellationToken cancellationToken)
+    {
+        var code = Clean(requestedCode);
+        if (code.Length == 0 || employee.TenantId is null) return;
+        var grade = employee.GradeId is null
+            ? null
+            : await db.Grades.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.Id == employee.GradeId && !x.IsDeleted, cancellationToken);
+        if (IsDefaultStructureCode(code, grade)) return;
+        if (await FindStructureAsync(db, employee, code, cancellationToken) is null)
+            throw new UnknownSalaryStructureException(code);
+    }
+
+    /// <summary>
+    /// The payroll profile's free-text "salary structure reference" is derived from the structure the salary is
+    /// assigned to — the forms no longer ask for it. It follows the assignment while it is blank or still names the
+    /// previous structure; a reference somebody set to something else (an import's own code, an explicit API value
+    /// in the same change) is left alone rather than overwritten.
+    /// </summary>
+    private static async Task MirrorStructureReferenceAsync(ZayraDbContext db, Employee employee, string structureCode,
+        IReadOnlyCollection<string> previousStructureCodes, CancellationToken cancellationToken)
+    {
+        var profile = db.EmployeePayrollProfiles.Local
+                          .FirstOrDefault(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && !x.IsDeleted)
+                      ?? await db.EmployeePayrollProfiles
+                          .FirstOrDefaultAsync(x => x.TenantId == employee.TenantId && x.EmployeeId == employee.Id && !x.IsDeleted, cancellationToken);
+        if (profile is null) return;
+        var current = Clean(profile.SalaryStructureReference);
+        if (current.Length == 0 || previousStructureCodes.Contains(current, StringComparer.OrdinalIgnoreCase))
+            profile.SalaryStructureReference = structureCode;
     }
     private static async Task<string> ResolveCompanyCurrencyAsync(ZayraDbContext db, Employee employee, CancellationToken cancellationToken)
     {
@@ -156,4 +214,12 @@ public static class EmployeeSalaryBreakdownWriter
     private static decimal GrossSalary(EmployeeSalaryBreakdownRequest? salary) =>
         (salary?.BasicSalary ?? 0m) + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+}
+
+/// <summary>An explicitly named salary structure that does not exist for the employee's company or group-wide → 422.</summary>
+public sealed class UnknownSalaryStructureException(string code)
+    : InvalidOperationException($"Salary structure '{code}' does not exist for this employee's company. Choose one of the company's salary structures, or leave it blank to use the default.")
+{
+    public const string ErrorCode = "unknown_salary_structure";
+    public string StructureCode { get; } = code;
 }

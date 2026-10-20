@@ -1707,6 +1707,9 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken)
     {
+        // Pre-save, like the rest of this method: a named salary structure that does not exist is refused (422)
+        // before anything is staged. The writer re-checks as the backstop for its other callers.
+        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary?.SalaryStructureCode, cancellationToken);
         if (employee.PositionId is not null)
         {
             var position = await _db.Positions.AsNoTracking()

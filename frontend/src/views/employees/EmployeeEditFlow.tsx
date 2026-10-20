@@ -24,6 +24,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRoutes';
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
+import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
 import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
@@ -209,6 +210,15 @@ export function EmployeeEditFlow({
                         <select id="edit-field-grade" value={draft.form.grade ?? ''} onChange={event => draft.setField('grade', event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
                       </label>;
                     }
+                    if (field.key === 'salaryBreakdown.salaryStructureCode') return <SalaryStructureSelect
+                      key={field.key}
+                      id="edit-field-salaryBreakdown.salaryStructureCode"
+                      companyId={employee.companyId}
+                      value={draft.form[field.key] ?? ''}
+                      currentCode={employee.salaryBreakdown?.salaryStructureCode}
+                      onChange={(value) => draft.setField(field.key, value)}
+                      labelSuffix={<>{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</>}
+                    />;
                     if (field.key === 'costCenter') return <label key={field.key} htmlFor="edit-field-costCenter" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                       <span>{t('Cost center')}</span>
                       <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />

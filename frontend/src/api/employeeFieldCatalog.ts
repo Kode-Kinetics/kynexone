@@ -165,7 +165,8 @@ export const BASE_EDIT_FIELDS: EmployeeEditField[] = [
   { section: 'Payroll & Banking', key: 'salaryCurrency', label: 'Salary currency', type: 'select', options: SALARY_CURRENCY_OPTIONS },
   { section: 'Payroll & Banking', key: 'paymentMethod', label: 'Payment method', type: 'select', options: PAYMENT_METHOD_OPTIONS },
   { section: 'Payroll & Banking', key: 'payrollGroup', label: 'Payroll group' },
-  { section: 'Payroll & Banking', key: 'salaryStructureReference', label: 'Salary structure reference' },
+  // No free-text "salary structure reference": the structure is chosen in the Salary step
+  // (salaryBreakdown.salaryStructureCode) and the payroll profile's reference is derived from it server-side.
 ];
 
 /** UI keys group back into one atomic, approval-controlled salaryBreakdown change. */
@@ -179,7 +180,8 @@ export const SALARY_BREAKDOWN_EDIT_FIELDS: EmployeeEditField[] = [
   { key: 'mobileAllowance', label: 'Mobile allowance', type: 'number' },
   { key: 'otherAllowance', label: 'Other allowance', type: 'number' },
   { key: 'fixedDeduction', label: 'Fixed deduction', type: 'number' },
-  { key: 'salaryStructureCode', label: 'Salary structure code', hidden: true },
+  // Rendered as a choice of the company's active structures (SalaryStructureSelect), never free text.
+  { key: 'salaryStructureCode', label: 'Salary structure', type: 'select' },
 ].map((field) => ({ ...field, type: field.type as FieldInputType | undefined, key: `salaryBreakdown.${field.key}`, section: 'Salary', sensitive: true }));
 
 // Passport is common to every GCC jurisdiction.
