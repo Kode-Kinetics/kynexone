@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Setup;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Compensation;
@@ -56,7 +57,9 @@ public sealed class PayEquityService(ZayraDbContext db, IAuditService audit)
                     cohort.First().Grade?.Name ?? "", cohort.Key.DesignationId is Guid d ? designations.GetValueOrDefault(d) ?? "" : "No designation"))
                 .OrderBy(c => c.GradeName).ThenBy(c => c.DesignationName).ToList();
 
-        var gender = Build(p => Gender(p.Employee.Gender), "gender", "Male", "Female");
+        // Employees store the gender code (MALE) or, on older rows, its label (Male): read both through the tenant's list.
+        var genders = await ReferenceList.LoadAsync(db, caller.TenantId, ReferenceList.GenderType, ct);
+        var gender = Build(p => Gender(p.Employee.Gender, genders), "gender", "Male", "Female");
         var nationality = cycle.EquityIncludesNationality
             ? Build(p => IsNational(p.Employee.Nationality, countryIso2) ? "National" : "Expatriate", "nationality", "National", "Expatriate")
             : [];
@@ -88,12 +91,17 @@ public sealed class PayEquityService(ZayraDbContext db, IAuditService audit)
             groups, Gap(ga?.MeanCompaRatio, gb?.MeanCompaRatio), Gap(ga?.ProjectedMeanCompaRatio, gb?.ProjectedMeanCompaRatio), dimension);
     }
 
-    internal static string Gender(string? value) => (value ?? "").Trim().ToLowerInvariant() switch
+    internal static string Gender(string? value) => Gender(value, ReferenceList.Default(ReferenceList.GenderType));
+
+    /// <summary>The cohort a stored gender falls in. The group names stay "Male"/"Female"/"Not stated" (the report's
+    /// contract); which row lands where is decided by the code, so "Male", "MALE", "m" and "ذكر" are one group.</summary>
+    internal static string Gender(string? value, ReferenceList genders)
     {
-        "male" or "m" => "Male",
-        "female" or "f" => "Female",
-        _ => "Not stated",
-    };
+        if (genders.ToCode(value) is not { } code) return "Not stated";
+        if (genders.Same(code, ReferenceList.Male)) return "Male";
+        if (genders.Same(code, ReferenceList.Female)) return "Female";
+        return "Not stated";
+    }
 
     private static bool IsNational(string? nationality, string? companyIso2) =>
         companyIso2 == "SA" ? Compliance.SaudiNationality.IsSaudi(nationality)

@@ -15,8 +15,9 @@ import {
   type DepartmentDto,
   type DesignationDto,
 } from '../../api/organization';
-import { masterDataApi, type MasterDataValue } from '../../api/setup';
-import { CONTRACT_TYPE_OPTIONS, EMPLOYMENT_TYPE_OPTIONS } from '../../api/employeeFieldCatalog';
+import { CONTRACT_TYPE_OPTIONS, EMPLOYMENT_TYPE_OPTIONS, GENDER_OPTIONS, MARITAL_STATUS_OPTIONS } from '../../api/employeeFieldCatalog';
+import { EMPLOYEE_REFERENCE_TYPES, useEmployeeReferenceLists, type EmployeeReferenceKey } from '../../hooks/useReferenceLists';
+import { referenceCode, referenceLabel, referenceOptions } from '../../lib/referenceLists';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRoutes';
@@ -33,13 +34,16 @@ function stepForSection(section: EmployeeSection, panel?: string) {
   return 0;
 }
 
-function activeMasterOptions(values: MasterDataValue[], fallback: string[]) {
-  const options = values
-    .filter((value) => value.isActive !== false)
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .map((value) => value.valueEn.trim())
-    .filter(Boolean);
-  return options.length ? [...new Set(options)] : fallback;
+/** Shown when the tenant's reference list cannot be read; the stored value is then the label, as before. */
+const REFERENCE_FALLBACK: Record<EmployeeReferenceKey, string[]> = {
+  gender: GENDER_OPTIONS,
+  maritalStatus: MARITAL_STATUS_OPTIONS,
+  employmentType: EMPLOYMENT_TYPE_OPTIONS,
+  contractType: CONTRACT_TYPE_OPTIONS,
+};
+
+function isReferenceKey(key: string): key is EmployeeReferenceKey {
+  return Object.prototype.hasOwnProperty.call(EMPLOYEE_REFERENCE_TYPES, key);
 }
 
 function retainCurrentOption(options: string[], current?: string) {
@@ -61,7 +65,7 @@ export function EmployeeEditFlow({
   onSaved(status: number): Promise<void> | void;
 }) {
   const { hasPermission } = useAuth();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const canWrite = hasPermission('employees.write');
   const canSeeSensitive = hasPermission('employees.sensitive');
   const [company, setCompany] = useState<CompanyDto | null>(null);
@@ -72,12 +76,15 @@ export function EmployeeEditFlow({
   const grades = useMemo(() => allGrades.filter((item) => item.isActive), [allGrades]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
-  const [employmentTypeOptions, setEmploymentTypeOptions] = useState(EMPLOYMENT_TYPE_OPTIONS);
-  const [contractTypeOptions, setContractTypeOptions] = useState(CONTRACT_TYPE_OPTIONS);
+  const { lists: referenceLists } = useEmployeeReferenceLists();
   // The employee's current structure is retired / superseded / another company's: a salary change on it would be
   // refused (422), so it is blocked here with the reason. Edits that do not touch the salary package still save.
   const [structureInvalid, setStructureInvalid] = useState(false);
-  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved });
+  const formatValue = useMemo(
+    () => (key: string, value: string) => (isReferenceKey(key) ? referenceLabel(referenceLists[key], value, locale) : value),
+    [referenceLists, locale],
+  );
+  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved, formatValue });
   const salaryBlockedByStructure = structureInvalid && draft.salaryPackageChanged;
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
 
@@ -89,18 +96,14 @@ export function EmployeeEditFlow({
       designationsApi.listAll(),
       costCentersApi.listAll(employee.companyId),
       employeesApi.listAll(),
-      masterDataApi.listValuesByCode('EmploymentType', true),
-      masterDataApi.listValuesByCode('ContractType', true),
     ]).then((results) => {
       if (cancelled) return;
-      const [companyResult, departmentResult, designationResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
+      const [companyResult, departmentResult, designationResult, costCenterResult, employeeResult] = results;
       setCompany(companyResult.status === 'fulfilled' ? companyResult.value.find((item) => item.id === employee.companyId) ?? null : null);
       setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive) : []);
       setDesignations(designationResult.status === 'fulfilled' ? designationResult.value.filter((item) => item.isActive) : []);
       setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => item.isActive) : []);
       setEmployees(employeeResult.status === 'fulfilled' ? employeeResult.value : []);
-      setEmploymentTypeOptions(employmentTypeResult.status === 'fulfilled' ? activeMasterOptions(employmentTypeResult.value, EMPLOYMENT_TYPE_OPTIONS) : EMPLOYMENT_TYPE_OPTIONS);
-      setContractTypeOptions(contractTypeResult.status === 'fulfilled' ? activeMasterOptions(contractTypeResult.value, CONTRACT_TYPE_OPTIONS) : CONTRACT_TYPE_OPTIONS);
     });
     return () => { cancelled = true; };
   }, [employee.companyId]);
@@ -182,14 +185,15 @@ export function EmployeeEditFlow({
                       originalValue={employee.workEmail ?? ''}
                       suggest={!employee.workEmail}
                     />;
-                    if (field.key === 'employmentType' || field.key === 'contractType') {
-                      const options = retainCurrentOption(
-                        field.key === 'employmentType' ? employmentTypeOptions : contractTypeOptions,
-                        draft.form[field.key],
-                      );
+                    if (isReferenceKey(field.key)) {
+                      // Stores the reference-list CODE and shows the label in the reader's language. A row saved
+                      // with the English label still selects its value; untouched, it is saved unchanged.
+                      const values = referenceLists[field.key];
+                      const current = draft.form[field.key] ?? '';
+                      const options = referenceOptions(values, locale, REFERENCE_FALLBACK[field.key], current);
                       return <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                        <span>{t(field.label)}</span>
-                        <select id={`edit-field-${field.key}`} value={draft.form[field.key] ?? ''} onChange={event => draft.setField(field.key, event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                        <span className="flex items-center gap-1.5">{t(field.label)}{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</span>
+                        <select id={`edit-field-${field.key}`} value={referenceCode(values, current)} onChange={event => draft.setField(field.key, event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
                       </label>;
                     }
                     if (field.key === 'department') {

@@ -1112,3 +1112,65 @@ test('Arabic document intake is translated and contained', async ({ page }, info
   await expect(page.getByRole('button', { name: 'رفع ومراجعة', exact: true })).toBeVisible();
   await contained(page); await evidence(page, info, 'arabic-document-intake');
 });
+
+test('reference-list editor is translated, its row actions are always visible, and delete asks in the app dialog', async ({ page }, info) => {
+  const state = await boot(page, { locale: 'ar', route: '/setup?tab=masterData' });
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async dialog => { nativeDialogs.push(dialog.message()); await dialog.dismiss(); });
+  const deletes: string[] = [];
+  const genderType = { id: 'type-gender', code: 'Gender', nameEn: 'Gender', nameAr: 'الجنس', description: '', isSystemDefined: true, allowCustomValues: true, isActive: true };
+  const values = [
+    { id: 'value-male', typeId: genderType.id, code: 'MALE', valueEn: 'Male', valueAr: 'ذكر', sortOrder: 1, isDefault: true, isSystemDefined: true, isActive: true },
+    { id: 'value-other', typeId: genderType.id, code: 'OTHER', valueEn: 'Other', valueAr: 'آخر', sortOrder: 2, isDefault: false, isSystemDefined: false, isActive: true },
+  ];
+  await page.route('**/api/admin/master-data/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ status: 204, body: '' }); }
+    if (path.endsWith('/types')) return route.fulfill({ json: [genderType] });
+    if (path.endsWith(`/types/${genderType.id}/values`)) return route.fulfill({ json: values.filter(v => !deletes.includes(`/api/admin/master-data/values/${v.id}`)) });
+    return route.fulfill({ json: [] });
+  });
+  await page.reload();
+
+  await page.getByRole('button', { name: /الجنس|Gender/ }).first().click();
+  const table = page.locator('table').filter({ hasText: 'MALE' });
+  await expect(table.getByRole('columnheader', { name: 'القيمة (بالإنجليزية)', exact: true })).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: 'الإجراءات', exact: true })).toBeVisible();
+  await expect(table.locator('tbody').getByText('افتراضي', { exact: true })).toBeVisible();
+
+  // Row actions say what they do and are visible without hovering (no opacity-0 hover reveal).
+  const edit = table.getByRole('button', { name: 'تعديل Male', exact: true });
+  const remove = table.getByRole('button', { name: 'حذف Other', exact: true });
+  await expect(edit).toHaveText('تعديل');
+  await expect(remove).toHaveText('حذف');
+  for (const action of [edit, remove]) {
+    expect(await action.evaluate(el => Number(getComputedStyle(el.parentElement as HTMLElement).opacity))).toBe(1);
+  }
+  // A system value cannot be deleted, so it offers no delete action.
+  await expect(table.getByRole('button', { name: 'حذف Male', exact: true })).toHaveCount(0);
+
+  // Editing keeps the code fixed: employees store it, so renaming never orphans them.
+  await edit.click();
+  const valueDialog = page.getByRole('dialog', { name: 'تعديل القيمة', exact: true });
+  await expect(valueDialog.getByPlaceholder('UAE')).toBeDisabled();
+  await expect(valueDialog.getByText('تحفظ سجلات الموظفين هذا الرمز، لذا لا يمكن تغييره.', { exact: false })).toBeVisible();
+  await valueDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
+
+  // Delete asks in the app's own translated dialog; cancelling sends nothing.
+  await remove.click();
+  const confirmDialog = page.getByRole('dialog', { name: 'حذف القيمة', exact: true });
+  await expect(confirmDialog).toContainText('هل تريد حذف "Other"؟');
+  await evidence(page, info, 'reference-list-delete-confirm-ar');
+  await confirmDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
+  await expect(confirmDialog).toHaveCount(0);
+  expect(deletes).toEqual([]);
+
+  await remove.click();
+  await page.getByRole('dialog', { name: 'حذف القيمة', exact: true }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect.poll(() => deletes).toEqual(['/api/admin/master-data/values/value-other']);
+  await expect(table.getByText('OTHER', { exact: true })).toHaveCount(0);
+  expect(nativeDialogs).toEqual([]);
+  await contained(page);
+  expect(state.errors).toEqual([]);
+});

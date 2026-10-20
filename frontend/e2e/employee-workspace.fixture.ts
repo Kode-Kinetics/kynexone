@@ -18,6 +18,8 @@ export interface EmployeeWorkspaceFixtureControl {
 interface EmployeeWorkspaceFixtureOptions {
   permissions?: string[];
   disabledFeatures?: string[];
+  /** The reader's language (default English). */
+  locale?: 'en' | 'ar';
 }
 
 const employees = {
@@ -93,7 +95,7 @@ const employees = {
     personalEmail: 'second.employee@example.test',
     workEmail: 'second.employee@evostel.test',
     phone: '+966500000902',
-    gender: 'Male',
+    gender: 'MALE',
     maritalStatus: 'Single',
     nationality: 'Saudi Arabia',
     countryCode: 'SAU',
@@ -219,11 +221,11 @@ export async function bootEmployeeWorkspaceFixture(
     readinessBody: new Map(),
   };
 
-  await page.addInitScript(() => {
+  await page.addInitScript((locale) => {
     localStorage.setItem('zayra_access_token', 'employee-workspace-fixture');
-    localStorage.setItem('kynexone-locale-choice-v2', 'en');
+    localStorage.setItem('kynexone-locale-choice-v2', locale);
     localStorage.setItem('kynexone-company:workspace-reviewer', 'fixture-company');
-  });
+  }, options.locale ?? 'en');
 
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
@@ -244,13 +246,19 @@ export async function bootEmployeeWorkspaceFixture(
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/admin/system-settings' || path === '/api/country-packs/available') return reply([]);
     if (path === '/api/admin/master-data/values') {
+      // Shaped like the real endpoint: every value has a code. Employee 901 stores the English labels (a row saved
+      // before the forms stored codes); 902 stores the gender code. Both must read and select the same way.
       const typeCode = url.searchParams.get('typeCode');
-      const values = typeCode === 'EmploymentType'
-        ? ['Full-Time', 'Seasonal']
+      const values: Array<[string, string, string]> = typeCode === 'EmploymentType'
+        ? [['FULL_TIME', 'Full-Time', 'دوام كامل'], ['SEASONAL', 'Seasonal', 'موسمي']]
         : typeCode === 'ContractType'
-          ? ['Unlimited', 'Unlimited Term']
-          : [];
-      return reply(values.map((valueEn, index) => ({ id: `${typeCode}-${index}`, valueEn, valueAr: '', sortOrder: index, isDefault: false, isActive: true })));
+          ? [['UNLIMITED', 'Unlimited', 'غير محدد'], ['UNLIMITED_TERM', 'Unlimited Term', 'غير محدد المدة']]
+          : typeCode === 'Gender'
+            ? [['MALE', 'Male', 'ذكر'], ['FEMALE', 'Female', 'أنثى']]
+            : typeCode === 'MaritalStatus'
+              ? [['SINGLE', 'Single', 'أعزب'], ['MARRIED', 'Married', 'متزوج']]
+              : [];
+      return reply(values.map(([code, valueEn, valueAr], index) => ({ id: `${typeCode}-${index}`, typeId: typeCode, code, valueEn, valueAr, sortOrder: index, isDefault: false, isSystemDefined: true, isActive: true })));
     }
     if (path === '/api/companies') return reply({ items: [{ id: 'fixture-company', legalNameEn: 'Evostel', tradeName: 'Evostel', countryCode: 'SAU', emailDomain: 'evostel.test', workEmailPattern: 'first.last', isActive: true, approvalStatus: 'Active' }], total: 1, page: 1, pageSize: 100 });
     if (path === '/api/departments') return reply({ items: [
