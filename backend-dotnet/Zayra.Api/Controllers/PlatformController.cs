@@ -4314,6 +4314,9 @@ public class PlatformController : ControllerBase
         new(FeatureKeys.Engagement,                    "Engagement surveys",                    "Rollout (opt-in)"),
         new(FeatureKeys.Compensation,                  "Merit planning & pay equity",           "Rollout (opt-in)"),
         new(FeatureKeys.ReleaseA,                      "Release A: entitlements & renewals",    "Rollout (opt-in)"),
+        // Off for every tenant by the owner's decision (2026-10-20). Re-enabling is a deliberate platform action; even
+        // then, policy text is never sent to a model (PolicyContentModelGate).
+        new(FeatureKeys.PolicyIntake,                  "Policy intake (upload & parse)",        "Rollout (opt-in)"),
     ];
 
     /// <summary>

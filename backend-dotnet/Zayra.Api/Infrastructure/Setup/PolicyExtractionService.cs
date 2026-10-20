@@ -10,7 +10,7 @@ using Zayra.Api.Infrastructure.AI;
 namespace Zayra.Api.Infrastructure.Setup;
 
 /// <summary>Produces evidence-bound proposals only. It never changes settings or publishes a document.</summary>
-public sealed class PolicyExtractionService(ILlmClient llm, AiOptions options, IAiCallRecorder recorder)
+public sealed class PolicyExtractionService(ILlmClient llm, AiOptions options, IAiCallRecorder recorder, IPolicyContentModelGate gate)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly Dictionary<string, Type> ConfigurationFields = new()
@@ -82,6 +82,9 @@ public sealed class PolicyExtractionService(ILlmClient llm, AiOptions options, I
         string diagnostics = "";
         try
         {
+            // Owner decision: policy text never reaches the model gateway, for any provider (PolicyContentModelGate).
+            if (!gate.MaySendPolicyContent(options))
+                return Empty(PolicyContentNeverLeaves.Reason);
             if (!options.IsLiveProviderConfigured)
                 return Empty("AI extraction is unavailable. Your document is saved as a draft; configure AI or enter settings manually.");
             if (ContextBudget < 256)

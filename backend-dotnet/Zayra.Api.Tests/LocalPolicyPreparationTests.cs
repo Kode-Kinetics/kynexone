@@ -35,10 +35,10 @@ public sealed class LocalPolicyPreparationTests
         await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         var tenant = Guid.NewGuid(); var user = Guid.NewGuid();
         var options = new AiOptions("none", "", "", "", "", "", 1, true, false);
-        var documents = new PolicyDocumentService(db, new NeverLlm(), options, new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+        var documents = new PolicyDocumentService(db, new NeverLlm(), options, new Recorder(), NullLogger<PolicyDocumentService>.Instance, PolicyContentNeverLeaves.Instance);
         using var content = new MemoryStream(Encoding.UTF8.GetBytes("Onboarding\nHR arranges contract signing."));
         var document = await documents.UploadAsync(tenant, user, content, "policy.txt", "text/plain", default);
-        var controller = new SetupPolicyExtractionController(documents, new(new NeverLlm(), options, new Recorder()), db);
+        var controller = new SetupPolicyExtractionController(documents, new(new NeverLlm(), options, new Recorder(), PolicyContentNeverLeaves.Instance), db);
         void Identity(Guid tenantId, Guid userId, bool permission = true) {
             var claims = new List<Claim> { new("tenant_id", tenantId.ToString()), new(ClaimTypes.NameIdentifier, userId.ToString()),
                 new(ClaimTypes.Role, "HR Officer"), new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })) };

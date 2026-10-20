@@ -55,6 +55,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });
     if (path === '/api/recruitment/onboarding/summary') return reply({ total: 0, pending: 0, completed: 0, blocked: 0, completionPct: 0 });
     if (path === '/api/companies') return reply({ items: companies, total: companies.length, page: 1, pageSize: 100 });
+    // policy_intake is ON in this fixture: it is absent from the disabled keys (the real API lists it until the platform team enables it).
     if (path === '/api/features/disabled-keys') {
       if (options.flagError) return route.fulfill({ status: 503, json: { message: 'Fixture unavailable' } });
       return reply(options.disabled ? ['release_a', 'learning'] : ['release_a']);

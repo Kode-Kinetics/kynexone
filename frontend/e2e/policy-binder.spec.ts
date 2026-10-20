@@ -47,6 +47,7 @@ async function boot(page: Page, options: { failSecondChunk?: boolean; slowSecond
       previews.push(request.postDataJSON());
       return reply({ configurationVersion: 1, draft: { branches: [{ code: 'HQ', nameEn: 'HQ', city: 'Jeddah', isHeadOffice: true }], policySources: previews.at(-1)?.configuration?.policySources, policyFieldSources: previews.at(-1)?.configuration?.policyFieldSources }, notes: [], engine: 'Fixture' });
     }
+    // policy_intake is ON in this fixture: it is absent from the disabled keys (the real API lists it until the platform team enables it).
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/features/modules' || path === '/api/notifications' || path === '/api/statutory-rules') return reply([]);
     if (request.method() !== 'GET') throw new Error(`Unexpected write: ${path}`);

@@ -71,6 +71,16 @@ public static class OptInFeatures
             ],
             // Candidate visibility owns no route: the ESS development-plan read checks it (default OFF).
             [FeatureKeys.SuccessionCandidateVisibility] = [],
+            // Policy intake (owner decision 2026-10-20: only manual company setup is enabled). Every policy upload,
+            // parse, local preparation, AI extraction and review (/api/setup-assistant/policy/...), and the policy
+            // library with its Q&A for HR and employees (/api/ai/policy/...). The Setup Assistant's own preview and
+            // apply (/api/setup-assistant/preview|apply) stay open: that is the manual setup path. Even with the flag
+            // on, policy text never reaches a model (PolicyContentModelGate).
+            [FeatureKeys.PolicyIntake] =
+            [
+                "/api/setup-assistant/policy",
+                "/api/ai/policy",
+            ],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

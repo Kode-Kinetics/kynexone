@@ -9,6 +9,7 @@ import type { CompanyDto } from '../api/organization';
 import { tenantAdminApi } from '../api/intelligence';
 import { useT } from '../hooks/useT';
 import { useReleaseA } from '../lib/releaseA';
+import { usePolicyIntake } from '../lib/policyIntake';
 import { setupAssistantApi, type CompanyProfile, type SetupDraft, type SetupConfiguration } from '../api/setupAssistant';
 import { useCompany } from '../contexts/CompanyContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -85,6 +86,8 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
   // Release A: grade allowances and benefits are set in Benefits by grade, so the draft's legacy grade pay lines are
   // neither shown nor sent (the server would skip them and say so).
   const releaseA = useReleaseA();
+  // Policy upload, the policy guide and the library appear only while policy intake is on (off by default).
+  const policyIntake = usePolicyIntake();
   const t = useT();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -612,7 +615,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
         <div className="flex flex-wrap gap-2">
           {!draft && eligibleSavedPreview && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={reviewSavedPreview}>{t('Review saved preview')}</button>}
           <button type="button" className="btn-secondary" disabled={loading || applying} onClick={saveForLater}>{t('Save for later')}</button>
-          <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { if (saveForLater()) onOpenLibrary?.(); }}>{t('Policy library / updates')}</button>
+          {policyIntake && onOpenLibrary && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { if (saveForLater()) onOpenLibrary(); }}>{t('Policy library / updates')}</button>}
           {onReturnToWorkspace && <button type="button" className="btn-secondary" disabled={loading || applying} onClick={() => { if (saveForLater()) onReturnToWorkspace(); }}>{t('Return to workspace')}</button>}
           <button type="button" className="btn-secondary" disabled={loading || applying} onClick={discardDraft}>{t('Cancel setup')}</button>
         </div>
@@ -662,7 +665,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
           {error && <p ref={errorRef} tabIndex={-1} role="alert" className="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 outline-none dark:bg-red-500/10 dark:text-red-300">{error}</p>}
           <fieldset disabled={loading || applying} className="min-w-0">
             <div hidden={step !== 0}>
-              <SetupPolicyEditor key={editorRevision} profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={acceptConfiguration} currency={currency} />
+              {policyIntake && <SetupPolicyEditor key={editorRevision} profile={policyProfile} onProfileChange={acceptProfileSuggestions} onSourceOpenChange={setPolicyGuideOpen} area="source" value={configuration} onChange={acceptConfiguration} currency={currency} />}
               <div className={policyGuideOpen ? 'hidden' : 'setup-company-grid grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-4'}>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Legal entity name <span aria-hidden="true" className="text-slate-500">*</span></span>

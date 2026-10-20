@@ -24,8 +24,14 @@ namespace Zayra.Api.Infrastructure.Filters;
 ///
 /// <para>A module the tenant is not permitted to disable is never blocked here even if a stale
 /// <c>false</c> row exists for it — see <see cref="TenantModuleService"/>.</para>
+///
+/// <para><b>A resource filter, deliberately.</b> MVC binds action arguments before any action filter runs, so as an
+/// action filter this refused a switched-off upload only after the whole multipart body had been received and
+/// buffered into an IFormFile (and a JSON body deserialized). Resource filters run after authentication and
+/// authorization and before model binding, so a refused request's body is never read. Registered right after
+/// <see cref="SubscriptionGuardFilter"/>, which moved with it, so the order of the two refusals is unchanged.</para>
 /// </summary>
-public class FeatureFlagGuardFilter : IAsyncActionFilter
+public class FeatureFlagGuardFilter : IAsyncResourceFilter
 {
     private readonly ITenantModuleService _modules;
     private readonly ILogger<FeatureFlagGuardFilter> _log;
@@ -44,29 +50,40 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
     public static void InvalidateCache(IMemoryCache cache, Guid tenantId, string featureKey)
         => TenantModuleService.Invalidate(cache, tenantId);
 
-    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    public async Task OnResourceExecutionAsync(ResourceExecutingContext context, ResourceExecutionDelegate next)
     {
-        var path = context.HttpContext.Request.Path.Value ?? string.Empty;
+        var refusal = await DecideAsync(context.HttpContext);
+        if (refusal is not null)
+        {
+            context.Result = refusal;
+            return;
+        }
+        await next();
+    }
+
+    /// <summary>The refusal for this request, or NULL when it may proceed. Reads only the path and the user.</summary>
+    internal async Task<IActionResult?> DecideAsync(HttpContext http)
+    {
+        var path = http.Request.Path.Value ?? string.Empty;
 
         // Opt-in features (default OFF) are checked first and independently of the owning module: a Core route
         // such as /api/entitlements is never switched off as a module, but stays closed until release_a is on.
         var optIn = OptInFeatures.ResolveApiPath(path);
-        if (optIn is not null && Guid.TryParse(context.HttpContext.User.FindFirstValue("tenant_id"), out var optInTenant))
+        if (optIn is not null && Guid.TryParse(http.User.FindFirstValue("tenant_id"), out var optInTenant))
         {
-            var optInState = await _modules.GetStateAsync(optInTenant, context.HttpContext.RequestAborted);
+            var optInState = await _modules.GetStateAsync(optInTenant, http.RequestAborted);
             if (!optInState.IsEnabled(optIn))
             {
                 _log.LogWarning(
                     "FeatureFlagGuard blocked an opt-in feature. Tenant={TenantId} Feature={FeatureKey} Path={Path}",
                     optInTenant, optIn, path);
-                context.Result = new ObjectResult(new
+                return new ObjectResult(new
                 {
                     error = "feature_not_enabled",
                     feature = optIn,
                     message = "This feature is not enabled for your account yet.",
                 })
                 { StatusCode = StatusCodes.Status403Forbidden };
-                return;
             }
         }
 
@@ -74,31 +91,27 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
         if (module is null)
         {
             // Route not classified by the catalog — not a gated module, allow.
-            await next();
-            return;
+            return null;
         }
 
         if (module.Lock == ModuleLock.Core)
         {
             // Core modules are never gated. Resolving them explicitly (rather than through an
             // allow-list that had to be kept in sync by hand) is what removed the drift.
-            await next();
-            return;
+            return null;
         }
 
-        var tenantClaim = context.HttpContext.User.FindFirstValue("tenant_id");
+        var tenantClaim = http.User.FindFirstValue("tenant_id");
         if (!Guid.TryParse(tenantClaim, out var tenantId))
         {
             // No tenant context (unauthenticated or platform admin JWT) — let auth handle it.
-            await next();
-            return;
+            return null;
         }
 
-        var state = await _modules.GetStateAsync(tenantId, context.HttpContext.RequestAborted);
+        var state = await _modules.GetStateAsync(tenantId, http.RequestAborted);
         if (state.IsEnabled(module.Key))
         {
-            await next();
-            return;
+            return null;
         }
 
         _log.LogWarning(
@@ -106,10 +119,10 @@ public class FeatureFlagGuardFilter : IAsyncActionFilter
             tenantId,
             module.Key,
             path,
-            context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
-            context.HttpContext.Request.Headers.UserAgent.ToString());
+            http.Connection.RemoteIpAddress?.ToString() ?? "",
+            http.Request.Headers.UserAgent.ToString());
 
-        context.Result = new ObjectResult(new
+        return new ObjectResult(new
         {
             error = "feature_not_enabled",
             feature = module.Key,

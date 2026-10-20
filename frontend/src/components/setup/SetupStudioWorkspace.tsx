@@ -9,6 +9,7 @@ import { useCompany } from '../../contexts/CompanyContext';
 import { useFeatureFlags } from '../../contexts/FeatureFlagContext';
 import type { SetupNavigationGuard } from '../../hooks/useSetupNavigationGuard';
 import { useT } from '../../hooks/useT';
+import { POLICY_INTAKE_FLAG } from '../../lib/policyIntake';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaBlueprint, type SetupBlueprintDestination } from './SetupAreaBlueprint';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
@@ -55,7 +56,8 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
     flagStatus: flags.status,
     isCompanyScopedGroup: accountType === 'Group' && !isGroupScope,
   };
-  const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  // The Policy library entry exists only while policy intake is switched on for the tenant (off by default).
+  const canManagePolicies = flags.isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
 
   const navigate = (areaId: SetupAreaId | 'overview', setting?: string, afterAccepted?: () => void) => {
     if (areaId === activeArea && (setting ?? null) === params?.get('setting')) {

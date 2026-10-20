@@ -55,6 +55,7 @@ async function boot(page: Page, options: { repeatedCoverage?: boolean; noProposa
       previews.push(request.postDataJSON());
       return reply({ configurationVersion: 1, draft: { branches: [{ code: 'HQ', nameEn: 'Head Office', city: 'Dammam', isHeadOffice: true }] }, notes: [], engine: 'Isolated fixture' });
     }
+    // policy_intake is ON in this fixture: it is absent from the disabled keys (the real API lists it until the platform team enables it).
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path.startsWith('/api/features/') || path === '/api/notifications') return reply([]);
     if (request.method() !== 'GET') return reply({ message: `Unexpected write ${path}` }, 500);

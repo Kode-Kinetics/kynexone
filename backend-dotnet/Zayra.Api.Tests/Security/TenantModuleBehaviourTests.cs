@@ -64,14 +64,14 @@ public class TenantModuleBehaviourTests
             [new Claim("tenant_id", tenantId.ToString())], "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = new FeatureFlagGuardFilter(
             new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions())),
             NullLogger<FeatureFlagGuardFilter>.Instance);
 
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         return ctx.Result;
     }

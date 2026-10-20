@@ -32,7 +32,7 @@ public sealed class PolicyReviewTests
         public ZayraDbContext Db = new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         public Guid Tenant = Guid.NewGuid(), User = Guid.NewGuid(), Company = Guid.NewGuid();
         public PolicyDocumentService Documents;
-        public Case() => Documents = new(Db, new NeverLlm(), new("none", "", "", "", "", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+        public Case() => Documents = new(Db, new NeverLlm(), new("none", "", "", "", "", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance, PolicyContentNeverLeaves.Instance);
         public async Task<PolicyReviewRequest> Seed()
         {
             Db.Companies.Add(new() { Id = Company, TenantId = Tenant, LegalNameEn = "Shadow", CountryCode = "SA", DefaultCurrency = "SAR" });
