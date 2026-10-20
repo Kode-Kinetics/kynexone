@@ -76,6 +76,11 @@ export function useSetupCompanyQuery() {
         return;
       }
     }
+    // Reconcile only the URL this render saw. A section switch pushes its entry at
+    // once; replacing from these older params would write the previous tab back over it.
+    // The effect runs again with the new params.
+    if (typeof window !== 'undefined' && (window.location.pathname !== '/setup'
+      || new URLSearchParams(window.location.search).toString() !== new URLSearchParams(params?.toString()).toString())) return;
     if (requested !== authorized) {
       const next = new URLSearchParams(params?.toString());
       if (authorized) next.set('companyId', authorized); else next.delete('companyId');

@@ -1679,6 +1679,32 @@ test('history_back_to_absent_company_restores_all_companies_scope', async ({ pag
   expect(writes).toEqual([]);
 });
 
+test('setup_section_history_records_every_tab_shown_even_when_the_server_is_slow', async ({ page }) => {
+  const { writes } = await boot(page);
+  // Hold every server round trip: a section switch shows its tab at once, so its
+  // history entry must not wait for (or be lost behind) a router fetch.
+  await page.route(url => url.searchParams.has('_rsc'), async route => {
+    await new Promise(resolve => setTimeout(resolve, 1_500));
+    await route.fallback();
+  });
+  const sections = page.getByRole('navigation', { name: 'Setup sections' });
+  const steps = [['Companies', 'companies'], ['Grades', 'grades'], ['Employee Reference Lists', 'masterData'], ['Grades', 'grades']] as const;
+  for (const [label] of steps) {
+    await sections.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.getByRole('heading', { level: 2, name: label, exact: true })).toBeVisible();
+  }
+  await expect(page).toHaveURL(/[?&]tab=grades(&|$)/);
+  for (const [label, tab] of [...steps].reverse().slice(1)) {
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`[?&]tab=${tab}(&|$)`));
+    await expect(page.getByRole('heading', { level: 2, name: label, exact: true })).toBeVisible();
+  }
+  await page.goForward();
+  await expect(page).toHaveURL(/[?&]tab=grades(&|$)/);
+  await expect(page.getByRole('heading', { level: 2, name: 'Grades', exact: true })).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
 test('whole_destination_row_is_action', async ({ page }) => {
   const { writes } = await boot(page, { area: 'organization' });
   const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Companies', exact: true });

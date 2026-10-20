@@ -2412,7 +2412,12 @@ export function SetupPage() {
     params.set('tab', tab);
     params.set('area', resolveSetupArea(params.get('area')));
     if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
-    router.push(`/setup?${params.toString()}`, { scroll: false });
+    // The tab is shown immediately, so its history entry must exist immediately too.
+    // router.push only writes the entry when its server round trip commits; a second
+    // tab chosen before then superseded it, and Back skipped a tab the user had seen.
+    // The page is client-rendered from the query, so a native push (which Next's
+    // router adopts without a fetch) is enough.
+    window.history.pushState(null, '', `/setup?${params.toString()}`);
   };
 
   // Resolve permissions on every render so a permission change cannot leave a
