@@ -64,6 +64,8 @@ public class OrganizationController : ControllerBase
     {
         try
         {
+            // Same rule as POST /api/branches: the company must be within the caller's grant.
+            if (!CompanyEndpoints.MayWrite(this, request.CompanyId)) return Forbid();
             var branch = await _organization.CreateBranchAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/organization/branches/{branch.Id}", branch);
         }

@@ -441,4 +441,18 @@ public class BranchCompanyScopeTests
                 .Should().BeOfType<OkObjectResult>();
         }
     }
+
+    [Fact]
+    public async Task OrganizationCreateBranch_AppliesTheSameCompanyRule()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        (await Organization(db, Caller(w.TenantId, null, w.A.Id)).CreateBranch(Req(w.B.Id, "B9"), CancellationToken.None)).Result
+            .Should().BeOfType<ForbidResult>();
+        (await Organization(db, Caller(w.TenantId, null, w.A.Id)).CreateBranch(Req(w.A.Id, "A9"), CancellationToken.None)).Result
+            .Should().BeOfType<CreatedResult>();
+        (await Organization(db, Caller(w.TenantId, w.A.Id)).CreateBranch(Req(w.B.Id, "B9"), CancellationToken.None)).Result
+            .Should().BeOfType<CreatedResult>("a group grant with a company selected still writes any company");
+        (await db.Branches.CountAsync(b => b.TenantId == w.TenantId && b.Code == "B9")).Should().Be(1);
+    }
 }
