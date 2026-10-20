@@ -3954,6 +3954,9 @@ public partial class PayrollController : ControllerBase
         run.ErpPostingStatus = ErpPostingStatuses.ReadyForErp;
         run.ErpPostingStatusChangedAtUtc = DateTime.UtcNow;
         await _db.PayrollSlips.Where(s => s.RunId == id).ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Final"), cancellationToken);
+        // The run's employees' attendance days in its month are now payroll-locked: no range run, correction or late punch
+        // may rewrite them (AttendancePayrollLock). A void releases them.
+        await AttendancePayrollLock.LockAsync(_db, tenantId, id, run.Year, run.Month, GetUserId(), cancellationToken);
         await _db.Payslips.Where(s => s.PayrollRunId == id && s.TenantId == tenantId).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsPublishedToEss, true).SetProperty(p => p.PublishedAtUtc, DateTime.UtcNow), cancellationToken);
         // POD-B2 (M5b) — echo the hold-out count on the Lock audit and response so the last irreversible
         // step before payment restates who is NOT being paid.

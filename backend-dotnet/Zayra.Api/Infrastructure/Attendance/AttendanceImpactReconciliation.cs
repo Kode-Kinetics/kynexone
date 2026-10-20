@@ -111,7 +111,8 @@ public static class AttendanceImpactReconciliation
             .ToHashSet();
 
         var locks = await db.AttendanceLockPeriods.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status == "Locked" && x.PeriodStart <= to && x.PeriodEnd >= from)
+            .Where(x => x.TenantId == tenantId && x.Status == "Locked" && x.PeriodStart <= to && x.PeriodEnd >= from
+                     && !x.LockType.StartsWith(AttendancePayrollLock.RunLockPrefix))
             .Select(x => new { x.PeriodStart, x.PeriodEnd }).ToListAsync(ct);
 
         // Punches around the period, dated by THE work-date rule. The window is wide enough for any day in the period:

@@ -670,12 +670,12 @@ public class AttendanceService : IAttendanceService
                 var employeeDays = new List<DateOnly>();
                 foreach (var date in employeeDates[emp.Id])
                 {
-                    if (await IsLocked(tenantId, date, ct)) continue;
+                    if (await IsLocked(tenantId, emp.Id, date, ct)) continue;
                     var done = false;
                     await AttendanceDailyRecordLock.RunAsync(_db, tenantId, emp.Id, date, async () =>
                     {
                         done = false;
-                        if (await IsLocked(tenantId, date, ct)) return; // re-checked inside the day's lock
+                        if (await IsLocked(tenantId, emp.Id, date, ct)) return; // re-checked inside the day's lock
                         await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
                         await _db.SaveChangesAsync(ct);
                         done = true;
@@ -787,7 +787,7 @@ public class AttendanceService : IAttendanceService
                 {
                     done = false;
                     // Re-checked inside the day's lock: a payroll period locked while the run was going is not rewritten.
-                    if (await IsLocked(tenantId, day, ct)) return;
+                    if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                     await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
                     done = true;
@@ -813,8 +813,9 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("From date must be on or before To date.");
         if (toDate.DayNumber - fromDate.DayNumber > 366)
             throw new InvalidOperationException("Attendance processing is limited to 367 days per request.");
-        if (await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId
-                && x.Status == "Locked" && x.PeriodStart <= toDate && x.PeriodEnd >= fromDate, ct))
+        // A tenant-wide lock refuses the whole range; a payroll run's lock covers only its employees' days, which the
+        // run skips one by one (IsLocked), so another company's attendance for the same month still processes.
+        if (await AttendancePayrollLock.IsTenantLockedAsync(_db, tenantId, fromDate, toDate, ct))
             throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
     }
 
@@ -868,7 +869,7 @@ public class AttendanceService : IAttendanceService
             {
                 done = false;
                 // Re-checked inside the day's lock: a payroll period locked while the job was going is not rewritten.
-                if (await IsLocked(tenantId, day, ct)) return;
+                if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                 await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                 await _db.SaveChangesAsync(ct);
                 done = true;
@@ -924,7 +925,7 @@ public class AttendanceService : IAttendanceService
                 await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
                 {
                     done = false;
-                    if (await IsLocked(tenantId, day, ct)) return;
+                    if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                     if (impactsOnly?.Contains((employee.Id, day)) == true)
                         await ResyncImpactsFromRecordAsync(tenantId, employee, day, policy, ct);
                     else
@@ -1019,13 +1020,13 @@ public class AttendanceService : IAttendanceService
         // Race-safe: two first-of-day punches of the same employee used to both create the daily record, and the loser
         // got an unhandled 23505 (a 500 after its raw event had committed). The daily record and what is derived from it
         // are written under a per-(tenant, employee, work date) advisory lock, so the second punch updates the first's row.
-        if (await IsLocked(tenantId, workDate, ct)) return raw;
+        if (await IsLocked(tenantId, employee.Id, workDate, ct)) return raw;
         // The tenant's first DEFAULT policy is created race-safely in its own short transaction, BEFORE the daily-record
         // lock is taken (the policy lock is never held together with a daily-record lock).
         var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, workDate, async () =>
         {
-            if (await IsLocked(tenantId, workDate, ct)) return;
+            if (await IsLocked(tenantId, employee.Id, workDate, ct)) return;
             await ProcessEmployeeDay(tenantId, employee, workDate,
                 ResolveAttendancePolicy(employee, policies), context, ct);
             await _db.SaveChangesAsync(ct);
@@ -1061,7 +1062,7 @@ public class AttendanceService : IAttendanceService
             Reason = Clean(request.Reason),
             Status = "Submitted",
             RequestedByUserId = context.UserId,
-            PayrollLockChecked = await IsLocked(tenantId, request.WorkDate, ct)
+            PayrollLockChecked = await IsLocked(tenantId, request.EmployeeId, request.WorkDate, ct)
         };
         _db.AttendanceRegularizationRequests.Add(reg);
         _db.AttendanceCorrectionApprovals.Add(new AttendanceCorrectionApproval { TenantId = tenantId, RegularizationRequestId = reg.Id, ApprovalLevel = "Manager" });
@@ -1094,7 +1095,7 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Cannot approve your own correction request.");
         if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
-        if (await IsLocked(tenantId, reg.WorkDate, ct))
+        if (await IsLocked(tenantId, reg.EmployeeId, reg.WorkDate, ct))
             throw new InvalidOperationException("Attendance period is payroll locked.");
         var beforeStatus = reg.Status;
         var activeLevel = reg.Status == "Submitted" ? "Manager" : "HR";
@@ -1105,7 +1106,7 @@ public class AttendanceService : IAttendanceService
             reg = await RunRegularizationTransitionAsync(tenantId, id, async () =>
             {
                 var r = await ReloadForTransitionAsync(tenantId, id, beforeStatus, ct);
-                if (await IsLocked(tenantId, r.WorkDate, ct))
+                if (await IsLocked(tenantId, r.EmployeeId, r.WorkDate, ct))
                     throw new InvalidOperationException("Attendance period is payroll locked.");
                 var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == "Manager", ct);
                 if (approval is not null)
@@ -1593,7 +1594,7 @@ public class AttendanceService : IAttendanceService
                 if (reg.Status == "Approved" && approval?.DecidedByUserId is Guid decider && decider == context.UserId)
                     return reg;
                 if (reg.Status != beforeStatus) throw new RegularizationConflictException();
-                if (await IsLocked(tenantId, reg.WorkDate, ct))
+                if (await IsLocked(tenantId, reg.EmployeeId, reg.WorkDate, ct))
                     throw new InvalidOperationException("Attendance period is payroll locked.");
                 // One correction is one work day (the shift may have changed since it was filed).
                 await EnsureCorrectionWithinWorkDayAsync(tenantId, reg.EmployeeId, reg.WorkDate, reg.RequestedInUtc, reg.RequestedOutUtc, ct);
@@ -1775,8 +1776,9 @@ public class AttendanceService : IAttendanceService
     private async Task<DateOnly> ResolvePunchWorkDateAsync(Guid tenantId, int employeeId, DateTime punchUtc, CancellationToken ct) =>
         await AttendanceWorkDate.ResolveAsync(_db, tenantId, employeeId, punchUtc, await ResolveTenantTimeZoneAsync(tenantId, ct), ct);
 
-    private async Task<bool> IsLocked(Guid tenantId, DateOnly date, CancellationToken ct) =>
-        await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
+    /// <summary>Whether the employee's day may not be rewritten (AttendancePayrollLock: a tenant-wide lock, or a payroll run's lock on the day).</summary>
+    private Task<bool> IsLocked(Guid tenantId, int employeeId, DateOnly date, CancellationToken ct) =>
+        AttendancePayrollLock.IsLockedAsync(_db, tenantId, employeeId, date, ct);
 
     private const string DefaultPolicyCode = "DEFAULT";
     internal static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = DefaultPolicyCode, Name = "Default attendance policy" };
