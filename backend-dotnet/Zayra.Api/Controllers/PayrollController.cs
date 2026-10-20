@@ -10065,24 +10065,32 @@ public partial class PayrollController : ControllerBase
             });
 
         // ── K3: THE ART. 84 WAGE BASE ────────────────────────────────────────────────────────────────
-        // The pack computes gratuity on the LAST BASIC wage; POD-A2 documented that as a per-company FLOOR,
-        // not the statutory "last wage" (basic + regular allowances). A displayed shortfall was advisory;
-        // a DISBURSED one is underpayment of a statutory entitlement, evidenced by the employer's own
-        // signed settlement. Non-zero delta requires an explicit, RECORDED acknowledgement.
+        // The pack computes gratuity on the wage base IT applies — for KSA basic + housing, plus transport
+        // unless 'eosb.include_transport' is off, with the composite "other allowances" (food, mobile, other)
+        // excluded unless 'eosb.include_other_allowances' is on (KsaEndOfServiceCalculator, A1). A non-zero
+        // delta means some of the package sits outside that base. A displayed shortfall was advisory; a
+        // DISBURSED one may be underpayment of a statutory entitlement, evidenced by the employer's own signed
+        // settlement, so it requires an explicit, RECORDED acknowledgement. The message names the base the
+        // settlement actually used (its inputs snapshot), not a fixed sentence.
         if (s.WageBaseDeltaAmount > 0.01m && !req.AcknowledgeWageBaseFloor)
+        {
+            var wageBase = DescribeEosbWageBase(s.InputsSnapshotJson, s.Currency);
             return UnprocessableEntity(new
             {
                 error   = "wage_base_floor_requires_acknowledgement",
-                message = $"This settlement pays gratuity on the BASIC wage only. Computed on the full package " +
-                          $"(basic + allowances) it would be {s.WageBaseDeltaAmount:N2} {s.Currency} HIGHER. KSA " +
-                          "Labour Law Art. 84 measures the award on the LAST WAGE, which the courts read as " +
-                          "including regular allowances — so approving this disburses a known potential shortfall. " +
+                message = $"This settlement pays gratuity on {wageBase.Text}. Computed on the full package " +
+                          $"it would be {s.WageBaseDeltaAmount:N2} {s.Currency} HIGHER. KSA " +
+                          "Labour Law Art. 84 measures the award on the LAST WAGE (Art. 2: basic plus all due increments), " +
+                          "so if an excluded allowance is a regular cash increment, approving this disburses a known potential shortfall. " +
                           "Either raise the settlement (add the difference as an other-dues line), or re-send with " +
-                          "acknowledgeWageBaseFloor=true to record who accepted the company floor. " +
+                          "acknowledgeWageBaseFloor=true to record who accepted this wage base. " +
                           "[FLAG-COMPLIANCE-KSA]",
                 wageBaseDelta = s.WageBaseDeltaAmount,
+                appliedWageBase = wageBase.Applied,
+                fullPackage = wageBase.FullPackage,
                 currency = s.Currency,
             });
+        }
 
         // ── GUARD 4: THE WAGE SIDE MUST BE DONE (the POD-C3 seam, as an assertion) ───────────────────
         // C3 pays a leaver through their last working day inside the ordinary run and stamps
@@ -10528,6 +10536,47 @@ public partial class PayrollController : ControllerBase
                       "refused rather than guessed. Set the employee's company and retry.",
             employeeId = employee.Id,
         });
+    }
+
+    /// <summary>
+    /// "a wage base of 12,500.00 SAR (basic + housing + transport, as applied by the country pack), not the full
+    /// package of 13,300.00 SAR — 800.00 SAR of other allowances (food, mobile, other) is excluded" — read from the
+    /// settlement's own inputs snapshot (appliedWageBase, the package components), so the sentence states the base
+    /// the money was computed on. Falls back to a neutral phrase when the snapshot predates those fields.
+    /// </summary>
+    internal static (string Text, decimal? Applied, decimal? FullPackage) DescribeEosbWageBase(string? inputsSnapshotJson, string currency)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(inputsSnapshotJson) ? "{}" : inputsSnapshotJson);
+            var root = doc.RootElement;
+            decimal? Read(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetDecimal(out var d) ? d : null;
+            var applied = Read("appliedWageBase");
+            var gross = Read("monthlyGross");
+            if (applied is not decimal appliedBase || gross is not decimal fullPackage)
+                return ("the wage base the country pack applied, not the full package", applied, gross);
+            var basic = Read("basicWage") ?? 0m;
+            var housing = Read("packageHousing") ?? 0m;
+            var transport = Read("packageTransport") ?? 0m;
+            // What the applied base covers, in component words: basic + housing is the Art. 84 floor; transport
+            // is in when the base reaches it (the default 'eosb.include_transport' = true).
+            var covered = new List<string> { "basic" };
+            var running = basic;
+            if (housing > 0m && appliedBase + 0.005m >= running + housing) { covered.Add("housing"); running += housing; }
+            if (transport > 0m && appliedBase + 0.005m >= running + transport) { covered.Add("transport"); running += transport; }
+            var excluded = Math.Max(0m, fullPackage - appliedBase);
+            var excludedWhat = new List<string>();
+            if (transport > 0m && !covered.Contains("transport")) excludedWhat.Add("transport");
+            excludedWhat.Add("other allowances (food, mobile, other)");
+            var text = $"a wage base of {appliedBase:N2} {currency} ({string.Join(" + ", covered)}, as applied by the country pack), " +
+                       $"not the full package of {fullPackage:N2} {currency}" +
+                       (excluded > 0.005m ? $" — {excluded:N2} {currency} of {string.Join(" and ", excludedWhat)} is excluded by default" : string.Empty);
+            return (text, appliedBase, fullPackage);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return ("the wage base the country pack applied, not the full package", null, null);
+        }
     }
 
     private static string SafeEosbRule(string json)
@@ -12036,8 +12085,9 @@ public record ApproveFinalSettlementRequest(
     /// defaults to "Resignation", which silently applies the Art. 85 haircut — this is what stops an
     /// untouched default discounting a genuine termination.</summary>
     string? ConfirmTerminationReason = null,
-    /// <summary>Records that the approver accepts gratuity computed on the BASIC wage floor rather than
-    /// the Art. 84 "last wage". Required whenever the computed delta is non-zero.</summary>
+    /// <summary>Records that the approver accepts gratuity computed on the wage base the country pack applied
+    /// (KSA: basic + housing + transport by default; other allowances excluded) rather than the full package.
+    /// Required whenever the computed delta is non-zero.</summary>
     bool AcknowledgeWageBaseFloor = false,
     /// <summary>Records that the leaver's final-month wages are genuinely UNPAID and authorises adding
     /// them to this settlement as an explicit other-dues line.</summary>

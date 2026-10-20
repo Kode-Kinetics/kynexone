@@ -159,8 +159,9 @@ const ROWS: Row[] = [
     kind: 'pack',
     name: 'Saudi Arabia',
     nameAr: 'السعودية',
-    items: ['GOSI', 'Nitaqat', 'ANB payroll file', 'Qiwa data check'],
-    itemsAr: ['التأمينات', 'نطاقات', 'ملف رواتب البنك', 'فحص بيانات قوى'],
+    /* 'ANB-format', not 'ANB': SaudiBankExportPanel states the layout is not a bank-certified format. */
+    items: ['GOSI', 'Nitaqat', 'ANB-format payroll file, pending ANB certification', 'Qiwa data check'],
+    itemsAr: ['التأمينات', 'نطاقات', 'ملف رواتب بصيغة البنك العربي، بانتظار اعتماد البنك', 'فحص بيانات قوى'],
     heads: 612,
   },
   {
@@ -246,8 +247,8 @@ const ROWS: Row[] = [
     nameAr: 'ملفات حماية الأجور',
     /* AnbConnectCsvGenerator + KsaWageFileRules (Saudi bank file with WPS
        fields), UaeWageProtectionExporter (SIF), QatarWageProtectionExporter */
-    items: ['ANB file, WPS fields', 'UAE SIF', 'Qatar WPS'],
-    itemsAr: ['ملف البنك بحقول الأجور', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
+    items: ['ANB-format file, WPS fields (pending ANB certification)', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف بصيغة البنك العربي بحقول الأجور (بانتظار اعتماد البنك)', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
   },
   {
     code: 'EOS',
@@ -400,7 +401,7 @@ const EN: Copy = {
     + 'only its strings being translated, the Hijri calendar alongside the '
     + 'Gregorian one, and a currency per company inside one group. Six more '
     + 'capabilities turn past on the drum: wage files (a Saudi bank payroll file '
-    + 'for ANB with the WPS fields, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
+    + 'in ANB\'s format with the WPS fields, pending ANB certification, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
     + 'final settlement and leave encashment; maker-checker approvals on payroll, '
     + 'leave and HR requests, and delegation; geofenced attendance with shifts, '
     + 'overtime and timesheets; employee self-service on web and mobile for '

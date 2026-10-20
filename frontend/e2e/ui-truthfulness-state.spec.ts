@@ -101,7 +101,11 @@ test.describe('browserless UI truthfulness contracts', () => {
     for (const claim of ["'Mudad file'", "'ملف مدد'", "'Mudad'", "'مدد'", "'Qiwa'", 'Mudad WPS XML exporter', 'the Mudad \'', 'live sync']) {
       expect(login, `login marketing must not claim ${claim}`).not.toContain(claim);
     }
-    expect(login).toContain("'ANB payroll file'");
+    // The ANB file is generated in ANB's layout but not certified by the bank (SaudiBankExportPanel says so),
+    // so the login must say "ANB-format … pending ANB certification", never a bare "ANB payroll file".
+    expect(login).toContain("'ANB-format payroll file, pending ANB certification'");
+    expect(login).not.toContain("'ANB payroll file'");
+    expect(login).not.toContain("'ANB file, WPS fields'");
     expect(login).toContain("'Qiwa data check'");
     expect(LOGIN_CAPABILITIES.find((item) => item.includes('Hijri'))).toContain('aware');
     /* These three used to pin Tailwind utilities on the old panel-grid
