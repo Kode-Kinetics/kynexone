@@ -34,9 +34,15 @@ public class AttendanceService : IAttendanceService
     // baseline is resolved once per employee-day and the company row never changes mid-run.
     private readonly Dictionary<Guid, string> _companyCountryCache = new();
 
-    public AttendanceService(ZayraDbContext db, INotificationService notifications, IHttpClientFactory httpClientFactory)
+    // DI's TimeProvider.System; tests pass a fixed one to punch, or ask for "today", at a chosen instant. Optional and
+    // trailing so the hand-rolled constructions elsewhere keep compiling.
+    private readonly TimeProvider _clock;
+
+    public AttendanceService(ZayraDbContext db, INotificationService notifications, IHttpClientFactory httpClientFactory,
+        TimeProvider? clock = null)
     {
         _db = db;
+        _clock = clock ?? TimeProvider.System;
         _notifications = notifications;
         _httpClientFactory = httpClientFactory;
         _workWeek = new WorkWeekService(db);
@@ -647,7 +653,11 @@ public class AttendanceService : IAttendanceService
         int processedDays = 0;
         if (autoProcess && employeeDates.Count > 0)
         {
-            var policy = await _db.AttendancePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct) ?? DefaultPolicy(tenantId);
+            // The SAME policy resolution as the punch path and the range run (the employee's assigned policy, then the
+            // org tiering). Ingest used to take the first active policy row, so one day's late, break, worked and overtime
+            // figures flipped with whichever path recomputed it last. Resolved before the day locks are taken (the default
+            // policy's own lock is never held together with a daily-record lock), and read-only from here on.
+            var policies = await EnsureActivePoliciesAsync(tenantId, ct);
             var ctx = new RequestContext(ip, "device-ingest", null, tenantId);
             // One employee-day per transaction, under the same per-(tenant, employee, work date) lock as a punch, in the
             // global order (employee, then date): a punch racing this ingest can neither 23505 nor lose its update. The
@@ -656,6 +666,7 @@ public class AttendanceService : IAttendanceService
             _db.ChangeTracker.Clear();
             foreach (var emp in matchedEmployees.Values.OrderBy(e => e.Id))
             {
+                var policy = ResolveAttendancePolicy(emp, policies);
                 var employeeDays = new List<DateOnly>();
                 foreach (var date in employeeDates[emp.Id])
                 {
@@ -860,7 +871,7 @@ public class AttendanceService : IAttendanceService
 
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today = DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime);
         // A PARAMETERLESS call defaults to a trailing window, not to today alone. Attendance only
         // exists for days that have HAPPENED — the demo seeders stop at yesterday, and a live
         // tenant's row appears only once that day's punches are processed — so a from==to==today
@@ -898,7 +909,7 @@ public class AttendanceService : IAttendanceService
     public async Task<AttendanceRawEvent> PunchAsync(Guid tenantId, WebPunchRequest request, string source, RequestContext context, CancellationToken ct,
         PunchVerification? verification = null)
     {
-        var punchedAtUtc = DateTime.UtcNow;
+        var punchedAtUtc = _clock.GetUtcNow().UtcDateTime;
         // Selfie attendance v2 rule 4: the stored method is what the SERVER verified (None, Geofence, Selfie,
         // Selfie+Geofence). The request's VerificationMethod, ConfidenceScore and ClientBiometricVerified are never read.
         verification ??= PunchVerification.Unverified;
@@ -1225,8 +1236,12 @@ public class AttendanceService : IAttendanceService
         var isRestDay = workWeek.IsWeekend(date.DayOfWeek);
         var isPublicHoliday = await _db.PublicHolidays.AsNoTracking()
             .AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
-        var approvedLeave = await _db.LeaveRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Approved"
+        // Tenant-wide, like the shift read (AttendanceWorkDate): LeaveRequest is company-scoped-operational, so on the
+        // anonymous device webhook (empty company scope under Production's strict mode) the filtered read saw no leave
+        // and an approved leave day was recomputed as "Absent" with an absence deduction. The employee is re-applied
+        // below and was authorised by the calling path; only the leave type name is read, never returned.
+        var approvedLeave = await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId, ApprovedLeaveReadJustification).AsNoTracking()
+            .Where(x => x.EmployeeId == employee.Id && x.Status == "Approved"
                 && x.StartDate <= date && x.EndDate >= date)
             .Select(x => x.LeaveTypeName)
             .FirstOrDefaultAsync(ct);
@@ -1292,6 +1307,11 @@ public class AttendanceService : IAttendanceService
         await UpsertExceptions(tenantId, daily, ct);
     }
 
+
+    private const string ApprovedLeaveReadJustification =
+        "Whether an employee's own approved leave covers the day being recomputed. The employee is already authorised by " +
+        "the calling path (or resolved from the authenticated device's tenant on the anonymous webhook); no leave data is " +
+        "returned, and the day's status must not depend on the caller's company scope.";
 
     /// <summary>An employee's scheduled shift on one date (local wall-clock times; End &lt;= Start means overnight).</summary>
     public sealed record WorkShift(TimeOnly StartTime, TimeOnly EndTime);

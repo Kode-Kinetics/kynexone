@@ -67,8 +67,12 @@ public static class AttendanceDerivedArtifacts
         ZayraDbContext db, Guid tenantId, Guid? employeeCompanyId,
         AttendanceDailyRecord daily, CancellationToken ct)
     {
-        var record = await db.AttendanceRecords.FirstOrDefaultAsync(
-            x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
+        // Tenant-wide: (tenant, employee, work date) is UNIQUE on attendance_records, so the lookup must find the row
+        // whatever the caller's company scope. On the anonymous device webhook (empty company scope under Production's
+        // strict mode) the filtered read missed the row the day's first punch created, and the second punch added
+        // another — a unique-index violation that failed the ingest after its raw events were saved.
+        var record = await ScopedBypass.NullableTenantWide(db.AttendanceRecords, tenantId, LegacyRecordJustification).FirstOrDefaultAsync(
+            x => x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
         if (record is null)
         {
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
@@ -203,6 +207,11 @@ public static class AttendanceDerivedArtifacts
 
     /// <summary>Payroll run statuses at which the run has paid, or committed to pay, its period (Draft and Voided have not).</summary>
     public static readonly string[] PaidRunStatuses = ["Processed", "PendingFinanceReview", "Approved", "Locked", "Paid"];
+
+    private const string LegacyRecordJustification =
+        "The legacy attendance row of the employee-day being settled is unique per (tenant, employee, work date) and must " +
+        "be found to be updated whatever the caller's company scope; the employee is already authorised by the calling " +
+        "path and nothing is returned to the caller.";
 
     private const string PayrollCoverageJustification =
         "Whether payroll already paid an employee's attendance day decides whether recomputing it may raise a new " +

@@ -430,6 +430,148 @@ public class AttendanceWorkDateCorrectnessTests
         await AssertDaysPartitionTimeAsync(db, tenantId, employee.Id, new DateOnly(2026, 9, 14), new DateOnly(2026, 9, 18));
     }
 
+    // ── (5) device ingest recomputes a day exactly as every other path does ──────────────────────────────
+
+    /// <summary>
+    /// An employee on approved leave passes the gate device, which logs a single break event (no In, no Out). Ingest
+    /// recomputes the day. Under Production's strict company scope the anonymous webhook could not see the
+    /// company-scoped <c>LeaveRequest</c>, so the leave day became "Absent" with a 480-minute absence deduction.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeviceIngest_UnderStrictScope_KeepsAnApprovedLeaveDayOnLeave(bool anonymousStrictScope)
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        string code;
+        int employeeId;
+        await using (var seed = StoreDb(store))
+        {
+            var employee = AddEmployee(seed, tenantId);
+            code = employee.EmployeeCode;
+            employeeId = employee.Id;
+            SeedRiyadh(seed, tenantId);
+            SeedDevice(seed, tenantId);
+            seed.LeaveRequests.Add(new LeaveRequest
+            {
+                TenantId = tenantId, CompanyId = CompanyA, EmployeeId = employee.Id, EmployeeName = employee.FullName,
+                LeaveTypeName = "Annual leave", Status = "Approved", StartDate = Weekday, EndDate = Weekday, TotalDays = 1,
+            });
+            await seed.SaveChangesAsync();
+        }
+        await using (var hr = StoreDb(store)) await ProcessAsync(hr, tenantId, employeeId, Weekday);
+
+        await using (var db = anonymousStrictScope ? AnonymousStrictDb(store) : StoreDb(store))
+        {
+            if (anonymousStrictScope)
+                (await db.LeaveRequests.CountAsync()).Should().Be(0, "premise: strict anonymous scope hides the leave request");
+            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                [new DeviceIngestPunch(code, RiyadhToUtc(Weekday, 10, 0), "BreakOut", null, null, null, null, null, null)], AutoProcess: true),
+                "127.0.0.1", default);
+            result!.Processed.Should().Be(1);
+        }
+
+        await using var check = StoreDb(store);
+        var daily = await check.AttendanceDailyRecords.SingleAsync();
+        daily.Status.Should().Be("On leave", "the approved leave governs the day whichever path recomputed it");
+        (await check.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == "Absence deduction"))
+            .Should().BeFalse("an approved leave day is never deducted as an absence");
+    }
+
+    /// <summary>
+    /// The second device punch of a day recomputes a day whose legacy <c>AttendanceRecord</c> already exists. That row
+    /// is company-scoped, so under strict anonymous scope the lookup missed it and a second row was added for the same
+    /// (tenant, employee, work date) — a unique-index violation on PostgreSQL.
+    /// </summary>
+    [Fact]
+    public async Task DeviceIngest_UnderStrictScope_UpdatesTheDaysLegacyRecord_NeverAddsASecond()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        string code;
+        await using (var seed = StoreDb(store))
+        {
+            code = AddEmployee(seed, tenantId).EmployeeCode;
+            SeedRiyadh(seed, tenantId);
+            SeedDevice(seed, tenantId);
+            await seed.SaveChangesAsync();
+        }
+
+        foreach (var (at, direction) in new[] { (RiyadhToUtc(Weekday, 9, 0), "In"), (RiyadhToUtc(Weekday, 17, 0), "Out") })
+        {
+            await using var db = AnonymousStrictDb(store);
+            await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                [new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+        }
+
+        await using var check = StoreDb(store);
+        var legacy = await check.AttendanceRecords.ToListAsync();
+        legacy.Should().ContainSingle("(tenant, employee, work date) is unique on attendance_records");
+        legacy[0].CompanyId.Should().Be(CompanyA);
+    }
+
+    /// <summary>
+    /// A tenant with two active policies; the employee is assigned the one that does not come first. The punch path
+    /// resolved the assigned policy, device ingest took the first active row, so the same day's break, worked, late and
+    /// undertime figures flipped depending on which path recomputed it last.
+    /// </summary>
+    [Fact]
+    public async Task DeviceIngest_AndThePunchPath_GiveTheSameDayFigures_UnderTheEmployeesAssignedPolicy()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        Employee viaPunch, viaDevice;
+        await using (var seed = StoreDb(store))
+        {
+            seed.AttendancePolicies.Add(new AttendancePolicy { TenantId = tenantId, Code = "A-OFFICE", Name = "Office" });
+            seed.AttendancePolicies.Add(new AttendancePolicy
+            {
+                TenantId = tenantId, Code = "B-SITE", Name = "Site", GraceMinutes = 0, EarlyExitThresholdMinutes = 0,
+                BreakMinutes = 30, StandardWorkMinutes = 420,
+            });
+            seed.SaveChanges();
+            viaPunch = AddEmployee(seed, tenantId);
+            viaDevice = AddEmployee(seed, tenantId);
+            viaPunch.AttendancePolicyCode = viaDevice.AttendancePolicyCode = "B-SITE";
+            SeedRiyadh(seed, tenantId);
+            SeedDevice(seed, tenantId);
+            await seed.SaveChangesAsync();
+        }
+        var clockIn = RiyadhToUtc(Weekday, 9, 20);
+        var clockOut = RiyadhToUtc(Weekday, 16, 50);
+
+        foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
+        {
+            await using (var db = StoreDb(store))
+                await Service(db, new FixedClock(at)).PunchAsync(tenantId, new WebPunchRequest(viaPunch.Id, direction, null, null, null),
+                    "Web", new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
+            await using (var db = AnonymousStrictDb(store))
+                await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                    [new DeviceIngestPunch(viaDevice.EmployeeCode, at, direction, null, null, null, null, null, null)], AutoProcess: true),
+                    "127.0.0.1", default);
+        }
+
+        await using var check = StoreDb(store);
+        static object Figures(AttendanceDailyRecord d) => new
+        {
+            d.WorkDate, d.FirstInUtc, d.LastOutUtc, d.MissingPunch, d.BreakMinutes, d.TotalWorkedMinutes, d.LateMinutes,
+            d.EarlyExitMinutes, d.OvertimeMinutes, d.UndertimeMinutes, d.Status,
+        };
+        var punched = await check.AttendanceDailyRecords.SingleAsync(d => d.EmployeeId == viaPunch.Id);
+        var ingested = await check.AttendanceDailyRecords.SingleAsync(d => d.EmployeeId == viaDevice.Id);
+        punched.BreakMinutes.Should().Be(30, "premise: the punch path applies the employee's assigned B-SITE policy");
+        punched.LateMinutes.Should().Be(20, "B-SITE has no grace");
+        Figures(ingested).Should().BeEquivalentTo(Figures(punched), "the same punches under the same policy are the same day");
+    }
+
+    private static void SeedDevice(ZayraDbContext db, Guid tenantId) =>
+        db.AttendanceDevices.Add(new AttendanceDevice
+        {
+            TenantId = tenantId, DeviceName = "Gate", SerialNumber = $"SN-{Guid.NewGuid():N}", IsActive = true,
+            ApiKeyReference = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(DeviceKey))),
+        });
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -554,7 +696,7 @@ public class AttendanceWorkDateCorrectnessTests
         return employee;
     }
 
-    private static AttendanceService Service(ZayraDbContext db) => new(db, new NullNotifications(), new NullHttpClients());
+    private static AttendanceService Service(ZayraDbContext db, TimeProvider? clock = null) => new(db, new NullNotifications(), new NullHttpClients(), clock);
 
     private static ZayraDbContext CreateDb() => StoreDb(Guid.NewGuid().ToString());
 
