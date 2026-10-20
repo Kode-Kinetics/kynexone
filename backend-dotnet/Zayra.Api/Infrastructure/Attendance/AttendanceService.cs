@@ -1510,11 +1510,8 @@ public class AttendanceService : IAttendanceService
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
     /// Ramadan day over-deducts by a third. See the call site for why the ordinary-day literal stays.</param>
-    private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct)
-    {
-        AttendanceDerivedArtifacts.UpsertImpacts(_db, tenantId, daily, absenceMinutes);
-        return Task.CompletedTask;
-    }
+    private Task UpsertImpacts(Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct) =>
+        AttendanceDerivedArtifacts.UpsertImpactsAsync(_db, tenantId, daily, absenceMinutes, ct);
 
     private async Task UpsertExceptions(Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
     {
