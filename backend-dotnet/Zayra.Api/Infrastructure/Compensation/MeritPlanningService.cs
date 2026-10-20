@@ -771,6 +771,19 @@ public sealed partial class MeritPlanningService(
             var code = await db.SalaryStructures.AsNoTracking().Where(s => s.Id == row.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(ct);
             var package = MeritLineCalculator.Package(row, code, row.BasicSalary - l.ProratedIncreasePay, request.EffectiveDate, row.Currency);
             await ValidatePackageAsync(employee, package, ct);
+            var reversalTitle = Truncate($"Merit award reversal - {employee.EmployeeCode} {employee.FullName} ({c.Name}): {reason}", 240);
+            // Routed BEFORE the change row is written: a reversal nobody could decide is refused with nothing saved,
+            // not left as a PendingApproval change with no approval behind it.
+            try
+            {
+                await approvals.EnsureRoutableAsync(c.TenantId, new CreateApprovalRequest(null, nameof(EmployeeChangeRequest), Guid.Empty.ToString(),
+                    reversalTitle, employee.Id, employee.CompanyId, "High"), caller.Context, ct);
+            }
+            catch (ApprovalRouteNotConfiguredException)
+            {
+                throw new CompRuleException("no_approval_route", "No approval workflow is configured for employee changes, so a reversal cannot be routed. Configure one under Approvals.");
+            }
+            catch (ApprovalRoutingException ex) { throw new CompRuleException(ex.Code, ex.Message); }
             var change = new EmployeeChangeRequest
             {
                 TenantId = c.TenantId, EmployeeId = l.EmployeeId, RequestedByUserId = caller.UserId, EffectiveDate = request.EffectiveDate,
@@ -782,13 +795,14 @@ public sealed partial class MeritPlanningService(
             try
             {
                 approval = await approvals.CreateRequestAsync(c.TenantId, new CreateApprovalRequest(null, nameof(EmployeeChangeRequest), change.Id.ToString(),
-                    Truncate($"Merit award reversal - {employee.EmployeeCode} {employee.FullName} ({c.Name}): {reason}", 240), employee.Id, employee.CompanyId, "High"),
+                    reversalTitle, employee.Id, employee.CompanyId, "High"),
                     caller.Context, ct);
             }
             catch (ApprovalRouteNotConfiguredException)
             {
                 throw new CompRuleException("no_approval_route", "No approval workflow is configured for employee changes, so a reversal cannot be routed. Configure one under Approvals.");
             }
+            catch (ApprovalRoutingException ex) { throw new CompRuleException(ex.Code, ex.Message); }
             change.ApprovalRequestId = approval.Id;
             l.ReversalChangeRequestId = change.Id;
             await SaveAsync(ct);

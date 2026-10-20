@@ -221,6 +221,8 @@ public sealed partial class MeritPlanningService
             {
                 throw new CompRuleException("no_approval_route", "No approval workflow is configured for merit worksheets. Add one for 'CompensationWorksheet' under Approvals.");
             }
+            // Nobody could ever decide it: refused before the approval is written; the transaction keeps the worksheet as it was.
+            catch (ApprovalRoutingException ex) { throw new CompRuleException(ex.Code, ex.Message); }
             sheet.ApprovalRequestId = approval.Id;
             sheet.Status = CompWorksheetStatuses.Submitted;
             sheet.SubmittedAtUtc = DateTime.UtcNow;

@@ -44,9 +44,31 @@ public class SelfRequestedApprovalTests
         var refused = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
         JsonSerializer.Serialize(refused.Value).Should().Contain("Nobody can approve this yet").And.Contain("HR Manager");
         (await db.ApprovalRequests.CountAsync()).Should().Be(0);
-        (await db.EmployeeChangeRequests.SingleAsync()).Status.Should().Be(EmployeeChangeStatuses.Cancelled,
-            "no change may linger as PendingApproval with no approval behind it");
+        (await db.EmployeeChangeRequests.CountAsync()).Should().Be(0, "routing is checked before the change row is written");
         (await db.Employees.SingleAsync()).Salary.Should().Be(10000m, "a refused change is never applied");
+    }
+
+    [Fact]
+    public async Task ARefusedSensitiveChange_SavesNothing_NotEvenTheOrdinaryFieldsSubmittedWithIt()
+    {
+        await using var db = CreateDb();
+        var (tenant, adminRole) = await SeedTenantAsync(db);
+        var requester = await AddUserAsync(db, tenant, adminRole);
+        var employee = await AddEmployeeAsync(db, tenant);
+
+        var result = await CreateController(db, tenant, requester).UpdateEmployee(employee.Id,
+            new EmployeeUpdateRequest(Today, new()
+            {
+                ["salary"] = JsonSerializer.SerializeToElement(15000),
+                ["phone"] = JsonSerializer.SerializeToElement("+966500000001"),
+            }), CancellationToken.None);
+
+        result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.EmployeeChangeRequests.CountAsync()).Should().Be(0);
+        var stored = await db.Employees.SingleAsync();
+        stored.Salary.Should().Be(10000m);
+        stored.Phone.Should().NotBe("+966500000001", "a refused submission writes nothing, not half of it");
     }
 
     [Fact]

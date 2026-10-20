@@ -3983,6 +3983,23 @@ public class EmployeesController : ControllerBase
                     });
                 }
 
+                // Routed BEFORE anything is written: a change nobody could ever decide is refused here with nothing saved —
+                // neither the change row nor the non-sensitive fields that ride along with it. (The workflow itself is
+                // provisioned first; that is configuration, idempotent, and not part of the employee's record.)
+                var routingWorkflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
+                if (_db.Entry(routingWorkflow).State != EntityState.Unchanged || _db.ChangeTracker.Entries<ApprovalWorkflowStep>().Any(e => e.State != EntityState.Unchanged))
+                    await _db.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await _approvalWorkflow.EnsureRoutableAsync(tenantId, new CreateApprovalRequest(routingWorkflow.Id, nameof(EmployeeChangeRequest),
+                        Guid.Empty.ToString(), $"Employee change approval - {employee.EmployeeCode} {employee.FullName}", employee.Id, employee.CompanyId, "High"),
+                        Context(), cancellationToken);
+                }
+                catch (ApprovalRoutingException ex)
+                {
+                    return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message, appliedFields = new List<string>() });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);

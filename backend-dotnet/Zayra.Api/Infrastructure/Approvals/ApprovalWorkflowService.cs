@@ -490,6 +490,27 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     public async Task<ApprovalRequestDto> CreateRequestAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        var (approval, overrideRouting) = await PrepareRequestAsync(tenantId, request, context, cancellationToken);
+        _db.ApprovalRequests.Add(approval);
+        await _db.SaveChangesAsync(cancellationToken);
+        await _audit.WriteAsync("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null, cancellationToken);
+        if (overrideRouting is not null)
+            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
+        return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// Everything <see cref="CreateRequestAsync"/> decides before it writes — the workflow, the first step's approver,
+    /// and whether anyone could ever decide it — with nothing written. A producer that saves its own record first calls
+    /// this BEFORE that write, so a refusal (<see cref="ApprovalNoEligibleDeciderException"/>, a missing or broken
+    /// workflow) leaves nothing half-saved, whatever the provider's transaction support.
+    /// </summary>
+    public async Task EnsureRoutableAsync(Guid tenantId, CreateApprovalRequest request, RequestContext context, CancellationToken cancellationToken)
+        => await PrepareRequestAsync(tenantId, request, context, cancellationToken);
+
+    private async Task<(ApprovalRequest Approval, string? OverrideRouting)> PrepareRequestAsync(Guid tenantId, CreateApprovalRequest request,
+        RequestContext context, CancellationToken cancellationToken)
+    {
         var entityName = Clean(request.EntityName);
         if (BenefitClaims.IsGovernedBenefit(entityName))
             throw new InvalidOperationException("Additional benefit approvals must be submitted from the employee Benefits page, not created directly.");
@@ -549,12 +570,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // Nobody at all could decide it ⇒ refused here (typed 422), before anything is written. The routed
         // approver cannot act but Admin/approvals.override can ⇒ it goes to that queue, audited below.
         var overrideRouting = await EnsureSomeoneCanDecideAsync(approval, firstStep, atCreate: true, currentDeciderUserId: null, cancellationToken);
-        _db.ApprovalRequests.Add(approval);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null, cancellationToken);
-        if (overrideRouting is not null)
-            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
-        return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
+        return (approval, overrideRouting);
     }
 
     public async Task<ApprovalRequestDto?> DecideAsync(Guid tenantId, Guid approvalRequestId, ApprovalDecisionRequest request, RequestContext context, CancellationToken cancellationToken)
