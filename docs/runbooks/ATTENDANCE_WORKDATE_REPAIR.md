@@ -259,8 +259,9 @@ or wanted.** Each open month is recomputed, day by day, when payroll first meets
 Held late and early-exit minutes on missing-punch days are listed on the same panel. Each run also warns about them
 with `WARN_MISSING_PUNCH_HELD`, which never blocks.
 
-If attendance changes between the moment Process loads the impacts and the moment it marks them, the run rolls back
-with `attendance_changed_during_process` (409). Process it again.
+If attendance, leave or overtime impacts change between the moment Process loads them and the moment it marks them,
+the run rolls back with `payroll_impacts_changed_concurrently` (409) and nothing is saved. Process it again. The
+opposite ordering is safe too: a day recompute never deletes an impact a run has already marked Processed.
 
 ## Known limitations
 
