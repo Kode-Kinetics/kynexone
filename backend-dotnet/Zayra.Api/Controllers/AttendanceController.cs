@@ -41,14 +41,15 @@ public class AttendanceController : ControllerBase
 
     [HttpGet("dashboard")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
-    public Task<AttendanceDashboardDto> Dashboard([FromQuery] DateOnly? date, CancellationToken ct) =>
-        _attendance.DashboardAsync(RequireTenant(), date ?? DateOnly.FromDateTime(DateTime.UtcNow), ct);
+    public async Task<AttendanceDashboardDto> Dashboard([FromQuery] DateOnly? date, CancellationToken ct) =>
+        await _attendance.DashboardAsync(RequireTenant(), date ?? await TenantClock.TodayForAsync(_db, RequireTenant(), ct), ct);
 
     [HttpGet("today")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Manager,Supervisor,Auditor")]
     public async Task<IActionResult> Today(CancellationToken ct)
     {
-        var date = DateOnly.FromDateTime(DateTime.UtcNow);
+        // The tenant's day, not the UTC one: before 03:00 in Riyadh "today" was still yesterday's figures.
+        var date = await TenantClock.TodayForAsync(_db, RequireTenant(), ct);
         var summary = await _attendance.DashboardAsync(RequireTenant(), date, ct);
         return Ok(new { date = summary.Date, totalActive = summary.ActiveEmployees, present = summary.Present, absent = summary.Absent, onLeave = 0, late = summary.Late });
     }

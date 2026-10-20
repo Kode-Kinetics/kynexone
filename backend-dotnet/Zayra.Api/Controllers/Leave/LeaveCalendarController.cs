@@ -213,12 +213,7 @@ public class LeaveCalendarController : ControllerBase
     /// place it is stored, shared with attendance and the dashboard. Fails open to UTC when unset or
     /// unrecognised, so a typo degrades to the previous behaviour rather than throwing.
     /// </summary>
-    private async Task<TimeZoneInfo> ResolveTimeZoneAsync(Guid tenantId, CancellationToken ct)
-    {
-        var tzId = await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId)
-            .Select(l => l.DefaultTimezone)
-            .FirstOrDefaultAsync(ct);
-        return TenantTimeZone.FromId(tzId);
-    }
+    private Task<TimeZoneInfo> ResolveTimeZoneAsync(Guid tenantId, CancellationToken ct) =>
+        // TenantClock's rule (a Saudi tenant is on Riyadh time whatever zone is stored), not the stored zone alone.
+        Zayra.Api.Infrastructure.Common.TenantClock.ZoneAsync(_db, tenantId, ct);
 }

@@ -317,6 +317,8 @@ public class DashboardController : ControllerBase
     private async Task<DashboardSummaryDto> BuildSummary(Guid tenantId, CancellationToken ct,
         IReadOnlyCollection<int>? population = null)
     {
+        // The cold summary stays ONE command (the tenant's zone is read inside the aggregate below); only the scoped path,
+        // which already makes several queries, resolves the tenant's day up front.
         var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
         // null = the whole tenant (unchanged behaviour); otherwise only these employee ids.
@@ -333,7 +335,10 @@ public class DashboardController : ControllerBase
         //    the scoped path never depended on a Tenants row. It is uncached and runs over a small
         //    population, so the round-trip saving was never what it was for.
         if (ids is not null)
-            return await BuildScopedSummary(tenantId, ids, today, monthStart, ct);
+        {
+            var tenantToday = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
+            return await BuildScopedSummary(tenantId, ids, tenantToday, new DateOnly(tenantToday.Year, tenantToday.Month, 1), ct);
+        }
 
         // ── TODAY'S ATTENDANCE: source, day and scope ─────────────────────────────────────────
         //
@@ -379,6 +384,10 @@ public class DashboardController : ControllerBase
                     .Where(l => l.TenantId == tenantId)
                     .Select(l => l.DefaultTimezone)
                     .FirstOrDefault(),
+                CountryCode = _db.TenantLocalizationSettings
+                    .Where(l => l.TenantId == tenantId)
+                    .Select(l => l.CountryCode)
+                    .FirstOrDefault(),
                 // Spelled inline (not AttendanceStatuses.IsAttended/IsOnLeave) because this is
                 // translated to SQL; the constants translate, a helper call would not.
                 PresentPrev = dailyPrev.Count(d => d.Status == AttendanceStatuses.Present
@@ -421,7 +430,8 @@ public class DashboardController : ControllerBase
         if (aggregate is null)
             return new DashboardSummaryDto(0, 0, 0, 0, 0, 0m, 0);
 
-        var localToday = TenantTimeZone.LocalDate(TenantTimeZone.FromId(aggregate.TimeZoneId), utcNow);
+        // TenantClock's rule: a Saudi tenant is on Riyadh time whatever zone is stored.
+        var localToday = Zayra.Api.Infrastructure.Common.TenantClock.LocalDate(aggregate.CountryCode, aggregate.TimeZoneId, utcNow);
         var (present, onLeave, absent, records) =
             localToday == dPrev ? (aggregate.PresentPrev, aggregate.OnLeavePrev, aggregate.AbsentPrev, aggregate.RecordsPrev)
             : localToday == dNext ? (aggregate.PresentNext, aggregate.OnLeaveNext, aggregate.AbsentNext, aggregate.RecordsNext)
@@ -498,7 +508,7 @@ public class DashboardController : ControllerBase
         IReadOnlyCollection<int>? population = null)
     {
         var ids = population?.ToList();
-        var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today      = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
 
         // THE ATTENDANCE RATE = days attended ÷ days the employee was ROSTERED TO WORK.
@@ -552,7 +562,7 @@ public class DashboardController : ControllerBase
     private async Task<DashboardOverviewDto> BuildOverview(Guid tenantId, CancellationToken ct,
         IReadOnlyCollection<int>? population = null, bool includePayroll = true)
     {
-        var today      = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today      = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var monthStart = new DateOnly(today.Year, today.Month, 1);
         // Use DateTimeKind.Utc to satisfy Npgsql's strict timestamptz mode.
         var monthStartUtc = monthStart.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
@@ -1082,7 +1092,7 @@ public class DashboardController : ControllerBase
     private async Task<IReadOnlyList<HeadcountTrendPointDto>> BuildHeadcountTrend(Guid tenantId, int months, CancellationToken ct,
         List<int>? ids = null)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
         var exitStatuses = ExitEmployeeStatuses.Exit;
 
@@ -1178,7 +1188,7 @@ public class DashboardController : ControllerBase
     private async Task<IReadOnlyList<PayrollTrendDto>> BuildPayrollTrends(Guid tenantId, int months, CancellationToken ct,
         IReadOnlyCollection<int>? population = null)
     {
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var minYear  = today.AddMonths(-(months - 1)).Year;
         var minMonth = today.AddMonths(-(months - 1)).Month;
         var ids = population?.ToList();
@@ -1279,7 +1289,7 @@ public class DashboardController : ControllerBase
     private async Task<DashboardKpisDto> BuildKpis(Guid tenantId, CancellationToken ct, DashboardView view)
     {
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var today = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var isUnrestricted = scope.IsUnrestricted;
         var scopeIds = scope.AllowedEmployeeIds?.ToArray() ?? Array.Empty<int>();
         var expiringSoon = today.AddDays(60);

@@ -745,14 +745,9 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         return runs.Select(r => $"{r.Year:0000}-{r.Month:00} ({r.Status})").Distinct().ToList();
     }
 
-    private static async Task<DateOnly> TenantLocalDateAsync(ZayraDbContext db, Guid tenantId, DateTime asOfUtc, CancellationToken ct)
-    {
-        var timeZoneId = await db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId)
-            .Select(l => l.DefaultTimezone)
-            .FirstOrDefaultAsync(ct);
-        return TenantTimeZone.LocalDate(TenantTimeZone.FromId(timeZoneId), asOfUtc);
-    }
+    private static Task<DateOnly> TenantLocalDateAsync(ZayraDbContext db, Guid tenantId, DateTime asOfUtc, CancellationToken ct) =>
+        // TenantClock's rule (Saudi tenants on Riyadh time), the same "today" every other surface uses.
+        Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(db, tenantId, ct, asOfUtc);
 
     // ───────────────────────────── evidence ─────────────────────────────
 
