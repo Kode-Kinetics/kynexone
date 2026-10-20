@@ -89,7 +89,7 @@ import Link from 'next/link';
 const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
 const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
 const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
-const OnboardingChecklistSettings = dynamic(() => import('./RecruitmentPage').then(module => module.OnboardingTab));
+const OnboardingPolicyWorkspace = dynamic(() => import('../components/setup/OnboardingPolicyWorkspace').then(module => module.OnboardingPolicyWorkspace));
 
 type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
   | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
@@ -2625,7 +2625,7 @@ export function SetupPage() {
                 // Catalogue checks route, feature, scope and editor access before calling this.
                 // Retain the mutation role intersection here as a second composition boundary.
                 if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
-                if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingChecklistSettings configurationOnly onDirtyChange={onDirtyChange} />;
+                if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingPolicyWorkspace companies={companies} onDirtyChange={onDirtyChange} />;
                 if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
                 if (id === 'leaveTypes') return <LeaveTypesTab onDirtyChange={onDirtyChange} />;
                 if (id === 'leavePolicies') return <PoliciesTab onDirtyChange={onDirtyChange} />;
