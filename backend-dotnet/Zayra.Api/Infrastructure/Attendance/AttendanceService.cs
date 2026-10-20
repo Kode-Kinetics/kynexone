@@ -869,6 +869,76 @@ public class AttendanceService : IAttendanceService
         return days;
     }
 
+    /// <summary>
+    /// An instance for recomputing days only: no notifications are sent and no device is polled on that path. Used where
+    /// payroll recomputes attendance it is about to pay or has just un-paid (run void and reopen, the stale-attendance
+    /// reconciliation), which have no notification service or HTTP client of their own.
+    /// </summary>
+    public static AttendanceService ForRecompute(ZayraDbContext db) => new(db, RecomputeOnlyNotifications.Instance, RecomputeOnlyHttpClients.Instance);
+
+    /// <summary>
+    /// Recomputes exactly the given employee-days with the day processor every punch path uses. Inside the caller's open
+    /// transaction (a payroll void or reopen) every day's lock is taken in that transaction and held until it commits;
+    /// without one, each day is its own transaction, like a range run. Days are taken in the global lock order (employee,
+    /// then date), so no cycle can form with a punch or a range run. A payroll-locked day is skipped. Any non-deleted
+    /// employee is recomputed (a Suspended or Offboarded employee's final month too, as a correction approval does).
+    /// </summary>
+    /// <returns>The number of days recomputed.</returns>
+    public async Task<int> RecomputeDaysAsync(Guid tenantId, IReadOnlyCollection<(int EmployeeId, DateOnly WorkDate)> days,
+        RequestContext context, string reason, CancellationToken ct)
+    {
+        if (days.Count == 0) return 0;
+        var employeeIds = days.Select(d => d.EmployeeId).Distinct().ToList();
+        var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, RecomputeEmployeeJustification).AsNoTracking()
+            .Where(e => employeeIds.Contains(e.Id) && !e.IsDeleted).ToListAsync(ct);
+        // Read, never created here: creating the tenant's DEFAULT policy takes the policy lock, which must never be held
+        // while waiting for a day's lock (AttendanceDailyRecordLock). With no active policy the default rules apply in
+        // memory, which is what processing would use anyway.
+        IReadOnlyCollection<AttendancePolicy> policies = await _db.AttendancePolicies.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(ct);
+        if (policies.Count == 0) policies = [DefaultPolicy(tenantId)];
+        var recomputed = new List<object>();
+        foreach (var employee in employees.OrderBy(e => e.Id))
+        {
+            var policy = ResolveAttendancePolicy(employee, policies);
+            foreach (var day in days.Where(d => d.EmployeeId == employee.Id).Select(d => d.WorkDate).Distinct().OrderBy(d => d))
+            {
+                var done = false;
+                await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
+                {
+                    done = false;
+                    if (await IsLocked(tenantId, day, ct)) return;
+                    await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                    await _db.SaveChangesAsync(ct);
+                    done = true;
+                }, ct);
+                if (done) recomputed.Add(new { employeeId = employee.Id, workDate = day });
+            }
+        }
+        await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", "days",
+            JsonSerializer.Serialize(new { reason, days = recomputed }), ct);
+        await _db.SaveChangesAsync(ct);
+        return recomputed.Count;
+    }
+
+    private const string RecomputeEmployeeJustification =
+        "Recomputing named attendance days for payroll (a run void or reopen, or the stale-attendance reconciliation) is a " +
+        "correction over the run's whole population, whatever the caller's company scope; the days were chosen by the " +
+        "server from the run and nothing about the employee is returned.";
+
+    private sealed class RecomputeOnlyNotifications : INotificationService
+    {
+        public static readonly RecomputeOnlyNotifications Instance = new();
+        public Task NotifyAsync(Guid tenantId, Guid? userId, string title, string message, string entityName, string? entityId, CancellationToken ct) => Task.CompletedTask;
+        public Task SendEmailAsync(Guid tenantId, string templateCode, string toAddress, string toName, Dictionary<string, string> variables, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class RecomputeOnlyHttpClients : IHttpClientFactory
+    {
+        public static readonly RecomputeOnlyHttpClients Instance = new();
+        public HttpClient CreateClient(string name) => throw new InvalidOperationException("A recompute-only attendance service polls no device.");
+    }
+
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
         // The TENANT's today (the date attendance gives a punch made now), not the UTC date: at 01:00 in Riyadh the UTC

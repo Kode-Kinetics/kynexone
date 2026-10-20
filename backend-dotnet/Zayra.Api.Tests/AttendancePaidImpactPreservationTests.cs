@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
@@ -308,62 +309,110 @@ public sealed class AttendancePaidImpactVoidRestorePostgresTests
     public AttendancePaidImpactVoidRestorePostgresTests(PostgresFixture fx) => _fx = fx;
 
     [Fact]
-    public async Task AfterReprocessingAPaidDay_VoidingTheRun_StillReleasesTheImpactsItConsumed()
+    public async Task AfterReprocessingAPaidDay_ReopeningTheRun_RecomputesTheDay_SoTheReRunDeductsWhatTheDayNowSays()
     {
-        Guid tenantId;
-        int employeeId;
-        var run = new PayrollRun { Year = 2026, Month = 8, Status = "Processed" };
-        await using (var db = _fx.CreateDb())
-        {
-            tenantId = await PostgresFixture.SeedMinimalTenant(db);
-            employeeId = AttendancePaidImpactPreservationTests.AddEmployee(db, tenantId).Id;
-            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "In", 9, 30);
-            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "Out", 18, 0);
-            await db.SaveChangesAsync();
-            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId);
-
-            // As PayrollController's run does: a witness per consumed impact, then the impacts marked Processed.
-            run.TenantId = tenantId;
-            db.PayrollRuns.Add(run);
-            db.PayrollSlips.Add(new PayrollSlip { TenantId = tenantId, RunId = run.Id, EmployeeId = employeeId, Status = "Processed" });
-            var consumed = await db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId).ToListAsync();
-            consumed.Should().ContainSingle();
-            foreach (var impact in consumed)
-                db.PayrollRunConsumptions.Add(new PayrollRunConsumption
-                {
-                    TenantId = tenantId, PayrollRunId = run.Id, ArtifactType = PayrollConsumptionArtifacts.AttendanceImpact,
-                    ArtifactId = impact.Id, EmployeeId = employeeId, PriorStatus = impact.Status,
-                });
-            await db.SaveChangesAsync();
-            await db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId)
-                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"));
-        }
+        // Paid: 20 late minutes. After payroll the In punch moves to 09:50 (40 late minutes) and HR reprocesses: the
+        // paid impact stays at 20 and a flag is raised. Reopening the run used to release the impact AS PAID (20) and
+        // close the flag saying the day "is recomputed" when nothing recomputed it, so the re-run deducted 20.
+        var (tenantId, employeeId, run) = await SeedPaidLateDayAsync();
+        await ReprocessWithInPunchAtAsync(tenantId, employeeId, 9, 50);
 
         await using (var db = _fx.CreateDb())
         {
-            var raw = await db.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.TenantId == tenantId && r.PunchDirection == "In");
-            raw.PunchTimestampUtc = AttendancePaidImpactPreservationTests.Utc(9, 50);
-            await db.SaveChangesAsync();
-            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId); // HR reprocesses the paid day
-        }
-
-        await using (var db = _fx.CreateDb())
-        {
-            var tracked = await db.PayrollRuns.IgnoreQueryFilters().SingleAsync(r => r.Id == run.Id);
-            var restored = await new PayrollVoidService(db).RestoreOperationalStateAsync(tenantId, tracked, run.Id, default);
-            await db.SaveChangesAsync();
-            restored.ImpactsReleased.Should().Be(1, "the restore must still find the impact the run consumed");
-            restored.PaidAttendanceExceptionsResolved.Should().Be(1);
+            var kit = await GlPostingKit.CreateAsync(_fx.CreateDb, tenantId);
+            (await kit.Payroll(db).ReopenRun(run.Id, new Zayra.Api.Controllers.PayrollReasonRequest("punch corrected after payroll"), default))
+                .Should().BeOfType<OkObjectResult>();
         }
 
         await using var verify = _fx.CreateDb();
         var impacts = await verify.AttendancePayrollImpacts.IgnoreQueryFilters().Where(x => x.TenantId == tenantId).ToListAsync();
-        impacts.Should().ContainSingle("no duplicate was raised while the day was paid");
-        impacts[0].Status.Should().Be("PendingPayroll", "the void hands the consumed impact back to payroll");
-        // The reprocess flagged the paid day; the void un-pays it (its impacts are pending again and will be
-        // recomputed), so the flag must not linger and invite an adjustment for a run that no longer exists.
-        var flags = await verify.AttendanceExceptions.IgnoreQueryFilters()
-            .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged).ToListAsync();
-        flags.Should().ContainSingle().Which.IsResolved.Should().BeTrue();
+        impacts.Should().ContainSingle("one late deduction for the day, never the paid one plus a new one");
+        impacts[0].Status.Should().Be("PendingPayroll", "the reopened run no longer pays the day");
+        impacts[0].Minutes.Should().Be(40, "the re-run must deduct what the day says now, not what the undone run paid");
+        var flag = await verify.AttendanceExceptions.IgnoreQueryFilters()
+            .SingleAsync(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged);
+        flag.IsResolved.Should().BeTrue("the day was recomputed, so nothing is left for a payroll adjustment");
+    }
+
+    [Fact]
+    public async Task AfterAPaidDayBecomesAbsent_VoidingTheRun_RaisesTheAbsenceForTheReplacementRun()
+    {
+        Guid tenantId;
+        int employeeId;
+        var run = new PayrollRun { Year = 2026, Month = 8, Status = "Processed", IncludesRecurringPay = true };
+        await using (var db = _fx.CreateDb())
+        {
+            tenantId = await PostgresFixture.SeedMinimalTenant(db);
+            employeeId = AttendancePaidImpactPreservationTests.AddEmployee(db, tenantId).Id;
+            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "In", 9, 0);
+            AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "Out", 18, 0);
+            await db.SaveChangesAsync();
+            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId); // a clean day: no impacts
+            run.TenantId = tenantId;
+            db.PayrollRuns.Add(run);
+            db.PayrollSlips.Add(new PayrollSlip { TenantId = tenantId, RunId = run.Id, EmployeeId = employeeId, Status = "Processed" });
+            await db.SaveChangesAsync();
+        }
+        await using (var db = _fx.CreateDb())
+        {
+            // Both punches were another employee's: the paid day is now Absent. Flagged, not deducted.
+            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == tenantId).ExecuteDeleteAsync();
+            await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId);
+            (await db.AttendancePayrollImpacts.IgnoreQueryFilters().AnyAsync(x => x.TenantId == tenantId)).Should().BeFalse("premise: paid");
+        }
+
+        await using (var db = _fx.CreateDb())
+            (await new PayrollVoidService(db).VoidAsync(run.Id, tenantId, null, "test", "wrong punches", default)).IsVoided.Should().BeTrue();
+
+        await using var verify = _fx.CreateDb();
+        var absence = await verify.AttendancePayrollImpacts.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId);
+        absence.ImpactType.Should().Be(AttendanceImpactTypes.AbsenceDeduction, "the voided run paid a day that was not worked");
+        absence.Status.Should().Be("PendingPayroll");
+        (await verify.AttendanceExceptions.IgnoreQueryFilters()
+                .SingleAsync(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged))
+            .IsResolved.Should().BeTrue();
+    }
+
+    private async Task<(Guid TenantId, int EmployeeId, PayrollRun Run)> SeedPaidLateDayAsync()
+    {
+        Guid tenantId;
+        int employeeId;
+        var run = new PayrollRun { Year = 2026, Month = 8, Status = "Processed", IncludesRecurringPay = true };
+        await using var db = _fx.CreateDb();
+        tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        employeeId = AttendancePaidImpactPreservationTests.AddEmployee(db, tenantId).Id;
+        AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "In", 9, 30);
+        AttendancePaidImpactPreservationTests.AddPunch(db, tenantId, employeeId, "Out", 18, 0);
+        await db.SaveChangesAsync();
+        await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId);
+
+        // As PayrollController's run does: a witness per consumed impact, then the impacts marked Processed.
+        run.TenantId = tenantId;
+        db.PayrollRuns.Add(run);
+        db.PayrollSlips.Add(new PayrollSlip { TenantId = tenantId, RunId = run.Id, EmployeeId = employeeId, Status = "Processed" });
+        var consumed = await db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId).ToListAsync();
+        consumed.Should().ContainSingle().Which.Minutes.Should().Be(20);
+        foreach (var impact in consumed)
+            db.PayrollRunConsumptions.Add(new PayrollRunConsumption
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, ArtifactType = PayrollConsumptionArtifacts.AttendanceImpact,
+                ArtifactId = impact.Id, EmployeeId = employeeId, PriorStatus = impact.Status,
+            });
+        await db.SaveChangesAsync();
+        await db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId)
+            .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"));
+        return (tenantId, employeeId, run);
+    }
+
+    private async Task ReprocessWithInPunchAtAsync(Guid tenantId, int employeeId, int hour, int minute)
+    {
+        await using var db = _fx.CreateDb();
+        var raw = await db.AttendanceRawEvents.IgnoreQueryFilters().SingleAsync(r => r.TenantId == tenantId && r.PunchDirection == "In");
+        raw.PunchTimestampUtc = AttendancePaidImpactPreservationTests.Utc(hour, minute);
+        await db.SaveChangesAsync();
+        await AttendancePaidImpactPreservationTests.ProcessAsync(db, tenantId, employeeId); // HR reprocesses the paid day
+        (await db.AttendanceExceptions.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId
+            && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved)).Should().Be(1, "premise: flagged");
+        (await db.AttendancePayrollImpacts.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId)).Minutes.Should().Be(20, "premise: paid as 20");
     }
 }

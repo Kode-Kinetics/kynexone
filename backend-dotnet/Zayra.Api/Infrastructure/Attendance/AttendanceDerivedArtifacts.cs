@@ -119,8 +119,9 @@ public static class AttendanceDerivedArtifacts
     /// <para>The exception's lifecycle (no schema change: its signature is a tag in <c>Details</c>): one open exception
     /// per day, re-worded as the difference changes; closed automatically when the day matches what was paid again;
     /// never re-raised for a difference HR already resolved (that would invite a second adjustment), but raised again
-    /// when the difference changes; and closed automatically when the run that paid the day is voided or reopened
-    /// (<c>PayrollVoidService.RestoreOperationalStateAsync</c>).</para>
+    /// when the difference changes; and, when the run that paid the day is voided or reopened, closed by the recompute of
+    /// the day that the void or reopen runs (<c>PayrollVoidService.RecomputeUnpaidAttendanceAsync</c>), once the day's
+    /// deductions are pending again with what it now says.</para>
     /// </summary>
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
@@ -149,7 +150,16 @@ public static class AttendanceDerivedArtifacts
                 TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate,
                 ImpactType = type, Minutes = minutes, DailyRecordId = daily.Id,
             });
-        if (!dayIsPaid) return;
+        var flags = await db.AttendanceExceptions.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+            && x.WorkDate == daily.WorkDate && x.ExceptionType == PaidAttendanceChanged).ToListAsync(ct);
+        var open = flags.FirstOrDefault(x => !x.IsResolved);
+        if (!dayIsPaid)
+        {
+            // The run that paid this day was voided or reopened, and the day has just been recomputed: its impacts are
+            // pending again with what the day says now, so the difference the flag asked HR to adjust no longer exists.
+            if (open is not null) AutoResolve(open, "the run that paid this day was voided or reopened; the day was recomputed and its deductions are pending again");
+            return;
+        }
 
         // What payroll paid vs what the day now says, for every type the paid day froze.
         // A held type is undetermined on a half-pair day, not different: it is compared again once the pair is complete.
@@ -163,9 +173,6 @@ public static class AttendanceDerivedArtifacts
             .OrderBy(d => d.Type, StringComparer.Ordinal)
             .ToList();
 
-        var flags = await db.AttendanceExceptions.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
-            && x.WorkDate == daily.WorkDate && x.ExceptionType == PaidAttendanceChanged).ToListAsync(ct);
-        var open = flags.FirstOrDefault(x => !x.IsResolved);
         if (differences.Count == 0)
         {
             // An open flag about a held type stays open: the day does not match again, it is undetermined.

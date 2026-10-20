@@ -761,6 +761,8 @@ public sealed class PayrollVoidService
         });
 
         await _db.SaveChangesAsync(ct);
+        // After the save (the recompute reads the run as Voided and its slips as voided), in the same transaction.
+        await RecomputeUnpaidAttendanceAsync(tenantId, runId, opState, ct);
 
         return VoidRunResult.Voided(period, glReversed, childRunIds, cascadedChildRunIds, metadata, staleYtdRunIds);
     }
@@ -819,6 +821,29 @@ public sealed class PayrollVoidService
     /// <para>Also used by <c>POST runs/{id}/reopen</c>, which is the SAME unwind minus the ledger: one
     /// implementation so "voided" and "reopened" can never restore different things.</para>
     /// </summary>
+    /// <summary>
+    /// Recomputes the attendance days the undone run had paid and that changed afterwards
+    /// (<see cref="OperationalRestoreResult.AttendanceDaysToRecompute"/>), so their pending deductions say what the day says
+    /// now and the replacement or re-processed run deducts that. Must run AFTER the undo is saved — the coverage check
+    /// reads the run's status and slips from the database — and inside the same transaction, so the undo and the
+    /// recompute commit or roll back together. The recompute is what closes the days' flags.
+    /// </summary>
+    internal async Task RecomputeUnpaidAttendanceAsync(Guid tenantId, Guid runId, OperationalRestoreResult restored, CancellationToken ct)
+    {
+        var days = restored.AttendanceDaysToRecompute;
+        if (days.Count == 0) return;
+        await Zayra.Api.Infrastructure.Attendance.AttendanceService.ForRecompute(_db).RecomputeDaysAsync(tenantId, days,
+            new Zayra.Api.Application.Auth.RequestContext(null, null, null, tenantId),
+            $"payroll run {runId} was voided or reopened", ct);
+        var employeeIds = days.Select(d => d.EmployeeId).Distinct().ToList();
+        var dates = days.Select(d => d.WorkDate).Distinct().ToList();
+        var stillOpen = await _db.AttendanceExceptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved
+                     && employeeIds.Contains(x.EmployeeId) && dates.Contains(x.WorkDate))
+            .Select(x => new { x.EmployeeId, x.WorkDate }).ToListAsync(ct);
+        restored.PaidAttendanceExceptionsResolved = days.Count(d => !stillOpen.Any(o => o.EmployeeId == d.EmployeeId && o.WorkDate == d.WorkDate));
+    }
+
     internal async Task<OperationalRestoreResult> RestoreOperationalStateAsync(
         Guid tenantId, PayrollRun run, Guid runId, CancellationToken ct)
     {
@@ -1058,8 +1083,12 @@ public sealed class PayrollVoidService
             }
         }
 
-        // The days this run paid are no longer paid (their impacts are pending again and will be recomputed against
-        // payroll), so an open "paid attendance changed" flag for them would ask HR to adjust a run that no longer stands.
+        // The days this run paid are no longer paid. A day that changed after it was paid (an open "paid attendance
+        // changed" flag) still carries its impacts AS PAID — the release above handed back what the run deducted, not
+        // what the day says now — so it must be recomputed before anything re-runs the month. That happens once the undo
+        // is saved (RecomputeUnpaidAttendanceAsync: the coverage check reads the run and its slips from the database),
+        // and only that recompute closes the flags, because only then does the day match. A day that changed with no
+        // open flag (HR already resolved it) is caught by the stale-attendance check before the next Process.
         var coveredEmployeeIds = await ScopedBypass.TenantWide(_db.PayrollSlips, tenantId,
                 "Run void/reopen is a system correction over the whole run: every company's slip on it says whose days it paid.")
             .Where(s => s.RunId == runId).Select(s => s.EmployeeId).Distinct().ToListAsync(ct);
@@ -1067,13 +1096,13 @@ public sealed class PayrollVoidService
         {
             var periodStart = new DateOnly(run.Year, run.Month, 1);
             var periodEnd = periodStart.AddMonths(1).AddDays(-1);
-            var paidAttendanceFlags = await _db.AttendanceExceptions
+            var changedDays = await _db.AttendanceExceptions.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved
                          && coveredEmployeeIds.Contains(x.EmployeeId) && x.WorkDate >= periodStart && x.WorkDate <= periodEnd)
+                .Select(x => new { x.EmployeeId, x.WorkDate }).Distinct()
                 .ToListAsync(ct);
-            foreach (var flag in paidAttendanceFlags)
-                AttendanceDerivedArtifacts.AutoResolve(flag, $"payroll run {runId} was voided or reopened; the day is recomputed against payroll again");
-            result.PaidAttendanceExceptionsResolved = paidAttendanceFlags.Count;
+            result.AttendanceDaysToRecompute.AddRange(changedDays
+                .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate).Select(x => (x.EmployeeId, x.WorkDate)));
         }
 
         var leaveIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact)
@@ -1164,8 +1193,11 @@ public sealed class PayrollVoidService
         public int AdvancesRestored { get; set; }
         public int InstallmentsReopened { get; set; }
         public int ImpactsReleased { get; set; }
-        /// <summary>Open <c>PaidAttendanceChanged</c> attendance exceptions closed because the run that paid those days is undone.</summary>
+        /// <summary>Open <c>PaidAttendanceChanged</c> attendance exceptions closed because the run that paid those days is
+        /// undone and the days were recomputed (<see cref="RecomputeUnpaidAttendanceAsync"/>).</summary>
         public int PaidAttendanceExceptionsResolved { get; set; }
+        /// <summary>The employee-days with an open <c>PaidAttendanceChanged</c> flag, to recompute once the undo is saved.</summary>
+        public List<(int EmployeeId, DateOnly WorkDate)> AttendanceDaysToRecompute { get; } = new();
         public int AdjustmentsReleased { get; set; }
         public int WitnessRowCount { get; set; }
         /// <summary>POD-C3 — arrears lines flipped Settled → Voided, i.e. made due again.</summary>
