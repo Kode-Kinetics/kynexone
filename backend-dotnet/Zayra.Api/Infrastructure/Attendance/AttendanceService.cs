@@ -1206,8 +1206,12 @@ public class AttendanceService : IAttendanceService
         var isRestDay = workWeek.IsWeekend(date.DayOfWeek);
         var isPublicHoliday = await _db.PublicHolidays.AsNoTracking()
             .AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
-        var approvedLeave = await _db.LeaveRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == "Approved"
+        // Tenant-wide, with the employee re-applied: LeaveRequest is company-scoped-operational, and the device webhook is
+        // anonymous — an anonymous request has an EMPTY company scope in every environment — so the filtered read saw no
+        // leave and an approved leave day was recomputed as "Absent" with an absence deduction. The employee was
+        // authorised by the calling path; only the leave type name is read, never returned.
+        var approvedLeave = await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId, ApprovedLeaveReadJustification).AsNoTracking()
+            .Where(x => x.EmployeeId == employee.Id && x.Status == "Approved"
                 && x.StartDate <= date && x.EndDate >= date)
             .Select(x => x.LeaveTypeName)
             .FirstOrDefaultAsync(ct);
@@ -1271,6 +1275,10 @@ public class AttendanceService : IAttendanceService
         await UpsertExceptions(tenantId, daily, ct);
     }
 
+    private const string ApprovedLeaveReadJustification =
+        "Whether an employee's own approved leave covers the day being recomputed. The employee is already authorised by " +
+        "the calling path (or resolved from the authenticated device's tenant on the anonymous webhook); no leave data is " +
+        "returned, and the day's status must not depend on the caller's company scope.";
 
     /// <summary>An employee's scheduled shift on one date (local wall-clock times; End &lt;= Start means overnight).</summary>
     public sealed record WorkShift(TimeOnly StartTime, TimeOnly EndTime);
