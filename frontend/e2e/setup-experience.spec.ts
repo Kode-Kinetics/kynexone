@@ -700,6 +700,11 @@ test('collects scoped company policies, custom grades and benefits without activ
   await page.getByLabel('Eligible grade codes', { exact: false }).pressSequentially('P1,P2');
   await page.getByLabel('Eligible grade codes', { exact: false }).fill('P1');
   await contained(page);
+  // Audit the hover state too: CI's pointer rested on this secondary button after the click above,
+  // and its hover colours (sapphire on a 4% sapphire tint) were the colour-contrast failure.
+  const addBenefit = page.getByRole('button', { name: 'Add benefit plan', exact: true });
+  await addBenefit.hover();
+  await addBenefit.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
   await accessible(page, '#setup-aiSetup');
   await evidence(page, info, 'custom-grades-benefits');
   await continueStep(page);

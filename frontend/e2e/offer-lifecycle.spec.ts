@@ -47,7 +47,8 @@ test('workspace respects capabilities and protects dirty edits before preview or
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.getByLabel('Job title', { exact: true })).toHaveValue('Reviewed Engineer');
   await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('The offer changed');
+  // Scoped to the page body: Next's own #__next-route-announcer__ is also role=alert, outside <main>.
+  await expect(page.getByRole('main').getByRole('alert')).toContainText('The offer changed');
   await expect(page.getByLabel('Job title', { exact: true })).toHaveValue('Reviewed Engineer');
   await page.getByRole('button', { name: 'Reload latest', exact: true }).click();
   await page.getByRole('button', { name: 'Discard and leave', exact: true }).click();
@@ -70,7 +71,9 @@ test('network replay keeps reviewed payload, capture is labelled and unknown has
 test('390px Arabic interface preserves authored document direction and six designer tabs', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await boot(page, { locale: 'ar' });
   await page.getByRole('tab', { name: 'الخطاب', exact: true }).click();
-  await expect(page.getByRole('tablist', { name: 'عناصر تحكم تصميم الخطاب' })).toBeVisible();
+  const designTabs = page.getByRole('tablist', { name: 'أدوات تصميم الخطاب', exact: true });
+  await expect(designTabs).toBeVisible();
+  await expect(designTabs.getByRole('tab')).toHaveCount(6);
   await expect(page.getByRole('tab', { name: 'تخطيط الصفحة', exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'تخطيط الصفحة', exact: true }).click();
   await expect(page.getByLabel('اتجاه القراءة', { exact: true })).toHaveValue('ltr');
