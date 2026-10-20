@@ -3070,7 +3070,22 @@ public partial class PayrollController : ControllerBase
             var attendanceImpactIds = attendanceImpacts.Select(x => x.Id).ToList();
             foreach (var x in attendanceImpacts)
                 Witness(PayrollConsumptionArtifacts.AttendanceImpact, x.Id, x.EmployeeId, 0m, x.Status);
-            await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && attendanceImpactIds.Contains(x.Id)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+            // Every impact the slips were computed from must still be there, still pending, to be marked. An attendance
+            // recompute between the load above and here replaces a day's pending impacts with new rows: marking fewer than
+            // were loaded would leave the new rows pending, and the next run would deduct the same day again. The whole
+            // run rolls back instead; processing it again computes from the recomputed impacts.
+            var attendanceMarked = await _db.AttendancePayrollImpacts
+                .Where(x => x.TenantId == tenantId && attendanceImpactIds.Contains(x.Id) && x.Status != "Processed")
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+            if (attendanceMarked != attendanceImpactIds.Count)
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error   = "attendance_changed_during_process",
+                    message = $"Attendance for this period changed while the run was being processed ({attendanceImpactIds.Count - attendanceMarked} " +
+                              "of the attendance deductions it read were recomputed or already taken). Nothing was saved. Process the run again.",
+                    loaded  = attendanceImpactIds.Count,
+                    marked  = attendanceMarked,
+                });
 
             var leaveImpactIds = leaveImpacts.Select(x => x.Id).ToList();
             foreach (var x in leaveImpacts)
