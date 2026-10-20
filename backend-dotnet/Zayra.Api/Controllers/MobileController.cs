@@ -167,7 +167,7 @@ public class MobileController : ControllerBase
 
         var upcomingLeave = await _db.LeaveRequests
             .Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId
-                && r.Status == "Approved" && r.StartDate > today)
+                && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate > today)
             .OrderBy(r => r.StartDate)
             .Select(r => new { r.LeaveTypeName, r.StartDate, r.EndDate, r.TotalDays })
             .FirstOrDefaultAsync(ct);

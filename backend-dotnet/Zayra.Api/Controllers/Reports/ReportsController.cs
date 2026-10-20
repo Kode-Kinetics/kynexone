@@ -644,7 +644,7 @@ public class ReportsController : ControllerBase
         var from = req.Filters?.DateFrom ?? DateTime.UtcNow.AddMonths(-3);
         var to = req.Filters?.DateTo ?? DateTime.UtcNow;
         var q = _db.LeaveRequests
-            .Where(x => x.TenantId == tid && x.Status == "Approved"
+            .Where(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status)
                 && x.StartDate >= DateOnly.FromDateTime(from) && x.StartDate <= DateOnly.FromDateTime(to));
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         return await q

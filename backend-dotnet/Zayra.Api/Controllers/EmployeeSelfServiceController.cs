@@ -238,7 +238,7 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             var nextLeave = await _db.LeaveRequests.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId
-                         && x.Status == "Approved" && x.StartDate > today)
+                         && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate > today)
                 .OrderBy(x => x.StartDate)
                 .FirstOrDefaultAsync(cancellationToken);
             if (nextLeave is not null)
@@ -1066,7 +1066,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var firstDate = workDates.Count == 0 ? default : workDates.Min();
         var lastDate = workDates.Count == 0 ? default : workDates.Max();
         var onLeave = ids.Count == 0 ? new List<int>() : (await _db.LeaveRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= lastDate && x.EndDate >= firstDate)
+            .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate <= lastDate && x.EndDate >= firstDate)
             .Select(x => new { x.EmployeeId, x.StartDate, x.EndDate }).ToListAsync(cancellationToken))
             .Where(x => x.StartDate <= todays[x.EmployeeId].WorkDate && x.EndDate >= todays[x.EmployeeId].WorkDate)
             .Select(x => x.EmployeeId).Distinct().ToList();

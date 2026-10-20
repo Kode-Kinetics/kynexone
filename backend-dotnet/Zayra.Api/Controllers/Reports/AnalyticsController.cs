@@ -77,7 +77,7 @@ public class AnalyticsController : ControllerBase
         if (Shows("leave", ["pendingLeave", "onLeaveToday"], DataDomains.Leave))
         {
             pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"), ct);
-            onLeaveToday = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && x.Status == "Approved"
+            onLeaveToday = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status)
                 && x.StartDate <= today && x.EndDate >= today, ct);
         }
 
@@ -305,7 +305,7 @@ public class AnalyticsController : ControllerBase
         var tid = GetTenantId();
         var (from, today) = await MonthWindowAsync(tid, months, ct);
         var rows = await _db.LeaveRequests
-            .Where(x => x.TenantId == tid && x.Status == "Approved" && x.StartDate >= from && x.StartDate <= today)
+            .Where(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate >= from && x.StartDate <= today)
             .GroupBy(x => new { x.StartDate.Year, x.StartDate.Month })
             .Select(g => new { g.Key.Year, g.Key.Month, totalRequests = g.Count(), totalDays = g.Sum(x => x.TotalDays) })
             .ToListAsync(ct);

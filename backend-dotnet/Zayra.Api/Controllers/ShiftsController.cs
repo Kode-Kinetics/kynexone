@@ -450,7 +450,7 @@ public class ShiftsController : ControllerBase
     private async Task<string?> ValidateAssignmentAsync(Guid tenantId, int employeeId, DateOnly date, ShiftDefinition shift, CancellationToken ct)
     {
         if (await _db.LeaveRequests.AsNoTracking().AnyAsync(x => x.TenantId == tenantId
-                && x.EmployeeId == employeeId && x.Status == "Approved" && x.StartDate <= date && x.EndDate >= date, ct))
+                && x.EmployeeId == employeeId && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status) && x.StartDate <= date && x.EndDate >= date, ct))
             return "Employee has approved leave on this date.";
 
         var policy = await _db.ShiftPolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);

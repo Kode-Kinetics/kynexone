@@ -1334,7 +1334,7 @@ public class AttendanceService : IAttendanceService
         // leave and an approved leave day was recomputed as "Absent" with an absence deduction. The employee was
         // authorised by the calling path; only the leave type name is read, never returned.
         var approvedLeave = await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId, ApprovedLeaveReadJustification).AsNoTracking()
-            .Where(x => x.EmployeeId == employee.Id && x.Status == "Approved"
+            .Where(x => x.EmployeeId == employee.Id && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status)
                 && x.StartDate <= date && x.EndDate >= date)
             .Select(x => x.LeaveTypeName)
             .FirstOrDefaultAsync(ct);

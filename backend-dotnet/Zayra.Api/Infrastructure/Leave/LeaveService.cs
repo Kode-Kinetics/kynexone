@@ -1530,16 +1530,43 @@ public class LeaveService : ILeaveService
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, ct);
+            return await AfterCancellationAsync(tenantId,
+                await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, ct), ct);
 
         // The pending-impact delete below is a set-based DELETE that runs immediately, so it needs the
         // same transaction as the cancellation's SaveChanges: otherwise a failed save would leave the
         // leave un-cancelled with its unpaid deduction already gone.
-        return await RunCancellationTransactionAsync(
+        return await AfterCancellationAsync(tenantId, await RunCancellationTransactionAsync(
             retryCt => CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, retryCt),
             retryCt => _db.LeaveRequests.AsNoTracking()
                 .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Cancelled", retryCt),
-            ct);
+            ct), ct);
+    }
+
+    /// <summary>
+    /// After a cancellation has COMMITTED: the leave's days that attendance already settled are recomputed, so a day
+    /// recorded as "On leave" becomes what it now is (Absent, a rest day, a holiday, or a worked day) and its deduction
+    /// is raised — or, on a day payroll already paid, a PaidAttendanceChanged flag is raised instead. One day per
+    /// transaction under the day's lock (AttendanceService.RecomputeDaysAsync), and only once the leave lock's
+    /// transaction has ended, so this never holds the leave lock and a day lock at once (the order payroll and leave
+    /// rely on). Inside a caller's transaction nothing is recomputed: that caller owns the commit, and the next range
+    /// run or the payroll stale-attendance check picks the days up.
+    /// </summary>
+    private async Task<LeaveRequest> AfterCancellationAsync(Guid tenantId, LeaveRequest cancelled, CancellationToken ct)
+    {
+        if (cancelled.Status != "Cancelled") return cancelled;
+        if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is not null) return cancelled;
+        var days = await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == cancelled.EmployeeId
+                     && d.WorkDate >= cancelled.StartDate && d.WorkDate <= cancelled.EndDate)
+            .Select(d => d.WorkDate).ToListAsync(ct);
+        if (days.Count == 0) return cancelled;
+        if (_db.ChangeTracker.HasChanges()) await _db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Attendance.AttendanceService.ForRecompute(_db).RecomputeDaysAsync(tenantId,
+            days.Select(d => (cancelled.EmployeeId, d)).ToList(),
+            new Zayra.Api.Application.Auth.RequestContext(null, null, null, tenantId),
+            $"leave request {cancelled.Id} was cancelled", ct);
+        return cancelled;
     }
 
     /// <summary>
@@ -1553,14 +1580,15 @@ public class LeaveService : ILeaveService
     public async Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct);
+            return await AfterCancellationAsync(tenantId,
+                await ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct), ct);
         // An ambiguous commit is settled by THIS cancellation row's id: an earlier cancellation of the same leave
         // decided by the same reviewer must not be mistaken for this one.
         Guid? decidedId = null;
-        return await RunCancellationTransactionAsync(
+        return await AfterCancellationAsync(tenantId, await RunCancellationTransactionAsync(
             retryCt => ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, cid => decidedId = cid, retryCt),
             retryCt => IsCancellationDecidedAsync(tenantId, decidedId, "Approved", retryCt),
-            ct);
+            ct), ct);
     }
 
     /// <summary>
@@ -1941,7 +1969,7 @@ public class LeaveService : ILeaveService
     }
 
     private static readonly string[] InactiveRequestStatuses = { "Rejected", "Cancelled", "Withdrawn", "Draft" };
-    private static readonly string[] ApprovedRequestStatuses = { "Approved", "CancellationRequested" };
+    private static readonly string[] ApprovedRequestStatuses = Zayra.Api.Application.Leave.LeaveTakenStatuses.All;
 
     /// <summary>
     /// The employee's requests of the same statutory kind, oldest first, excluding
