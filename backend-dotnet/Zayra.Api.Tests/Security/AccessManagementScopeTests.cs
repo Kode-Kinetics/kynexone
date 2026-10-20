@@ -276,7 +276,7 @@ public class AccessManagementScopeTests
 
     /// <summary>A security.manage caller; group-scoped when <paramref name="companyScope"/> is null,
     /// otherwise holding only those companies. <paramref name="selectedCompany"/> sets the switcher.</summary>
-    private AccessController Controller(ZayraDbContext db, Guid tenantId, Guid callerId, Guid? selectedCompany, Guid[]? companyScope)
+    private AccessController Controller(ZayraDbContext db, Guid tenantId, Guid callerId, Guid? selectedCompany, Guid[]? companyScope, bool v2 = false)
     {
         var claims = new List<System.Security.Claims.Claim>
         {
@@ -285,7 +285,12 @@ public class AccessManagementScopeTests
             new(System.Security.Claims.ClaimTypes.Role, "Admin"),
             new("permission", "security.manage"),
         };
-        if (companyScope is null) claims.Add(new("is_group_scope", "true"));
+        if (v2)
+            // The current token shape: one entity_scope claim (v2), group or a company list.
+            claims.Add(new(EntityScopeContext.V2ClaimType, System.Text.Json.JsonSerializer.Serialize(companyScope is null
+                ? (object)new { v = 2, m = EntityScopeModes.Group }
+                : new { v = 2, m = EntityScopeModes.Companies, c = companyScope })));
+        else if (companyScope is null) claims.Add(new("is_group_scope", "true"));
         else claims.AddRange(companyScope.Select(c =>
             new System.Security.Claims.Claim("entity_access", System.Text.Json.JsonSerializer.Serialize(new { c, r = "Admin" }))));
         var http = new Microsoft.AspNetCore.Http.DefaultHttpContext
@@ -444,6 +449,57 @@ public class AccessManagementScopeTests
         (await Controller(db, w.TenantId, callerId, w.CompanyA, scope).CreateEntityGrant(
                 new CreateEntityGrantRequest(w.UserA, w.CompanyA, "HR"), CancellationToken.None)).Result
             .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>("granting within their own company still works");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GroupAdmin_WithCompanySelected_ManagesAUserOfAnotherCompany(bool v2)
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Team Viewer");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        AccessController C() => Controller(db, w.TenantId, callerId, w.CompanyA, null, v2);
+
+        (await C().GetUser(w.UserB, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        (await C().UpdateUser(w.UserB, new UpdateUserRequest("Company B User (renamed)", null, null, null), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        (await C().AssignRoles(w.UserB, new AssignRolesRequest(new[] { "Team Viewer" }), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompanyScopedAdmin_CannotManageAUserOfAnotherCompany(bool v2)
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Team Viewer");
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var scope = new[] { w.CompanyA };
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            AccessController C() => Controller(db, w.TenantId, callerId, selected, scope, v2);
+            (await C().GetUser(w.UserB, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>();
+            (await C().UpdateUser(w.UserB, new UpdateUserRequest("Taken over", null, null, null), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>("the service treats a user outside the scope as not found");
+            (await C().AssignRoles(w.UserB, new AssignRolesRequest(new[] { "Team Viewer" }), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>();
+            (await C().CreateUser(new CreateUserRequest($"x-{Guid.NewGuid():N}@example.test", "B Admin", "StrongPassword!123", new[] { "Admin" }, w.CompanyB),
+                    CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().CreateEntityGrant(new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().GetSecuritySettings(CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().GetUser(w.UserA, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>("own company's user");
+        }
+        db.ChangeTracker.Clear();
+        var userB = await db.Users.IgnoreQueryFilters().Include(u => u.UserRoles).SingleAsync(u => u.Id == w.UserB);
+        userB.FullName.Should().Be("Company B User");
+        userB.UserRoles.Should().BeEmpty();
     }
 
     private async Task<World> SeedWorld()
