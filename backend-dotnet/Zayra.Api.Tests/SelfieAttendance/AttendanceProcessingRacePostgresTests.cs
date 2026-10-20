@@ -177,6 +177,10 @@ public sealed class AttendanceProcessingRacePostgresTests
             Assert.Equal(day, daily.WorkDate);
             Assert.Equal(punch.PunchTimestampUtc, daily.FirstInUtc);
             Assert.Equal(device.PunchTimestampUtc, daily.LastOutUtc);
+            // The device's Out is stamped 30 s BEFORE the punch's In: it closes nothing, so the day is a missing punch
+            // (attended, raised for review) — not a zero-length complete day recorded as Absent with an absence deduction.
+            Assert.True(daily.MissingPunch);
+            Assert.Equal("Present", daily.Status);
         }
     }
 

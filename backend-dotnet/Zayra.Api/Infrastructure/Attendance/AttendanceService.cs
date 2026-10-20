@@ -1199,9 +1199,11 @@ public class AttendanceService : IAttendanceService
         daily.FirstInUtc = inEvents.FirstOrDefault()?.PunchTimestampUtc;
         daily.LastOutUtc = outEvents.LastOrDefault()?.PunchTimestampUtc ?? (events.Count > 1 ? events.Last().PunchTimestampUtc : null);
         var hasPunch = daily.FirstInUtc is not null || daily.LastOutUtc is not null;
-        daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null;
+        // An Out at or before the first In closes nothing (it used to make a zero-length "complete" day: Absent, with an
+        // absence deduction): it is half a pair, like the In-only and Out-only days. Both stamps are kept as evidence.
+        daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null || daily.LastOutUtc <= daily.FirstInUtc;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
-        daily.TotalWorkedMinutes = daily.FirstInUtc is not null && daily.LastOutUtc is not null ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
+        daily.TotalWorkedMinutes = !daily.MissingPunch ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
         var startLocalTime = shift?.StartTime ?? AttendanceWorkDate.DefaultShiftStart;
         // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
         var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);

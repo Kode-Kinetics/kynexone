@@ -253,6 +253,28 @@ public class AttendanceWorkDateCorrectnessTests
 
     // ── (4) one definition: the date a punch is given is the day whose window counts it ───────────────────
 
+    [Fact]
+    public async Task AnOutPunchStampedBeforeTheIn_IsAMissingPunch_NotAZeroLengthAbsentDay()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        db.AttendanceRawEvents.AddRange(
+            new AttendanceRawEvent { TenantId = tenantId, EmployeeId = employee.Id, PunchDirection = "Out", PunchTimestampUtc = new DateTime(2026, 8, 18, 8, 0, 0, DateTimeKind.Utc) },
+            new AttendanceRawEvent { TenantId = tenantId, EmployeeId = employee.Id, PunchDirection = "In", PunchTimestampUtc = new DateTime(2026, 8, 18, 9, 0, 0, DateTimeKind.Utc) });
+        await db.SaveChangesAsync();
+
+        await ProcessAsync(db, tenantId, employee.Id, Weekday);
+
+        var daily = await db.AttendanceDailyRecords.SingleAsync();
+        daily.MissingPunch.Should().BeTrue("an Out before the In closes nothing; the day has no worked span");
+        daily.Status.Should().Be("Present");
+        daily.BreakMinutes.Should().Be(0);
+        daily.TotalWorkedMinutes.Should().Be(0);
+        (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == "Absence deduction")).Should().BeFalse();
+        (await db.AttendanceExceptions.CountAsync(x => x.ExceptionType == "MissingPunch")).Should().Be(1);
+    }
+
     [Theory]
     [InlineData(18, 45, 3, 5, 8 * 60 + 20)]  // In 21:45 local (15 min early), Out 06:05 local (5 min late)
     [InlineData(19, 0, 3, 0, 8 * 60)]       // Out at EXACTLY the shift end, 06:00:00 local
