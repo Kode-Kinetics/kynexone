@@ -277,6 +277,10 @@ test('company_switch_does_not_reuse_other_company_draft', async ({ page }) => {
 
 test('forged_area_or_return_path_is_ignored', async ({ page }) => {
   const { writes } = await boot(page, { area: 'forged-area', setting: 'leavePolicies&returnTo=https%3A%2F%2Fexample.invalid%2Fcapture' });
+  // Wait for canonicalisation: the forged area, the setting it tried to borrow and the
+  // return path are all dropped, so the overview below is the settled state, not a first paint.
+  await expect(page).not.toHaveURL(/[?&](area=forged-area|setting=|returnTo=)/);
+  await expect(page).toHaveURL(/[?&]path=configuration(&|$)/);
   await expect(page.getByRole('heading', { name: 'Workspace overview', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
   await selectArea(page, 'Leave and absence');
@@ -611,6 +615,29 @@ async function clickDashboard(page: Page) {
   if (await mobile.isVisible()) await mobile.click();
   else await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Dashboard', exact: true }).click();
 }
+
+test('setup_studio_canonicalisation_never_rewrites_another_setup_section', async ({ page }) => {
+  const { writes } = await boot(page, { group: true, area: 'leave' });
+  // Section URLs carry the Studio area so a later return restores it. That area is
+  // not a Studio deep link: canonicalising it must not turn the section back into Studio.
+  for (const [url, heading] of [
+    ['/setup?tab=policyLibrary&area=leave&companyId=fixture-company', 'Policy library'],
+    ['/setup?tab=grades&area=overview&companyId=fixture-company', 'Grades'],
+  ] as const) {
+    await page.goto(url);
+    await expect(page.getByRole('heading', { level: 2, name: heading, exact: true })).toBeVisible();
+    await page.waitForTimeout(500);
+    await expect(page).toHaveURL(new RegExp(`[?&]tab=${url.split('tab=')[1].split('&')[0]}(&|$)`));
+    await expect(page.getByTestId('setup-studio-workspace')).toBeHidden();
+  }
+  const sections = page.getByRole('navigation', { name: 'Setup sections' });
+  await sections.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await expect(page).toHaveURL(/[?&]tab=policyLibrary(&|$)/);
+  await page.waitForTimeout(500);
+  await expect(page).toHaveURL(/[?&]tab=policyLibrary(&|$)/);
+  await expect(page.getByRole('heading', { level: 2, name: 'Policy library', exact: true })).toBeVisible();
+  expect(writes).toEqual([]);
+});
 
 test('return_from_library_preserves_area_and_company', async ({ page }) => {
   const { writes } = await boot(page, { group: true, area: 'leave' });
@@ -948,14 +975,20 @@ test.describe('path switch', () => {
 });
 
 test('forged_company_configuration_is_fail_closed_until_explicit_recovery', async ({ page }) => {
-  const { reads, writes } = await boot(page, { group: true });
-  reads.length = 0;
+  const { writes } = await boot(page, { group: true });
+  // Attribute reads to the document that issued them. Clearing a shared list after boot
+  // also counted the boot page's own reference reads when they reached the fixture late.
+  const forgedReads: string[] = [];
+  page.on('request', request => {
+    if (request.method() === 'GET' && request.frame().url().includes('companyId=forged-company')) forgedReads.push(new URL(request.url()).pathname);
+  });
   await page.goto('/setup?tab=aiSetup&path=configuration&companyId=forged-company&area=leave&setting=leavePolicies');
   await expect(page.getByRole('alert').getByRole('heading', { name: 'Company access required', exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
   await page.waitForTimeout(250);
-  expect(reads.filter(path => path === '/api/companies' || path.startsWith('/api/grades') || path.startsWith('/api/cost-centers') || path.startsWith('/api/leave/'))).toEqual([]);
+  expect(forgedReads.filter(path => path.startsWith('/api/'))).not.toHaveLength(0);
+  expect(forgedReads.filter(path => path === '/api/companies' || path.startsWith('/api/grades') || path.startsWith('/api/cost-centers') || path.startsWith('/api/leave/'))).toEqual([]);
   await expect(page).toHaveURL(/companyId=forged-company/);
   await page.getByRole('button', { name: 'Use Workspace Fixture LLC', exact: true }).click();
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
