@@ -11,6 +11,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
@@ -105,7 +106,123 @@ public sealed class LeaveImpactRacePostgresTests
             .Should().Be(0, "an approved leave day must not keep a pending absence charge for the next run to deduct");
     }
 
+    /// <summary>
+    /// A reprocess of the day is in flight: it holds the day lock and has written Absent plus a pending charge (it read
+    /// the leave as not yet approved), uncommitted. The approval used to pick the days to lock from an unlocked read of
+    /// COMMITTED absent days, found none, and approved without waiting, leaving an approved leave over an Absent day
+    /// with a pending charge. It now locks every date of the leave, so it waits for the reprocess and clears its charge.
+    /// </summary>
+    [Fact]
+    public async Task Approval_ReprocessInFlightForTheDay_WaitsForIt_AndClearsItsCharge()
+    {
+        var f = await SeedAsync();
+        await using (var clean = _fx.CreateDb())
+        {
+            await clean.AttendancePayrollImpacts.Where(x => x.TenantId == f.TenantId).ExecuteDeleteAsync();
+            await clean.AttendanceDailyRecords.Where(x => x.TenantId == f.TenantId).ExecuteDeleteAsync();
+        }
+        var id = await SubmitAsync(f);
+
+        // The reprocess's own transaction, held open by the test (no retrying strategy, so it may be user-initiated).
+        await using var job = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(_fx.ConnectionString)
+            .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance).Options);
+        await using var tx = await job.Database.BeginTransactionAsync();
+        await AttendanceDailyRecordLock.AcquireInCurrentTransactionAsync(job, f.TenantId, f.EmployeeId, f.Day, CancellationToken.None);
+        var daily = new AttendanceDailyRecord { TenantId = f.TenantId, EmployeeId = f.EmployeeId, EmployeeName = "Emp", WorkDate = f.Day, Status = AttendanceStatuses.Absent, UndertimeMinutes = 480 };
+        job.AttendanceDailyRecords.Add(daily);
+        job.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = f.TenantId, EmployeeId = f.EmployeeId, WorkDate = f.Day, ImpactType = AttendanceImpactTypes.AbsenceDeduction, Minutes = 480, Status = "PendingPayroll", DailyRecordId = daily.Id });
+        await job.SaveChangesAsync();
+
+        var approve = ApproveAsync(f, id, null);
+        var finishedWhileReprocessOpen = await Task.WhenAny(approve, Task.Delay(1500)) == approve;
+        await tx.CommitAsync();
+        await approve;
+
+        finishedWhileReprocessOpen.Should().BeFalse("the approval must wait for the in-flight reprocess of a leave day");
+        await using var db = _fx.CreateDb();
+        (await db.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be("Approved");
+        (await db.AttendanceDailyRecords.AsNoTracking().SingleAsync(x => x.TenantId == f.TenantId)).Status.Should().Be(AttendanceStatuses.OnLeave);
+        (await db.AttendancePayrollImpacts.AsNoTracking().CountAsync(x => x.TenantId == f.TenantId && x.Status != "Processed"))
+            .Should().Be(0, "an approved leave day must not keep a pending absence charge for the next run to deduct");
+    }
+
     // ── Cancellation ────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A leave already awaiting a cancellation decision goes to the reviewer. A direct cancel used to cancel it outright
+    /// (releasing its used days) and left the Pending cancellation row with no way to decide it.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_OnALeaveAwaitingACancellationDecision_IsRefused()
+    {
+        var (f, id, cancellationId) = await SeedCancellationRequestedAsync();
+
+        IActionResult result;
+        await using (var db = Db())
+            result = await Controller(db, f.TenantId).Cancel(id, new CancelLeaveRequest("direct"), CancellationToken.None);
+
+        result.Should().BeOfType<ConflictObjectResult>();
+        await using var check = _fx.CreateDb();
+        (await check.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be("CancellationRequested");
+        (await check.LeaveCancellationRequests.AsNoTracking().SingleAsync(x => x.Id == cancellationId)).Status.Should().Be("Pending");
+        (await check.LeaveBalanceTransactions.CountAsync(x => x.TenantId == f.TenantId && x.TransactionType == "Reversed")).Should().Be(0);
+    }
+
+    /// <summary>A direct cancel closes any Pending cancellation row of that leave in the same transaction.</summary>
+    [Fact]
+    public async Task Cancel_DirectCancel_ClosesAPendingCancellationRowOfThatLeave()
+    {
+        var f = await SeedAsync();
+        var id = await SubmitAsync(f);
+        Guid cancellationId;
+        await using (var s = _fx.CreateDb())
+        {
+            var c = new LeaveCancellationRequest { TenantId = f.TenantId, LeaveRequestId = id, EmployeeId = f.EmployeeId, Reason = "stale", Status = "Pending" };
+            s.LeaveCancellationRequests.Add(c);
+            await s.SaveChangesAsync();
+            cancellationId = c.Id;
+        }
+
+        await using (var db = Db())
+            await new LeaveService(db, new ApprovalRouter(db)).CancelRequestAsync(f.TenantId, id, "HR", "no longer needed");
+
+        await using var check = _fx.CreateDb();
+        (await check.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be("Cancelled");
+        (await check.LeaveCancellationRequests.AsNoTracking().SingleAsync(x => x.Id == cancellationId)).Status
+            .Should().Be("Closed", "no Pending cancellation row may outlive the leave it asks to cancel");
+    }
+
+    /// <summary>
+    /// The commit of a rejection fails ambiguously and the strategy asks whether it landed. An earlier cancellation
+    /// of the same leave, rejected by the same reviewer, used to answer "yes": nothing had committed, yet the call
+    /// reported success. The check is now by this cancellation row's id, so the strategy retries and the decision lands.
+    /// </summary>
+    [Fact]
+    public async Task RejectCancellation_AmbiguousCommit_IsVerifiedAgainstThisCancellationRow()
+    {
+        var (f, id, cancellationId) = await SeedCancellationRequestedAsync();
+        await using (var s = _fx.CreateDb())
+        {
+            s.LeaveCancellationRequests.Add(new LeaveCancellationRequest
+            {
+                TenantId = f.TenantId, LeaveRequestId = id, EmployeeId = f.EmployeeId, Reason = "earlier", Status = "Rejected",
+                ReviewedByName = "HR Reviewer", ReviewedAtUtc = DateTime.UtcNow.AddDays(-3), CreatedAtUtc = DateTime.UtcNow.AddDays(-4),
+            });
+            await s.SaveChangesAsync();
+        }
+
+        var failCommit = new FailFirstCommit();
+        IActionResult result;
+        await using (var db = Db(failCommit))
+            result = await Controller(db, f.TenantId).RejectCancellation(id, new CancellationDecisionRequest("no"), CancellationToken.None);
+        failCommit.Fired.Should().BeTrue();
+
+        result.Should().BeOfType<OkObjectResult>();
+        await using var check = _fx.CreateDb();
+        (await check.LeaveCancellationRequests.AsNoTracking().SingleAsync(x => x.Id == cancellationId)).Status.Should().Be("Rejected",
+            "a success answer must mean THIS cancellation was decided");
+        (await check.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be("Approved");
+    }
 
     /// <summary>A transient failure on the first attempt: the retry releases the balance once and the
     /// cancellation's approval is persisted.</summary>
@@ -153,7 +270,9 @@ public sealed class LeaveImpactRacePostgresTests
     [Fact]
     public async Task ConcurrentCancels_ReleaseTheBalanceOnce()
     {
-        var (f, id, _) = await SeedCancellationRequestedAsync();
+        var f = await SeedAsync(unpaid: true);
+        var id = await SubmitAsync(f);
+        await ApproveAsync(f, id, null);
 
         Exception? second = null;
         var gate = new AfterFirstRead("FROM leave_requests", async () =>
@@ -284,6 +403,7 @@ public sealed class LeaveImpactRacePostgresTests
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Name, "HR Reviewer"),
             new Claim(ClaimTypes.Role, "HR Manager"),
+            new Claim("permission", "leave.write"),
         };
         controller.ControllerContext = new ControllerContext
         {
@@ -317,6 +437,21 @@ public sealed class LeaveImpactRacePostgresTests
         {
             if (c.CommandText.Contains(marker, StringComparison.Ordinal) && Interlocked.Exchange(ref _fired, 1) == 0) await between();
             return r;
+        }
+    }
+
+    /// <summary>Throws a transient error just before the first transaction commit, so the commit never happens and the
+    /// execution strategy has to ask verifySucceeded whether it did.</summary>
+    private sealed class FailFirstCommit : DbTransactionInterceptor
+    {
+        private int _fired;
+        public bool Fired => _fired == 1;
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(DbTransaction transaction, TransactionEventData eventData,
+            InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _fired, 1) == 0)
+                throw new NpgsqlException("injected ambiguous commit", new TimeoutException());
+            return ValueTask.FromResult(result);
         }
     }
 

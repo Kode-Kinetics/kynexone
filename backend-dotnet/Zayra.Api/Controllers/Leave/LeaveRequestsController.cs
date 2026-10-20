@@ -387,6 +387,7 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
