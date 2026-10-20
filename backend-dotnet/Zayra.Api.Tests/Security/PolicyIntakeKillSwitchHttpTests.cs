@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -67,6 +68,47 @@ public sealed class PolicyIntakeKillSwitchHttpTests(PolicyIntakeKillSwitchFixtur
         f.Model.Calls.Should().Be(calls, "a refused policy request never reaches the model gateway");
     }
 
+    /// <summary>
+    /// The guard must refuse BEFORE model binding: an action filter runs after MVC has bound the IFormFile, so the
+    /// whole multipart upload was received and buffered before the 403. Counted at the outermost middleware.
+    /// </summary>
+    [Fact]
+    public async Task WithTheFlagOff_AnUploadIsRefusedWithoutItsBodyEverBeingRead()
+    {
+        var probe = Guid.NewGuid().ToString("N");
+        using var response = await f.Send("UPLOAD", "/api/ai/policy/documents/upload", f.OffTenant, probe);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, await response.Content.ReadAsStringAsync());
+        f.BodyReads.BytesRead(probe).Should().Be(0, "a refused upload must not be received, parsed or buffered");
+
+        // The same holds for a JSON body (bound by the input formatter, also after action filters ran before).
+        var extract = Guid.NewGuid().ToString("N");
+        using var refused = await f.Send("EXTRACT_AI", "/api/setup-assistant/policy/extract", f.OffTenant, extract);
+        refused.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        f.BodyReads.BytesRead(extract).Should().Be(0);
+    }
+
+    /// <summary>[RequireOptInFeature] endpoints outside an opt-in prefix are refused before binding too.</summary>
+    [Fact]
+    public async Task ARequireOptInFeatureEndpoint_IsRefusedWithoutItsBodyEverBeingRead()
+    {
+        var probe = Guid.NewGuid().ToString("N");
+        // release_a is off for this tenant; the loan-consent upload carries [RequireOptInFeature(release_a)].
+        using var response = await f.Send("MULTIPART", $"/api/finance/loans/{Guid.NewGuid()}/consent", f.OffTenant, probe);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, await response.Content.ReadAsStringAsync());
+        JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("feature").GetString()
+            .Should().Be(FeatureKeys.ReleaseA);
+        f.BodyReads.BytesRead(probe).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task WithTheFlagOn_AnUploadIsReadAndStored()
+    {
+        var probe = Guid.NewGuid().ToString("N");
+        using var response = await f.Send("UPLOAD", "/api/ai/policy/documents/upload", f.OnTenant, probe);
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        f.BodyReads.BytesRead(probe).Should().BeGreaterThan(0);
+    }
+
     [Fact]
     public async Task WithTheFlagOn_PolicyIntakeWorks_ButPolicyTextNeverReachesTheModel()
     {
@@ -122,6 +164,7 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
     private HttpClient? _client;
 
     public RecordingModel Model { get; } = new();
+    public BodyReadProbe BodyReads { get; } = new();
     public TenantSeed OffTenant { get; private set; } = null!;
     public TenantSeed OnTenant { get; private set; } = null!;
 
@@ -134,6 +177,8 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
             {
                 services.RemoveAll<ILlmClient>();
                 services.AddSingleton<ILlmClient>(Model);
+                // Outermost middleware: counts the request-body bytes the pipeline actually reads.
+                services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter>(new BodyReadProbe.StartupFilter(BodyReads));
             },
             // An external provider with a key: anything that forwards policy text would reach RecordingModel.
             hostSettings: new Dictionary<string, string?> { ["AI_PROVIDER"] = "anthropic", ["ANTHROPIC_API_KEY"] = "test-key-not-a-secret" });
@@ -165,7 +210,7 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
         var role = new Role { TenantId = tenantId, Name = "Admin", NormalizedName = "ADMIN" };
         db.Roles.Add(role);
         db.Set<UserRole>().Add(new UserRole { UserId = hr.Id, RoleId = role.Id });
-        foreach (var permission in new[] { "organization.write", "ai.query", "ess.read" })
+        foreach (var permission in new[] { "organization.write", "ai.query", "ess.read", "loans.write" })
             db.Set<UserPermissionOverride>().Add(new UserPermissionOverride { TenantId = tenantId, UserId = hr.Id, PermissionKey = permission, Effect = "Allow", IsActive = true });
         var employee = new Employee { TenantId = tenantId, CompanyId = companyId, FullName = "HR", EnglishName = "HR",
             EmployeeCode = $"PK-{name}", Status = "Active", JoiningDate = DateTime.UtcNow, UserAccountId = hr.Id };
@@ -194,7 +239,7 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
         return new(tenantId, companyId, doc.Id, doc.ContentSha256, token);
     }
 
-    public async Task<HttpResponseMessage> Send(string kind, string path, TenantSeed who)
+    public async Task<HttpResponseMessage> Send(string kind, string path, TenantSeed who, string? probeId = null)
     {
         path = path.Replace("{doc}", who.DocumentId.ToString()).Replace("{company}", who.CompanyId.ToString());
         var profile = Zayra.Api.Tests.SetupConfigurationTests.Profile();
@@ -203,7 +248,7 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
             "GET" => new(HttpMethod.Get, path),
             "DELETE" => new(HttpMethod.Delete, path),
             "POST" => new(HttpMethod.Post, path) { Content = JsonContent.Create(new PolicyAskRequest("How many days of annual leave?")) },
-            "UPLOAD" => new(HttpMethod.Post, path)
+            "UPLOAD" or "MULTIPART" => new(HttpMethod.Post, path)
             {
                 Content = new MultipartFormDataContent { { new ByteArrayContent(Encoding.UTF8.GetBytes(PolicyText)), "file", "new-handbook.txt" } },
             },
@@ -220,6 +265,7 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
         using (request)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", who.Token);
+            if (probeId is not null) request.Headers.Add(BodyReadProbe.Header, probeId);
             return await _client!.SendAsync(request);
         }
     }
@@ -236,5 +282,49 @@ public sealed class PolicyIntakeKillSwitchFixture : IAsyncLifetime
                 && (a.Action.StartsWith("policy.") || a.Action == "setup.policy_review_recorded")),
             await db.AIHRQueryLogs.IgnoreQueryFilters().CountAsync(l => l.TenantId == t),
             await db.TenantAiUsages.IgnoreQueryFilters().CountAsync(u => u.TenantId == t));
+    }
+}
+
+/// <summary>Counts request-body bytes read per request, keyed by the <see cref="Header"/> the test sends.</summary>
+public sealed class BodyReadProbe
+{
+    public const string Header = "X-Test-Body-Probe";
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _reads = new();
+
+    public long BytesRead(string id) => _reads.TryGetValue(id, out var n) ? n : 0;
+
+    public sealed class StartupFilter(BodyReadProbe probe) : Microsoft.AspNetCore.Hosting.IStartupFilter
+    {
+        public Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> Configure(Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, inner) =>
+            {
+                if (context.Request.Headers.TryGetValue(Header, out var id))
+                {
+                    probe._reads.TryAdd(id.ToString(), 0);
+                    context.Request.Body = new Counting(context.Request.Body, n => probe._reads.AddOrUpdate(id.ToString(), n, (_, v) => v + n));
+                }
+                await inner();
+            });
+            next(app);
+        };
+    }
+
+    private sealed class Counting(Stream inner, Action<long> onRead) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) { var n = inner.Read(buffer, offset, count); onRead(n); return n; }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        { var n = await inner.ReadAsync(buffer, ct); onRead(n); return n; }
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        { var n = await inner.ReadAsync(buffer.AsMemory(offset, count), ct); onRead(n); return n; }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

@@ -685,9 +685,9 @@ public class SelfieAttendanceTests : PlatformTestBase
     {
         var http = new DefaultHttpContext { User = user };
         http.Request.Path = path;
-        var ctx = new ActionExecutingContext(new ActionContext(http, new RouteData(), new ActionDescriptor()), [], new Dictionary<string, object?>(), new object());
+        var ctx = new ResourceExecutingContext(new ActionContext(http, new RouteData(), new ActionDescriptor()), [], []);
         var guard = new FeatureFlagGuardFilter(modules, NullLogger<FeatureFlagGuardFilter>.Instance);
-        await guard.OnActionExecutionAsync(ctx, () => Task.FromResult(new ActionExecutedContext(ctx, [], new object())));
+        await guard.OnResourceExecutionAsync(ctx, () => Task.FromResult(new ResourceExecutedContext(ctx, [])));
         return ctx.Result;
     }
 }

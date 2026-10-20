@@ -198,6 +198,9 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Modules.ITenantModuleService
 
 builder.Services.AddControllers(options =>
 {
+    // Both are RESOURCE filters: they run after authentication/authorization and before model binding, so a
+    // refused request's body (a multipart upload, a JSON payload) is never read. Order matters: a request both
+    // would refuse gets the subscription answer first, as it did when they were action filters.
     options.Filters.Add<SubscriptionGuardFilter>();
     options.Filters.Add<FeatureFlagGuardFilter>();
 })
