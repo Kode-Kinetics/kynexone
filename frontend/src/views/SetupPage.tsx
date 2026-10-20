@@ -470,13 +470,13 @@ function CompaniesTab() {
               ))}
             </select>
           </FormField>
-          <FormField label="Registration Number" required error={fieldErrors.registrationNumber} errorId="company-registration-number-error">
+          <FormField label={t('Registration Number')} required error={fieldErrors.registrationNumber} errorId="company-registration-number-error">
             <input
               type="text"
               value={form.registrationNumber}
               onChange={(e) => f('registrationNumber', e.target.value)}
               className={`input w-full ${fieldErrors.registrationNumber ? 'border-red-400 focus:border-red-500 dark:border-red-500/60' : ''}`}
-              aria-label="Registration Number"
+              aria-label={t('Registration Number')}
               aria-required="true"
               aria-invalid={fieldErrors.registrationNumber ? true : undefined}
               aria-describedby={fieldErrors.registrationNumber ? 'company-registration-number-error' : undefined}
