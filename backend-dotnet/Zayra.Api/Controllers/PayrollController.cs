@@ -3053,15 +3053,47 @@ public partial class PayrollController : ControllerBase
 
         if (includesRecurringPay)
         {
+            // ── THE MARK IS A COMPARE-AND-SWAP, AND THE ROW COUNT PROVES WE WON IT ─────────────────────
+            // The impact lists were read BEFORE this transaction opened, and payroll takes no attendance
+            // day lock. In between, an attendance recompute (AttendanceDerivedArtifacts.UpsertImpacts,
+            // under AttendanceDailyRecordLock) can delete a loaded impact and insert its replacement, and
+            // a leave cancellation deletes a pending leave deduction. Marking by id alone then matched
+            // fewer rows and committed anyway: the witnesses named deleted impacts (nothing for void/
+            // reopen to release) and the replacement stayed pending for the next off-cycle run to deduct
+            // AGAIN. The same holds for a concurrent sibling run that consumed the row first.
+            //
+            // Re-checking the load predicate (still not Processed) on the UPDATE makes it a CAS: under
+            // READ COMMITTED a row a concurrent writer deleted (or is deleting, in which case we wait for
+            // it) is simply not matched. A short count aborts the whole run; the throw rolls back slips,
+            // witnesses and every other write in this transaction, exactly like bonus_consumed_concurrently.
+            // No attendance lock is taken here on purpose: it would add a second lock order to payroll's
+            // transaction for no gain, since a replaced row is detected rather than prevented.
             var attendanceImpactIds = attendanceImpacts.Select(x => x.Id).ToList();
             foreach (var x in attendanceImpacts)
                 Witness(PayrollConsumptionArtifacts.AttendanceImpact, x.Id, x.EmployeeId, 0m, x.Status);
-            await _db.AttendancePayrollImpacts.Where(x => x.TenantId == tenantId && attendanceImpactIds.Contains(x.Id)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+            var markedAttendance = await _db.AttendancePayrollImpacts
+                .Where(x => x.TenantId == tenantId && attendanceImpactIds.Contains(x.Id) && x.Status != "Processed")
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
 
             var leaveImpactIds = leaveImpacts.Select(x => x.Id).ToList();
             foreach (var x in leaveImpacts)
                 Witness(PayrollConsumptionArtifacts.LeaveImpact, x.Id, x.EmployeeId, x.Amount, x.Status);
-            await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && leaveImpactIds.Contains(x.Id)).ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+            var markedLeave = await _db.LeavePayrollImpacts
+                .Where(x => x.TenantId == tenantId && leaveImpactIds.Contains(x.Id) && x.Status != "Processed")
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+
+            if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count)
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error    = "payroll_impacts_changed_concurrently",
+                    message  = "Attendance or leave for this period changed while the run was processing (a day was " +
+                               "re-processed, a leave was cancelled, or another run consumed it), so the pay this run " +
+                               "computed no longer matches the records. Nothing was written — re-process this run.",
+                    attendanceExpected = attendanceImpactIds.Count,
+                    attendanceMarked   = markedAttendance,
+                    leaveExpected      = leaveImpactIds.Count,
+                    leaveMarked        = markedLeave,
+                });
 
             var consumedOtImpacts = overtimeImpacts
                 .Where(x => x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)
