@@ -16,6 +16,7 @@ import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
+import { payrollAttendance } from './payrollAttendance';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1391,6 +1392,8 @@ const en: Dict = {
   ...essWorkspace.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
+  // Payroll's attendance check before Process — see ./payrollAttendance.
+  ...payrollAttendance.en,
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...glSetup.en,
@@ -2774,6 +2777,8 @@ const ar: Dict = {
   ...essWorkspace.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
+  // Payroll's attendance check before Process — see ./payrollAttendance.
+  ...payrollAttendance.ar,
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...glSetup.ar,

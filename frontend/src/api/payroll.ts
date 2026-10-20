@@ -570,6 +570,43 @@ export interface AIInsight {
   createdAtUtc: string;
 }
 
+/** One attendance day of the run's pre-Process check (GET runs/{id}/attendance-reconciliation). */
+export interface AttendanceStaleDay {
+  employeeId: number;
+  employeeCode: string | null;
+  employeeName: string | null;
+  workDate: string;
+  /** impacts_without_record | deductions_differ | punches_differ | punches_moved */
+  reason: string;
+}
+
+export interface AttendanceHeldDay {
+  employeeId: number;
+  employeeCode: string | null;
+  employeeName: string | null;
+  workDate: string;
+  lateMinutes: number;
+  earlyExitMinutes: number;
+}
+
+export interface AttendanceReconciliation {
+  runId: string;
+  from: string;
+  to: string;
+  consumesAttendance: boolean;
+  /** ERR_ATTENDANCE_IMPACT_STALE: these days block Process until they are recomputed. */
+  stale: { code: string; employeeCount: number; dayCount: number; days: AttendanceStaleDay[] };
+  /** WARN_MISSING_PUNCH_HELD: late / early-exit minutes held on half-pair days, not deducted. */
+  held: { code: string; employeeCount: number; dayCount: number; lateMinutes: number; earlyExitMinutes: number; days: AttendanceHeldDay[] };
+}
+
+export interface StaleAttendanceRecompute {
+  found: number;
+  recomputed: number;
+  remaining: number;
+  message: string;
+}
+
 export const payrollApi = {
   listRuns: (params: { status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<PayrollRun>>('/api/payroll/runs', { params }).then((r) => r.data),
@@ -583,6 +620,13 @@ export const payrollApi = {
 
   processRun: (id: string) =>
     client.post<PayrollRun>(`/api/payroll/runs/${id}/process`).then((r) => r.data),
+
+  attendanceReconciliation: (id: string) =>
+    client.get<AttendanceReconciliation>(`/api/payroll/runs/${id}/attendance-reconciliation`).then((r) => r.data),
+
+  /** Recomputes exactly the days the run's attendance check finds stale (the server finds them; none are sent). */
+  recomputeStaleAttendance: (id: string) =>
+    client.post<StaleAttendanceRecompute>(`/api/payroll/runs/${id}/attendance/recompute-stale`).then((r) => r.data),
 
   lockRun: (id: string) =>
     client.post<PayrollRun>(`/api/payroll/runs/${id}/lock`).then((r) => r.data),

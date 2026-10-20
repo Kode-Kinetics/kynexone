@@ -36,6 +36,7 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
+import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 
@@ -1200,6 +1201,10 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   // could only be corrected by a consultant with a REST client.
   const [reopening, setReopening] = useState<PayrollRun | null>(null);
   const [voiding, setVoiding] = useState<PayrollRun | null>(null);
+  // Process refused because attendance deductions no longer match their days (ERR_ATTENDANCE_IMPACT_STALE): the one
+  // next action is the recompute on the Validation tab.
+  const [staleAttendanceRun, setStaleAttendanceRun] = useState<PayrollRun | null>(null);
+  const t = useT();
 
   // A failed load is shown as a failure, never as "No runs yet" (which invites creating a duplicate run).
   const [runsError, setRunsError] = useState<unknown>(null);
@@ -1249,14 +1254,16 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   const processRun = async (id: string) => {
     setError('');
+    setStaleAttendanceRun(null);
     try {
       const updated = await payrollApi.processRun(id);
       setRuns(rs => rs.map(r => r.id === id ? updated : r));
       // Re-fetch slips for the processed run so the table matches the new totals.
       if (selectedRunId === id) openSlips(updated);
     } catch (e) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to process the payroll run. Check that the company has a country code and a statutory pack configured.');
+      const data = (e as { response?: { data?: { message?: string; code?: string } } })?.response?.data;
+      if (data?.code === 'ERR_ATTENDANCE_IMPACT_STALE') setStaleAttendanceRun(runs.find(r => r.id === id) ?? null);
+      setError(data?.message ?? 'Failed to process the payroll run. Check that the company has a country code and a statutory pack configured.');
     }
   };
 
@@ -1307,6 +1314,12 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
         <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
+          {staleAttendanceRun && (
+            <button type="button" className={`${btn.sm} ms-auto shrink-0`} data-testid="open-attendance-recompute"
+              onClick={() => onSelectRun(staleAttendanceRun, 'validation')}>
+              {t('Review attendance and recompute')}
+            </button>
+          )}
         </div>
       )}
 
@@ -1767,6 +1780,8 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
       </div>
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
+
+      {runId && <AttendanceReconciliationPanel runId={runId} />}
 
       {results.length > 0 && (
         <div className="grid grid-cols-3 gap-4">

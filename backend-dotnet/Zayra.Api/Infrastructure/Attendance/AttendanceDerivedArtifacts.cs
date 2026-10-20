@@ -134,13 +134,8 @@ public static class AttendanceDerivedArtifacts
         var paid = existing.Where(x => x.Status == ProcessedStatus).ToList();
         db.AttendancePayrollImpacts.RemoveRange(existing.Where(x => x.Status != ProcessedStatus));
 
-        var recomputed = new List<(string Type, int Minutes)>();
-        // Held, not raised, on a half-pair day (see IsHalfPair): the minutes stay on the daily record for information.
+        var recomputed = ImpliedImpacts(daily, absenceMinutes);
         var halfPair = IsHalfPair(daily);
-        if (daily.LateMinutes > 0 && !halfPair) recomputed.Add((AttendanceImpactTypes.LateDeduction, daily.LateMinutes));
-        if (daily.EarlyExitMinutes > 0 && !halfPair) recomputed.Add((AttendanceImpactTypes.EarlyExitDeduction, daily.EarlyExitMinutes));
-        if (daily.Status == "Absent") recomputed.Add((AttendanceImpactTypes.AbsenceDeduction, absenceMinutes > 0 ? absenceMinutes : OrdinaryAbsenceMinutes));
-        if (daily.OvertimeMinutes > 0) recomputed.Add((AttendanceImpactTypes.OvertimePayable, daily.OvertimeMinutes));
 
         var dayIsPaid = paid.Count > 0 || await IsCoveredByPayrollAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct);
         bool Frozen(string type) => paid.Any(p => p.ImpactType == type) || (dayIsPaid && type != AttendanceImpactTypes.OvertimePayable);
@@ -198,6 +193,39 @@ public static class AttendanceDerivedArtifacts
         });
     }
 
+    /// <summary>
+    /// The impacts a settled daily record implies: what <see cref="UpsertImpactsAsync"/> writes for an unpaid day, and
+    /// what the payroll stale-attendance check (<see cref="AttendanceImpactReconciliation"/>) compares pending impacts
+    /// with. Late and early-exit deductions are held on a half-pair day (<see cref="IsHalfPair"/>).
+    /// </summary>
+    public static List<(string Type, int Minutes)> ImpliedImpacts(AttendanceDailyRecord daily, int absenceMinutes)
+    {
+        var implied = new List<(string Type, int Minutes)>();
+        var halfPair = IsHalfPair(daily);
+        if (daily.LateMinutes > 0 && !halfPair) implied.Add((AttendanceImpactTypes.LateDeduction, daily.LateMinutes));
+        if (daily.EarlyExitMinutes > 0 && !halfPair) implied.Add((AttendanceImpactTypes.EarlyExitDeduction, daily.EarlyExitMinutes));
+        if (daily.Status == "Absent") implied.Add((AttendanceImpactTypes.AbsenceDeduction, absenceMinutes > 0 ? absenceMinutes : OrdinaryAbsenceMinutes));
+        if (daily.OvertimeMinutes > 0) implied.Add((AttendanceImpactTypes.OvertimePayable, daily.OvertimeMinutes));
+        return implied;
+    }
+
+    /// <summary>
+    /// A day's first-in and last-out from its punches (in time order): the first In (or direction-less) punch, and the
+    /// last Out — or, for a device that sends no direction, the last of two or more punches. The one pairing rule, used
+    /// by the day processor and by the stale-attendance check.
+    /// </summary>
+    public static (DateTime? FirstInUtc, DateTime? LastOutUtc) PairOf(IReadOnlyList<(DateTime PunchUtc, string Direction)> ordered)
+    {
+        DateTime? firstIn = null, lastOut = null;
+        foreach (var (at, direction) in ordered)
+        {
+            if (firstIn is null && direction is "In" or "Unknown") firstIn = at;
+            if (direction == "Out") lastOut = at;
+        }
+        lastOut ??= ordered.Count > 1 ? ordered[^1].PunchUtc : null;
+        return (firstIn, lastOut);
+    }
+
     /// <summary>The deductions held on a half-pair day until the pair is complete.</summary>
     public static readonly string[] HeldOnHalfPairTypes = [AttendanceImpactTypes.LateDeduction, AttendanceImpactTypes.EarlyExitDeduction];
 
@@ -211,8 +239,13 @@ public static class AttendanceDerivedArtifacts
     /// not half a pair (it is Absent, or leave / holiday / rest) and holds nothing. Overtime needs no hold: a half-pair
     /// day has no worked span, so the processor computes no overtime for it.
     /// </summary>
-    public static bool IsHalfPair(AttendanceDailyRecord daily) =>
-        daily.MissingPunch && (daily.FirstInUtc is not null || daily.LastOutUtc is not null);
+    public static bool IsHalfPair(AttendanceDailyRecord daily) => IsHalfPairCompiled(daily);
+
+    /// <summary><see cref="IsHalfPair"/> as a query expression, so a database query applies the identical rule.</summary>
+    public static readonly System.Linq.Expressions.Expression<Func<AttendanceDailyRecord, bool>> IsHalfPairExpression =
+        d => d.MissingPunch && (d.FirstInUtc != null || d.LastOutUtc != null);
+
+    private static readonly Func<AttendanceDailyRecord, bool> IsHalfPairCompiled = IsHalfPairExpression.Compile();
 
     /// <summary>The missing-punch exception's text: what is missing and, when there are any, the minutes held.</summary>
     public static string DescribeMissingPunch(AttendanceDailyRecord daily)

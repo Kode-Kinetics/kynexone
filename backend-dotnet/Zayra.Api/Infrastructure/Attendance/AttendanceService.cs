@@ -884,8 +884,10 @@ public class AttendanceService : IAttendanceService
     /// employee is recomputed (a Suspended or Offboarded employee's final month too, as a correction approval does).
     /// </summary>
     /// <returns>The number of days recomputed.</returns>
+    /// <param name="impactsOnly">Days whose deductions are re-derived from the stored record instead of rebuilding the
+    /// record from punches (<see cref="StaleAttendanceDay.FromPunches"/> false).</param>
     public async Task<int> RecomputeDaysAsync(Guid tenantId, IReadOnlyCollection<(int EmployeeId, DateOnly WorkDate)> days,
-        RequestContext context, string reason, CancellationToken ct)
+        RequestContext context, string reason, CancellationToken ct, IReadOnlySet<(int EmployeeId, DateOnly WorkDate)>? impactsOnly = null)
     {
         if (days.Count == 0) return 0;
         var employeeIds = days.Select(d => d.EmployeeId).Distinct().ToList();
@@ -908,11 +910,14 @@ public class AttendanceService : IAttendanceService
                 {
                     done = false;
                     if (await IsLocked(tenantId, day, ct)) return;
-                    await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                    if (impactsOnly?.Contains((employee.Id, day)) == true)
+                        await ResyncImpactsFromRecordAsync(tenantId, employee, day, policy, ct);
+                    else
+                        await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
                     done = true;
                 }, ct);
-                if (done) recomputed.Add(new { employeeId = employee.Id, workDate = day });
+                if (done) recomputed.Add(new { employeeId = employee.Id, workDate = day, impactsOnly = impactsOnly?.Contains((employee.Id, day)) == true });
             }
         }
         await Audit(tenantId, context, "attendance.processed", "AttendanceDailyRecord", "days",
@@ -1277,15 +1282,13 @@ public class AttendanceService : IAttendanceService
             daily = new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, Department = employee.Department, Branch = employee.Branch, WorkDate = date };
             _db.AttendanceDailyRecords.Add(daily);
         }
-        var inEvents = events.Where(x => x.PunchDirection is "In" or "Unknown").ToList();
-        var outEvents = events.Where(x => x.PunchDirection is "Out").ToList();
         // The first-in is only ever an In (or a direction-less Unknown) punch. It used to fall back to the day's first
         // event of ANY direction, so a day with nothing but an Out punch had first-in == last-out: MissingPunch false,
         // the policy break applied, status "Absent", an absence deduction raised and no missing-punch exception for
         // anyone to review. Such a day is now exactly the In-only day mirrored. The last-out fallback (the last of two
         // or more events, for devices that send no direction) is unchanged.
-        daily.FirstInUtc = inEvents.FirstOrDefault()?.PunchTimestampUtc;
-        daily.LastOutUtc = outEvents.LastOrDefault()?.PunchTimestampUtc ?? (events.Count > 1 ? events.Last().PunchTimestampUtc : null);
+        (daily.FirstInUtc, daily.LastOutUtc) = AttendanceDerivedArtifacts.PairOf(
+            events.Select(x => (x.PunchTimestampUtc, x.PunchDirection)).ToList());
         var hasPunch = daily.FirstInUtc is not null || daily.LastOutUtc is not null;
         // An Out at or before the first In closes nothing (it used to make a zero-length "complete" day: Absent, with an
         // absence deduction): it is half a pair, like the In-only and Out-only days. Both stamps are kept as evidence.
@@ -1337,10 +1340,7 @@ public class AttendanceService : IAttendanceService
         // personal field that defaults empty, so gating on it both missed employees of a KSA entity
         // and leaked the reduction to employees of a non-KSA one. Art. 109 and Art. 117 already
         // resolve the company; Art. 98 now does the same. See ResolveCompanyCountryAsync.
-        var employerCountry = await ResolveCompanyCountryAsync(tenantId, employee.CompanyId, ct);
-        var hoursBaseline = await _ksaWorkingHours.ResolveDailyAsync(
-            employerCountry, date, policy.StandardWorkMinutes, ct);
-        var baselineMinutes = hoursBaseline.DailyMinutes;
+        var (baselineMinutes, absenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
 
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - baselineMinutes);
         daily.UndertimeMinutes = Math.Max(0, baselineMinutes - daily.TotalWorkedMinutes);
@@ -1375,14 +1375,36 @@ public class AttendanceService : IAttendanceService
         daily.UpdatedAtUtc = DateTime.UtcNow;
         foreach (var raw in events) raw.IsProcessed = true;
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
+        await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
+        await UpsertExceptions(tenantId, daily, ct);
+    }
+
+    /// <summary>The day's working-hours baseline (overtime / undertime threshold) and what one absent day costs.</summary>
+    private async Task<(int BaselineMinutes, int AbsenceMinutes)> DayBaselineAsync(Guid tenantId, Employee employee, DateOnly date,
+        AttendancePolicy policy, CancellationToken ct)
+    {
+        var employerCountry = await ResolveCompanyCountryAsync(tenantId, employee.CompanyId, ct);
+        var hoursBaseline = await _ksaWorkingHours.ResolveDailyAsync(employerCountry, date, policy.StandardWorkMinutes, ct);
+        var baselineMinutes = hoursBaseline.DailyMinutes;
         // An absent day costs a day's hours. The literal 480 below is DELIBERATELY retained for every
         // ordinary day, including for a tenant whose AttendancePolicy is not 480: making the absence
         // deduction follow the policy generally is a defensible fix, but it would move money for
         // non-KSA tenants — upward, for anyone configured above 8 hours — and that is outside this
         // change's remit. Only the Ramadan case is corrected here, and only downward.
-        var absenceMinutes = hoursBaseline.IsRamadan ? Math.Min(baselineMinutes, 480) : 480;
+        return (baselineMinutes, hoursBaseline.IsRamadan ? Math.Min(baselineMinutes, 480) : 480);
+    }
+
+    /// <summary>
+    /// Re-derives one day's impacts from its stored record, without rebuilding the record from punches: for a day that has
+    /// no raw punches (a migration import, or a legacy mobile punch from before it recorded raw events), where rebuilding
+    /// would wipe the record. The same writer and paid-day protection as processing.
+    /// </summary>
+    private async Task ResyncImpactsFromRecordAsync(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, CancellationToken ct)
+    {
+        var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
+        if (daily is null) return;
+        var (_, absenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
         await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
-        await UpsertExceptions(tenantId, daily, ct);
     }
 
 

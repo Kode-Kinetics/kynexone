@@ -1678,6 +1678,19 @@ public partial class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
 
+        // ── ERR_ATTENDANCE_IMPACT_STALE: never deduct attendance impacts that no longer match their days ─────────
+        // This run is about to deduct the pending impacts loaded above exactly as they stand. One written by an older
+        // rule (an Out-only day's 480-minute absence, a late deduction on an In-only day), left behind by an undone run,
+        // or dated by a time zone or roster that has since changed would be deducted wrongly, and nothing downstream
+        // compares it with the day. Refuse instead, name the days, and offer the recompute of exactly those days.
+        if (run.IncludesRecurringPay)
+        {
+            var staleAttendance = await AttendanceImpactReconciliation.FindStaleDaysAsync(
+                _db, tenantId, employeeIdsForRun, periodStart, periodEnd, id, cancellationToken);
+            if (staleAttendance.Count > 0)
+                return UnprocessableEntity(StaleAttendanceRefusal(run, staleAttendance, employees));
+        }
+
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var loanCompanyId = company.Id;
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
@@ -11812,6 +11825,137 @@ public partial class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The 422 Process answers when pending attendance impacts no longer match their days (ERR_ATTENDANCE_IMPACT_STALE).</summary>
+    private static object StaleAttendanceRefusal(PayrollRun run, IReadOnlyList<StaleAttendanceDay> stale, IReadOnlyCollection<Employee> employees)
+    {
+        var employeeCount = stale.Select(d => d.EmployeeId).Distinct().Count();
+        var byId = employees.GroupBy(e => e.Id).ToDictionary(g => g.Key, g => g.First());
+        return new
+        {
+            error = "attendance_impact_stale",
+            code = AttendanceImpactReconciliation.StaleCode,
+            message = $"{stale.Count} attendance day(s) for {employeeCount} employee(s) in {run.Year}-{run.Month:D2} have deductions that " +
+                      "no longer match their punches, so this run would deduct the wrong amounts. Recompute those days " +
+                      "(Payroll → Validation → Recompute these days), then process the run again. Nothing was saved.",
+            employeeCount,
+            dayCount = stale.Count,
+            days = stale.Take(StaleDaysListed).Select(d => new
+            {
+                d.EmployeeId,
+                employeeCode = byId.TryGetValue(d.EmployeeId, out var e) ? e.EmployeeCode : null,
+                employeeName = byId.TryGetValue(d.EmployeeId, out var n) ? n.FullName : null,
+                workDate = d.WorkDate, reason = d.Reason,
+            }),
+            recompute = new { method = "POST", path = $"/api/payroll/runs/{run.Id}/attendance/recompute-stale" },
+        };
+    }
+
+    private const int StaleDaysListed = 200;
+
+    /// <summary>
+    /// The run's attendance check, before Process: the days whose pending deductions no longer match their punches (which
+    /// block Process with ERR_ATTENDANCE_IMPACT_STALE) and the half-pair days whose late / early-exit minutes are held
+    /// (WARN_MISSING_PUNCH_HELD). Over the population Process would pay, for the run's month.
+    /// </summary>
+    [HttpGet("runs/{id:guid}/attendance-reconciliation")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> AttendanceReconciliation(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var scope = await AttendanceReconciliationScopeAsync(tenantId, id, ct);
+        if (scope is null) return NotFound();
+        var (run, employees, from, to) = scope.Value;
+        var ids = employees.Select(e => e.Id).ToList();
+        IReadOnlyList<StaleAttendanceDay> stale = run.IncludesRecurringPay
+            ? await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, ids, from, to, run.Id, ct)
+            : Array.Empty<StaleAttendanceDay>();
+        var held = await AttendanceImpactReconciliation.FindHeldDaysAsync(_db, tenantId, ids, from, to, ct);
+        var byId = employees.ToDictionary(e => e.Id);
+        string? CodeOf(int employeeId) => byId.TryGetValue(employeeId, out var e) ? e.EmployeeCode : null;
+        string? NameOf(int employeeId) => byId.TryGetValue(employeeId, out var e) ? e.FullName : null;
+        return Ok(new
+        {
+            runId = run.Id, from, to,
+            consumesAttendance = run.IncludesRecurringPay,
+            stale = new
+            {
+                code = AttendanceImpactReconciliation.StaleCode,
+                employeeCount = stale.Select(d => d.EmployeeId).Distinct().Count(),
+                dayCount = stale.Count,
+                days = stale.Select(d => new { d.EmployeeId, employeeCode = CodeOf(d.EmployeeId), employeeName = NameOf(d.EmployeeId), d.WorkDate, d.Reason }),
+            },
+            held = new
+            {
+                code = AttendanceImpactReconciliation.HeldCode,
+                employeeCount = held.Select(d => d.EmployeeId).Distinct().Count(),
+                dayCount = held.Count,
+                lateMinutes = held.Sum(d => d.LateMinutes),
+                earlyExitMinutes = held.Sum(d => d.EarlyExitMinutes),
+                days = held.Select(d => new { d.EmployeeId, employeeCode = CodeOf(d.EmployeeId), employeeName = NameOf(d.EmployeeId) ?? d.EmployeeName, d.WorkDate, d.LateMinutes, d.EarlyExitMinutes }),
+            },
+        });
+    }
+
+    /// <summary>
+    /// Recomputes exactly the days the run's attendance check finds stale (the server finds them again; the client names
+    /// none), with the day processor — or, for a day with no raw punches, by re-deriving its deductions from the record.
+    /// Each day is its own transaction under the day's lock, like a range run. Paid and payroll-locked days are never
+    /// touched. Afterwards the run can be processed.
+    /// </summary>
+    [HttpPost("runs/{id:guid}/attendance/recompute-stale")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> RecomputeStaleAttendance(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var scope = await AttendanceReconciliationScopeAsync(tenantId, id, ct);
+        if (scope is null) return NotFound();
+        var (run, employees, from, to) = scope.Value;
+        // The statuses Process refuses: such a run has already consumed its attendance.
+        if (run.Status is "Processed" or "PendingFinanceReview" or "Locked" or "Approved" or "Paid" or "Voided")
+            return BadRequest(new { error = "run_not_processable", message = $"A '{run.Status}' run has already consumed its attendance. Reopen it first." });
+        var stale = await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, employees.Select(e => e.Id).ToList(), from, to, run.Id, ct);
+        // The population read stamps selection outcomes on tracked rows; this endpoint must not save them.
+        _db.ChangeTracker.Clear();
+        var recomputed = await AttendanceService.ForRecompute(_db).RecomputeDaysAsync(tenantId,
+            stale.Select(d => (d.EmployeeId, d.WorkDate)).ToList(),
+            new Zayra.Api.Application.Auth.RequestContext(HttpContext?.Connection.RemoteIpAddress?.ToString(), null, GetUserId(), tenantId),
+            $"payroll run {run.Id}: stale attendance recomputed before processing", ct,
+            stale.Where(d => !d.FromPunches).Select(d => (d.EmployeeId, d.WorkDate)).ToHashSet());
+        var remaining = await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, employees.Select(e => e.Id).ToList(), from, to, run.Id, ct);
+        return Ok(new
+        {
+            found = stale.Count,
+            recomputed,
+            remaining = remaining.Count,
+            message = remaining.Count == 0
+                ? $"{recomputed} attendance day(s) were recomputed. Process the run again."
+                : $"{recomputed} attendance day(s) were recomputed; {remaining.Count} still differ (a payroll-locked period, or a day changed again). Review them before processing.",
+        });
+    }
+
+    /// <summary>The run, the population Process would pay, and its month — for the attendance check before Process.</summary>
+    private async Task<(PayrollRun Run, List<Employee> Employees, DateOnly From, DateOnly To)?> AttendanceReconciliationScopeAsync(
+        Guid tenantId, Guid runId, CancellationToken ct)
+    {
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.Id == runId && r.TenantId == tenantId, ct);
+        if (run is null) return null;
+        var from = new DateOnly(run.Year, run.Month, 1);
+        var to = from.AddMonths(1).AddDays(-1);
+        // The same company resolution and eligible population Process uses.
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted).OrderBy(c => c.CreatedAtUtc).ToListAsync(ct);
+        var legacySingleCompany = companies.Count == 1;
+        var company = run.CompanyId.HasValue ? companies.FirstOrDefault(c => c.Id == run.CompanyId.Value)
+            : legacySingleCompany ? companies[0] : null;
+        if (company is null) return (run, new List<Employee>(), from, to);
+        var anyScoped = await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId.HasValue, ct);
+        var anyForCompany = await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, ct);
+        var (eligible, _, _, _, _) = await LoadEligibleWithLeaversAsync(tenantId, company.Id, legacySingleCompany || !anyScoped || !anyForCompany,
+            asNoTracking: true, from, to, excludeRunId: run.Id, ct, includeSettlementLeavers: run.SettlesFinalSettlements);
+        var population = await ResolveRunPopulationAsync(tenantId, run, eligible, ct);
+        return (run, population.Employees, from, to);
+    }
 
     /// <summary>
     /// Unresolved "paid attendance changed" attendance exceptions for these employees in the period — Rule 10b's
