@@ -18,6 +18,7 @@ using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -3131,6 +3132,8 @@ public partial class PayrollController : ControllerBase
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
+            UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
+                tenantId, periodStart, periodEnd, employeeIdsForRun, cancellationToken),
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
@@ -4134,6 +4137,9 @@ public partial class PayrollController : ControllerBase
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
+            // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
+            UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
+                tenantId, valPeriodStart, valPeriodEnd, employeeIdsForValidation, cancellationToken),
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
             GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
@@ -11802,6 +11808,23 @@ public partial class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Unresolved "paid attendance changed" attendance exceptions for these employees in the period — Rule 10b's
+    /// WARN_PAID_ATTENDANCE_CHANGED. One source for Process and /validate.
+    /// </summary>
+    private async Task<IReadOnlyList<PaidAttendanceChange>> UnresolvedPaidAttendanceChangesAsync(
+        Guid tenantId, DateOnly from, DateOnly to, IReadOnlyCollection<int> employeeIds, CancellationToken ct)
+    {
+        var rows = await _db.AttendanceExceptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved
+                     && x.WorkDate >= from && x.WorkDate <= to && employeeIds.Contains(x.EmployeeId))
+            .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate)
+            .Select(x => new { x.EmployeeId, x.WorkDate, x.Details })
+            .ToListAsync(ct);
+        return rows.Select(r => new PaidAttendanceChange(r.EmployeeId, r.WorkDate, AttendanceDerivedArtifacts.DescribePaidAttendanceChange(r.Details))).ToList();
+    }
+
     /// <summary>
     /// The effective date of the newest platform GOSI rate row — what the staleness warning
     /// (WARN_GOSI_RATES_REQUIRE_SIGNOFF) ages. Read from statutory_rules, the store the payslip computes

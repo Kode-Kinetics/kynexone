@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -1057,6 +1058,24 @@ public sealed class PayrollVoidService
             }
         }
 
+        // The days this run paid are no longer paid (their impacts are pending again and will be recomputed against
+        // payroll), so an open "paid attendance changed" flag for them would ask HR to adjust a run that no longer stands.
+        var coveredEmployeeIds = await ScopedBypass.TenantWide(_db.PayrollSlips, tenantId,
+                "Run void/reopen is a system correction over the whole run: every company's slip on it says whose days it paid.")
+            .Where(s => s.RunId == runId).Select(s => s.EmployeeId).Distinct().ToListAsync(ct);
+        if (coveredEmployeeIds.Count > 0)
+        {
+            var periodStart = new DateOnly(run.Year, run.Month, 1);
+            var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+            var paidAttendanceFlags = await _db.AttendanceExceptions
+                .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved
+                         && coveredEmployeeIds.Contains(x.EmployeeId) && x.WorkDate >= periodStart && x.WorkDate <= periodEnd)
+                .ToListAsync(ct);
+            foreach (var flag in paidAttendanceFlags)
+                AttendanceDerivedArtifacts.AutoResolve(flag, $"payroll run {runId} was voided or reopened; the day is recomputed against payroll again");
+            result.PaidAttendanceExceptionsResolved = paidAttendanceFlags.Count;
+        }
+
         var leaveIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact)
                                 .Select(w => w.ArtifactId).ToList();
         if (leaveIds.Count > 0)
@@ -1145,6 +1164,8 @@ public sealed class PayrollVoidService
         public int AdvancesRestored { get; set; }
         public int InstallmentsReopened { get; set; }
         public int ImpactsReleased { get; set; }
+        /// <summary>Open <c>PaidAttendanceChanged</c> attendance exceptions closed because the run that paid those days is undone.</summary>
+        public int PaidAttendanceExceptionsResolved { get; set; }
         public int AdjustmentsReleased { get; set; }
         public int WitnessRowCount { get; set; }
         /// <summary>POD-C3 — arrears lines flipped Settled → Voided, i.e. made due again.</summary>

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Attendance;
@@ -97,11 +98,20 @@ public static class AttendanceDerivedArtifacts
     /// <c>AttendanceLockPeriods</c> (so no period is ever locked), any HR process run over a paid period deleted the
     /// paid impacts and raised fresh pending ones that an off-cycle run would deduct again.</para>
     ///
-    /// <para>On a day with any <c>Processed</c> impact (a paid day): the processed impacts stay exactly as paid; no new
-    /// deduction is raised for that day (an off-cycle run would take it); and when the recomputed deductions differ from
-    /// what was paid, a <see cref="PaidAttendanceChanged"/> attendance exception lists the differences for HR to correct
-    /// with a payroll adjustment. Overtime payable, which payroll never consumes (it is claimed through overtime
-    /// detection), is still recomputed like any pending impact unless it was itself processed.</para>
+    /// <para><b>A paid day</b> is one payroll covers (<see cref="IsCoveredByPayrollAsync"/>: a non-voided run at Processed
+    /// or later that pays recurring salary and holds a non-voided slip for the employee in that month), or one with any
+    /// <c>Processed</c> impact. Coverage is what decides it: a clean day, paid in full, has no impacts at all. On a paid
+    /// day the processed impacts stay exactly as paid; no new deduction is raised for that day (an off-cycle run would
+    /// take it); and when the recomputed deductions differ from what was paid, a <see cref="PaidAttendanceChanged"/>
+    /// attendance exception lists the differences for HR to correct with a payroll adjustment. Overtime payable, which
+    /// payroll never consumes (it is claimed through overtime detection), is still recomputed like any pending impact
+    /// unless it was itself processed.</para>
+    ///
+    /// <para>The exception's lifecycle (no schema change: its signature is a tag in <c>Details</c>): one open exception
+    /// per day, re-worded as the difference changes; closed automatically when the day matches what was paid again;
+    /// never re-raised for a difference HR already resolved (that would invite a second adjustment), but raised again
+    /// when the difference changes; and closed automatically when the run that paid the day is voided or reopened
+    /// (<c>PayrollVoidService.RestoreOperationalStateAsync</c>).</para>
     /// </summary>
     /// <param name="absenceMinutes">What one absent day costs in minutes: 480 on an ordinary day, or the
     /// reduced KSA Art. 98 Ramadan baseline (360) on a Ramadan day. Deducting a full 480 for a 6-hour
@@ -120,7 +130,7 @@ public static class AttendanceDerivedArtifacts
         if (daily.Status == "Absent") recomputed.Add((AttendanceImpactTypes.AbsenceDeduction, absenceMinutes > 0 ? absenceMinutes : OrdinaryAbsenceMinutes));
         if (daily.OvertimeMinutes > 0) recomputed.Add((AttendanceImpactTypes.OvertimePayable, daily.OvertimeMinutes));
 
-        var dayIsPaid = paid.Count > 0;
+        var dayIsPaid = paid.Count > 0 || await IsCoveredByPayrollAsync(db, tenantId, daily.EmployeeId, daily.WorkDate, ct);
         bool Frozen(string type) => paid.Any(p => p.ImpactType == type) || (dayIsPaid && type != AttendanceImpactTypes.OvertimePayable);
         foreach (var (type, minutes) in recomputed.Where(r => !Frozen(r.Type)))
             db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact
@@ -139,18 +149,76 @@ public static class AttendanceDerivedArtifacts
             .Where(d => d.Paid != d.Now)
             .OrderBy(d => d.Type, StringComparer.Ordinal)
             .ToList();
-        if (differences.Count == 0) return;
 
+        var flags = await db.AttendanceExceptions.Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+            && x.WorkDate == daily.WorkDate && x.ExceptionType == PaidAttendanceChanged).ToListAsync(ct);
+        var open = flags.FirstOrDefault(x => !x.IsResolved);
+        if (differences.Count == 0)
+        {
+            if (open is not null) AutoResolve(open, "the day matches what payroll paid again");
+            return;
+        }
+
+        var signature = string.Join(";", differences.Select(d => $"{d.Type}={d.Paid}/{d.Now}"));
         var details = "Attendance for a paid day changed after payroll: "
             + string.Join("; ", differences.Select(d => $"{d.Type} paid {d.Paid} min, recomputed {d.Now} min"))
-            + ". The paid impacts were left as paid and no new deduction was raised; correct the difference with a payroll adjustment.";
-        var open = await db.AttendanceExceptions.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
-            && x.WorkDate == daily.WorkDate && x.ExceptionType == PaidAttendanceChanged && !x.IsResolved, ct);
+            + ". The paid impacts were left as paid and no new deduction was raised; correct the difference with a payroll adjustment."
+            + $" {SignatureTag}{signature}]";
         if (open is not null) { open.Details = details; return; }
+        // HR resolved exactly this difference already (an automatic close does not count): do not ask for it twice.
+        if (flags.Any(f => f.IsResolved && !f.Details.Contains(AutoResolvedTag, StringComparison.Ordinal) && SignatureOf(f.Details) == signature))
+            return;
         db.AttendanceExceptions.Add(new AttendanceException
         {
             TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate,
             ExceptionType = PaidAttendanceChanged, Severity = "High", Details = details,
         });
+    }
+
+    private const string SignatureTag = "[sig:";
+    private const string AutoResolvedTag = "[auto-resolved:";
+
+    /// <summary>The difference signature stored at the end of a <see cref="PaidAttendanceChanged"/> exception's details.</summary>
+    private static string? SignatureOf(string details)
+    {
+        var at = details.LastIndexOf(SignatureTag, StringComparison.Ordinal);
+        if (at < 0) return null;
+        var end = details.IndexOf(']', at);
+        return end < 0 ? null : details[(at + SignatureTag.Length)..end];
+    }
+
+    /// <summary>The exception's description for people: its details without the stored signature or close note.</summary>
+    public static string DescribePaidAttendanceChange(string details)
+    {
+        var at = details.IndexOf(" " + SignatureTag, StringComparison.Ordinal);
+        return at < 0 ? details : details[..at];
+    }
+
+    /// <summary>Closes an open <see cref="PaidAttendanceChanged"/> exception the system no longer needs HR to act on.</summary>
+    public static void AutoResolve(AttendanceException exception, string reason)
+    {
+        exception.IsResolved = true;
+        exception.Details = $"{exception.Details} {AutoResolvedTag} {reason}]";
+    }
+
+    /// <summary>Payroll run statuses at which the run has paid, or committed to pay, its period (Draft and Voided have not).</summary>
+    public static readonly string[] PaidRunStatuses = ["Processed", "PendingFinanceReview", "Approved", "Locked", "Paid"];
+
+    private const string PayrollCoverageJustification =
+        "Whether payroll already paid an employee's attendance day decides whether recomputing it may raise a new " +
+        "deduction. The answer must not depend on the caller's company scope (the anonymous device webhook has none); " +
+        "the employee is already authorised by the calling path and only a yes/no leaves this method.";
+
+    /// <summary>
+    /// True when payroll has paid <paramref name="workDate"/> for the employee: a non-voided slip in a run for that
+    /// month that pays recurring salary (only those consume attendance impacts) and is at Processed or later.
+    /// </summary>
+    public static async Task<bool> IsCoveredByPayrollAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly workDate, CancellationToken ct)
+    {
+        var runs = ScopedBypass.TenantWide(db.PayrollRuns, tenantId, PayrollCoverageJustification)
+            .Where(r => r.Year == workDate.Year && r.Month == workDate.Month && r.IncludesRecurringPay && PaidRunStatuses.Contains(r.Status));
+        return await ScopedBypass.TenantWide(db.PayrollSlips, tenantId, PayrollCoverageJustification)
+            .Where(s => s.EmployeeId == employeeId && s.Status != "Voided")
+            .AnyAsync(s => runs.Any(r => r.Id == s.RunId), ct);
     }
 }
