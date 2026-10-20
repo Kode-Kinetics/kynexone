@@ -85,6 +85,7 @@ public static class AttendanceImpactReconciliation
                 TenantId = x.TenantId, EmployeeId = x.EmployeeId, WorkDate = x.WorkDate, FirstInUtc = x.FirstInUtc,
                 LastOutUtc = x.LastOutUtc, MissingPunch = x.MissingPunch, Status = x.Status, LateMinutes = x.LateMinutes,
                 EarlyExitMinutes = x.EarlyExitMinutes, OvertimeMinutes = x.OvertimeMinutes,
+                ManualCorrectionStatus = x.ManualCorrectionStatus,
             })
             .ToListAsync(ct);
         var recordByDay = records.GroupBy(x => (x.EmployeeId, x.WorkDate)).ToDictionary(g => g.Key, g => g.First());
@@ -174,6 +175,17 @@ public static class AttendanceImpactReconciliation
                 if (dayEvents.Count == 0) continue;
                 if (pending.Count > 0) stale.Add(new StaleAttendanceDay(employeeId, workDate, ImpactsWithoutRecord, true));
                 else if (dayEvents.Any(e => e.IsProcessed)) stale.Add(new StaleAttendanceDay(employeeId, workDate, PunchesMoved, true));
+                continue;
+            }
+
+            // An imported day keeps its values until a correction replaces them (the processor never rebuilds it from
+            // punches), so only its deductions are judged; real punches on it are the ImportedDayHasPunches conflict.
+            if (record.ManualCorrectionStatus == AttendanceDerivedArtifacts.ImportedRecord)
+            {
+                var importedImplied = AttendanceDerivedArtifacts.ImpliedImpacts(record, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes)
+                    .Where(x => x.Type != AttendanceImpactTypes.OvertimePayable).ToList();
+                if (!SameDeductions(pending, importedImplied))
+                    stale.Add(new StaleAttendanceDay(employeeId, workDate, DeductionsDiffer, FromPunches: false));
                 continue;
             }
 

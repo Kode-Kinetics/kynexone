@@ -1295,6 +1295,17 @@ public class AttendanceService : IAttendanceService
             && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
             .OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
         var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
+        if (daily is not null && await KeepsRecordedTimesAsync(tenantId, employee.Id, daily, events.Count, start, end, ct))
+        {
+            // An imported day, or a day with times and no raw punch anywhere near it: its times came from somewhere other
+            // than the punches here, and rebuilding it from punches turned it into an Absent day with a 480-minute
+            // deduction. It keeps its times and status; only its deductions are re-derived, through the same writer and
+            // paid-day protection. Real punches on an imported day are a conflict for HR, never a silent overwrite.
+            if (events.Count > 0) RaiseImportConflict(tenantId, daily, events);
+            var (_, keptAbsenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
+            await UpsertImpacts(tenantId, daily, keptAbsenceMinutes, ct);
+            return;
+        }
         if (daily is null)
         {
             daily = new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, Department = employee.Department, Branch = employee.Branch, WorkDate = date };
@@ -1378,6 +1389,43 @@ public class AttendanceService : IAttendanceService
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
         await UpsertExceptions(tenantId, daily, ct);
+    }
+
+    /// <summary>
+    /// Whether the day processor keeps a record's times instead of rebuilding it from punches: an imported day (until a
+    /// correction replaces it), or a record with times and no raw punch of the employee in or around the day's window —
+    /// written before punches were recorded as raw events. A day whose punch merely moved to the next or previous day
+    /// still has raw punches nearby, so it is rebuilt (and emptied) as before.
+    /// </summary>
+    private async Task<bool> KeepsRecordedTimesAsync(Guid tenantId, int employeeId, AttendanceDailyRecord daily, int dayEvents,
+        DateTime windowStart, DateTime windowEnd, CancellationToken ct)
+    {
+        if (daily.FirstInUtc is null && daily.LastOutUtc is null) return false;
+        if (daily.ManualCorrectionStatus == AttendanceDerivedArtifacts.ImportedRecord) return true;
+        if (dayEvents > 0) return false;
+        var from = windowStart.AddDays(-1);
+        var to = windowEnd.AddDays(1);
+        return !await _db.AttendanceRawEvents.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+            && x.PunchTimestampUtc >= from && x.PunchTimestampUtc < to, ct);
+    }
+
+    /// <summary>One open conflict per imported day that real punches landed on, re-worded as the punches change.</summary>
+    private void RaiseImportConflict(Guid tenantId, AttendanceDailyRecord daily, IReadOnlyList<AttendanceRawEvent> events)
+    {
+        var punches = string.Join(", ", events.Select(e => $"{e.PunchDirection} {e.PunchTimestampUtc:yyyy-MM-dd HH:mm} UTC"));
+        var details = $"This day was imported ({daily.FirstInUtc:HH:mm}–{daily.LastOutUtc:HH:mm} UTC, {daily.Status}) and real punches "
+            + $"were then recorded for it: {punches}. The imported values were kept. If the punches are right, approve a correction "
+            + "for the day; it then follows the punches.";
+        var open = _db.AttendanceExceptions.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                       && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved)
+                   ?? _db.AttendanceExceptions.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                       && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved);
+        if (open is not null) { open.Details = details; return; }
+        _db.AttendanceExceptions.Add(new AttendanceException
+        {
+            TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate,
+            ExceptionType = AttendanceDerivedArtifacts.ImportedDayHasPunches, Severity = "High", Details = details,
+        });
     }
 
     /// <summary>The day's working-hours baseline (overtime / undertime threshold) and what one absent day costs.</summary>
@@ -1571,6 +1619,17 @@ public class AttendanceService : IAttendanceService
                 var employee = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == reg.EmployeeId && !e.IsDeleted, ct);
                 if (employee is not null)
                 {
+                    // An approved correction is HR's decision about the day: from now on it follows its punches (and this
+                    // correction), even if it was imported. The import conflict, if one was open, is settled by it.
+                    var existingDay = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId
+                        && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate, ct);
+                    if (existingDay is not null && existingDay.ManualCorrectionStatus == AttendanceDerivedArtifacts.ImportedRecord)
+                    {
+                        existingDay.ManualCorrectionStatus = "Approved";
+                        foreach (var conflict in await _db.AttendanceExceptions.Where(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId
+                                     && x.WorkDate == reg.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved).ToListAsync(ct))
+                            AttendanceDerivedArtifacts.AutoResolve(conflict, $"an approved correction ({reg.Id}) replaced the imported values");
+                    }
                     var policies = await EnsureActivePoliciesAsync(tenantId, ct);
                     await ProcessEmployeeDay(tenantId, employee, reg.WorkDate, ResolveAttendancePolicy(employee, policies), context, ct);
                     var daily = _db.AttendanceDailyRecords.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate)

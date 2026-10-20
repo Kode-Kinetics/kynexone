@@ -33,6 +33,17 @@ public static class AttendanceDerivedArtifacts
     /// <summary>What one absent day costs when no jurisdiction rule reduces it.</summary>
     public const int OrdinaryAbsenceMinutes = 480;
 
+    /// <summary>
+    /// <c>AttendanceDailyRecord.ManualCorrectionStatus</c> of a day written by the migration import. Its times came from
+    /// the system it was migrated from and have no raw punches here, so the day processor keeps them (it re-derives only
+    /// the deductions) until an approved correction replaces them. No schema change: the column already records where a
+    /// day's values came from other than the punches ("None", or "Approved" for a correction).
+    /// </summary>
+    public const string ImportedRecord = "Imported";
+
+    /// <summary>The attendance exception raised when real punches land on an imported day: the import was kept.</summary>
+    public const string ImportedDayHasPunches = "ImportedDayHasPunches";
+
     /// <summary>The attendance exception raised when a paid day's recomputed impacts differ from what payroll paid.</summary>
     public const string PaidAttendanceChanged = "PaidAttendanceChanged";
 
