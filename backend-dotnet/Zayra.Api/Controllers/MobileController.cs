@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
@@ -30,13 +31,16 @@ public class MobileController : ControllerBase
     private readonly ZayraDbContext _db;
 
     private readonly AttendanceVerificationService _verification;
+    private readonly TimeProvider _clock;
 
     // The verification service is optional so existing constructions compile; DI supplies the registered one (with the
     // deploy's storage residency). Without it a service over the same context is used, with selfie attendance off.
-    public MobileController(ZayraDbContext db, AttendanceVerificationService? verification = null)
+    // The clock is DI's TimeProvider.System; tests pass a fixed one to punch at a chosen instant.
+    public MobileController(ZayraDbContext db, AttendanceVerificationService? verification = null, TimeProvider? clock = null)
     {
         _db = db;
         _verification = verification ?? new AttendanceVerificationService(db);
+        _clock = clock ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -130,7 +134,12 @@ public class MobileController : ControllerBase
         if (employeeId != callerId.Value) return Forbid();
         employeeId = callerId.Value;
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // The tenant's calendar day, not the UTC one (a Riyadh tenant is three hours ahead); today's attendance is the
+        // record of the work date a punch now would land on, so a night worker sees the shift they are still on.
+        var nowUtc = _clock.GetUtcNow().UtcDateTime;
+        var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId.Value, ct);
+        var today = TenantTimeZone.LocalDate(timeZone, nowUtc);
+        var attendanceDate = await AttendanceWorkDate.ResolveAsync(_db, tenantId.Value, employeeId, nowUtc, timeZone, ct);
 
         var employee = await _db.Employees
             .Where(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted)
@@ -152,7 +161,7 @@ public class MobileController : ControllerBase
             .CountAsync(n => n.TenantId == tenantId && n.EmployeeId == employeeId && !n.IsRead, ct);
 
         var todayAttendance = await _db.AttendanceDailyRecords
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.WorkDate == today)
+            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.WorkDate == attendanceDate)
             .Select(a => new { a.Status, CheckIn = a.FirstInUtc, CheckOut = a.LastOutUtc, WorkedMinutes = a.TotalWorkedMinutes })
             .FirstOrDefaultAsync(ct);
 
@@ -195,8 +204,13 @@ public class MobileController : ControllerBase
         if (decision.Refusal is { } refusal)
             return BadRequest((refusal.Code == AttendanceRefusals.LocationRequired.Code ? AttendanceRefusals.LegacyPunchNeedsLocation : refusal).Body);
 
-        var nowUtc = DateTime.UtcNow;
-        var today = DateOnly.FromDateTime(nowUtc);
+        var nowUtc = _clock.GetUtcNow().UtcDateTime;
+        // The work date by THE rule every other punch path uses (AttendanceWorkDate: tenant-local date, overnight shift's
+        // early-morning punch on the shift's day) — it is also the daily-record lock key. This used to be the UTC date,
+        // so for a Riyadh tenant a punch between 00:00 and 03:00 local was written to yesterday, under a different lock
+        // from ingest and processing.
+        var today = await AttendanceWorkDate.ResolveAsync(_db, tenantId.Value, employeeId.Value, nowUtc,
+            await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId.Value, ct), ct);
 
         // Race-safe like AttendanceService.PunchAsync: two first-of-day punches used to both insert the daily record and
         // the loser got an unhandled 23505 (a 500). Under the per-(tenant, employee, work date) lock the second one finds

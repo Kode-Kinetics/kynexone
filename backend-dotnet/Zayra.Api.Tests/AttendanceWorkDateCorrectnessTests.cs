@@ -211,7 +211,67 @@ public class AttendanceWorkDateCorrectnessTests
         (await check.AttendanceDailyRecords.CountAsync()).Should().Be(2, "one day each, the day each person punched");
     }
 
+    // ── (3) the legacy mobile punch uses the tenant's work date ──────────────────────────────────────────
+
+    [Fact]
+    public async Task LegacyMobilePunch_AtOneInTheMorningInRiyadh_IsDatedTheRiyadhDay()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        SeedRiyadh(db, tenantId);
+        await db.SaveChangesAsync();
+
+        // 2026-09-15 22:00 UTC = 2026-09-16 01:00 in Riyadh.
+        var result = await MobilePunchAsync(db, tenantId, employee.Id, "In", new DateTime(2026, 9, 15, 22, 0, 0, DateTimeKind.Utc));
+
+        result.Should().BeOfType<OkObjectResult>();
+        (await db.AttendanceDailyRecords.SingleAsync()).WorkDate.Should().Be(new DateOnly(2026, 9, 16),
+            "01:00 in Riyadh is the 16th there; the UTC date (the 15th) is another day's record and lock key");
+    }
+
+    [Fact]
+    public async Task LegacyMobilePunch_FollowsTheOvernightShiftRule_LikeThePunchPath()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        var shiftDate = new DateOnly(2026, 9, 15);
+        SeedRiyadh(db, tenantId);
+        SeedNightShift(db, tenantId, employee, shiftDate);
+        await db.SaveChangesAsync();
+
+        // In at 22:30 local on the 15th; Out at 03:30 local on the 16th (00:30 UTC on the 16th).
+        await MobilePunchAsync(db, tenantId, employee.Id, "In", new DateTime(2026, 9, 15, 19, 30, 0, DateTimeKind.Utc));
+        await MobilePunchAsync(db, tenantId, employee.Id, "Out", new DateTime(2026, 9, 16, 0, 30, 0, DateTimeKind.Utc));
+
+        var daily = await db.AttendanceDailyRecords.ToListAsync();
+        daily.Select(d => d.WorkDate).Should().Equal([shiftDate], "both punches belong to the 15 Sep night shift");
+        daily[0].FirstInUtc.Should().NotBeNull();
+        daily[0].LastOutUtc.Should().NotBeNull();
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
+
+    private static async Task<IActionResult> MobilePunchAsync(ZayraDbContext db, Guid tenantId, int employeeId, string direction, DateTime utcNow)
+    {
+        var controller = new MobileController(db, new AttendanceVerificationService(db), new FixedClock(utcNow))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [
+                        new Claim("tenant_id", tenantId.ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim("employee_id", employeeId.ToString()),
+                    ], "Test")),
+                },
+            },
+        };
+        return await controller.Punch(new MobilePunchRequest(0, direction, null), default);
+    }
 
     private static Task ProcessAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly day) =>
         Service(db).ProcessAsync(tenantId, new ProcessAttendanceRequest(day, day, employeeId),
@@ -258,6 +318,11 @@ public class AttendanceWorkDateCorrectnessTests
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options,
             new HttpAccessor(new DefaultHttpContext()), logger: null,
             scopeOptions: Options.Create(new EntityScopeOptions { StrictMode = true }));
+
+    private sealed class FixedClock(DateTime utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
+    }
 
     private sealed class HttpAccessor(HttpContext ctx) : IHttpContextAccessor
     {
