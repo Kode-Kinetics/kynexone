@@ -620,6 +620,95 @@ public class AttendanceWorkDateCorrectnessTests
         page.Items.Select(x => x.WorkDate).Should().Equal([Weekday], "it is already the 18th in Riyadh");
     }
 
+    // ── (5) one time-zone rule: attendance uses the zone the app's "today" (TenantClock) uses ───────────────────
+
+    // 2026-09-15 22:00 UTC = 2026-09-16 01:00 in Riyadh.
+    private static readonly DateTime OneAmRiyadhOnThe16th = new(2026, 9, 15, 22, 0, 0, DateTimeKind.Utc);
+    private static readonly DateOnly The16th = new(2026, 9, 16);
+
+    [Theory]
+    [InlineData("Web")]
+    [InlineData("Device")]
+    [InlineData("Mobile")]
+    [InlineData("Range")]
+    [InlineData("Correction")]
+    public async Task ASaudiTenantWithNoStoredTimeZone_DatesA1amRiyadhPunchTheRiyadhDay_OnEveryPath(string path)
+    {
+        // TenantClock has always put a Saudi tenant on Asia/Riyadh; attendance read default_timezone alone and fell back to
+        // UTC, so with the column blank "today" was the 16th while the punch was dated the 15th.
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        Employee employee;
+        await using (var seed = StoreDb(store))
+        {
+            employee = AddEmployee(seed, tenantId);
+            seed.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = tenantId, CountryCode = "SAU", DefaultTimezone = "" });
+            if (path == "Device") SeedDevice(seed, tenantId);
+            if (path == "Range")
+                seed.AttendanceRawEvents.Add(new AttendanceRawEvent
+                {
+                    TenantId = tenantId, EmployeeId = employee.Id, PunchDirection = "In", PunchTimestampUtc = OneAmRiyadhOnThe16th,
+                });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = StoreDb(store))
+        {
+            var ctx = new RequestContext(null, null, Guid.NewGuid(), tenantId);
+            switch (path)
+            {
+                case "Web":
+                    await Service(db, new FixedClock(OneAmRiyadhOnThe16th)).PunchAsync(tenantId,
+                        new WebPunchRequest(employee.Id, "In", null, null, null), "Web", ctx, default);
+                    break;
+                case "Device":
+                    (await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                        [new DeviceIngestPunch(employee.EmployeeCode, OneAmRiyadhOnThe16th, "In", null, null, null, null, null, null)],
+                        AutoProcess: true), "127.0.0.1", default))!.Processed.Should().Be(1);
+                    break;
+                case "Mobile":
+                    (await MobilePunchAsync(db, tenantId, employee.Id, "In", OneAmRiyadhOnThe16th)).Should().BeOfType<OkObjectResult>();
+                    break;
+                case "Range":
+                    await ProcessAsync(db, tenantId, employee.Id, The16th.AddDays(-1), The16th);
+                    break;
+                case "Correction":
+                    var service = Service(db);
+                    var reg = await service.CreateRegularizationAsync(tenantId, new RegularizationRequestDto(employee.Id, The16th,
+                        "Missed punch", OneAmRiyadhOnThe16th, OneAmRiyadhOnThe16th.AddHours(8), "Forgot to clock"), ctx, default);
+                    await service.ApproveRegularizationAsync(tenantId, reg.Id, new RegularizationDecisionRequest("ok"),
+                        new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
+                    await Service(db).ApproveRegularizationAsync(tenantId, reg.Id, new RegularizationDecisionRequest("ok"),
+                        new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
+                    break;
+            }
+        }
+
+        await using var check = StoreDb(store);
+        var punched = await check.AttendanceDailyRecords.Where(x => x.FirstInUtc == OneAmRiyadhOnThe16th).ToListAsync();
+        punched.Should().ContainSingle($"the {path} path records the punch on one day").Which.WorkDate
+            .Should().Be(The16th, "01:00 in Riyadh is the 16th there, the day TenantClock calls today");
+    }
+
+    [Theory]
+    [InlineData("SAU", "Asia/Riyadh", 16)] // a Saudi tenant with its zone stored: unchanged
+    [InlineData("ARE", "Asia/Dubai", 16)]  // an explicit non-Saudi zone: unchanged (01:30 in Dubai)
+    [InlineData("ARE", "", 15)]            // a non-Saudi tenant with no zone still fails open to UTC
+    public async Task ATenantsStoredTimeZone_StillDatesItsPunches(string country, string zone, int expectedDay)
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        db.TenantLocalizationSettings.Add(new TenantLocalizationSetting { TenantId = tenantId, CountryCode = country, DefaultTimezone = zone });
+        await db.SaveChangesAsync();
+        var at = new DateTime(2026, 9, 15, 21, 30, 0, DateTimeKind.Utc);
+
+        await Service(db, new FixedClock(at)).PunchAsync(tenantId, new WebPunchRequest(employee.Id, "In", null, null, null), "Web",
+            new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
+
+        (await db.AttendanceDailyRecords.SingleAsync()).WorkDate.Should().Be(new DateOnly(2026, 9, expectedDay));
+    }
+
     private static void SeedDevice(ZayraDbContext db, Guid tenantId) =>
         db.AttendanceDevices.Add(new AttendanceDevice
         {
