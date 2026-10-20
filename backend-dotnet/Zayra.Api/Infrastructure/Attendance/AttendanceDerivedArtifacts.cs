@@ -232,6 +232,36 @@ public static class AttendanceDerivedArtifacts
         return (firstIn, lastOut);
     }
 
+    /// <summary>
+    /// A day's late and early-exit minutes from its first-in / last-out: against the shift's start and end on that date,
+    /// placed in the tenant's time zone (an overnight shift ends the next day), or — with no shift — the default start
+    /// plus the policy's working day and break. The one rule, used by the day processor and by the stale-attendance
+    /// check, which recomputes it from the punches instead of trusting the minutes a record was given.
+    /// </summary>
+    public static (int LateMinutes, int EarlyExitMinutes) LateAndEarlyExit(DateTime? firstInUtc, DateTime? lastOutUtc, DateOnly date,
+        TimeOnly? shiftStartTime, TimeOnly? shiftEndTime, TimeZoneInfo tz, AttendancePolicy policy)
+    {
+        var startLocalTime = shiftStartTime ?? AttendanceWorkDate.DefaultShiftStart;
+        // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
+        var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
+        var shiftStart = TimeZoneInfo.ConvertTimeToUtc(startLocal, tz);
+        DateTime shiftEnd;
+        if (shiftStartTime is TimeOnly start && shiftEndTime is TimeOnly end)
+        {
+            // Overnight shift (end <= start) rolls into the next calendar day.
+            var endDate = end <= start ? date.AddDays(1) : date;
+            var endLocal = DateTime.SpecifyKind(endDate.ToDateTime(end), DateTimeKind.Unspecified);
+            shiftEnd = TimeZoneInfo.ConvertTimeToUtc(endLocal, tz);
+        }
+        else
+        {
+            shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
+        }
+        var late = firstInUtc is null ? 0 : Math.Max(0, (int)(firstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
+        var early = lastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - lastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
+        return (late, early);
+    }
+
     /// <summary>The deductions held on a half-pair day until the pair is complete.</summary>
     public static readonly string[] HeldOnHalfPairTypes = [AttendanceImpactTypes.LateDeduction, AttendanceImpactTypes.EarlyExitDeduction];
 

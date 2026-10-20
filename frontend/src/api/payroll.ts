@@ -576,7 +576,7 @@ export interface AttendanceStaleDay {
   employeeCode: string | null;
   employeeName: string | null;
   workDate: string;
-  /** impacts_without_record | deductions_differ | punches_differ | punches_moved */
+  /** impacts_without_record | deductions_differ | punches_differ | punches_moved | minutes_differ */
   reason: string;
 }
 

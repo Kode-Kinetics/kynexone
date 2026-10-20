@@ -1313,22 +1313,6 @@ public class AttendanceService : IAttendanceService
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null || daily.LastOutUtc <= daily.FirstInUtc;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = !daily.MissingPunch ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
-        var startLocalTime = shift?.StartTime ?? AttendanceWorkDate.DefaultShiftStart;
-        // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
-        var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
-        var shiftStart = TimeZoneInfo.ConvertTimeToUtc(startLocal, tz);
-        DateTime shiftEnd;
-        if (shift is not null)
-        {
-            // Overnight shift (end <= start) rolls into the next calendar day.
-            var endDate = shift.EndTime <= shift.StartTime ? date.AddDays(1) : date;
-            var endLocal = DateTime.SpecifyKind(endDate.ToDateTime(shift.EndTime), DateTimeKind.Unspecified);
-            shiftEnd = TimeZoneInfo.ConvertTimeToUtc(endLocal, tz);
-        }
-        else
-        {
-            shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
-        }
         var workWeek = await _workWeek.ResolveAsync(tenantId, employee.CompanyId,
             string.IsNullOrWhiteSpace(employee.CountryCode) ? null : employee.CountryCode, ct);
         var isRestDay = workWeek.IsWeekend(date.DayOfWeek);
@@ -1344,8 +1328,8 @@ public class AttendanceService : IAttendanceService
             .Select(x => x.LeaveTypeName)
             .FirstOrDefaultAsync(ct);
 
-        daily.LateMinutes = daily.FirstInUtc is null ? 0 : Math.Max(0, (int)(daily.FirstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
-        daily.EarlyExitMinutes = daily.LastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - daily.LastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
+        (daily.LateMinutes, daily.EarlyExitMinutes) = AttendanceDerivedArtifacts.LateAndEarlyExit(
+            daily.FirstInUtc, daily.LastOutUtc, date, shift?.StartTime, shift?.EndTime, tz, policy);
 
         // KSA Labour Law Art. 98 — during Ramadan the actual working hours for Muslims are reduced to
         // 6 hours a day, and Art. 98 cuts HOURS, not wages: the monthly salary is unchanged. So the
@@ -1736,7 +1720,7 @@ public class AttendanceService : IAttendanceService
         await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
 
     private const string DefaultPolicyCode = "DEFAULT";
-    private static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = DefaultPolicyCode, Name = "Default attendance policy" };
+    internal static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = DefaultPolicyCode, Name = "Default attendance policy" };
 
     /// <summary>
     /// Picks the attendance policy that governs one employee's day.
@@ -1754,7 +1738,7 @@ public class AttendanceService : IAttendanceService
     /// failing the day's processing: import data is dirty, and refusing to process attendance is a
     /// worse answer than the behaviour that was there before. The tiering below is unchanged.</para>
     /// </summary>
-    private static AttendancePolicy ResolveAttendancePolicy(Employee employee, IReadOnlyCollection<AttendancePolicy> policies)
+    internal static AttendancePolicy ResolveAttendancePolicy(Employee employee, IReadOnlyCollection<AttendancePolicy> policies)
     {
         var assigned = (employee.AttendancePolicyCode ?? string.Empty).Trim();
         if (assigned.Length > 0)

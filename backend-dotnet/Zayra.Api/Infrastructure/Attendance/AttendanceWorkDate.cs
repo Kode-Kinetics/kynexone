@@ -156,6 +156,11 @@ public static class AttendanceWorkDate
             .ToDictionary(g => g.Key, g => new DayShift(g.First().StartTime, g.First().EndTime));
     }
 
+    /// <summary>The assigned shifts of the given employees on the given dates, in one query (tenant-wide).</summary>
+    public static Task<Dictionary<(int EmployeeId, DateOnly Date), DayShift>> ShiftsOnAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<int> employeeIds, IReadOnlyCollection<DateOnly> dates, CancellationToken ct) =>
+        ShiftsAsync(db, tenantId, employeeIds, dates, ct);
+
     /// <summary>One punch's work date (one query).</summary>
     public static async Task<DateOnly> ResolveAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime punchUtc, TimeZoneInfo timeZone, CancellationToken ct)
     {

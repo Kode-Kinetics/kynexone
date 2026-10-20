@@ -118,6 +118,36 @@ public sealed class AttendanceStaleImpactPostgresTests
     }
 
     [Theory]
+    [InlineData("America/New_York", 405)]
+    [InlineData("UTC", 165)]
+    public async Task ASaudiTenantsDayTimedByAStoredNonRiyadhZone_HasItsFalseEarlyExitCaught_AndTheRecomputeClearsIt(string storedZone, int falseEarlyExit)
+    {
+        // 09:00–18:00 in Riyadh is 06:00–15:00 UTC: one date in every zone, so no punch moves. But the shift's end was
+        // placed in the stored zone (18:00 New York = 22:00 UTC; 18:00 UTC), so the old processor recorded an early exit
+        // the employee never made, and raised a deduction for it. The stored minutes must be checked, not trusted.
+        var k = await CreateAsync(_fx.CreateDb, storedZone);
+        var inAt = Utc(Day, 6, 0);
+        var outAt = Utc(Day, 15, 0);
+        await k.PunchAsync(inAt, "In");
+        await k.PunchAsync(outAt, "Out");
+        await k.SeedDayAsync(Day, inAt, outAt, "Present", missingPunch: false, earlyExitMinutes: falseEarlyExit,
+            pendingImpacts: (AttendanceImpactTypes.EarlyExitDeduction, falseEarlyExit));
+
+        await using (var db = k.NewContext())
+            (await AttendanceImpactReconciliation.FindStaleDaysAsync(db, k.TenantId, [k.Employee.Id],
+                    new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 31), k.Run.Id, default))
+                .Should().ContainSingle().Which.Should().Be(
+                    new StaleAttendanceDay(k.Employee.Id, Day, AttendanceImpactReconciliation.MinutesDiffer, FromPunches: true));
+
+        await using (var db = k.NewContext())
+            (await k.Payroll(db).RecomputeStaleAttendance(k.Run.Id, default)).Should().BeOfType<OkObjectResult>()
+                .Which.Value.Should().Match(v => Prop<int>(v!, "remaining") == 0);
+        (await k.ImpactsAsync()).Should().BeEmpty("09:00–18:00 in Riyadh is neither late nor early");
+        await using var check = k.NewContext();
+        (await check.AttendanceDailyRecords.IgnoreQueryFilters().SingleAsync(x => x.TenantId == k.TenantId)).EarlyExitMinutes.Should().Be(0);
+    }
+
+    [Theory]
     [InlineData("UTC")]
     [InlineData("America/New_York")]
     public async Task ASaudiTenantsDaysDatedByAStoredNonRiyadhZone_AreCaughtInTheOpenMonth(string storedZone)

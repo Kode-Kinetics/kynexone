@@ -244,9 +244,17 @@ day differs, Process refuses with `ERR_ATTENDANCE_IMPACT_STALE` and saves nothin
   re-derived from its record.
 - Paid days, payroll-locked days, and days with neither a record nor a punch are not judged.
 
-This covers rows written before the fix: Out-only days with a pending 480-minute absence, In-only days with a
-pending late deduction, and days dated by a non-Riyadh stored zone for a Saudi tenant. **No deploy-time mass
-rewrite is needed or wanted.** Each open month is recomputed, day by day, when payroll first meets it.
+This covers rows written before the fix:
+
+- Out-only days with a pending 480-minute absence;
+- In-only days with a pending late deduction;
+- for a Saudi tenant with a non-Riyadh stored zone (blank, UTC or America/New_York), days whose punches now fall on
+  another date, and days whose late or early-exit minutes were timed in the stored zone. 09:00–18:00 Riyadh carried
+  a false early exit of hours. The check recomputes each day's late and early-exit minutes from its raw punches
+  under today's rules (`minutes_differ`) rather than trusting the stored figure.
+
+A day with no raw punches (an import) is judged by its stored minutes only. **No deploy-time mass rewrite is needed
+or wanted.** Each open month is recomputed, day by day, when payroll first meets it.
 
 Held late and early-exit minutes on missing-punch days are listed on the same panel. Each run also warns about them
 with `WARN_MISSING_PUNCH_HELD`, which never blocks.

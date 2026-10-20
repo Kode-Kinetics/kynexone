@@ -13,6 +13,7 @@ const STALE_REASONS: Record<string, string> = {
   deductions_differ: msg('Deductions do not match the day'),
   punches_differ: msg('The punches for this day have changed'),
   punches_moved: msg('A punch now belongs to another day'),
+  minutes_differ: msg('The late or early-exit minutes are not what the punches give'),
 };
 
 /**

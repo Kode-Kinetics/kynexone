@@ -30,7 +30,10 @@ public sealed record HeldAttendanceDay(int EmployeeId, string EmployeeName, Date
 ///     pairing rule <see cref="AttendanceDerivedArtifacts.PairOf"/>) are not the record's first-in / last-out — for example
 ///     an Out-only day recorded by the old rule as a zero-length "complete" day with a 480-minute absence;</item>
 ///   <item><see cref="PunchesMoved"/>: a punch the record was built from now belongs to another day (a time-zone or
-///     roster change), or punches already processed into another day now belong to a day with no record.</item>
+///     roster change), or punches already processed into another day now belong to a day with no record;</item>
+///   <item><see cref="MinutesDiffer"/>: the record's late / early-exit minutes are not what its punches give under
+///     today's rules (<see cref="AttendanceDerivedArtifacts.LateAndEarlyExit"/>, in the tenant's zone and the day's
+///     shift) — for example a Saudi tenant's day timed by a stored New York zone, with a false early exit.</item>
 /// </list>
 /// <para>Paid days are not judged here: a day with a <c>Processed</c> impact, or an employee another non-voided run has
 /// already paid this month, is <see cref="AttendanceDerivedArtifacts"/>'s paid-day protection's business (the
@@ -51,6 +54,7 @@ public static class AttendanceImpactReconciliation
     public const string DeductionsDiffer = "deductions_differ";
     public const string PunchesDiffer = "punches_differ";
     public const string PunchesMoved = "punches_moved";
+    public const string MinutesDiffer = "minutes_differ";
 
     private const string CoverageJustification =
         "Whether another payroll run already paid an employee's month decides whether its attendance days are judged as " +
@@ -106,6 +110,24 @@ public static class AttendanceImpactReconciliation
         var dateOfPunch = dated.GroupBy(x => (x.Event.EmployeeId, x.Event.PunchTimestampUtc))
             .ToDictionary(g => g.Key, g => g.First().WorkDate);
 
+        // What the day processor would give the stored stamps today: the employee's policy, the day's shift, the zone.
+        var employees = (await ScopedBypass.NullableTenantWide(db.Employees, tenantId, CoverageJustification).AsNoTracking()
+                .Where(e => ids.Contains(e.Id))
+                .Select(e => new Employee
+                {
+                    Id = e.Id, TenantId = e.TenantId, AttendancePolicyCode = e.AttendancePolicyCode,
+                    BranchId = e.BranchId, DepartmentId = e.DepartmentId, GradeId = e.GradeId,
+                })
+                .ToListAsync(ct))
+            .ToDictionary(e => e.Id);
+        IReadOnlyCollection<AttendancePolicy> policies = await db.AttendancePolicies.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(ct);
+        if (policies.Count == 0) policies = [AttendanceService.DefaultPolicy(tenantId)];
+        var recordDates = records.Select(r => r.WorkDate).Distinct().ToList();
+        var shifts = recordDates.Count == 0
+            ? new Dictionary<(int EmployeeId, DateOnly Date), AttendanceWorkDate.DayShift>()
+            : await AttendanceWorkDate.ShiftsOnAsync(db, tenantId, ids, recordDates, ct);
+
         var days = recordByDay.Keys
             .Concat(impacts.Select(x => (x.EmployeeId, x.WorkDate)))
             .Concat(dated.Where(x => x.WorkDate >= from && x.WorkDate <= to).Select(x => (x.Event.EmployeeId, x.WorkDate)))
@@ -144,6 +166,19 @@ public static class AttendanceImpactReconciliation
                 {
                     stale.Add(new StaleAttendanceDay(employeeId, workDate, PunchesDiffer, true));
                     continue;
+                }
+                // The punches are the day's; are the minutes what they give today? (A record written for an untouched
+                // leave / holiday / rest day has no punch, so it never reaches here.)
+                if (employees.TryGetValue(employeeId, out var employee))
+                {
+                    shifts.TryGetValue((employeeId, workDate), out var shift);
+                    var (late, early) = AttendanceDerivedArtifacts.LateAndEarlyExit(firstIn, lastOut, workDate,
+                        shift?.StartTime, shift?.EndTime, timeZone, AttendanceService.ResolveAttendancePolicy(employee, policies));
+                    if (late != record.LateMinutes || early != record.EarlyExitMinutes)
+                    {
+                        stale.Add(new StaleAttendanceDay(employeeId, workDate, MinutesDiffer, true));
+                        continue;
+                    }
                 }
             }
             else if (MovedAway(record.FirstInUtc) || MovedAway(record.LastOutUtc))
