@@ -136,18 +136,85 @@ public class SelfRequestedApprovalTests
     }
 
     [Fact]
-    public async Task ADifferentValue_StillRaisesItsOwnRequest()
+    public async Task ADifferentValueForTheSameField_IsRefusedWhileTheFirstIsPending_NamingTheField()
     {
+        // Two waiting changes to one field let the OLDER value win when they were approved newest-first.
         await using var db = CreateDb();
         var (tenant, adminRole) = await SeedTenantAsync(db);
         var requester = await AddUserAsync(db, tenant, adminRole);
         await AddUserAsync(db, tenant, adminRole);   // someone else can decide it
         var employee = await AddEmployeeAsync(db, tenant);
 
+        var first = await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
+        var second = await SubmitRawAsync(db, tenant, requester, employee.Id, "salary", 16000);
+
+        var conflict = second.Should().BeOfType<ConflictObjectResult>().Subject;
+        Prop(conflict.Value!, "error").Should().Be("change_already_pending");
+        Prop(conflict.Value!, "message").Should().BeOfType<string>().Which.Should().Contain("A change to salary is already awaiting approval");
+        Prop(conflict.Value!, "approvalRequestId").Should().Be(Prop(first, "approvalRequestId"));
+        (await db.ApprovalRequests.CountAsync()).Should().Be(1);
+        (await db.EmployeeChangeRequests.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AChangeToADifferentField_StillRaisesItsOwnRequest()
+    {
+        await using var db = CreateDb();
+        var (tenant, adminRole) = await SeedTenantAsync(db);
+        var requester = await AddUserAsync(db, tenant, adminRole);
+        await AddUserAsync(db, tenant, adminRole);
+        var employee = await AddEmployeeAsync(db, tenant);
+
         await SubmitAsync(db, tenant, requester, employee.Id, "salary", 15000);
-        await SubmitAsync(db, tenant, requester, employee.Id, "salary", 16000);
+        await SubmitAsync(db, tenant, requester, employee.Id, "dateOfBirth", "1990-05-01");
 
         (await db.ApprovalRequests.CountAsync()).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ApprovingAnOlderChange_AfterANewerOneToTheSameFieldWasApplied_SupersedesIt_InsteadOfWritingTheStaleValue()
+    {
+        // A pair already in flight (raised before the submission guard, or by another producer): approve the newer
+        // date of birth, then the older one. Before: the older value overwrote the newer. Now: Superseded, audited.
+        await using var db = CreateDb();
+        var (tenant, adminRole) = await SeedTenantAsync(db);
+        var requester = await AddUserAsync(db, tenant, adminRole);
+        var approver = await AddUserAsync(db, tenant, adminRole);
+        var employee = await AddEmployeeAsync(db, tenant);
+        var workflow = new ApprovalWorkflow { TenantId = tenant, Code = "EMPLOYEE-CHANGE", Name = "Change", EntityName = nameof(EmployeeChangeRequest), IsActive = true };
+        workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenant, StepOrder = 1, StepName = "Admin", ApproverType = "Role", ApproverRole = "Admin", IsFinalStep = true });
+        db.ApprovalWorkflows.Add(workflow);
+        await db.SaveChangesAsync();
+        async Task<Guid> RaiseAsync(string dob, DateTime createdAt)
+        {
+            var change = new EmployeeChangeRequest
+            {
+                TenantId = tenant, EmployeeId = employee.Id, RequestedByUserId = requester, SensitiveFields = "dateOfBirth",
+                EffectiveDate = Today, CreatedAtUtc = createdAt,
+                ProposedChangesJson = JsonSerializer.Serialize(new Dictionary<string, object> { ["dateOfBirth"] = dob }),
+            };
+            db.EmployeeChangeRequests.Add(change);
+            await db.SaveChangesAsync();
+            var approval = await Service(db).CreateRequestAsync(tenant,
+                new CreateApprovalRequest(workflow.Id, nameof(EmployeeChangeRequest), change.Id.ToString(), "DOB", employee.Id),
+                Context(tenant, requester), CancellationToken.None);
+            change.ApprovalRequestId = approval.Id;
+            await db.SaveChangesAsync();
+            return approval.Id;
+        }
+        var older = await RaiseAsync("1990-01-01", DateTime.UtcNow.AddMinutes(-10));
+        var newer = await RaiseAsync("1991-02-02", DateTime.UtcNow.AddMinutes(-5));
+
+        (await Service(db).DecideAsync(tenant, newer, new ApprovalDecisionRequest("Approve", "newer"), Context(tenant, approver), CancellationToken.None))!
+            .Status.Should().Be("Approved");
+        await Service(db).DecideAsync(tenant, older, new ApprovalDecisionRequest("Approve", "older"), Context(tenant, approver), CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        (await db.Employees.SingleAsync()).DateOfBirth.Should().Be(new DateOnly(1991, 2, 2), "the newer, already-applied value stands");
+        var stale = await db.EmployeeChangeRequests.SingleAsync(c => c.ApprovalRequestId == older);
+        stale.Status.Should().Be(EmployeeChangeStatuses.Superseded);
+        stale.RejectionReason.Should().Contain("date of birth");
+        (await db.AuditLogs.SingleAsync(a => a.Action == "employee.change_superseded")).EntityId.Should().Be(stale.Id.ToString());
     }
 
     [Fact]

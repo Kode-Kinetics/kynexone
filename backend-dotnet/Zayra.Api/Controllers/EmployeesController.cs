@@ -3966,6 +3966,23 @@ public class EmployeesController : ControllerBase
                     });
                 }
 
+                // A DIFFERENT pending change to one of these fields: refused, nothing applied. Two waiting
+                // changes to one field let the older value win if they were approved newest-first
+                // (EmployeeChangeOverlap explains why this refuses rather than cancelling the older one).
+                if (await EmployeeChangeOverlap.FindPendingOverlapAsync(_db, tenantId, employee.Id, sensitiveChanges.Keys, null, cancellationToken) is { } overlap)
+                {
+                    var fields = DashboardController.FormatChangedFields(string.Join(',', overlap.Keys)) ?? string.Join(", ", overlap.Keys);
+                    return Conflict(new
+                    {
+                        error = "change_already_pending",
+                        message = $"A change to {fields} is already awaiting approval for this employee. " +
+                                  "Wait for it to be decided, or withdraw it (if you raised it) or ask an approver to reject it, then submit again. No change was applied.",
+                        fields = overlap.Keys,
+                        changeRequestId = overlap.Change.Id,
+                        approvalRequestId = overlap.Change.ApprovalRequestId,
+                    });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);

@@ -37,6 +37,10 @@ export interface ApprovalRequest {
   canWithdraw?: boolean;
   /** What is being approved, e.g. "IBAN, passport". */
   changeSummary?: string | null;
+  /** Position of the current step among the steps that will actually run (1-based), when known. */
+  stepPosition?: number | null;
+  /** How many steps will run (up to and including the first final step), when known. */
+  stepCount?: number | null;
 }
 
 /** One field of a pending employee change: on file now → proposed. Masked values arrive already masked. */

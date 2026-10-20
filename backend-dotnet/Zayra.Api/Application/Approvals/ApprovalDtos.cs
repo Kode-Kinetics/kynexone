@@ -81,7 +81,11 @@ public record ApprovalRequestDto(
     string? DecisionBlockedReason = null,
     bool CanWithdraw = false,
     // What is actually being approved (e.g. "IBAN, passport"), so identical titles stay tellable apart.
-    string? ChangeSummary = null);
+    string? ChangeSummary = null,
+    // "Step 2 of 3": the current step's position among the steps that will run (up to the first final step),
+    // and how many those are. Null when the workflow cannot be read (e.g. legacy context-less reads).
+    int? StepPosition = null,
+    int? StepCount = null);
 
 /// <param name="WorkflowId">
 /// An explicit workflow, or null to let <c>IApprovalRouter</c> choose the workflow for
@@ -134,7 +138,8 @@ public static class ApprovalMappings
         step.IsFinalStep);
 
     public static ApprovalRequestDto ToDto(this ApprovalRequest request, bool canDecide = false,
-        string? decisionBlockedReason = null, bool canWithdraw = false, string? changeSummary = null) => new(
+        string? decisionBlockedReason = null, bool canWithdraw = false, string? changeSummary = null,
+        (int Position, int Count)? steps = null) => new(
         request.Id,
         request.WorkflowId,
         request.EntityName,
@@ -165,7 +170,9 @@ public static class ApprovalMappings
         canDecide,
         decisionBlockedReason,
         canWithdraw,
-        changeSummary);
+        changeSummary,
+        steps?.Position,
+        steps?.Count);
 
     public static ApprovalDecisionDto ToDto(this ApprovalDecision decision) => new(
         decision.Id,

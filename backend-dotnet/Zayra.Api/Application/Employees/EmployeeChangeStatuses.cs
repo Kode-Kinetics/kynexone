@@ -25,4 +25,10 @@ public static class EmployeeChangeStatuses
     /// <c>EmployeeEffectiveChanges:UnverifiableMaxAgeDays</c>. Terminal; the change must be submitted again.
     /// </summary>
     public const string Expired = "Expired";
+
+    /// <summary>
+    /// Closed without being applied: a change submitted AFTER it, touching the same field, was applied first, so
+    /// writing this one now would put back an older value. Terminal; an audit row names the change that won.
+    /// </summary>
+    public const string Superseded = "Superseded";
 }

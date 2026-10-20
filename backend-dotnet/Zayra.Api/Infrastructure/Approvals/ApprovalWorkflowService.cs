@@ -232,11 +232,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             .Take(pageSize)
             .ToListAsync(cancellationToken);
         var summaries = await LoadChangeSummariesAsync(tenantId, approvals, cancellationToken);
+        var stepOrders = await LoadReachableStepOrdersAsync(tenantId, approvals, cancellationToken);
         var otherDeciders = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var items = new List<ApprovalRequestDto>(approvals.Count);
         foreach (var approval in approvals)
         {
-            items.Add(await ProjectAsync(approval, context, summaries, otherDeciders, cancellationToken));
+            items.Add(await ProjectAsync(approval, context, summaries, otherDeciders, cancellationToken, stepOrders));
         }
         return new PagedResult<ApprovalRequestDto>(items, total, page, pageSize);
     }
@@ -254,7 +255,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (request is null) return null;
         if (!await CanViewRequestAsync(request, context, cancellationToken)) return null;
         var summaries = await LoadChangeSummariesAsync(tenantId, new[] { request }, cancellationToken);
-        return await ProjectAsync(request, context, summaries, new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), cancellationToken);
+        return await ProjectAsync(request, context, summaries, new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase), cancellationToken,
+            await LoadReachableStepOrdersAsync(tenantId, new[] { request }, cancellationToken));
     }
 
     /// <summary>
@@ -352,7 +354,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
     // context is null on the legacy context-less listing: nobody can decide there, and no reason is owed.
     private async Task<ApprovalRequestDto> ProjectAsync(ApprovalRequest approval, RequestContext? context,
-        IReadOnlyDictionary<string, string?> summaries, Dictionary<string, bool> otherDeciders, CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, string?> summaries, Dictionary<string, bool> otherDeciders, CancellationToken cancellationToken,
+        IReadOnlyDictionary<Guid, IReadOnlyList<int>>? reachableSteps = null)
     {
         // The bar is resolved once per row and shared by canDecide and the reason below.
         var bar = context is null ? DecisionBar.None : await ResolveDecisionBarAsync(approval, context, cancellationToken);
@@ -392,7 +395,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 blockedReason = $"This step is assigned to {OwnerLabel(approval)}, which your access does not cover.";
             }
         }
-        return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId));
+        (int, int)? steps = null;
+        if (reachableSteps is not null && reachableSteps.TryGetValue(approval.WorkflowId, out var orders) && orders.Count > 0)
+        {
+            var index = orders.ToList().IndexOf(approval.CurrentStepOrder);
+            // A completed request sits on its last decided step; position is only meaningful while it is on the chain.
+            if (index >= 0) steps = (index + 1, orders.Count);
+        }
+        return approval.ToDto(canDecide, blockedReason, canWithdraw, summaries.GetValueOrDefault(approval.EntityId), steps);
     }
 
     // A step routed to a named person is unblocked by reassigning it, not by granting "their" role.
@@ -440,6 +450,27 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             : await ApprovalUnblock.AnyOtherUserInRolesAsync(_db, approval.TenantId, new[] { role }, orOverride: true, excludedIds, cancellationToken);
         cache[key] = exists;
         return exists;
+    }
+
+    /// <summary>
+    /// Per workflow, the step orders a request actually runs through: in order, up to and including the first step
+    /// marked final (steps after it are unreachable by design). One query for the page.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<int>>> LoadReachableStepOrdersAsync(Guid tenantId,
+        IReadOnlyCollection<ApprovalRequest> approvals, CancellationToken cancellationToken)
+    {
+        var workflowIds = approvals.Select(x => x.WorkflowId).Where(x => x != Guid.Empty).Distinct().ToList();
+        if (workflowIds.Count == 0) return new Dictionary<Guid, IReadOnlyList<int>>();
+        var steps = await _db.ApprovalWorkflowSteps.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && workflowIds.Contains(x.WorkflowId))
+            .Select(x => new { x.WorkflowId, x.StepOrder, x.IsFinalStep, x.Id })
+            .ToListAsync(cancellationToken);
+        return steps.GroupBy(x => x.WorkflowId).ToDictionary(g => g.Key, g =>
+        {
+            var ordered = g.OrderBy(x => x.StepOrder).ThenBy(x => x.Id).ToList();
+            var final = ordered.FindIndex(x => x.IsFinalStep);
+            return (IReadOnlyList<int>)(final < 0 ? ordered : ordered.Take(final + 1)).Select(x => x.StepOrder).ToList();
+        });
     }
 
     /// <summary>"IBAN, passport" for each employee-change approval, keyed by EntityId, in one query.</summary>
@@ -1180,6 +1211,15 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         change.ApprovedByUserId = approverId;
         change.ApprovedAtUtc = DateTime.UtcNow;
+        // A change submitted AFTER this one and touching one of its fields was applied first: writing this
+        // one now (or on its effective date) would put the older value back. Closed as Superseded instead,
+        // audited in this same unit of work (EmployeeChangeOverlap). Checked before the future-date branch,
+        // because a baseline sealed now would already contain the newer value and never see the clash.
+        if (await Zayra.Api.Infrastructure.Employees.EmployeeChangeOverlap.FindLaterAppliedOverlapAsync(_db, change, cancellationToken) is { } newer)
+        {
+            StageSupersession(approval, change, newer, approverId);
+            return;
+        }
         if (change.EffectiveDate > today)
         {
             // Nothing is written to the employee now. EffectiveChangeJobHandler applies it — through the
@@ -1266,6 +1306,48 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 ? "{}"
                 : JsonSerializer.Serialize(new { unappliedFields = unknownApproved }),
             CreatedByUserId = approverId
+        });
+    }
+
+    internal const string SupersededAction = "employee.change_superseded";
+    internal const string SupersededEventType = "SensitiveChangeSuperseded";
+
+    private void StageSupersession(ApprovalRequest approval, EmployeeChangeRequest change,
+        Zayra.Api.Infrastructure.Employees.EmployeeChangeOverlap.Overlap newer, Guid? approverId)
+    {
+        var fields = Zayra.Api.Controllers.DashboardController.FormatChangedFields(string.Join(',', newer.Keys)) ?? string.Join(", ", newer.Keys);
+        var reason = $"Superseded: {fields} was already changed by a later request that was applied first, " +
+                     "so this older value was not written. Submit it again if it is still wanted.";
+        change.Status = EmployeeChangeStatuses.Superseded;
+        change.RejectionReason = reason;
+        _db.EmployeeHistories.Add(new EmployeeHistory
+        {
+            TenantId = approval.TenantId,
+            EmployeeId = change.EmployeeId,
+            EventType = SupersededEventType,
+            FieldName = change.SensitiveFields,
+            EffectiveDate = change.EffectiveDate,
+            Reason = reason,
+            ApprovedByUserId = approverId,
+            SnapshotJson = "{}",
+            CreatedByUserId = approverId,
+        });
+        _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog
+        {
+            TenantId = approval.TenantId,
+            CompanyId = approval.CompanyId,
+            UserId = approverId,
+            Action = SupersededAction,
+            EntityName = nameof(EmployeeChangeRequest),
+            EntityId = change.Id.ToString(),
+            Metadata = JsonSerializer.Serialize(new
+            {
+                employeeId = change.EmployeeId,
+                approvalRequestId = approval.Id,
+                supersededBy = newer.Change.Id,
+                fields = newer.Keys,
+            }),
+            CreatedAtUtc = DateTime.UtcNow,
         });
     }
 
