@@ -501,6 +501,27 @@ test('workspace overview distinguishes blockers from recommendations and present
   await expect(page.getByText('Blocks payroll', { exact: true })).toBeVisible();
 });
 
+test('a missing government ID opens the Identity step of Edit Employee, and Compliance offers Edit identity', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  // Category and fix exactly as EmployeeFieldRegistry emits them for IdNumber.
+  fixture.readinessBody.set(901, {
+    ...readinessForTest(),
+    blocking: [{ key: 'IdNumber', label: 'Government ID number', category: 'identity', reason: 'statutory', gate: 'activate', fix: { kind: 'field', target: 'idNumber' } }],
+    payBlocking: [],
+  });
+  await page.goto('/people/901?section=overview');
+  await expect(page.getByText('Complete Government ID number', { exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Open section' }).click();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=compliance-documents/);
+  const flow = page.getByTestId('employee-edit-flow');
+  await expect(flow.getByRole('button', { name: /^Step 5: Identity/ })).toHaveAttribute('aria-current', 'step');
+
+  await page.goto('/people/901?section=compliance-documents');
+  await page.getByRole('link', { name: 'Edit identity' }).click();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=compliance-documents/);
+  await expect(page.getByTestId('employee-edit-flow').getByRole('button', { name: /^Step 5: Identity/ })).toHaveAttribute('aria-current', 'step');
+});
+
 test('route-owned employment editing preserves tenant values and follows organization master data', async ({ page }) => {
   await bootEmployeeWorkspaceFixture(page);
   await page.goto('/people/901/edit?section=employment');
