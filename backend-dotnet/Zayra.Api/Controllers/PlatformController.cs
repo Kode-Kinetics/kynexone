@@ -1281,7 +1281,12 @@ public class PlatformController : ControllerBase
         var loc = await _db.TenantLocalizationSettings.FirstOrDefaultAsync(l => l.TenantId == tenantId, ct);
         if (loc is null)
         {
-            loc = new TenantLocalizationSetting { TenantId = tenantId };
+            // A new row starts on the stated country's zone (or the first company's), not the entity's New York default,
+            // when the request does not name one.
+            var homeCountry = req.CountryCode ?? await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.CountryCode != string.Empty)
+                .OrderBy(c => c.CreatedAtUtc).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
+            loc = new TenantLocalizationSetting { TenantId = tenantId, DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry) };
             _db.TenantLocalizationSettings.Add(loc);
         }
 
@@ -4207,6 +4212,8 @@ public class PlatformController : ControllerBase
             CountryCode = homeCountry,
             // Same operating-currency rule as CreateTenant (see CreateTenantCore).
             CurrencyCode = HomeCurrencyFor(homeCountry),
+            // Same zone rule as CreateTenant: without it a converted lead was born on the entity's New York default.
+            DefaultTimezone = HomeJurisdiction.TimeZoneFor(homeCountry),
         });
 
         var adminRole = await _authSeeder.EnsureTenantRolesAsync(tenant.Id, ct);

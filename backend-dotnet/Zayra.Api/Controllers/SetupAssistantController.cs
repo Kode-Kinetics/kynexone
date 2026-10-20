@@ -526,7 +526,13 @@ public class SetupAssistantController : ControllerBase
         if (d.WorkingWeek is not null || d.Localization is not null)
         {
             var loc = await _db.TenantLocalizationSettings.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
-            if (loc is null) { loc = new TenantLocalizationSetting { TenantId = tenantId }; _db.TenantLocalizationSettings.Add(loc); }
+            if (loc is null)
+            {
+                // Born with the stated country's zone, not the entity's America/New_York default: a draft that sets only
+                // the working week must not leave a Gulf tenant on a New York clock.
+                loc = new TenantLocalizationSetting { TenantId = tenantId, DefaultTimezone = HomeJurisdiction.TimeZoneFor(req.CountryCode) };
+                _db.TenantLocalizationSettings.Add(loc);
+            }
             if (d.WorkingWeek is not null)
             {
                 loc.WorkWeek = d.WorkingWeek.WorkWeek;
