@@ -371,11 +371,44 @@ public static class AttendanceDerivedArtifacts
     /// <summary>True when a resolved <see cref="PaidAttendanceChanged"/> exception was closed by HR, not automatically.</summary>
     public static bool WasResolvedByHr(string details) => !details.Contains(AutoResolvedTag, StringComparison.Ordinal);
 
+    private const string HrResolvedTag = "[resolved:";
+
+    /// <summary>The state of a missing-punch day an exception was raised for: a resolution holds until it changes.</summary>
+    public static string MissingPunchSignature(AttendanceDailyRecord daily) =>
+        $"in={daily.FirstInUtc:O};out={daily.LastOutUtc:O}";
+
+    /// <summary>An exception's details with its signature stored at the end (no schema change).</summary>
+    public static string WithSignature(string text, string signature) => $"{text} {SignatureTag}{signature}]";
+
+    /// <summary>The signature stored in an exception's details, if any.</summary>
+    public static string? SignatureIn(string details) => SignatureOf(details);
+
+    /// <summary>
+    /// HR resolves an exception, with a required reason. Recorded in the details (no schema change) and kept: the
+    /// exception is not raised again for the same signature (the same punches, or the same paid difference); only a
+    /// change opens a new one.
+    /// </summary>
+    public static void ResolveByHr(AttendanceException exception, string resolvedBy, string reason, DateTime atUtc)
+    {
+        exception.IsResolved = true;
+        exception.Details = $"{exception.Details} {HrResolvedTag} {resolvedBy} at {atUtc:yyyy-MM-dd HH:mm} UTC: {reason.Replace("]", ")")}]";
+    }
+
+    /// <summary>HR's resolution note ("who at when: reason"), or null for an open or automatically closed exception.</summary>
+    public static string? HrResolutionOf(string details)
+    {
+        var at = details.LastIndexOf(HrResolvedTag, StringComparison.Ordinal);
+        if (at < 0) return null;
+        var end = details.LastIndexOf(']');
+        return end <= at ? null : details[(at + HrResolvedTag.Length)..end].Trim();
+    }
+
     /// <summary>The exception's description for people: its details without the stored signature or close note.</summary>
     public static string DescribePaidAttendanceChange(string details)
     {
-        var at = details.IndexOf(" " + SignatureTag, StringComparison.Ordinal);
-        return at < 0 ? details : details[..at];
+        var cut = new[] { " " + SignatureTag, " " + AutoResolvedTag, " " + HrResolvedTag }
+            .Select(tag => details.IndexOf(tag, StringComparison.Ordinal)).Where(i => i >= 0).DefaultIfEmpty(-1).Min();
+        return cut < 0 ? details : details[..cut];
     }
 
     /// <summary>Closes an open attendance exception (a <see cref="PaidAttendanceChanged"/> flag, or a missing punch the day's

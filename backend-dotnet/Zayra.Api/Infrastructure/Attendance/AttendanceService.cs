@@ -962,6 +962,87 @@ public class AttendanceService : IAttendanceService
         public HttpClient CreateClient(string name) => throw new InvalidOperationException("A recompute-only attendance service polls no device.");
     }
 
+    /// <summary>The exception types HR works through on Attendance → Exceptions.</summary>
+    public static readonly string[] ReviewedExceptionTypes =
+        ["MissingPunch", AttendanceDerivedArtifacts.PaidAttendanceChanged, AttendanceDerivedArtifacts.ImportedDayHasPunches];
+
+    /// <summary>The shortest reason HR may give for resolving an exception: "ok" is not a reason.</summary>
+    public const int MinimumResolutionReasonLength = 10;
+
+    /// <summary>
+    /// HR's list of attendance exceptions: open by default, High first, newest day first. Only employees the caller can
+    /// see (the Employee query filter applies the company scope; <paramref name="scopeIds"/> a narrower data scope).
+    /// </summary>
+    public async Task<PagedResult<AttendanceExceptionDto>> GetExceptionsAsync(Guid tenantId, string? state, string? type, DateOnly? from, DateOnly? to,
+        int? employeeId, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    {
+        var types = string.IsNullOrWhiteSpace(type) ? ReviewedExceptionTypes : [type.Trim()];
+        var visible = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        var q = _db.AttendanceExceptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && types.Contains(x.ExceptionType) && visible.Any(e => e.Id == x.EmployeeId));
+        q = (state ?? "open").ToLowerInvariant() switch
+        {
+            "resolved" => q.Where(x => x.IsResolved),
+            "all" => q,
+            _ => q.Where(x => !x.IsResolved),
+        };
+        if (from is not null) q = q.Where(x => x.WorkDate >= from);
+        if (to is not null) q = q.Where(x => x.WorkDate <= to);
+        if (scopeIds is not null) q = q.Where(x => scopeIds.Contains(x.EmployeeId));
+        else if (employeeId is not null) q = q.Where(x => x.EmployeeId == employeeId);
+        var total = await q.CountAsync(ct);
+        var rows = await q.OrderBy(x => x.Severity == "High" ? 0 : 1).ThenByDescending(x => x.WorkDate).ThenBy(x => x.EmployeeId)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        return new PagedResult<AttendanceExceptionDto>(await ToExceptionDtosAsync(tenantId, rows, ct), total, page, pageSize);
+    }
+
+    /// <summary>
+    /// HR resolves one exception with a reason, recorded on it and in the attendance audit log. The resolution survives a
+    /// recompute: the same exception is not raised again for the same punches (or the same paid difference); a change
+    /// opens a new one. Null when the exception does not exist or is not the caller's to see.
+    /// </summary>
+    public async Task<AttendanceExceptionDto?> ResolveExceptionAsync(Guid tenantId, Guid id, string reason, string resolvedBy, RequestContext context,
+        CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    {
+        var trimmed = (reason ?? string.Empty).Trim();
+        if (trimmed.Length < MinimumResolutionReasonLength)
+            throw new InvalidOperationException($"Say why this is resolved (at least {MinimumResolutionReasonLength} characters): what was checked, and what was done.");
+        var visible = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        var exception = await _db.AttendanceExceptions.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id
+            && ReviewedExceptionTypes.Contains(x.ExceptionType) && visible.Any(e => e.Id == x.EmployeeId), ct);
+        if (exception is null || (scopeIds is not null && !scopeIds.Contains(exception.EmployeeId))) return null;
+        if (!exception.IsResolved)
+        {
+            AttendanceDerivedArtifacts.ResolveByHr(exception, resolvedBy, trimmed, _clock.GetUtcNow().UtcDateTime);
+            await Audit(tenantId, context, "attendance.exception.resolved", nameof(AttendanceException), exception.Id.ToString(),
+                JsonSerializer.Serialize(new { exception.EmployeeId, exception.WorkDate, exception.ExceptionType, reason = trimmed }), ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        return (await ToExceptionDtosAsync(tenantId, [exception], ct)).Single();
+    }
+
+    private async Task<List<AttendanceExceptionDto>> ToExceptionDtosAsync(Guid tenantId, IReadOnlyCollection<AttendanceException> rows, CancellationToken ct)
+    {
+        var employeeIds = rows.Select(r => r.EmployeeId).Distinct().ToList();
+        var dates = rows.Select(r => r.WorkDate).Distinct().ToList();
+        var people = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.FullName, e.EmployeeCode }).ToDictionaryAsync(e => e.Id, ct);
+        var days = (await _db.AttendanceDailyRecords.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && employeeIds.Contains(d.EmployeeId) && dates.Contains(d.WorkDate))
+                .Select(d => new { d.EmployeeId, d.WorkDate, d.Status, d.FirstInUtc, d.LastOutUtc, d.LateMinutes, d.EarlyExitMinutes, d.MissingPunch })
+                .ToListAsync(ct))
+            .GroupBy(d => (d.EmployeeId, d.WorkDate)).ToDictionary(g => g.Key, g => g.First());
+        return rows.Select(r =>
+        {
+            people.TryGetValue(r.EmployeeId, out var p);
+            days.TryGetValue((r.EmployeeId, r.WorkDate), out var d);
+            return new AttendanceExceptionDto(r.Id, r.EmployeeId, p?.FullName ?? string.Empty, p?.EmployeeCode ?? string.Empty, r.WorkDate,
+                r.ExceptionType, r.Severity, AttendanceDerivedArtifacts.DescribePaidAttendanceChange(r.Details), r.IsResolved,
+                AttendanceDerivedArtifacts.HrResolutionOf(r.Details), r.CreatedAtUtc,
+                d is null ? null : new AttendanceExceptionDayDto(d.Status, d.FirstInUtc, d.LastOutUtc, d.LateMinutes, d.EarlyExitMinutes, d.MissingPunch));
+        }).ToList();
+    }
+
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
         // The TENANT's today (the date attendance gives a punch made now), not the UTC date: at 01:00 in Riyadh the UTC
@@ -1414,14 +1495,22 @@ public class AttendanceService : IAttendanceService
     private void RaiseImportConflict(Guid tenantId, AttendanceDailyRecord daily, IReadOnlyList<AttendanceRawEvent> events)
     {
         var punches = string.Join(", ", events.Select(e => $"{e.PunchDirection} {e.PunchTimestampUtc:yyyy-MM-dd HH:mm} UTC"));
-        var details = $"This day was imported ({daily.FirstInUtc:HH:mm}–{daily.LastOutUtc:HH:mm} UTC, {daily.Status}) and real punches "
+        var signature = string.Join(",", events.Select(e => $"{e.PunchDirection}@{e.PunchTimestampUtc:O}"));
+        var details = AttendanceDerivedArtifacts.WithSignature(
+            $"This day was imported ({daily.FirstInUtc:HH:mm}–{daily.LastOutUtc:HH:mm} UTC, {daily.Status}) and real punches "
             + $"were then recorded for it: {punches}. The imported values were kept. If the punches are right, approve a correction "
-            + "for the day; it then follows the punches.";
+            + "for the day; it then follows the punches.", signature);
         var open = _db.AttendanceExceptions.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
                        && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved)
                    ?? _db.AttendanceExceptions.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
                        && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved);
         if (open is not null) { open.Details = details; return; }
+        // HR already decided to keep the import for exactly these punches: a recompute does not ask again.
+        if (_db.AttendanceExceptions.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && x.IsResolved)
+            .Select(x => x.Details).AsEnumerable()
+            .Any(d => AttendanceDerivedArtifacts.HrResolutionOf(d) is not null && AttendanceDerivedArtifacts.SignatureIn(d) == signature))
+            return;
         _db.AttendanceExceptions.Add(new AttendanceException
         {
             TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate,
@@ -1710,13 +1799,26 @@ public class AttendanceService : IAttendanceService
         }
         else if (openMissing is not null)
         {
-            openMissing.Details = AttendanceDerivedArtifacts.DescribeMissingPunch(daily);
+            openMissing.Details = AttendanceDerivedArtifacts.WithSignature(AttendanceDerivedArtifacts.DescribeMissingPunch(daily),
+                AttendanceDerivedArtifacts.MissingPunchSignature(daily));
             return;
         }
         if (!daily.MissingPunch && daily.LateMinutes == 0) return;
         var type = daily.MissingPunch ? "MissingPunch" : "LateArrival";
         var exists = await _db.AttendanceExceptions.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate && x.ExceptionType == type && !x.IsResolved, ct);
-        if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? AttendanceDerivedArtifacts.DescribeMissingPunch(daily) : $"{daily.LateMinutes} late minutes." });
+        if (exists) return;
+        if (daily.MissingPunch)
+        {
+            // HR resolved this missing punch for exactly these punches: a recompute does not reopen it. New punches do.
+            var signature = AttendanceDerivedArtifacts.MissingPunchSignature(daily);
+            var resolved = await _db.AttendanceExceptions.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                && x.WorkDate == daily.WorkDate && x.ExceptionType == type && x.IsResolved).Select(x => x.Details).ToListAsync(ct);
+            if (resolved.Any(d => AttendanceDerivedArtifacts.HrResolutionOf(d) is not null && AttendanceDerivedArtifacts.SignatureIn(d) == signature)) return;
+            _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = "High",
+                Details = AttendanceDerivedArtifacts.WithSignature(AttendanceDerivedArtifacts.DescribeMissingPunch(daily), signature) });
+            return;
+        }
+        _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = "Medium", Details = $"{daily.LateMinutes} late minutes." });
     }
 
     /// <summary>

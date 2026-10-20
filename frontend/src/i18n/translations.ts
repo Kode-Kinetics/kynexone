@@ -21,6 +21,7 @@ import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
+import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
@@ -1415,6 +1416,8 @@ const en: Dict = {
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.en,
+  // Attendance → Exceptions — see ./attendanceExceptions.
+  ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...glSetup.en,
@@ -2817,6 +2820,8 @@ const ar: Dict = {
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.ar,
+  // Attendance → Exceptions — see ./attendanceExceptions.
+  ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
