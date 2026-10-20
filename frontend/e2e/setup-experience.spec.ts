@@ -164,6 +164,29 @@ test('registration number: server validation errors map to the field instead of 
   expect(state.errors).toEqual([]);
 });
 
+test('branches show their company name, never a raw company id', async ({ page }, info) => {
+  const unknownCompanyId = '7d1c2f0e-5b8a-4c3d-9e21-0a6b4f8c9d10';
+  const branch = (id: string, code: string, nameEn: string, companyId: string, companyName?: string) => ({
+    id, companyId, code, nameEn, nameAr: '', countryCode: 'SA', city: 'Riyadh', addressLine1: '', addressLine2: '',
+    timeZoneId: 'Asia/Riyadh', laborOfficeCode: '', isHeadOffice: false, isActive: true, ...(companyName ? { companyName } : {}),
+  });
+  const state = await boot(page, { route: '/setup?tab=branches', groupMode: true });
+  await page.route(/\/api\/branches(?:\?.*)?$/, route => route.fulfill({ json: {
+    items: [
+      branch('b-1', 'GS1', 'Group Services HQ', groupCompany.id, 'Group Services LLC'),
+      branch('b-2', 'NM1', 'Named Only By Server', unknownCompanyId, 'Server Named Co'),
+      branch('b-3', 'UN1', 'Orphan Branch', unknownCompanyId),
+    ], total: 3, page: 1, pageSize: 100,
+  } }));
+  await page.reload();
+  await expect(page.getByRole('row').filter({ hasText: 'Group Services HQ' })).toContainText('Group Services LLC');
+  await expect(page.getByRole('row').filter({ hasText: 'Named Only By Server' })).toContainText('Server Named Co');
+  await expect(page.getByRole('row').filter({ hasText: 'Orphan Branch' })).toContainText('Unknown company');
+  await expect(page.getByText(unknownCompanyId)).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('branch-company-names.png') });
+  expect(state.errors).toEqual([]);
+});
+
 interface ApplyRequest {
   draft: SetupDraft;
   countryCode: string;
