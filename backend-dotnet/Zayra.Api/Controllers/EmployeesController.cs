@@ -60,7 +60,11 @@ public class EmployeesController : ControllerBase
         "socialInsuranceReference",
         // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
         "bankRoutingCode", "accountNumber",
-        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown"
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
+        // The national ID and the four identity-card expiries take the same route as the passport and visa beside
+        // them: they identify the person and gate activation/payroll, so a change is approved before it applies.
+        // Creating an employee is not a change and still sets them directly.
+        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate"
     };
 
     private readonly ZayraDbContext _db;

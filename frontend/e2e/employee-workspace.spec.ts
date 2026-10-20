@@ -522,6 +522,19 @@ test('a missing government ID opens the Identity step of Edit Employee, and Comp
   await expect(page.getByTestId('employee-edit-flow').getByRole('button', { name: /^Step 5: Identity/ })).toHaveAttribute('aria-current', 'step');
 });
 
+test('a read-only user sees the next action disabled with the reason, not a link to a permission wall', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read'] });
+  fixture.readinessBody.set(901, {
+    ...readinessForTest(),
+    blocking: [{ key: 'IdNumber', label: 'Government ID number', category: 'identity', reason: 'statutory', gate: 'activate', fix: { kind: 'field', target: 'idNumber' } }],
+  });
+  await page.goto('/people/901?section=overview');
+  await expect(page.getByText('Complete Government ID number', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open section' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open section' })).toBeDisabled();
+  await expect(page.getByText(/completing it needs edit access/)).toBeVisible();
+});
+
 test('route-owned employment editing preserves tenant values and follows organization master data', async ({ page }) => {
   await bootEmployeeWorkspaceFixture(page);
   await page.goto('/people/901/edit?section=employment');

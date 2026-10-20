@@ -93,8 +93,8 @@ export const SALARY_CURRENCY_OPTIONS = ['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR'
  * and never a per-section default.
  *
  * It used to be both. `complianceEditFieldsForCountry` stamped `sensitive: true` on every statutory
- * input, promising approval for six keys the server writes on the spot (`idNumber`, `sponsorName`
- * and the four card `*ExpiryDate` columns); meanwhile the remote overlay's `r.sensitive ?? ...`
+ * input, promising approval for keys the server wrote on the spot (then `idNumber`, `sponsorName`
+ * and the four card `*ExpiryDate` columns — all but `sponsorName` are approval-gated now); meanwhile the remote overlay's `r.sensitive ?? ...`
  * DEMOTED `dateOfBirth` and `bankName` whenever the registry answered, so the same field's badge
  * changed meaning between online and offline mode. `requiresApproval` unions this mirror with a
  * server-supplied flag and never downgrades: when the field-catalog endpoint starts publishing
@@ -116,6 +116,8 @@ const APPROVAL_REQUIRED_EDIT_KEYS = new Set<string>([
   // Where the WPS/SIF line pays — approval-gated server-side with the IBAN.
   'bankroutingcode', 'accountnumber', 'molid', 'salarycurrency', 'payrollgroup',
   'salarystructurereference', 'paymentmethod', 'salarybreakdown',
+  // The national ID and the four identity-card expiries — approval-gated server-side like the passport and visa.
+  'idnumber', 'iqamaexpirydate', 'emiratesidexpirydate', 'qidexpirydate', 'civilidexpirydate',
 ]);
 
 /** True when saving this edit key submits a change request instead of writing immediately. */

@@ -108,6 +108,8 @@ const en: Dict = {
   "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.": "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.",
   "Salary structures could not be loaded. Leave this on the default, or try again later.": "Salary structures could not be loaded. Leave this on the default, or try again later.",
   "Edit identity": "Edit identity",
+  "Open section": "Open section",
+  "You can see this requirement, but completing it needs edit access to these details. Ask an HR colleague who has it.": "You can see this requirement, but completing it needs edit access to these details. Ask an HR colleague who has it.",
   // Guided employee editing
   "Review their profile": "Review their profile",
   "Review employment details": "Review employment details",
@@ -1504,6 +1506,8 @@ const ar: Dict = {
   "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.": "هيكل الراتب هذا لم يعد صالحًا لهذا الموظف. اختر هيكلًا آخر، أو الافتراضي، قبل حفظ تغييرات الراتب.",
   "Salary structures could not be loaded. Leave this on the default, or try again later.": "تعذّر تحميل هياكل الرواتب. اترك الاختيار على الافتراضي، أو حاول مرة أخرى لاحقًا.",
   "Edit identity": "تعديل بيانات الهوية",
+  "Open section": "فتح القسم",
+  "You can see this requirement, but completing it needs edit access to these details. Ask an HR colleague who has it.": "يمكنك رؤية هذا المتطلب، لكن إكماله يحتاج إلى صلاحية تعديل هذه البيانات. اطلب ذلك من زميل في الموارد البشرية لديه الصلاحية.",
   // Guided employee editing
   "Review their profile": "راجع الملف الشخصي",
   "Review employment details": "راجع بيانات التوظيف",
