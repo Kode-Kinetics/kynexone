@@ -9,6 +9,7 @@ import { useCompany } from '../../contexts/CompanyContext';
 import { useT } from '../../hooks/useT';
 import { SetupPolicySource } from '../SetupPolicySource';
 import { SetupPendingFilesState } from './SetupEditorState';
+import { usePolicyIntake } from '../../lib/policyIntake';
 
 const OnboardingTab = dynamic(() => import('../../views/RecruitmentPage').then(module => module.OnboardingTab));
 
@@ -30,7 +31,10 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
 }) {
   const t = useT();
   const { hasPermission, hasRole } = useAuth();
-  const canIntake = !!company && hasPermission('organization.write')
+  // Policy intake is off by the owner's decision (only manual setup is enabled); while it is off this is the
+  // manual task editor alone, with no entry-method switch and no upload.
+  const policyIntake = usePolicyIntake();
+  const canIntake = policyIntake && !!company && hasPermission('organization.write')
     && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const storageKey = `kynexone-onboarding-intake:v1:${scope}`;
   const [configuration, setConfiguration] = useState<SetupConfiguration | null>(null);
@@ -52,9 +56,10 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     catch { setStorageError(true); }
   }, [storageKey]);
   useLayoutEffect(() => {
-    onDirtyChange(editorDirty || pendingFiles || storageError || !!configuration?.policyIntakeText);
+    // A policy draft left in this browser from before the switch must not hold the manual editor dirty.
+    onDirtyChange(editorDirty || (policyIntake && (pendingFiles || storageError || !!configuration?.policyIntakeText)));
     return () => onDirtyChange(false);
-  }, [editorDirty, pendingFiles, storageError, configuration?.policyIntakeText, onDirtyChange]);
+  }, [editorDirty, pendingFiles, storageError, configuration?.policyIntakeText, onDirtyChange, policyIntake]);
   const profile = useMemo<CompanyProfile>(() => ({
     companyId: company?.id, legalEntityName: company?.legalNameEn,
     countryCode: company?.countryCode ?? '', currencyCode: company?.defaultCurrency ?? '',
@@ -68,6 +73,9 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     if (!confirmEditorReset()) return;
     setPolicyDraft(true); setRevision(value => value + 1); setMode('review');
   };
+  if (!policyIntake) return <div className="min-w-0 space-y-4">
+    <OnboardingTab configurationOnly policyDraft={false} policyDraftRevision={0} onDirtyChange={setEditorDirty} />
+  </div>;
   return <div className="min-w-0 space-y-4">
     <div className="flex flex-wrap gap-2" aria-label={t('Onboarding entry method')}>
       <button type="button" className={mode === 'manual' ? 'btn-primary' : 'btn-secondary'} aria-pressed={mode === 'manual'} onClick={() => {

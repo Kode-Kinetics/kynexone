@@ -15,6 +15,7 @@ import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
 import dynamic from 'next/dynamic';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
+import { usePolicyIntake } from '../lib/policyIntake';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
@@ -2331,7 +2332,9 @@ export function SetupPage() {
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
-  const canManagePolicies = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  // The policy library exists only while the tenant has policy intake switched on (off by the owner's decision).
+  const policyIntake = usePolicyIntake();
+  const canManagePolicies = policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
   const canReadCompanies = canWrite || hasPermission('organization.read');
   const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));

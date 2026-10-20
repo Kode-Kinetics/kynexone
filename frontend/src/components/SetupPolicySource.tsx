@@ -11,11 +11,12 @@ import { SetupPolicyExtraction } from './SetupPolicyExtraction';
 import { LocalOnboardingPreparation } from './setup/LocalOnboardingPreparation';
 import type { CompanyProfile, PolicyDraftSource, SetupConfiguration } from '../api/setupAssistant';
 import { policySources } from '../lib/policyBinder';
+import { usePolicyIntake } from '../lib/policyIntake';
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_TEXT_CHARACTERS = 5_000_000;
 
-export function SetupPolicySource({ value, onChange, onOpenChange, profile, onProfileChange, onReviewOnboardingDraft }: {
+type SetupPolicySourceProps = {
   value: SetupConfiguration;
   onChange: (value: SetupConfiguration) => void;
   onOpenChange?: (open: boolean) => void;
@@ -23,7 +24,18 @@ export function SetupPolicySource({ value, onChange, onOpenChange, profile, onPr
   onProfileChange?: (patch: Partial<CompanyProfile>) => void;
   /** Embedded onboarding uses the same intake, without the starter-wizard handoff. */
   onReviewOnboardingDraft?: () => void;
-}) {
+};
+
+/**
+ * Policy upload, preparation and extraction. Renders nothing unless the tenant has policy intake switched on
+ * (off by the owner's decision: only manual company setup is enabled). Callers hide their own entry points too;
+ * this is the second boundary, so no mount site can show an upload the API would refuse.
+ */
+export function SetupPolicySource(props: SetupPolicySourceProps) {
+  return usePolicyIntake() ? <PolicyIntakeSource {...props} /> : null;
+}
+
+function PolicyIntakeSource({ value, onChange, onOpenChange, profile, onProfileChange, onReviewOnboardingDraft }: SetupPolicySourceProps) {
   const t = useT();
   const { hasRole, hasPermission } = useAuth();
   const canUpload = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));

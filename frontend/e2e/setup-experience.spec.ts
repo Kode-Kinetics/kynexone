@@ -179,6 +179,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/tenant-admin/localization') return reply(options.missingLocalization
       ? { countryCode: '', currencyCode: '' }
       : { countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh' });
+    // policy_intake is ON in this fixture: it is absent from the disabled keys (the real API lists it until the platform team enables it).
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/features/modules' || path === '/api/notifications') return reply([]);
     if (path === '/api/companies') return reply(paged(options.groupMode ? [company, groupCompany] : [company]));

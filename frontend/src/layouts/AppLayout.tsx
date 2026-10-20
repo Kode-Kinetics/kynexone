@@ -24,6 +24,7 @@ import { commandNavigationItems } from '../routes/navigation';
 import type { ThemeMode } from '../types/ui';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { POLICY_INTAKE_FLAG } from '../lib/policyIntake';
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -68,7 +69,9 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
   const { isFeatureEnabled } = useFeatureFlags();
-  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view') || hasPermission('ess.read'));
+  // ess.read alone opens the assistant only for policy questions, which exist only while policy intake is on.
+  const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view')
+    || (isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('ess.read')));
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
   const [commandOpen, setCommandOpen] = useState(false);

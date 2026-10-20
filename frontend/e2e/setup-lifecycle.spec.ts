@@ -16,6 +16,7 @@ async function boot(page: Page) {
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/tenant-admin/localization') return reply({ countryCode: 'SAU', currencyCode: 'SAR' });
     if (path === '/api/companies') return reply({ items: companies, total: 2, page: 1, pageSize: 100 });
+    // policy_intake is ON in this fixture: it is absent from the disabled keys (the real API lists it until the platform team enables it).
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path === '/api/setup-assistant/preview') return reply({ configurationVersion: 1, engine: 'Browser fixture', notes: [], draft: {
       branches: [{ code: 'HQ', nameEn: 'Head Office', city: 'Dammam', isHeadOffice: true }], departments: [], costCenters: [], designations: [], grades: [], gradePayComponents: [], leaveTypes: [], shifts: [], payComponents: [], statutoryRules: [], leavePolicies: [], benefitPlans: [],
