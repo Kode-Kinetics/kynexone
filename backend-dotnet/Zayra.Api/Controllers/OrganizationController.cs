@@ -21,7 +21,12 @@ public class OrganizationController : ControllerBase
     [HttpGet("companies")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<PagedResult<CompanyDto>>> Companies([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
-        => Ok(await _organization.GetCompaniesAsync(RequireTenant(), page, pageSize, cancellationToken));
+    {
+        // Same scope as /api/companies: a company-scoped caller lists only the companies they hold.
+        var scope = this.GetEntityScope();
+        return Ok(await _organization.GetCompaniesAsync(RequireTenant(), page, pageSize, cancellationToken,
+            scope.IsGroupLevel ? null : scope.AccessibleCompanyIds));
+    }
 
     [HttpGet("companies/{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]

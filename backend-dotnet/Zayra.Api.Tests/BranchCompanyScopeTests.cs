@@ -287,4 +287,32 @@ public class BranchCompanyScopeTests
         result.Created.Should().Be(2);
         result.Skipped.Should().Be(0);
     }
+
+    // ── /api/organization/companies follows the same scope as /api/companies ─────────────────
+
+    private static async Task<PagedResult<CompanyDto>> OrgCompanies(ZayraDbContext db, DefaultHttpContext http) =>
+        (PagedResult<CompanyDto>)((OkObjectResult)(await new OrganizationController(new OrganizationSetupService(db, new AuditService(db)))
+            { ControllerContext = new ControllerContext { HttpContext = http } }
+            .Companies(1, 100, CancellationToken.None)).Result!).Value!;
+
+    [Fact]
+    public async Task OrganizationCompanies_CompanyScopedCaller_ListsOnlyTheirCompanies()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var page = await OrgCompanies(db, Caller(w.TenantId, null, w.B.Id));
+        page.Items.Select(c => c.Id).Should().BeEquivalentTo(new[] { w.B.Id });
+        page.Total.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task OrganizationCompanies_GroupCaller_ListsTheTenantsCompanies_AndNoOtherTenants()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        (await OrgCompanies(db, Caller(w.TenantId))).Items.Select(c => c.Id).Should().BeEquivalentTo(new[] { w.A.Id, w.B.Id });
+        (await OrgCompanies(db, Caller(w.TenantId, w.A.Id))).Items.Select(c => c.Id)
+            .Should().BeEquivalentTo(new[] { w.A.Id }, "with a company selected it matches /api/companies");
+        (await OrgCompanies(db, Caller(w.TenantId, null, w.OtherTenantBranch.CompanyId))).Items.Should().BeEmpty();
+    }
 }

@@ -24,11 +24,17 @@ public class OrganizationSetupService : IOrganizationSetupService
         _audit = audit;
     }
 
-    public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var query = _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).OrderBy(x => x.LegalNameEn);
+        var filtered = _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        if (accessibleCompanyIds is not null)
+        {
+            var ids = accessibleCompanyIds.ToList();
+            filtered = filtered.Where(x => ids.Contains(x.Id));
+        }
+        var query = filtered.OrderBy(x => x.LegalNameEn);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
         return new PagedResult<CompanyDto>(items, total, page, pageSize);
