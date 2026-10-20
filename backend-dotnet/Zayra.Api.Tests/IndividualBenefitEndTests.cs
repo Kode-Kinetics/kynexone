@@ -381,6 +381,8 @@ public class IndividualBenefitEndTests
             StepName = "Approve", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
         db.AddRange(company, grade, employee, plan, workflow);
         await db.SaveChangesAsync();
+        // Someone besides the requester and the employee holds the step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         var from = scheduled ? Today.AddDays(20) : Today.AddDays(-30);
         var context = new RequestContext(null, "end-benefit-test", maker, tenant, ["HR Manager"], ["employees.write"]);
         var scope = EntityScopeContext.ForCompanies([company.Id]);

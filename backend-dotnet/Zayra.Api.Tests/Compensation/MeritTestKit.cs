@@ -82,6 +82,10 @@ internal static class MeritTestKit
         var w = new MeritWorld();
         await using var db = fx.CreateDb();
         w.Tenant = await PostgresFixture.SeedMinimalTenant(db);
+        // The merit workflow's roles each have an active holder besides the people on the worksheets (routing
+        // refuses a request nobody could decide, and moves a later step nobody can decide to the Admin queue).
+        await TestApprovalConfig.EnsureDeciderAsync(db, w.Tenant);
+        await TestApprovalConfig.EnsureDeciderAsync(db, w.Tenant, "Finance Approver");
         var company = new Company
         {
             Id = Guid.NewGuid(), TenantId = w.Tenant, LegalNameEn = "Golden Merit Co", CountryCode = "SA", Jurisdiction = "KSA-mainland",

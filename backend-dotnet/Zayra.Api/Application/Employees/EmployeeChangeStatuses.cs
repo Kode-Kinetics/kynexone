@@ -25,4 +25,18 @@ public static class EmployeeChangeStatuses
     /// <c>EmployeeEffectiveChanges:UnverifiableMaxAgeDays</c>. Terminal; the change must be submitted again.
     /// </summary>
     public const string Expired = "Expired";
+
+    /// <summary>
+    /// Closed without being applied: a change submitted AFTER it, touching the same field, was applied first, so
+    /// writing this one now would put back an older value. Terminal; an audit row names the change that won.
+    /// </summary>
+    public const string Superseded = "Superseded";
+
+    /// <summary>
+    /// Closed without being applied: on its effective date it had to go back for review, and nobody other than the
+    /// person it is about could ever decide that review (no holder of the workflow's role, no Admin or
+    /// approvals.override). Terminal — the effective-date job does not retry it daily; the reason says what to fix,
+    /// and the change is submitted again once someone can decide it.
+    /// </summary>
+    public const string Blocked = "Blocked";
 }

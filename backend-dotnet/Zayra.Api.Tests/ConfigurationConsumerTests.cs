@@ -130,6 +130,7 @@ public class ConfigurationConsumerTests
         await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, tenantId);
         var pinned = AddRoleWorkflow(db, tenantId, "LEAVE-SICK", "Finance Head");
         await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "Finance Head");
 
         db.LeavePolicies.Add(new LeavePolicy
         {

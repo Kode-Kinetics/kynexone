@@ -3,6 +3,7 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Jawazat;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Infrastructure.Jawazat;
@@ -77,6 +78,10 @@ public sealed class JawazatWorkflowService(ZayraDbContext db, IApprovalRouter ro
             if (route.Steps.Any(s => s.ApproverType != "Role" || !JawazatConstants.IsHrRole(s.ApproverRole)))
                 throw new JawazatException("hr_workflow_required", "Jawazat employer-assisted requests require a workflow containing only HR role steps.", 422);
         }
+        // Nobody could ever decide it ⇒ refused (422) before anything is written; the HR role is empty but Admin can act
+        // ⇒ the Admin queue (Admin is an HR role for Jawazat), audited (ApprovalFirstStep).
+        var routed = route is null ? null
+            : await ApprovalFirstStep.RouteAsync(db, router, actor.TenantId, JawazatConstants.ApprovalEntityName, employee.Id, actor.UserId, route.FirstStep, ct);
 
         var notification = request.Route == JawazatConstants.WorkerNotification;
         var ticket = new HRRequest
@@ -97,11 +102,12 @@ public sealed class JawazatWorkflowService(ZayraDbContext db, IApprovalRouter ro
                 TenantId = actor.TenantId, CompanyId = employee.CompanyId, WorkflowId = route.WorkflowId,
                 EntityName = JawazatConstants.ApprovalEntityName, EntityId = ticket.Id.ToString(), Title = ticket.Subject,
                 RequestedByUserId = actor.UserId, RequestedForEmployeeId = employee.Id, CurrentStepOrder = first.StepOrder,
-                CurrentApproverRole = first.ApproverRole, CurrentApproverType = "Role", CurrentQueue = $"Role:{first.ApproverRole}",
+                CurrentApproverRole = routed!.Approver.QueueRole, CurrentApproverType = "Role", CurrentQueue = $"Role:{routed.Approver.QueueRole}",
                 SlaHours = Math.Clamp(first.EscalationAfterHours ?? 48, 1, 720), LastRoutedAtUtc = DateTime.UtcNow
             };
             approval.DueAtUtc = DateTime.UtcNow.AddHours(approval.SlaHours);
             ticket.ApprovalRequestId = approval.Id;
+            ApprovalFirstStep.StageOverride(db, approval, actor.UserId, routed);
             db.ApprovalRequests.Add(approval);
         }
         db.HRRequests.Add(ticket);

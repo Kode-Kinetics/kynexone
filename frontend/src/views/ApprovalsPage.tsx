@@ -13,6 +13,7 @@ import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { SlateApprovalLink } from '../components/succession/SlateApprovalLink';
 import { leaveRequestsApi } from '../api/leave';
+import { useLocale } from '../contexts/LocaleContext';
 import type { StatutoryLeaveContext } from '../api/leave';
 
 const PAGE_SIZE = 25;
@@ -44,8 +45,20 @@ const ageLabel = (hours: number) => hours < 1 ? '<1h old' : hours < 24 ? `${hour
 const ownerLabel = (r: ApprovalRequest) => r.currentApproverName || r.currentQueue || r.currentApproverRole || 'Unassigned';
 const ownerMeta = (r: ApprovalRequest) => [r.currentApproverType, r.currentApproverRole].filter(Boolean).join(' · ') || 'No route metadata';
 
+/** "Step 2 of 3" when the server says how many steps will run, else the bare step number. */
+const stepLabel = (r: ApprovalRequest, t: ReturnType<typeof useLocale>['t']) =>
+  r.stepPosition && r.stepCount && r.stepCount > 1 ? t('Step {step} of {count}', { step: r.stepPosition, count: r.stepCount }) : `${r.currentStepOrder}`;
+
+/** True when approving this request only completes an intermediate step (the request stays pending). */
+const approvalAdvancesToNextStep = (r: ApprovalRequest) =>
+  r.stepPosition != null && r.stepCount != null && r.stepPosition < r.stepCount;
+
 export function ApprovalsPage() {
+  const { t } = useLocale();
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
+  // Optimistic "Step N of M approved" labels for multi-step requests whose intermediate step was just approved:
+  // such a request is still Pending (it moved to its next step), so labelling it "Approved" was false.
+  const [stepProgress, setStepProgress] = useState<Record<string, string>>({});
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('Pending');
@@ -106,6 +119,7 @@ export function ApprovalsPage() {
       const res = await approvalsApi.list({ status: statusFilter || undefined, queue: queueFilter || undefined, page, pageSize: PAGE_SIZE });
       setRequests(res.items);
       setTotal(res.total);
+      if (!silent) setStepProgress({});
     } catch {
       if (!silent) {
         setError('Could not load approval requests from the API.');
@@ -143,10 +157,18 @@ export function ApprovalsPage() {
     const prevMetrics = metrics;
     const prevComments = comments;
 
+    // Approving an intermediate step of a multi-step request completes THAT step only: the request stays
+    // Pending at its next step, so it is labelled "Step N of M approved", never "Approved".
+    const advances = decision === 'Approve' && approvalAdvancesToNextStep(decided);
     // The decided row only leaves the visible list while the list is showing pending work; on a
-    // "Approved"/"Rejected"/all-status view the row legitimately stays, with its new status.
-    const leavesCurrentList = statusFilter === 'Pending';
-    const decidedStatus = decision === 'Approve' ? 'Approved' : 'Rejected';
+    // "Approved"/"Rejected"/all-status view the row legitimately stays, with its new status. A request that
+    // only advanced is still pending, so it stays in the all-queues pending view too.
+    const leavesCurrentList = statusFilter === 'Pending' && !(advances && queueFilter === '');
+    const decidedStatus = advances ? 'Pending' : decision === 'Approve' ? 'Approved' : 'Rejected';
+    const prevStepProgress = stepProgress;
+    if (advances) {
+      setStepProgress(p => ({ ...p, [decided.id]: t('Step {step} of {count} approved', { step: decided.stepPosition ?? decided.currentStepOrder, count: decided.stepCount ?? 0 }) }));
+    }
 
     setDeciding(true);
     setSelected(null);
@@ -157,8 +179,9 @@ export function ApprovalsPage() {
     if (leavesCurrentList) setTotal(t => Math.max(0, t - 1));
     // Every counter is a count of PENDING work, so each one this request belonged to drops by one.
     // "All Pending" always contained it; the queue-specific tiles only if it sat in that queue.
+    // A request that only advanced is still pending, so "All Pending" keeps it.
     setMetrics(ms => ms.map(m => (
-      m.key === '' || m.key === decided.currentQueue
+      (m.key === '' && !advances) || m.key === decided.currentQueue
         ? { ...m, value: Math.max(0, m.value - 1) }
         : m
     )));
@@ -172,6 +195,7 @@ export function ApprovalsPage() {
       setRequests(prevRequests);
       setTotal(prevTotal);
       setMetrics(prevMetrics);
+      setStepProgress(prevStepProgress);
 
       const block = establishmentBlockFromError(err);
       if (block) {
@@ -338,11 +362,11 @@ export function ApprovalsPage() {
                     <p className="text-xs text-slate-400">Due {fmtDateTime(r.dueAtUtc)}</p>
                   </td>
                   <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                    <p className="font-semibold text-slate-700 dark:text-slate-200">Step {r.currentStepOrder}</p>
+                    <p className="font-semibold text-slate-700 dark:text-slate-200">{r.stepCount && r.stepCount > 1 ? stepLabel(r, t) : t('Step {step}', { step: r.currentStepOrder })}</p>
                     <p className="text-xs">{ageLabel(Number(r.ageHours ?? 0))}</p>
                     {r.lastRoutedAtUtc && <p className="text-xs">Routed {fmtDateTime(r.lastRoutedAtUtc)}</p>}
                   </td>
-                  <td className="px-4 py-3"><StatusChip {...statusTone(r.status)} /></td>
+                  <td className="px-4 py-3">{stepProgress[r.id] ? <StatusChip label={stepProgress[r.id]} tone="emerald" /> : <StatusChip {...statusTone(r.status)} />}</td>
                   <td className="px-4 py-3">
                     <SlateApprovalLink request={r} />
                     {r.status === 'Pending' && r.canDecide && (
@@ -422,7 +446,7 @@ export function ApprovalsPage() {
                 </div>
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Workflow</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">Step {selected.currentStepOrder}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">{selected.stepCount && selected.stepCount > 1 ? stepLabel(selected, t) : t('Step {step}', { step: selected.currentStepOrder })}</p>
                   <p className="text-xs text-slate-400">{ageLabel(Number(selected.ageHours ?? 0))}</p>
                 </div>
               </div>

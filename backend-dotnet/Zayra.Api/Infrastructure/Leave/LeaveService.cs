@@ -890,6 +890,12 @@ public class LeaveService : ILeaveService
                     ?? await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
         var firstStep = route.FirstStep;
         var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        // Nobody at all could decide the first step ⇒ refused (typed 422), and this transaction rolls back with
+        // no balance reserved. Its own approver cannot act but Admin/approvals.override can ⇒ that queue, audited.
+        var firstRequester = requestedByUserId ?? employee.UserAccountId;
+        var firstOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, firstStep, firstApprover,
+            new[] { firstRequester }, atSubmission: true, ct);
+        if (firstOverride is not null) firstApprover = firstOverride;
         request.Status = StatusForPendingStep(firstStep);
         var firstApproverEmployeeId = firstApprover.EmployeeId;
         var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
@@ -926,6 +932,8 @@ public class LeaveService : ILeaveService
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
+        if (firstOverride is not null)
+            await LogOverrideRoutingAsync(tenantId, request, firstStep, ct);
         if (statutoryKind is { } declaredKind && IsDeclaredSeparate(request, declaredKind))
             await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "StatutoryEventDeclaredSeparate",
                 string.Empty, $"event_date={request.StatutoryEventDate:yyyy-MM-dd}", request.SeparateEventReason!,
@@ -981,6 +989,16 @@ public class LeaveService : ILeaveService
                 ?? throw new ApprovalRouteInvalidException(tenantId, nameof(LeaveRequest), route.WorkflowId, route.Code,
                     $"step {currentStepNumber} is not final and no step follows it.");
             var nextApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, nextStep, ct);
+            // Mid-chain the earlier approval stands: a next step nobody can decide moves to the override queue.
+            var routedProjection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+                ?? await _db.ApprovalRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == request.Id, ct);
+            var earlierDeciders = await _db.ApprovalDecisions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.ApprovalRequestId == request.Id && d.DecidedByUserId != null)
+                .Select(d => d.DecidedByUserId)
+                .ToListAsync(ct);
+            var nextOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, nextStep, nextApprover,
+                earlierDeciders.Append(routedProjection.RequestedByUserId).Append(approverId).ToArray(), atSubmission: false, ct);
+            if (nextOverride is not null) nextApprover = nextOverride;
             request.Status = StatusForPendingStep(nextStep);
             var nextApproval = BuildPendingApproval(tenantId, requestId, nextStep, nextApprover);
             _db.LeaveApprovals.Add(nextApproval);
@@ -989,6 +1007,8 @@ public class LeaveService : ILeaveService
 
             await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
                 previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
+            if (nextOverride is not null)
+                await LogOverrideRoutingAsync(tenantId, request, nextStep, ct);
             await _db.SaveChangesAsync(ct);
             return request;
         }
@@ -2484,9 +2504,39 @@ public class LeaveService : ILeaveService
     /// records its approver type (the label LeaveRequestsController authorises against). An escalated
     /// person step records the HR Manager queue it was escalated to.
     /// </summary>
+    /// <summary>
+    /// The "someone can decide this" check for a leave step (<see cref="IApprovalRouter.CheckDeciderAsync"/>),
+    /// excluding <paramref name="alsoExcluded"/> and every login of the employee on leave. The leave screen
+    /// lets HR Officer decide an "HR" step, so that role counts there. Returns null when the step stands as
+    /// routed, else the override-queue approver to route to. At submission, with nobody even in the override
+    /// queue, throws <see cref="ApprovalNoEligibleDeciderException"/>.
+    /// </summary>
+    private async Task<ResolvedApprover?> EnsureSomeoneCanDecideAsync(Guid tenantId, int employeeId, ApprovalRouteStep step,
+        ResolvedApprover approver, IEnumerable<Guid?> alsoExcluded, bool atSubmission, CancellationToken ct)
+    {
+        var excluded = alsoExcluded.Where(x => x is not null).Select(x => x!.Value).ToHashSet();
+        foreach (var linked in await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, employeeId, ct)) excluded.Add(linked);
+        var alsoAccepted = !approver.Escalated && string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
+            ? new[] { "HR Officer" }
+            : null;
+        var check = await _router.CheckDeciderAsync(tenantId, approver, excluded, alsoAccepted, ct);
+        if (check.Eligible) return null;
+        if (atSubmission && !check.OverrideAvailable)
+            throw new ApprovalNoEligibleDeciderException(tenantId, nameof(LeaveRequest), step.StepOrder, step.StepName, check.Owner, check.NamedPerson);
+        return ApprovalRouter.OverrideQueue(step.ApproverType);
+    }
+
+    private Task LogOverrideRoutingAsync(Guid tenantId, LeaveRequest request, ApprovalRouteStep step, CancellationToken ct)
+        => LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "ApprovalRoutedToOverride",
+            $"step {step.StepOrder}: {step.ApproverType}{(string.IsNullOrWhiteSpace(step.ApproverRole) ? string.Empty : $" ({step.ApproverRole.Trim()})")}",
+            IApprovalRouter.OverrideQueueRole,
+            "Nobody other than the requester, the employee and earlier approvers could decide this step as configured, so it was moved to the Admin queue.",
+            request.EmployeeName, ct);
+
     private static string ResolvedApproverRole(ApprovalRouteStep step, ResolvedApprover approver)
     {
-        if (approver.Escalated) return ApprovalRouter.HrManagerRole;
+        // Escalated: the queue the router sent it to (HR Manager for a person who cannot act; Admin for the override queue).
+        if (approver.Escalated) return string.IsNullOrWhiteSpace(approver.QueueRole) ? ApprovalRouter.HrManagerRole : approver.QueueRole;
         return string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(step.ApproverRole)
             ? step.ApproverRole.Trim()

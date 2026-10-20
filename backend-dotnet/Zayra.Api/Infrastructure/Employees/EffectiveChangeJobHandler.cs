@@ -38,6 +38,8 @@ public enum EffectiveChangeOutcome
     Deferred,
     /// <summary>Another attempt or path already decided it (it was no longer ApprovedPendingEffectiveDate).</summary>
     AlreadyHandled,
+    /// <summary>Not written: it needed a re-review that nobody could ever decide. Status Blocked (terminal, not retried).</summary>
+    Blocked,
 }
 
 /// <summary>The decision for one change. <see cref="Reason"/> is plain language and never contains a value.</summary>
@@ -93,6 +95,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
     public const string CancelledAction = "employee.change_effective_cancelled";
     public const string DeferredAction = "employee.change_effective_deferred";
     public const string ExpiredAction = "employee.change_effective_expired";
+    public const string BlockedAction = "employee.change_effective_blocked";
     public const string GateFailedAction = "employee.change_effective_gate_failed";
     /// <summary>A gate that throws is retried on later runs; after this many attempts the change is cancelled (HR told).</summary>
     public const int MaxGateAttempts = 5;
@@ -101,6 +104,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
     public const string ReturnedForReviewEventType = EmployeeChangeBaseline.ReturnedForReviewEventType;
     public const string CancelledEventType = "SensitiveChangeCancelled";
     public const string ExpiredEventType = "SensitiveChangeExpired";
+    public const string BlockedEventType = "SensitiveChangeBlocked";
 
     /// <summary>The actor recorded on the audit rows and the review request this job writes.</summary>
     public const string SystemActor = "kynexone:effective-change-job";
@@ -198,7 +202,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             if (!committed || result is null) continue;
 
             tally[result.Outcome]++;
-            if (result.Outcome is EffectiveChangeOutcome.ReturnedForReview or EffectiveChangeOutcome.Cancelled or EffectiveChangeOutcome.Expired)
+            if (result.Outcome is EffectiveChangeOutcome.ReturnedForReview or EffectiveChangeOutcome.Cancelled or EffectiveChangeOutcome.Expired or EffectiveChangeOutcome.Blocked)
                 _log.LogWarning(
                     "Approved employee change {ChangeId} (tenant {TenantId}, employee {EmployeeId}) was not applied: {Outcome} ({ReasonCode}).",
                     changeId, ctx.TenantId, result.EmployeeId, result.Outcome, result.ReasonCode);
@@ -453,6 +457,24 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                 workflowId = null;
         }
 
+        var approvals = d.Services.GetService<IApprovalWorkflowService>()
+                        ?? new ApprovalWorkflowService(d.Db, d.Services.GetService<IAuditService>() ?? new AuditService(d.Db));
+        var title = Truncate(
+            $"Employee change re-review - {employee.EmployeeCode} {employee.FullName}: {headline}. {dates}"
+            + (string.IsNullOrEmpty(values) ? string.Empty : $" {values}"), 240);
+        var reviewRequest = new CreateApprovalRequest(workflowId, nameof(EmployeeChangeRequest), change.Id.ToString(), title,
+            employee.Id, employee.CompanyId, "High");
+        var reviewContext = new RequestContext(null, SystemActor, null, d.TenantId);
+        // Routed before anything is staged. Its approver cannot act but Admin/approvals.override can ⇒ CreateRequestAsync
+        // sends it to the Admin queue with the routed-to-override audit row. Nobody at all could decide it ⇒ the change
+        // is closed as Blocked with the reason and an audit row: never left to fail and retry every day.
+        try { await approvals.EnsureRoutableAsync(d.TenantId, reviewRequest, reviewContext, ct); }
+        catch (ApprovalNoEligibleDeciderException ex)
+        {
+            return Close(d, EmployeeChangeStatuses.Blocked, EffectiveChangeOutcome.Blocked, BlockedAction, BlockedEventType,
+                "no_eligible_decider", $"{reason} It needed a re-review, and nobody can decide one: {ex.Message.Replace(" This request was not submitted.", string.Empty)} Then submit the change again.");
+        }
+
         change.Status = EmployeeChangeStatuses.PendingApproval;
         // The earlier approval stays on record (its approval request, decisions, history and audit rows); the
         // change itself now waits for a new decision, so it no longer claims one.
@@ -471,16 +493,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             SnapshotJson = EventSnapshot.Json(change.Id, d.JobId, reasonCode, previousApprovalId, baseline: sealedReview),
         });
 
-        var approvals = d.Services.GetService<IApprovalWorkflowService>()
-                        ?? new ApprovalWorkflowService(d.Db, d.Services.GetService<IAuditService>() ?? new AuditService(d.Db));
-        var title = Truncate(
-            $"Employee change re-review - {employee.EmployeeCode} {employee.FullName}: {headline}. {dates}"
-            + (string.IsNullOrEmpty(values) ? string.Empty : $" {values}"), 240);
-        var approval = await approvals.CreateRequestAsync(d.TenantId,
-            new CreateApprovalRequest(workflowId, nameof(EmployeeChangeRequest), change.Id.ToString(), title,
-                employee.Id, employee.CompanyId, "High"),
-            new RequestContext(null, SystemActor, null, d.TenantId),
-            ct);
+        var approval = await approvals.CreateRequestAsync(d.TenantId, reviewRequest, reviewContext, ct);
         change.ApprovalRequestId = approval.Id;
 
         AddAudit(d, ReturnedForReviewAction, new
@@ -776,6 +789,8 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                 ("Approved employee change cancelled", $"The approved {what} change for {who} was cancelled. {result.Reason}"),
             EffectiveChangeOutcome.Expired =>
                 ("Approved employee change expired", $"The approved {what} change for {who} was not applied. {result.Reason}"),
+            EffectiveChangeOutcome.Blocked =>
+                ("Approved employee change blocked", $"The approved {what} change for {who} was not applied. {result.Reason}"),
             EffectiveChangeOutcome.Deferred when result.FirstDeferral =>
                 ("Approved bank change waiting for payroll", $"The approved {what} change for {who} is waiting. {result.Reason}"),
             _ => null,

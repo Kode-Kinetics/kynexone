@@ -74,6 +74,9 @@ public class RequisitionApprovalConvergenceTests
     private static RequisitionsController Controller(
         ZayraDbContext db, Guid tenantId, Guid userId, string role = "HR Manager")
     {
+        // Each step's role has someone besides the requester (routing refuses a request nobody could decide).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "Finance").GetAwaiter().GetResult();
         var controller = new RequisitionsController(
             db, new RecruitmentService(db), new NoNotifications(),
             new ApprovalWorkflowService(db, new AuditService(db)));

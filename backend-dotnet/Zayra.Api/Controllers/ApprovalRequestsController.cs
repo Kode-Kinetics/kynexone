@@ -39,6 +39,21 @@ public class ApprovalRequestsController : ControllerBase
         return request is null ? NotFound() : Ok(request);
     }
 
+    /// <summary>
+    /// Before → after for a pending employee change, per field, masked for the viewer. Authorised like the
+    /// decision itself (approvals.decide, and the service's CanDecide with its separation-of-duties bars):
+    /// anyone who could not decide it now gets 404.
+    /// </summary>
+    [HttpGet("{id:guid}/change-detail")]
+    [HasPermission("approvals.decide")]
+    public async Task<ActionResult<EmployeeChangeDetailDto>> ChangeDetail(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var detail = await _approvals.GetEmployeeChangeDetailAsync(tenantId.Value, id, Context(), cancellationToken);
+        return detail is null ? NotFound() : Ok(detail);
+    }
+
     [HttpPost]
     [HasPermission("approvals.write")]
     public async Task<ActionResult<ApprovalRequestDto>> Create(CreateApprovalRequest request, CancellationToken cancellationToken)

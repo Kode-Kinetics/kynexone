@@ -26,6 +26,34 @@ public class JawazatWorkflowTests
         Assert.NotNull(JawazatPolicyRules.ValidateJson(json));
 
     [Fact]
+    public async Task EmployerAssisted_NobodyCouldDecide_IsRefusedBeforeAnythingIsWritten()
+    {
+        await using var db = Db();
+        var s = await Seed(db);
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, s.TenantId));
+
+        await Assert.ThrowsAsync<ApprovalNoEligibleDeciderException>(() => Service(db).CreateAsync(Actor(s), Request() with { Route = "EmployerAssisted" }, default));
+        db.ChangeTracker.Clear();
+        Assert.Empty(db.ApprovalRequests);
+        Assert.Empty(db.HRRequests);
+    }
+
+    [Fact]
+    public async Task EmployerAssisted_TheHrRoleIsEmpty_ButAnAdminExists_GoesToTheAdminQueue_WithAnAuditRow()
+    {
+        await using var db = Db();
+        var s = await Seed(db);
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, s.TenantId));
+        await TestApprovalConfig.EnsureDeciderAsync(db, s.TenantId, "Admin");
+
+        var created = await Service(db).CreateAsync(Actor(s), Request() with { Route = "EmployerAssisted" }, default);
+
+        var approval = await db.ApprovalRequests.SingleAsync(a => a.Id == created.ApprovalRequestId);
+        Assert.Equal("Admin", approval.CurrentApproverRole);
+        Assert.Single(db.AuditLogs.Where(x => x.Action == "approval.routed_to_override" && x.EntityId == approval.Id.ToString()));
+    }
+
+    [Fact]
     public async Task WorkerNotification_DoesNotCreateEmployerApproval_AndGovernmentFactsStayUnknown()
     {
         await using var db = Db();
@@ -400,6 +428,8 @@ public class JawazatWorkflowTests
         workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = s.TenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "HR", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // Someone besides the requester and the employee holds the step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, s.TenantId);
         return s;
     }
     private sealed record SeedData(Guid TenantId, Guid CompanyId, Guid UserId);

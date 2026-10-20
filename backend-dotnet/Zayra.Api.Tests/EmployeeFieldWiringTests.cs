@@ -515,6 +515,8 @@ public class EmployeeFieldWiringTests
 
     private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, Guid? userId = null, bool sensitive = true)
     {
+        // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
         var audit = new AuditService(db);
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), audit, new FakeDocs(),
             new FakeNotifications(), new FakeHijri(), new DataScopeService(db), new FakeLetters(),

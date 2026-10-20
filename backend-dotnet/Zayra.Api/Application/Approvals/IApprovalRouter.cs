@@ -59,7 +59,33 @@ public interface IApprovalRouter
     /// themself is routed to the "HR Manager" role queue with <see cref="ResolvedApprover.Escalated"/> set.
     /// </summary>
     Task<ResolvedApprover> ResolveApproverAsync(Guid tenantId, int? subjectEmployeeId, ApprovalRouteStep step, CancellationToken ct);
+
+    /// <summary>
+    /// Whether anyone outside <paramref name="excludedUserIds"/> (the requester, every login of the person the
+    /// request is about, and whoever already decided a step) could decide a step routed to
+    /// <paramref name="approver"/>: a named person needs an active login of their own; a role queue needs an
+    /// active holder of the role (or of <paramref name="alsoAcceptedRoles"/>, for a module whose own screen
+    /// accepts more than the queue role). <see cref="DeciderCheck.OverrideAvailable"/> says whether the
+    /// override queue (<see cref="OverrideQueueRole"/> or approvals.override) has someone instead.
+    ///
+    /// <para>Without this a request could be routed to a role nobody holds, or to a person with no login, and
+    /// sit there for ever: nothing refused it, and nothing moved it. The callers refuse at submission when
+    /// nobody at all can decide (<see cref="ApprovalNoEligibleDeciderException"/>), and otherwise move the
+    /// step to the override queue with an audit row. Separation of duties is untouched: the excluded users
+    /// never count, and the decision itself is still checked by each module's own rules.</para>
+    /// </summary>
+    Task<DeciderCheck> CheckDeciderAsync(Guid tenantId, ResolvedApprover approver, IReadOnlyCollection<Guid> excludedUserIds,
+        IReadOnlyCollection<string>? alsoAcceptedRoles, CancellationToken ct);
+
+    /// <summary>The queue a step falls to when its own approver cannot act: Admin, or anyone holding approvals.override.</summary>
+    public const string OverrideQueueRole = "Admin";
 }
+
+/// <param name="Eligible">Someone outside the excluded users can decide the step as routed.</param>
+/// <param name="OverrideAvailable">Someone outside the excluded users holds Admin or approvals.override.</param>
+/// <param name="Owner">Who the step was routed to, in words: the role, or the named person.</param>
+/// <param name="NamedPerson">The step was routed to one named person rather than a role queue.</param>
+public sealed record DeciderCheck(bool Eligible, bool OverrideAvailable, string Owner, bool NamedPerson);
 
 /// <summary>A resolved, validated approval chain. <see cref="WorkflowId"/> is always a real ApprovalWorkflow.Id.</summary>
 public sealed record ApprovalRoute(
@@ -154,4 +180,37 @@ public sealed class ApprovalRouteInvalidException : ApprovalRoutingException
     }
 
     public Guid WorkflowId { get; }
+}
+
+/// <summary>
+/// Nobody other than the requester and the person the request is about could ever decide it: the step's role
+/// has no active holder, or its named approver has no active login, and nobody holds Admin or approvals.override
+/// either. Refused at submission (422) instead of creating a request that would wait for ever.
+/// </summary>
+public sealed class ApprovalNoEligibleDeciderException : ApprovalRoutingException
+{
+    public const string ErrorCode = "approval_no_eligible_decider";
+
+    public ApprovalNoEligibleDeciderException(Guid tenantId, string entityName, int stepOrder, string stepName, string owner, bool namedPerson)
+        : base(ErrorCode, tenantId, entityName, Describe(stepOrder, stepName, owner, namedPerson))
+    {
+        StepOrder = stepOrder;
+        Owner = owner;
+        NamedPerson = namedPerson;
+    }
+
+    public int StepOrder { get; }
+    /// <summary>The role, or the named approver, the step is routed to.</summary>
+    public string Owner { get; }
+    public bool NamedPerson { get; }
+
+    private static string Describe(int stepOrder, string stepName, string owner, bool namedPerson)
+    {
+        var step = string.IsNullOrWhiteSpace(stepName) ? $"Step {stepOrder}" : $"Step {stepOrder} ('{stepName.Trim()}')";
+        return namedPerson
+            ? $"Nobody can approve this yet. {step} goes to {owner}, who has no active login, and nobody else holds the Admin role. " +
+              $"Give {owner} a login, or change the workflow under Approvals → Workflows. This request was not submitted."
+            : $"Nobody can approve this yet. {step} goes to the {owner} role, and no one other than the requester and the person it is about holds it or the Admin role. " +
+              $"Assign someone to {owner} in User Management, or change the workflow under Approvals → Workflows. This request was not submitted.";
+    }
 }

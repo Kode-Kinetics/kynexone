@@ -109,7 +109,10 @@ public static class AdditionalBenefitGrants
         if (route.Steps.Any(x => string.IsNullOrWhiteSpace(x.ApproverRole) || x.ApproverRole.Equals("Any", StringComparison.OrdinalIgnoreCase)))
             throw new ApprovalRouteInvalidException(tenantId, EntityName, route.WorkflowId, route.Code, "every benefit approval step must name an explicit approver role.");
         var first = route.FirstStep;
-        var approver = await router.ResolveApproverAsync(tenantId, employee.Id, first, ct);
+        // Nobody could ever decide it ⇒ refused (422) before anything is written; its approver cannot act but
+        // Admin / approvals.override can ⇒ the Admin queue, audited (ApprovalFirstStep).
+        var routed = await Zayra.Api.Infrastructure.Approvals.ApprovalFirstStep.RouteAsync(db, router, tenantId, EntityName, employee.Id, context.UserId, first, ct);
+        var approver = routed.Approver;
         var proposal = new AdditionalBenefitProposal(1, requestId, tenantId, employee.CompanyId, employee.GradeId,
             employee.FullName, plan.Name, plan.Currency, terms, baseline is null ? null : BenefitEnrollmentDto.From(baseline), plan.Classification, WorkflowDigest(route.Steps), operation, endDate, baseline?.PaymentPolicySnapshotJson ?? BenefitPaymentPolicies.Snapshot(plan), plan.PolicyVersion);
         var payload = JsonSerializer.Serialize(proposal, Json);
@@ -127,6 +130,7 @@ public static class AdditionalBenefitGrants
             SlaHours = Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720), LastRoutedAtUtc = now,
             DueAtUtc = now.AddHours(Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720)),
         };
+        Zayra.Api.Infrastructure.Approvals.ApprovalFirstStep.StageOverride(db, approval, context.UserId, routed);
         db.ApprovalRequests.Add(approval);
         StageAudit(db, approval, context.UserId, "benefits.additional.requested", new { proposal, route.WorkflowId, route.MatchedOn });
         await db.SaveChangesAsync(ct);

@@ -3977,6 +3977,40 @@ public class EmployeesController : ControllerBase
                     });
                 }
 
+                // A DIFFERENT pending change to one of these fields: refused, nothing applied. Two waiting
+                // changes to one field let the older value win if they were approved newest-first
+                // (EmployeeChangeOverlap explains why this refuses rather than cancelling the older one).
+                if (await EmployeeChangeOverlap.FindPendingOverlapAsync(_db, tenantId, employee.Id, sensitiveChanges.Keys, null, cancellationToken) is { } overlap)
+                {
+                    var fields = DashboardController.FormatChangedFields(string.Join(',', overlap.Keys)) ?? string.Join(", ", overlap.Keys);
+                    return Conflict(new
+                    {
+                        error = "change_already_pending",
+                        message = $"A change to {fields} is already awaiting approval for this employee. " +
+                                  "Wait for it to be decided, or withdraw it (if you raised it) or ask an approver to reject it, then submit again. No change was applied.",
+                        fields = overlap.Keys,
+                        changeRequestId = overlap.Change.Id,
+                        approvalRequestId = overlap.Change.ApprovalRequestId,
+                    });
+                }
+
+                // Routed BEFORE anything is written: a change nobody could ever decide is refused here with nothing saved —
+                // neither the change row nor the non-sensitive fields that ride along with it. (The workflow itself is
+                // provisioned first; that is configuration, idempotent, and not part of the employee's record.)
+                var routingWorkflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
+                if (_db.Entry(routingWorkflow).State != EntityState.Unchanged || _db.ChangeTracker.Entries<ApprovalWorkflowStep>().Any(e => e.State != EntityState.Unchanged))
+                    await _db.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await _approvalWorkflow.EnsureRoutableAsync(tenantId, new CreateApprovalRequest(routingWorkflow.Id, nameof(EmployeeChangeRequest),
+                        Guid.Empty.ToString(), $"Employee change approval - {employee.EmployeeCode} {employee.FullName}", employee.Id, employee.CompanyId, "High"),
+                        Context(), cancellationToken);
+                }
+                catch (ApprovalRoutingException ex)
+                {
+                    return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message, appliedFields = new List<string>() });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);
@@ -4016,18 +4050,39 @@ public class EmployeesController : ControllerBase
                 {
                     await _db.SaveChangesAsync(cancellationToken);
                 }
-                var approval = await _approvalWorkflow.CreateRequestAsync(
-                    tenantId,
-                    new CreateApprovalRequest(
-                        workflow.Id,
-                        nameof(EmployeeChangeRequest),
-                        change.Id.ToString(),
-                        $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
-                        employee.Id,
-                        employee.CompanyId,
-                        "High"),
-                    Context(),
-                    cancellationToken);
+                ApprovalRequestDto approval;
+                try
+                {
+                    approval = await _approvalWorkflow.CreateRequestAsync(
+                        tenantId,
+                        new CreateApprovalRequest(
+                            workflow.Id,
+                            nameof(EmployeeChangeRequest),
+                            change.Id.ToString(),
+                            $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
+                            employee.Id,
+                            employee.CompanyId,
+                            "High"),
+                        Context(),
+                        cancellationToken);
+                }
+                catch (ApprovalRoutingException ex)
+                {
+                    // Nobody could ever decide it (or no workflow applies): the change row saved above must not
+                    // linger as PendingApproval with no approval behind it. Closed, with the reason, and refused.
+                    change.Status = EmployeeChangeStatuses.Cancelled;
+                    change.RejectionReason = ex.Message.Length <= 1000 ? ex.Message : ex.Message[..1000];
+                    await _db.SaveChangesAsync(cancellationToken);
+                    return UnprocessableEntity(new
+                    {
+                        error = ex.Code,
+                        code = ex.Code,
+                        message = ex.Message + (immediateChanges.Count > 0
+                            ? $" The other fields you edited ({string.Join(", ", immediateChanges.Keys)}) do not need approval and were saved."
+                            : string.Empty),
+                        appliedFields = immediateChanges.Keys.ToList(),
+                    });
+                }
                 change.ApprovalRequestId = approval.Id;
                 await _db.SaveChangesAsync(cancellationToken);
                 await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);

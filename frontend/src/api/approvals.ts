@@ -37,6 +37,31 @@ export interface ApprovalRequest {
   canWithdraw?: boolean;
   /** What is being approved, e.g. "IBAN, passport". */
   changeSummary?: string | null;
+  /** Position of the current step among the steps that will actually run (1-based), when known. */
+  stepPosition?: number | null;
+  /** How many steps will run (up to and including the first final step), when known. */
+  stepCount?: number | null;
+}
+
+/** One field of a pending employee change: on file now → proposed. Masked values arrive already masked. */
+export interface EmployeeChangeField {
+  key: string;
+  label: string;
+  currentValue: string | null;
+  proposedValue: string | null;
+  masked: boolean;
+}
+
+/** Before → after for an employee-change approval; only returned to someone who may decide it now. */
+export interface EmployeeChangeDetail {
+  approvalRequestId: string;
+  changeRequestId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  effectiveDate: string;
+  changeStatus: string;
+  fields: EmployeeChangeField[];
 }
 
 export interface ApprovalDecision {
@@ -56,6 +81,9 @@ export const approvalsApi = {
 
   decide: (id: string, decision: 'Approve' | 'Reject', comments = '') =>
     client.post<ApprovalRequest>(`/api/approval-requests/${id}/decisions`, { decision, comments }).then((r) => r.data),
+
+  changeDetail: (id: string) =>
+    client.get<EmployeeChangeDetail>(`/api/approval-requests/${id}/change-detail`).then((r) => r.data),
 
   withdraw: (id: string, reason = '') =>
     client.post<ApprovalRequest>(`/api/approval-requests/${id}/withdraw`, { reason }).then((r) => r.data),
