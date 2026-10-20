@@ -358,4 +358,122 @@ public class EstablishmentApiTests
         (await db.TenantHrConfigs.SingleAsync(c => c.TenantId == tenantId)).EstablishmentEnforcementMode
             .Should().Be("Advisory", "a PUT without the field must not reset the mode");
     }
+
+    // ── Company switcher (X-Company-Id) on the establishment writes ─────────
+
+    private static readonly string[] EstablishmentWriter = { "organization.read", "organization.write", "organization.establishment.write" };
+
+    /// <summary>A caller principal, optionally company-scoped (legacy entity_access rows), with the
+    /// company switcher header set when <paramref name="selectedCompany"/> is given.</summary>
+    private static DefaultHttpContext Caller(Guid tenantId, Guid? selectedCompany, Guid[]? companyScope)
+    {
+        var claims = new List<Claim>
+        {
+            new("tenant_id", tenantId.ToString()),
+            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.Role, "Admin"),
+        };
+        if (companyScope is null) claims.Add(new Claim("is_group_scope", "true"));
+        else claims.AddRange(companyScope.Select(c => new Claim("entity_access", JsonSerializer.Serialize(new { c, r = "Admin" }))));
+        claims.AddRange(EstablishmentWriter.Select(p => new Claim("permission", p)));
+        var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
+        if (selectedCompany is not null) http.Request.Headers[ZayraDbContext.CompanySelectionHeader] = selectedCompany.ToString();
+        return http;
+    }
+
+    private sealed record SwitcherWorld(Guid TenantId, Guid CompanyA, Guid CompanyB, Department Unbranched, Department InB, StaffingLevel Level);
+
+    private static async Task<SwitcherWorld> SeedSwitcherWorld(ZayraDbContext db)
+    {
+        var tenantId = Guid.NewGuid();
+        var a = new Company { TenantId = tenantId, LegalNameEn = "Alpha", RegistrationNumber = "A-1", IsActive = true };
+        var b = new Company { TenantId = tenantId, LegalNameEn = "Beta", RegistrationNumber = "B-1", IsActive = true };
+        var branchB = new Branch { TenantId = tenantId, CompanyId = b.Id, Code = "B-HQ", NameEn = "Beta HQ" };
+        var unbranched = new Department { TenantId = tenantId, Code = "GRP", NameEn = "Group Office", IsActive = true };
+        var inB = new Department { TenantId = tenantId, Code = "BOPS", NameEn = "Beta Operations", IsActive = true, BranchId = branchB.Id };
+        var level = new StaffingLevel { TenantId = tenantId, Code = "MGR", NameEn = "Manager", NameAr = "مدير", Rank = 2 };
+        db.AddRange(a, b, branchB, unbranched, inB, level);
+        await db.SaveChangesAsync();
+        return new SwitcherWorld(tenantId, a.Id, b.Id, unbranched, inB, level);
+    }
+
+    private static PlanningController Planning(ZayraDbContext db, DefaultHttpContext http) =>
+        new(db, new AuditService(db), new EstablishmentGuardService(db)) { ControllerContext = new ControllerContext { HttpContext = http } };
+
+    private static EstablishmentController Establishment(ZayraDbContext db, DefaultHttpContext http) =>
+        new(db, new AuditService(db), new EstablishmentGuardService(db)) { ControllerContext = new ControllerContext { HttpContext = http } };
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_CanSetEnvelope_OnUnbranchedAndOtherCompanyDepartments()
+    {
+        await using var db = CreateDb();
+        var w = await SeedSwitcherWorld(db);
+
+        (await Planning(db, Caller(w.TenantId, w.CompanyA, null))
+                .SetEstablishment(w.Unbranched.Id, new EstablishmentUpdate(5, 1000m, null, "plan"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>("selecting a company in the switcher narrows reads, not a group admin's authority");
+        (await Planning(db, Caller(w.TenantId, w.CompanyA, null))
+                .SetEstablishment(w.InB.Id, new EstablishmentUpdate(3, 500m, null, "plan"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_CanPutBudgets_OnUnbranchedAndOtherCompanyDepartments()
+    {
+        await using var db = CreateDb();
+        var w = await SeedSwitcherWorld(db);
+        var rows = new List<DepartmentBudgetRow> { new(w.Level.Id, 2) };
+
+        (await Establishment(db, Caller(w.TenantId, w.CompanyA, null))
+                .PutBudgets(w.Unbranched.Id, new DepartmentBudgetsRequest(rows, "plan"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        (await Establishment(db, Caller(w.TenantId, w.CompanyA, null))
+                .PutBudgets(w.InB.Id, new DepartmentBudgetsRequest(rows, "plan"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_StillForbidden_ForOtherCompanyAndUnbranchedDepartments()
+    {
+        await using var db = CreateDb();
+        var w = await SeedSwitcherWorld(db);
+        var rows = new List<DepartmentBudgetRow> { new(w.Level.Id, 2) };
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            (await Planning(db, Caller(w.TenantId, selected, new[] { w.CompanyA }))
+                    .SetEstablishment(w.InB.Id, new EstablishmentUpdate(9, 9m, null, "x"), CancellationToken.None))
+                .Should().BeOfType<ForbidResult>("a Company A admin cannot set Company B's establishment");
+            (await Planning(db, Caller(w.TenantId, selected, new[] { w.CompanyA }))
+                    .SetEstablishment(w.Unbranched.Id, new EstablishmentUpdate(9, 9m, null, "x"), CancellationToken.None))
+                .Should().BeOfType<ForbidResult>("an unbranched department is tenant-wide and needs a group grant");
+            (await Establishment(db, Caller(w.TenantId, selected, new[] { w.CompanyA }))
+                    .PutBudgets(w.InB.Id, new DepartmentBudgetsRequest(rows, "x"), CancellationToken.None))
+                .Should().BeOfType<ForbidResult>();
+            (await Establishment(db, Caller(w.TenantId, selected, new[] { w.CompanyA }))
+                    .PutBudgets(w.Unbranched.Id, new DepartmentBudgetsRequest(rows, "x"), CancellationToken.None))
+                .Should().BeOfType<ForbidResult>();
+        }
+        (await db.DepartmentStaffingBudgets.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_CanStillMaintainOwnCompanyDepartment()
+    {
+        await using var db = CreateDb();
+        var w = await SeedSwitcherWorld(db);
+        (await Planning(db, Caller(w.TenantId, w.CompanyB, new[] { w.CompanyB }))
+                .SetEstablishment(w.InB.Id, new EstablishmentUpdate(4, 400m, null, "plan"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task CrossTenantDepartment_IsNotFound_EvenForGroupAdmin()
+    {
+        await using var db = CreateDb();
+        var w = await SeedSwitcherWorld(db);
+        (await Planning(db, Caller(Guid.NewGuid(), null, null))
+                .SetEstablishment(w.Unbranched.Id, new EstablishmentUpdate(4, 400m, null, "plan"), CancellationToken.None))
+            .Should().BeOfType<NotFoundObjectResult>();
+    }
 }
