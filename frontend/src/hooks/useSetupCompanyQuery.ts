@@ -90,7 +90,11 @@ export function useSetupCompanyQuery() {
       router.replace(`/setup?${next.toString()}`, { scroll: false });
       return;
     }
-    if (pathResolution.needsReplace) {
+    // Path canonicalisation belongs to Setup Studio (tab=aiSetup, or no tab). Other
+    // sections keep the Studio area in their URL only to restore it on return; reading
+    // that as a legacy Studio deep link rewrote e.g. tab=policyLibrary back to Studio.
+    const tab = params?.get('tab') ?? null;
+    if (pathResolution.needsReplace && (tab === null || tab === 'aiSetup')) {
       const next = serializeSetupPath(pathResolution, new URLSearchParams(params?.toString()));
       router.replace(`/setup?${next.toString()}`, { scroll: false });
     }
