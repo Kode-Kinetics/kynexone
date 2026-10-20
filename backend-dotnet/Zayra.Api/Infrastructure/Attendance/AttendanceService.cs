@@ -871,7 +871,9 @@ public class AttendanceService : IAttendanceService
 
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {
-        var today = DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime);
+        // The TENANT's today (the date attendance gives a punch made now), not the UTC date: at 01:00 in Riyadh the UTC
+        // date is still yesterday, so the default window ended a day early and hid the day being worked.
+        var today = TenantTimeZone.LocalDate(await ResolveTenantTimeZoneAsync(tenantId, ct), _clock.GetUtcNow().UtcDateTime);
         // A PARAMETERLESS call defaults to a trailing window, not to today alone. Attendance only
         // exists for days that have HAPPENED — the demo seeders stop at yesterday, and a live
         // tenant's row appears only once that day's punches are processed — so a from==to==today

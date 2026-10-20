@@ -10,6 +10,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
@@ -48,13 +49,17 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly IAttendanceService _attendanceService;
     private readonly IHrLetterIssuer _letterIssuer;
     private readonly IDocumentStorage? _documentStorage;
+    private readonly TimeProvider _clock;
 
     // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
-    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null)
+    public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
+        TimeProvider? clock = null)
     {
+        // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
+        _clock = clock ?? TimeProvider.System;
         _letters = letters;
         _db = db;
         _pdfGate = pdfGate;
@@ -75,8 +80,13 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
         var employee = await OwnEmployee(tenantId, employeeId, cancellationToken);
         if (employee is null) return NotFound(new { message = EssLinkGuidance.En, messageAr = EssLinkGuidance.Ar });
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var now = DateTime.UtcNow;
+        var now = _clock.GetUtcNow().UtcDateTime;
+        // "Today" is the employee's WORK DATE now: the day a punch made now is given (AttendanceWorkDate — the tenant's
+        // time zone, and an overnight shift's early hours on the shift's own day), and its punch window. It used to be the
+        // UTC date, so at 01:00 in Riyadh the dashboard looked for yesterday's record and showed yesterday's punches.
+        var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, cancellationToken);
+        var today = await AttendanceWorkDate.ResolveAsync(_db, tenantId, employeeId, now, timeZone, cancellationToken);
+        var (todayStartUtc, todayEndUtc, _) = await AttendanceWorkDate.WindowAsync(_db, tenantId, employeeId, today, timeZone, cancellationToken);
         var attendance = await _db.AttendanceDailyRecords.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkDate == today && !x.IsDeleted, cancellationToken);
         // W2-D (S8): a mobile/web punch creates a RAW event only; the daily record appears after HR
         // processing. Until then, expose today's state from the raw punches (not persisted, Id empty)
@@ -84,7 +94,7 @@ public class EmployeeSelfServiceController : ControllerBase
         string? attendanceSource = attendance is null ? null : "processed";
         if (attendance is null)
         {
-            var provisional = (await TodayFromRawEventsAsync(tenantId, new[] { employeeId }, today, cancellationToken))
+            var provisional = (await TodayFromRawEventsAsync(tenantId, new[] { employeeId }, todayStartUtc, todayEndUtc, cancellationToken))
                 .GetValueOrDefault(employeeId);
             if (provisional is not null)
             {
@@ -1035,7 +1045,10 @@ public class EmployeeSelfServiceController : ControllerBase
     {
         var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // The tenant's calendar day (not the UTC date) and its punch window, as the dashboard and the attendance
+        // processor see it.
+        var timeZone = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, cancellationToken);
+        var today = TenantTimeZone.LocalDate(timeZone, _clock.GetUtcNow().UtcDateTime);
         var reports = await _db.Employees.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.ManagerEmployeeId == employeeId && x.Id != employeeId
                 && x.Status != EmployeeStatuses.Terminated)
@@ -1046,7 +1059,8 @@ public class EmployeeSelfServiceController : ControllerBase
         var daily = ids.Count == 0 ? new() : await _db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.WorkDate == today && !x.IsDeleted)
             .ToListAsync(cancellationToken);
-        var raw = await TodayFromRawEventsAsync(tenantId, ids, today, cancellationToken);
+        var raw = await TodayFromRawEventsAsync(tenantId, ids,
+            TenantTimeZone.LocalDayStartUtc(timeZone, today), TenantTimeZone.LocalDayStartUtc(timeZone, today.AddDays(1)), cancellationToken);
         var onLeave = ids.Count == 0 ? new List<int>() : await _db.LeaveRequests.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.Status == "Approved" && x.StartDate <= today && x.EndDate >= today)
             .Select(x => x.EmployeeId).Distinct().ToListAsync(cancellationToken);
@@ -1072,15 +1086,14 @@ public class EmployeeSelfServiceController : ControllerBase
     }
 
     /// <summary>
-    /// Today's state per employee from RAW punch events (UTC day, matching WorkDate). First "In" is
+    /// Today's state per employee from RAW punch events in [startUtc, endUtc) (the caller's "today"). First "In" is
     /// the clock-in; if the latest punch is "Out" it is the clock-out, otherwise the person is on the
     /// clock. Worked minutes are summed over In→Out pairs.
     /// </summary>
-    private async Task<Dictionary<int, ProvisionalAttendance>> TodayFromRawEventsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, DateOnly today, CancellationToken ct)
+    private async Task<Dictionary<int, ProvisionalAttendance>> TodayFromRawEventsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds,
+        DateTime start, DateTime end, CancellationToken ct)
     {
         if (employeeIds.Count == 0) return new();
-        var start = today.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var end = start.AddDays(1);
         var ids = employeeIds.Cast<int?>().ToList();
         var events = await _db.AttendanceRawEvents.AsNoTracking()
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId) && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)

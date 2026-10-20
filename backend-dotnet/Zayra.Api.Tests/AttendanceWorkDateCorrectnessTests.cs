@@ -565,6 +565,27 @@ public class AttendanceWorkDateCorrectnessTests
         Figures(ingested).Should().BeEquivalentTo(Figures(punched), "the same punches under the same policy are the same day");
     }
 
+    /// <summary>HR's daily list with no dates ends on the TENANT's today: at 01:00 in Riyadh that is not the UTC date.</summary>
+    [Fact]
+    public async Task DailyList_WithNoDates_EndsOnTheTenantsToday_NotTheUtcDate()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        SeedRiyadh(db, tenantId);
+        db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, WorkDate = Weekday,
+            FirstInUtc = RiyadhToUtc(Weekday, 0, 30), Status = "Present", MissingPunch = true,
+        });
+        await db.SaveChangesAsync();
+
+        var oneAmRiyadh = RiyadhToUtc(Weekday, 1, 0); // still the previous day in UTC
+        var page = await Service(db, new FixedClock(oneAmRiyadh)).GetDailyAsync(tenantId, null, null, null, null, 1, 50, default);
+
+        page.Items.Select(x => x.WorkDate).Should().Equal([Weekday], "it is already the 18th in Riyadh");
+    }
+
     private static void SeedDevice(ZayraDbContext db, Guid tenantId) =>
         db.AttendanceDevices.Add(new AttendanceDevice
         {
