@@ -122,6 +122,95 @@ public class AttendanceWorkDateCorrectnessTests
         two.TotalWorkedMinutes.Should().Be(9 * 60 - 60);
     }
 
+    // ── (2) device ingest and the overnight-shift work date ──────────────────────────────────────────────
+
+    /// <summary>
+    /// A night worker (22:00–06:00, assigned on 15 Sep, Riyadh) clocks in at 22:00 and out at 02:00 local on a gate
+    /// device; the device pushes each punch as it happens. The 02:00 Out belongs to 15 Sep — as the punch path has
+    /// always said — so ingest must recompute 15 Sep under 15 Sep's lock and open nothing on 16 Sep.
+    /// <para><paramref name="anonymousStrictScope"/> runs it as Production does: the webhook is anonymous and strict
+    /// company scope hides every company-scoped row (ShiftAssignment is one), so the shift must be read tenant-wide.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeviceIngest_AttributesAnOvernightShiftsEarlyMorningPunch_ToTheShiftsWorkDate(bool anonymousStrictScope)
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var shiftDate = new DateOnly(2026, 9, 15);
+        string code;
+        await using (var seed = StoreDb(store))
+        {
+            var employee = AddEmployee(seed, tenantId);
+            code = employee.EmployeeCode;
+            SeedRiyadh(seed, tenantId);
+            SeedNightShift(seed, tenantId, employee, shiftDate);
+            seed.AttendanceDevices.Add(new AttendanceDevice
+            {
+                TenantId = tenantId, DeviceName = "Gate", SerialNumber = "SN-NIGHT", IsActive = true,
+                ApiKeyReference = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(DeviceKey))),
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var clockIn = new DateTime(2026, 9, 15, 19, 0, 0, DateTimeKind.Utc);  // 22:00 local, 15 Sep
+        var clockOut = new DateTime(2026, 9, 15, 23, 0, 0, DateTimeKind.Utc); // 02:00 local, 16 Sep
+        foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
+        {
+            await using var db = anonymousStrictScope ? AnonymousStrictDb(store) : StoreDb(store);
+            if (anonymousStrictScope)
+                (await db.ShiftAssignments.CountAsync()).Should().Be(0, "premise: strict anonymous scope hides the shift assignment");
+            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+                new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true),
+                "127.0.0.1", default);
+            result!.Accepted.Should().Be(1);
+            result.Processed.Should().Be(1);
+        }
+
+        await using var check = StoreDb(store);
+        var daily = await check.AttendanceDailyRecords.ToListAsync();
+        daily.Select(d => d.WorkDate).Should().Equal([shiftDate], "the 02:00 clock-out closes the 15 Sep shift; nothing is opened on 16 Sep");
+        daily[0].FirstInUtc.Should().Be(clockIn);
+        daily[0].LastOutUtc.Should().Be(clockOut);
+        daily[0].MissingPunch.Should().BeFalse();
+        daily[0].TotalWorkedMinutes.Should().Be(4 * 60 - 60);
+    }
+
+    [Fact]
+    public async Task DeviceIngest_ProcessesEachEmployeeOnlyOnTheDaysTheyPunched()
+    {
+        // The batch used to recompute every matched employee on every date any punch in the batch fell on, opening
+        // "Absent" days for people who had no punch on them.
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        string first, second;
+        await using (var seed = StoreDb(store))
+        {
+            first = AddEmployee(seed, tenantId).EmployeeCode;
+            second = AddEmployee(seed, tenantId).EmployeeCode;
+            seed.AttendanceDevices.Add(new AttendanceDevice
+            {
+                TenantId = tenantId, DeviceName = "Gate", SerialNumber = "SN-TWO", IsActive = true,
+                ApiKeyReference = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(DeviceKey))),
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = StoreDb(store))
+        {
+            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+            [
+                new DeviceIngestPunch(first, new DateTime(2026, 8, 17, 9, 0, 0, DateTimeKind.Utc), "In", null, null, null, null, null, null),
+                new DeviceIngestPunch(second, new DateTime(2026, 8, 18, 9, 0, 0, DateTimeKind.Utc), "In", null, null, null, null, null, null),
+            ], AutoProcess: true), "127.0.0.1", default);
+            result!.Processed.Should().Be(2);
+        }
+
+        await using var check = StoreDb(store);
+        (await check.AttendanceDailyRecords.CountAsync()).Should().Be(2, "one day each, the day each person punched");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
 
     private static Task ProcessAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly day) =>

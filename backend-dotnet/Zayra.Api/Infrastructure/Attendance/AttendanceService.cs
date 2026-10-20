@@ -51,12 +51,9 @@ public class AttendanceService : IAttendanceService
     private async Task<TimeZoneInfo> ResolveTenantTimeZoneAsync(Guid tenantId, CancellationToken ct)
     {
         if (_tzCache.TryGetValue(tenantId, out var cached)) return cached;
-        var tzId = await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId)
-            .Select(l => l.DefaultTimezone)
-            .FirstOrDefaultAsync(ct);
-        // Shared with DashboardController so both agree on which calendar day "today" is.
-        var tz = TenantTimeZone.FromId(tzId);
+        // Shared with DashboardController (TenantTimeZone) and the legacy mobile punch (AttendanceWorkDate) so all agree
+        // on which calendar day "today" is.
+        var tz = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, ct);
         _tzCache[tenantId] = tz;
         return tz;
     }
@@ -576,8 +573,7 @@ public class AttendanceService : IAttendanceService
             throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
         int accepted = 0, duplicates = 0, unmatched = 0;
         var matchedEmployees = new Dictionary<int, Employee>();
-        var affectedDates = new HashSet<DateOnly>();
-        var tenantTimeZone = await ResolveTenantTimeZoneAsync(tenantId, ct);
+        var matchedPunches = new List<(int EmployeeId, DateTime PunchUtc)>();
 
         foreach (var punch in punches)
         {
@@ -618,10 +614,25 @@ public class AttendanceService : IAttendanceService
             else
             {
                 matchedEmployees[employee.Id] = employee;
-                var localPunch = TimeZoneInfo.ConvertTimeFromUtc(
-                    DateTime.SpecifyKind(punch.PunchTimestampUtc, DateTimeKind.Utc), tenantTimeZone);
-                affectedDates.Add(DateOnly.FromDateTime(localPunch));
+                matchedPunches.Add((employee.Id, punch.PunchTimestampUtc));
             }
+        }
+
+        // Each punch's work date by the SAME rule as the punch path (AttendanceWorkDate: tenant-local date, with an
+        // overnight shift's early-morning punch on the shift's own day), in one shift query for the batch. It used to be
+        // the plain local date, so a night worker's 02:00 clock-out opened a spurious next-day record under a different
+        // lock key from the punch path, and the shift's day was never closed. Each employee is processed only on the
+        // dates THEIR punches fall on (it used to be every date any punch in the batch fell on).
+        var employeeDates = new Dictionary<int, SortedSet<DateOnly>>();
+        var autoProcess = request.AutoProcess ?? true;
+        var workDates = autoProcess
+            ? await AttendanceWorkDate.ResolveManyAsync(_db, tenantId, matchedPunches, await ResolveTenantTimeZoneAsync(tenantId, ct), ct)
+            : [];
+        for (var i = 0; i < workDates.Count; i++)
+        {
+            if (!employeeDates.TryGetValue(matchedPunches[i].EmployeeId, out var dates))
+                employeeDates[matchedPunches[i].EmployeeId] = dates = new SortedSet<DateOnly>();
+            dates.Add(workDates[i]);
         }
 
         device.LastSyncStatus = "Completed";
@@ -634,7 +645,7 @@ public class AttendanceService : IAttendanceService
         await _db.SaveChangesAsync(ct);
 
         int processedDays = 0;
-        if ((request.AutoProcess ?? true) && matchedEmployees.Count > 0 && affectedDates.Count > 0)
+        if (autoProcess && employeeDates.Count > 0)
         {
             var policy = await _db.AttendancePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive, ct) ?? DefaultPolicy(tenantId);
             var ctx = new RequestContext(ip, "device-ingest", null, tenantId);
@@ -646,7 +657,7 @@ public class AttendanceService : IAttendanceService
             foreach (var emp in matchedEmployees.Values.OrderBy(e => e.Id))
             {
                 var employeeDays = new List<DateOnly>();
-                foreach (var date in affectedDates.Order())
+                foreach (var date in employeeDates[emp.Id])
                 {
                     if (await IsLocked(tenantId, date, ct)) continue;
                     var done = false;
@@ -1297,12 +1308,10 @@ public class AttendanceService : IAttendanceService
     public async Task<WorkDayWindow> WorkDayWindowAsync(Guid tenantId, int employeeId, DateOnly date, CancellationToken ct)
     {
         var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        var row = await _db.ShiftAssignments.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.AssignedDate == date)
-            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                  a => a.ShiftDefinitionId, d => d.Id, (a, d) => new { d.StartTime, d.EndTime })
-            .FirstOrDefaultAsync(ct);
-        var shift = row is null ? null : new WorkShift(row.StartTime, row.EndTime);
+        // Read tenant-wide, as the work-date rule reads it: on the anonymous device webhook the company-filtered read
+        // saw no shift at all (strict scope), so an overnight shift's window collapsed to the calendar day there.
+        var row = await AttendanceWorkDate.ShiftOnAsync(_db, tenantId, employeeId, date, ct);
+        var shift = row is null ? null : new WorkShift(row.Value.StartTime, row.Value.EndTime);
         var isOvernightShift = shift is not null && shift.EndTime <= shift.StartTime;
         var startLocalBoundary = isOvernightShift
             ? DateTime.SpecifyKind(date.ToDateTime(shift!.StartTime), DateTimeKind.Unspecified)
@@ -1574,26 +1583,9 @@ public class AttendanceService : IAttendanceService
         return null;
     }
 
-    private async Task<DateOnly> ResolvePunchWorkDateAsync(Guid tenantId, int employeeId, DateTime punchUtc, CancellationToken ct)
-    {
-        var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        var utc = DateTime.SpecifyKind(punchUtc, DateTimeKind.Utc);
-        var local = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
-        var localDate = DateOnly.FromDateTime(local);
-        var previousDate = localDate.AddDays(-1);
-        var previousOvernightEnd = await _db.ShiftAssignments.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.AssignedDate == previousDate)
-            .Join(_db.ShiftDefinitions.AsNoTracking().Where(d => d.TenantId == tenantId),
-                a => a.ShiftDefinitionId, d => d.Id,
-                (a, d) => new { d.StartTime, d.EndTime })
-            .Where(s => s.EndTime <= s.StartTime)
-            .Select(s => (TimeOnly?)s.EndTime)
-            .FirstOrDefaultAsync(ct);
-
-        return previousOvernightEnd.HasValue && TimeOnly.FromDateTime(local) <= previousOvernightEnd.Value
-            ? previousDate
-            : localDate;
-    }
+    /// <summary>The work date (and so the daily-record lock key) of one punch: <see cref="AttendanceWorkDate"/>'s rule.</summary>
+    private async Task<DateOnly> ResolvePunchWorkDateAsync(Guid tenantId, int employeeId, DateTime punchUtc, CancellationToken ct) =>
+        await AttendanceWorkDate.ResolveAsync(_db, tenantId, employeeId, punchUtc, await ResolveTenantTimeZoneAsync(tenantId, ct), ct);
 
     private async Task<bool> IsLocked(Guid tenantId, DateOnly date, CancellationToken ct) =>
         await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
