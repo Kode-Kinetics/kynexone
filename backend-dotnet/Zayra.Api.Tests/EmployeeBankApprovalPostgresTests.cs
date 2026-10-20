@@ -25,6 +25,7 @@ public sealed class EmployeeBankApprovalPostgresTests(PostgresFixture fixture)
         await using (var db = fixture.CreateDb())
         {
             tenant = await PostgresFixture.SeedMinimalTenant(db);
+            await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
             var e = new Employee { TenantId = tenant, EmployeeCode = "BANK-PG", FullName = "Synthetic Bank PG", Status = "Active", JoiningDate = DateTime.UtcNow.Date, BankName = "Stale scalar", BankIban = "" };
             db.Employees.Add(e); await db.SaveChangesAsync(); employeeId = e.Id;
             db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = tenant, EmployeeId = e.Id, BankName = "Original Bank", Iban = "SA0380000000608010167519", SalaryCurrency = "SAR", MolId = "KEEP-MOL", AccountNumber = "KEEP-ACCOUNT", WpsEligible = false, EosbEligible = false });
