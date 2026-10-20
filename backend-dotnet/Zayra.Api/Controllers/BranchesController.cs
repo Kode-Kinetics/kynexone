@@ -49,7 +49,15 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await _organization.GetBranchesAsync(tenantId.Value, companyId, page, pageSize, cancellationToken));
+        return Ok(await _organization.GetBranchesAsync(tenantId.Value, companyId, page, pageSize, cancellationToken, AccessibleCompanies()));
+    }
+
+    /// <summary>The companies whose branches this request may read: null for a group-level scope, else
+    /// the caller's companies (narrowed by the X-Company-Id switcher, as the company list is).</summary>
+    private IReadOnlyCollection<Guid>? AccessibleCompanies()
+    {
+        var scope = this.GetEntityScope();
+        return scope.IsGroupLevel ? null : scope.AccessibleCompanyIds;
     }
 
     [HttpGet("{id:guid}")]
@@ -57,7 +65,7 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var branch = await _organization.GetBranchAsync(tenantId.Value, id, cancellationToken);
+        var branch = await _organization.GetBranchAsync(tenantId.Value, id, cancellationToken, AccessibleCompanies());
         return branch is null ? NotFound() : Ok(branch);
     }
 
@@ -106,8 +114,10 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var accessible = AccessibleCompanies()?.ToList();
         var branches = await _db.Branches.AsNoTracking()
             .Where(b => b.TenantId == tenantId.Value && !b.IsDeleted)
+            .Where(b => accessible == null || accessible.Contains(b.CompanyId))
             .Join(_db.Companies.AsNoTracking(), b => b.CompanyId, c => c.Id, (b, c) => new { b, c })
             .OrderBy(x => x.c.LegalNameEn).ThenBy(x => x.b.Code)
             .ToListAsync(ct);

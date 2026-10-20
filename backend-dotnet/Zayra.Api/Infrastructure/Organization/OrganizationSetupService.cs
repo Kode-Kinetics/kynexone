@@ -188,23 +188,48 @@ public class OrganizationSetupService : IOrganizationSetupService
         @"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
         System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var query = _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        // Branch is tenant-owned with no ambient company filter, so the caller's companies are applied
+        // here: a company-scoped caller lists only the branches of the companies they hold.
+        if (accessibleCompanyIds is not null)
+        {
+            var ids = accessibleCompanyIds.ToList();
+            query = query.Where(x => ids.Contains(x.CompanyId));
+        }
         if (companyId.HasValue) query = query.Where(x => x.CompanyId == companyId.Value);
         var ordered = query.OrderBy(x => x.Code);
         var total = await ordered.CountAsync(cancellationToken);
-        var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
+        var branches = await ordered.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        var names = await CompanyNamesAsync(tenantId, branches.Select(b => b.CompanyId), cancellationToken);
+        var items = branches.Select(b => WithCompanyName(b, names)).ToList();
         return new PagedResult<BranchDto>(items, total, page, pageSize);
     }
 
-    public async Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
+    public async Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         var branch = await _db.Branches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        return branch?.ToDto();
+        if (branch is null) return null;
+        if (accessibleCompanyIds is not null && !accessibleCompanyIds.Contains(branch.CompanyId)) return null;
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
+
+    /// <summary>Legal names of the given companies, tenant-filtered. Branch lists carry the name so a
+    /// screen never has to show a raw CompanyId when it has not loaded that company.</summary>
+    private async Task<Dictionary<Guid, string>> CompanyNamesAsync(Guid tenantId, IEnumerable<Guid> companyIds, CancellationToken cancellationToken)
+    {
+        var ids = companyIds.Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, string>();
+        return await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && ids.Contains(c.Id))
+            .ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, cancellationToken);
+    }
+
+    private static BranchDto WithCompanyName(Branch branch, IReadOnlyDictionary<Guid, string> names) =>
+        branch.ToDto() with { CompanyName = names.TryGetValue(branch.CompanyId, out var name) ? name : string.Empty };
 
     public async Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
     {
@@ -215,7 +240,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         _db.Branches.Add(branch);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
-        return branch.ToDto();
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
     public async Task<BranchDto?> UpdateBranchAsync(Guid tenantId, Guid id, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -229,7 +254,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         branch.UpdatedBy = context.UserId;
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
-        return branch.ToDto();
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
     public async Task<PagedResult<DepartmentDto>> GetDepartmentsAsync(Guid tenantId, Guid? branchId, int page, int pageSize, CancellationToken cancellationToken)

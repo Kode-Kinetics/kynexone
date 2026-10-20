@@ -546,7 +546,9 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
     finally { setDeleting(null); }
   };
 
-  const companyName = (id: string) => companies.find((c) => c.id === id)?.legalNameEn ?? id;
+  // The server names each branch's company; the loaded company list is the fallback. Never the raw id.
+  const companyName = (b: BranchDto) =>
+    b.companyName?.trim() || companies.find((c) => c.id === b.companyId)?.legalNameEn || 'Unknown company';
 
   return (
     <>
@@ -578,7 +580,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{b.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.nameEn}</td>
-            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b.companyId)}</td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b)}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{b.city || '—'}</td>
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>

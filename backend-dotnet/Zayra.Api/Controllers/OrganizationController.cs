@@ -56,7 +56,12 @@ public class OrganizationController : ControllerBase
     [HttpGet("branches")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     public async Task<ActionResult<PagedResult<BranchDto>>> Branches([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
-        => Ok(await _organization.GetBranchesAsync(RequireTenant(), companyId, page, pageSize, cancellationToken));
+    {
+        // Same company scoping as /api/branches: a company-scoped caller lists only their companies' branches.
+        var scope = this.GetEntityScope();
+        return Ok(await _organization.GetBranchesAsync(RequireTenant(), companyId, page, pageSize, cancellationToken,
+            scope.IsGroupLevel ? null : scope.AccessibleCompanyIds));
+    }
 
     [HttpPost("branches")]
     [Authorize(Roles = "Admin,HR Manager")]
