@@ -129,11 +129,7 @@ public static class AttendanceDerivedArtifacts
     public static async Task UpsertImpactsAsync(ZayraDbContext db, Guid tenantId, AttendanceDailyRecord daily, int absenceMinutes, CancellationToken ct,
         PayrollCoverageMemo? coverage = null)
     {
-        var existing = await db.AttendancePayrollImpacts
-            .Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate)
-            .ToListAsync(ct);
-        var paid = existing.Where(x => x.Status == ProcessedStatus).ToList();
-        db.AttendancePayrollImpacts.RemoveRange(existing.Where(x => x.Status != ProcessedStatus));
+        var paid = await ReplacePendingAsync(db, tenantId, daily, ct);
 
         var recomputed = ImpliedImpacts(daily, absenceMinutes);
         var halfPair = IsHalfPair(daily);
@@ -276,6 +272,39 @@ public static class AttendanceDerivedArtifacts
         return held.Count == 0
             ? "Missing in or out punch."
             : $"Missing in or out punch. Held, not deducted, until the punch is corrected: {string.Join(" and ", held)}.";
+    }
+
+    /// <summary>
+    /// Removes the day's pending impacts and returns the ones payroll has consumed (<c>Processed</c>).
+    ///
+    /// <para><b>The status predicate is ON THE DELETE</b>, in one statement, as <c>LeaveService</c> does for leave
+    /// deductions. Payroll takes no attendance day lock: its mark is a compare-and-swap on <c>status</c>. A read, then a
+    /// delete by id, let this ordering through — the read saw the impact pending, payroll marked it Processed and
+    /// committed, and the delete (it had waited on payroll's row lock under READ COMMITTED) then removed the consumed
+    /// row; the day looked unpaid and its deduction was raised again as pending, to be taken twice. With the predicate
+    /// on the statement, Postgres re-checks the row after the wait and leaves a consumed impact alone; the read AFTER the
+    /// delete then sees it, and the day is treated as paid. No row lock is taken for this (a <c>FOR UPDATE</c> here
+    /// would order against the void's locks).</para>
+    /// </summary>
+    private static async Task<List<AttendancePayrollImpact>> ReplacePendingAsync(ZayraDbContext db, Guid tenantId,
+        AttendanceDailyRecord daily, CancellationToken ct)
+    {
+        var day = db.AttendancePayrollImpacts
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate);
+        if (!db.Database.IsRelational())
+        {
+            // The in-memory test provider has no set-based delete and no concurrency to guard against.
+            var existing = await day.ToListAsync(ct);
+            db.AttendancePayrollImpacts.RemoveRange(existing.Where(x => x.Status != ProcessedStatus));
+            return existing.Where(x => x.Status == ProcessedStatus).ToList();
+        }
+        await day.Where(x => x.Status != ProcessedStatus).ExecuteDeleteAsync(ct);
+        // Tracked copies of rows that statement removed would otherwise be written back (or deleted again) on save.
+        foreach (var entry in db.ChangeTracker.Entries<AttendancePayrollImpact>().ToList())
+            if (entry.Entity.TenantId == tenantId && entry.Entity.EmployeeId == daily.EmployeeId && entry.Entity.WorkDate == daily.WorkDate
+                && entry.State != EntityState.Added)
+                entry.State = EntityState.Detached;
+        return await day.AsNoTracking().Where(x => x.Status == ProcessedStatus).ToListAsync(ct);
     }
 
     private const string UndeterminedSentence =
