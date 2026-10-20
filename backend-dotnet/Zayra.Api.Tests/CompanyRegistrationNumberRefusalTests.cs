@@ -62,7 +62,7 @@ public class CompanyRegistrationNumberRefusalTests
     [Fact]
     public void DuplicateException_KeepsItsMessage_ForImportersThatCatchInvalidOperation()
     {
-        InvalidOperationException ex = new CompanyRegistrationNumberTakenException();
+        InvalidOperationException ex = new CompanyRegistrationNumberTakenException(Guid.NewGuid());
         ex.Message.Should().Be("Company registration number already exists in this tenant.");
     }
 }

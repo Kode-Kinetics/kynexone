@@ -95,7 +95,7 @@ internal static class CompanyEndpoints
             return created(company);
         }
         catch (EmailDomainRefusedException ex) { return c.StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload()); }
+        catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload(OrgWriteRules.MayWriteCompany(c, ex.HolderCompanyId))); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
@@ -127,7 +127,7 @@ internal static class CompanyEndpoints
             return company is null ? c.NotFound() : c.Ok(company);
         }
         catch (EmailDomainRefusedException ex) { return c.StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload()); }
+        catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload(OrgWriteRules.MayWriteCompany(c, ex.HolderCompanyId))); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 }

@@ -65,7 +65,7 @@ public class OrganizationController : ControllerBase
         try
         {
             // Same rule as POST /api/branches: the company must be within the caller's grant.
-            if (!CompanyEndpoints.MayWrite(this, request.CompanyId)) return Forbid();
+            if (!OrgWriteRules.MayWriteCompany(this, request.CompanyId)) return Forbid();
             var branch = await _organization.CreateBranchAsync(RequireTenant(), request, Context(), cancellationToken);
             return Created($"/api/organization/branches/{branch.Id}", branch);
         }
@@ -77,17 +77,14 @@ public class OrganizationController : ControllerBase
     public async Task<ActionResult<PagedResult<DepartmentDto>>> Departments([FromQuery] Guid? branchId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
         => Ok(await _organization.GetDepartmentsAsync(RequireTenant(), branchId, page, pageSize, cancellationToken));
 
+    // Department, designation and grade writes need a group grant on this door exactly as on their
+    // dedicated controllers (OrgWriteRules); roles match the dedicated controllers too.
     [HttpPost("departments")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public async Task<ActionResult<DepartmentDto>> CreateDepartment(DepartmentRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var department = await _organization.CreateDepartmentAsync(RequireTenant(), request, Context(), cancellationToken);
-            return Created($"/api/organization/departments/{department.Id}", department);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    [Authorize(Roles = "Admin,HR Manager")]
+    public Task<ActionResult<DepartmentDto>> CreateDepartment(DepartmentRequest request, CancellationToken cancellationToken)
+        => OrgWriteRules.GroupWriteAsync<DepartmentDto>(this,
+            tenantId => _organization.CreateDepartmentAsync(tenantId, request, Context(), cancellationToken)!,
+            department => Created($"/api/organization/departments/{department.Id}", department));
 
     [HttpGet("designations")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Manager,Auditor")]
@@ -95,16 +92,11 @@ public class OrganizationController : ControllerBase
         => Ok(await _organization.GetDesignationsAsync(RequireTenant(), departmentId, page, pageSize, cancellationToken));
 
     [HttpPost("designations")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public async Task<ActionResult<DesignationDto>> CreateDesignation(DesignationRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var designation = await _organization.CreateDesignationAsync(RequireTenant(), request, Context(), cancellationToken);
-            return Created($"/api/organization/designations/{designation.Id}", designation);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    [Authorize(Roles = "Admin,HR Manager")]
+    public Task<ActionResult<DesignationDto>> CreateDesignation(DesignationRequest request, CancellationToken cancellationToken)
+        => OrgWriteRules.GroupWriteAsync<DesignationDto>(this,
+            tenantId => _organization.CreateDesignationAsync(tenantId, request, Context(), cancellationToken)!,
+            designation => Created($"/api/organization/designations/{designation.Id}", designation));
 
     [HttpGet("grades")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
@@ -113,15 +105,10 @@ public class OrganizationController : ControllerBase
 
     [HttpPost("grades")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<GradeDto>> CreateGrade(GradeRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var grade = await _organization.CreateGradeAsync(RequireTenant(), request, Context(), cancellationToken);
-            return Created($"/api/organization/grades/{grade.Id}", grade);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<GradeDto>> CreateGrade(GradeRequest request, CancellationToken cancellationToken)
+        => OrgWriteRules.GroupWriteAsync<GradeDto>(this,
+            tenantId => _organization.CreateGradeAsync(tenantId, request, Context(), cancellationToken)!,
+            grade => Created($"/api/organization/grades/{grade.Id}", grade));
 
     [HttpGet("cost-centers")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
@@ -130,15 +117,9 @@ public class OrganizationController : ControllerBase
 
     [HttpPost("cost-centers")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CostCenterDto>> CreateCostCenter(CostCenterRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var costCenter = await _organization.CreateCostCenterAsync(RequireTenant(), request, Context(), cancellationToken);
-            return Created($"/api/organization/cost-centers/{costCenter.Id}", costCenter);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CostCenterDto>> CreateCostCenter(CostCenterRequest request, CancellationToken cancellationToken)
+        => CostCenterEndpoints.CreateAsync(this, _organization, request, Context(),
+            costCenter => Created($"/api/organization/cost-centers/{costCenter.Id}", costCenter), cancellationToken);
 
     private Guid RequireTenant() => this.GetTenantId() ?? throw new UnauthorizedAccessException("Tenant claim missing.");
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), RequireTenant());

@@ -833,8 +833,11 @@ public class OrganizationSetupService : IOrganizationSetupService
     private async Task EnsureCompanyUnique(Guid tenantId, string registrationNumber, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = Clean(registrationNumber);
-        var exists = await _db.Companies.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.RegistrationNumber == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new CompanyRegistrationNumberTakenException();
+        var holder = await _db.Companies
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.RegistrationNumber == clean && x.Id != excludedId)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (holder is not null) throw new CompanyRegistrationNumberTakenException(holder.Value);
     }
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
@@ -931,11 +934,18 @@ public class OrganizationSetupService : IOrganizationSetupService
 /// <summary>A company registration number that another company of the tenant already holds. Still an
 /// <see cref="InvalidOperationException"/> (with the same message) so every existing caller - importers,
 /// the setup assistant - keeps working; the company forms catch it to put the message on the field.</summary>
-public sealed class CompanyRegistrationNumberTakenException()
+public sealed class CompanyRegistrationNumberTakenException(Guid holderCompanyId)
     : InvalidOperationException("Company registration number already exists in this tenant.")
 {
     public const string Code = "registration_number_taken";
     public const string Field = "registrationNumber";
+    public const string UnavailableMessage = "This registration number can't be used.";
 
-    public object ToPayload() => new { error = Code, field = Field, message = Message };
+    /// <summary>The company that already holds the number.</summary>
+    public Guid HolderCompanyId { get; } = holderCompanyId;
+
+    /// <param name="holderVisible">Whether the caller may see the holding company. When not, the
+    /// message does not confirm that another company holds the number.</param>
+    public object ToPayload(bool holderVisible = true) =>
+        new { error = Code, field = Field, message = holderVisible ? Message : UnavailableMessage };
 }

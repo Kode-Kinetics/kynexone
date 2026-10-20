@@ -63,8 +63,7 @@ public class BranchesController : ControllerBase
     /// <summary>Whether this caller may write branches of <paramref name="companyId"/>. Judged on the
     /// grant: a group grant covers every company of the tenant whichever one the switcher selects; a
     /// company-scoped caller writes only the companies they hold.</summary>
-    private bool MayWriteCompany(Guid companyId) =>
-        this.HasGroupEntityScope() || this.GetEntityScope().CanAccessCompany(companyId);
+    private bool MayWriteCompany(Guid companyId) => OrgWriteRules.MayWriteCompany(this, companyId);
 
     /// <summary>The company that owns an existing branch of this tenant, or null when there is none.</summary>
     private Task<Guid?> BranchCompanyAsync(Guid tenantId, Guid branchId, CancellationToken ct) =>
@@ -220,7 +219,11 @@ public class BranchesController : ControllerBase
 
             if (string.IsNullOrWhiteSpace(companyName)) errors.Add("CompanyLegalName is required");
             else if (!companiesByName.ContainsKey(OrgCodes.Normalize(companyName)))
-                errors.Add($"Company '{companyName}' not found in this tenant");
+                // A non-group caller gets the same words for a missing company and one outside their
+                // grant, so the import does not confirm which sibling companies exist.
+                errors.Add(groupGrant
+                    ? $"Company '{companyName}' not found in this tenant"
+                    : $"Company '{companyName}' is not one of the companies you can manage.");
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
             if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate Code '{code}' in this batch");

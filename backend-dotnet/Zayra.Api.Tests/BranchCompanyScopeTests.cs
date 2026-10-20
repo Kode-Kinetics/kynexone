@@ -478,4 +478,156 @@ public class BranchCompanyScopeTests
         var group = Encoding.UTF8.GetString(((FileContentResult)await Companies(db, Caller(w.TenantId)).Export(CancellationToken.None)).FileContents);
         group.Should().Contain("Alpha Trading").And.Contain("Beta Contracting").And.NotContain("Foreign Co");
     }
+
+    // ── /api/organization department/designation/grade writes match their dedicated controllers ──
+
+    [Fact]
+    public async Task OrganizationDoor_DepartmentDesignationGradeCreates_NeedAGroupGrant()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var dept = new DepartmentRequest(null, null, null, "OPS", "Operations", null, null);
+        var desig = new DesignationRequest(null, "MGR", "Manager", null, null, null, null, null);
+        var grade = new GradeRequest("G1", "Grade 1", null, 1);
+
+        var scoped = Organization(db, Caller(w.TenantId, null, w.A.Id));
+        (await scoped.CreateDepartment(dept, CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
+        (await scoped.CreateDesignation(desig, CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
+        (await scoped.CreateGrade(grade, CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
+        (await db.Departments.AnyAsync(d => d.TenantId == w.TenantId)).Should().BeFalse();
+        (await db.Designations.AnyAsync(d => d.TenantId == w.TenantId)).Should().BeFalse();
+        (await db.Grades.AnyAsync(g => g.TenantId == w.TenantId)).Should().BeFalse();
+
+        var group = Organization(db, Caller(w.TenantId, w.A.Id));
+        (await group.CreateDepartment(dept, CancellationToken.None)).Result.Should().BeOfType<CreatedResult>();
+        (await group.CreateDesignation(desig, CancellationToken.None)).Result.Should().BeOfType<CreatedResult>();
+        (await group.CreateGrade(grade, CancellationToken.None)).Result.Should().BeOfType<CreatedResult>();
+    }
+
+    // ── Cost centres: company-scoped writes on both doors ─────────────────────────────────────
+
+    private static CostCentersController CostCenters(ZayraDbContext db, DefaultHttpContext http) =>
+        new(new OrganizationSetupService(db, new AuditService(db)), db) { ControllerContext = new ControllerContext { HttpContext = http } };
+
+    private static async Task<(CostCenter A, CostCenter B, CostCenter Shared, CostCenter Foreign)> SeedCostCenters(ZayraDbContext db, World w)
+    {
+        var a = new CostCenter { TenantId = w.TenantId, CompanyId = w.A.Id, Code = "CC-A", Name = "Alpha ops" };
+        var b = new CostCenter { TenantId = w.TenantId, CompanyId = w.B.Id, Code = "CC-B", Name = "Beta ops" };
+        var shared = new CostCenter { TenantId = w.TenantId, CompanyId = null, Code = "CC-G", Name = "Group" };
+        var foreign = new CostCenter { TenantId = Guid.NewGuid(), CompanyId = w.OtherTenantBranch.CompanyId, Code = "CC-F", Name = "Foreign" };
+        db.AddRange(a, b, shared, foreign);
+        await db.SaveChangesAsync();
+        return (a, b, shared, foreign);
+    }
+
+    [Fact]
+    public async Task CostCenter_CompanyScopedCaller_RefusedOutsideTheirCompanies_OnBothDoors()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+        DefaultHttpContext ScopedA() => Caller(w.TenantId, null, w.A.Id);
+
+        (await CostCenters(db, ScopedA()).Create(new CostCenterRequest(w.B.Id, "CC-B2", "x"), CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
+        (await Organization(db, ScopedA()).CreateCostCenter(new CostCenterRequest(w.B.Id, "CC-B3", "x"), CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
+        (await CostCenters(db, ScopedA()).Create(new CostCenterRequest(null, "CC-G2", "x"), CancellationToken.None)).Result
+            .Should().BeOfType<ForbidResult>("a cost centre without a company is tenant-wide");
+        (await CostCenters(db, ScopedA()).Update(cc.A.Id, new CostCenterRequest(w.B.Id, "CC-A", "moved"), CancellationToken.None)).Result
+            .Should().BeOfType<ForbidResult>("moving an own cost centre into another company");
+        (await CostCenters(db, ScopedA()).Update(cc.B.Id, new CostCenterRequest(w.A.Id, "CC-B", "moved"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>("moving another company's cost centre out of it");
+        (await CostCenters(db, ScopedA()).Update(cc.Shared.Id, new CostCenterRequest(null, "CC-G", "renamed"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>();
+        (await CostCenters(db, ScopedA()).Delete(cc.B.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+
+        db.ChangeTracker.Clear();
+        (await db.CostCenters.CountAsync(c => c.TenantId == w.TenantId)).Should().Be(3);
+        (await db.CostCenters.SingleAsync(c => c.Id == cc.A.Id)).CompanyId.Should().Be(w.A.Id);
+        (await db.CostCenters.SingleAsync(c => c.Id == cc.B.Id)).Name.Should().Be("Beta ops");
+        (await db.CostCenters.SingleAsync(c => c.Id == cc.B.Id)).IsDeleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CostCenter_CompanyScopedCaller_MaintainsOwn_GroupCallerAny()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+
+        (await CostCenters(db, Caller(w.TenantId, null, w.A.Id)).Create(new CostCenterRequest(w.A.Id, "CC-A2", "Alpha east"), CancellationToken.None)).Result
+            .Should().BeOfType<CreatedAtActionResult>();
+        (await CostCenters(db, Caller(w.TenantId, null, w.A.Id)).Update(cc.A.Id, new CostCenterRequest(w.A.Id, "CC-A", "Alpha renamed"), CancellationToken.None)).Result
+            .Should().BeOfType<OkObjectResult>();
+
+        foreach (var selected in new Guid?[] { null, w.A.Id })
+        {
+            (await CostCenters(db, Caller(w.TenantId, selected)).Update(cc.B.Id, new CostCenterRequest(w.B.Id, "CC-B", "Beta renamed"), CancellationToken.None)).Result
+                .Should().BeOfType<OkObjectResult>();
+            (await Organization(db, Caller(w.TenantId, selected)).CreateCostCenter(new CostCenterRequest(null, $"CC-G{(selected is null ? 2 : 3)}", "Group 2"), CancellationToken.None)).Result
+                .Should().BeOfType<CreatedResult>();
+        }
+        (await CostCenters(db, Caller(w.TenantId, w.A.Id)).Delete(cc.B.Id, CancellationToken.None)).Should().BeOfType<NoContentResult>();
+    }
+
+    [Fact]
+    public async Task CostCenter_AnotherTenants_IsNotFound()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+        (await CostCenters(db, Caller(w.TenantId)).Update(cc.Foreign.Id, new CostCenterRequest(null, "CC-F", "x"), CancellationToken.None)).Result
+            .Should().BeOfType<NotFoundResult>();
+        (await CostCenters(db, Caller(w.TenantId)).Delete(cc.Foreign.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+    }
+
+    [Fact]
+    public async Task CostCenter_CompanyScopedImport_RefusesTenantWideAndOtherCompanyRows()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+        var csv = "Code,Name,NameAr,DepartmentCode,IsActive\nCC-A,Alpha renamed,,,true\nCC-B,Beta renamed,,,true\nCC-NEW,Brand new,,,true";
+
+        var result = (ImportCommitResult)((OkObjectResult)await CostCenters(db, Caller(w.TenantId, null, w.A.Id))
+            .Import(new CostCenterImportRequest(csv), CancellationToken.None)).Value!;
+        result.Updated.Should().Be(1);
+        result.Created.Should().Be(0);
+        result.Rows.Where(r => r.Status == ImportRowStatus.Error).Select(r => r.EntityCode).Should().BeEquivalentTo(new[] { "CC-B", "CC-NEW" });
+        db.ChangeTracker.Clear();
+        (await db.CostCenters.SingleAsync(c => c.Id == cc.B.Id)).Name.Should().Be("Beta ops");
+        (await db.CostCenters.AnyAsync(c => c.Code == "CC-NEW")).Should().BeFalse();
+    }
+
+    // ── Refusals do not confirm which sibling companies exist ─────────────────────────────────
+
+    [Fact]
+    public async Task CompanyScopedImport_SameWordsForMissingAndOutOfScopeCompanies()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var csv = "CompanyLegalName,Code,NameEn,CountryCode,City,TimeZoneId\nBeta Contracting,B7,x,SA,Riyadh,Asia/Riyadh\nNo Such Co,N7,x,SA,Riyadh,Asia/Riyadh";
+        var result = (ImportCommitResult)((OkObjectResult)await Branches(db, Caller(w.TenantId, null, w.A.Id))
+            .Import(new BranchImportRequest(csv), CancellationToken.None)).Value!;
+        result.Rows.Select(r => string.Join(" ", r.Errors)).Should().Equal(
+            "Company 'Beta Contracting' is not one of the companies you can manage.",
+            "Company 'No Such Co' is not one of the companies you can manage.");
+    }
+
+    [Fact]
+    public async Task DuplicateRegistrationNumber_HeldOutsideTheCallersCompanies_GetsAGenericMessage()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        db.Tenants.Add(new Zayra.Api.Domain.Entities.Tenant { Id = w.TenantId, Name = "Group", Slug = $"g-{w.TenantId:N}", AccountType = Zayra.Api.Domain.Entities.TenantAccountTypes.Group });
+        await db.SaveChangesAsync();
+        var takeBetasNumber = CompanyEdit(w.A, "Alpha Trading") with { RegistrationNumber = w.B.RegistrationNumber };
+
+        var scoped = (BadRequestObjectResult)(await Companies(db, Caller(w.TenantId, null, w.A.Id)).Update(w.A.Id, takeBetasNumber, CancellationToken.None)).Result!;
+        var scopedBody = JsonSerializer.SerializeToElement(scoped.Value);
+        scopedBody.GetProperty("error").GetString().Should().Be("registration_number_taken");
+        scopedBody.GetProperty("message").GetString().Should().Be("This registration number can't be used.");
+
+        var group = (BadRequestObjectResult)(await Companies(db, Caller(w.TenantId)).Update(w.A.Id, takeBetasNumber, CancellationToken.None)).Result!;
+        JsonSerializer.SerializeToElement(group.Value).GetProperty("message").GetString().Should().Contain("already exists in this tenant");
+    }
 }

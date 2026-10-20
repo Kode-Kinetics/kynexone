@@ -48,40 +48,19 @@ public class CostCentersController : ControllerBase
 
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CostCenterDto>> Create(CostCenterRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var tenantId = this.GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var costCenter = await _organization.CreateCostCenterAsync(tenantId.Value, request, Context(), cancellationToken);
-            return CreatedAtAction(nameof(Get), new { id = costCenter.Id }, costCenter);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CostCenterDto>> Create(CostCenterRequest request, CancellationToken cancellationToken)
+        => CostCenterEndpoints.CreateAsync(this, _organization, request, Context(),
+            costCenter => CreatedAtAction(nameof(Get), new { id = costCenter.Id }, costCenter), cancellationToken);
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CostCenterDto>> Update(Guid id, CostCenterRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var tenantId = this.GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var costCenter = await _organization.UpdateCostCenterAsync(tenantId.Value, id, request, Context(), cancellationToken);
-            return costCenter is null ? NotFound() : Ok(costCenter);
-        }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CostCenterDto>> Update(Guid id, CostCenterRequest request, CancellationToken cancellationToken)
+        => CostCenterEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteCostCenterAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
-    }
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -172,7 +151,10 @@ public class CostCentersController : ControllerBase
                     Name: name,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
 
-                try
+                // Same rule as the form: the row's company (none = tenant-wide) must be within the grant.
+                if (!OrgWriteRules.MayWriteCompany(this, request.CompanyId))
+                    errors.Add("You can only import cost centres for the companies you manage.");
+                else try
                 {
                     if (existing is not null)
                     {
