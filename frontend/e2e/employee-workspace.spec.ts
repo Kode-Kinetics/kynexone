@@ -125,6 +125,10 @@ test('navigation guard covers command search, company switching, and sign-out', 
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await guardDialog(page).getByRole('button', { name: 'Discard and leave', exact: true }).click();
   await expect(page.getByTestId('company-switcher')).toContainText('second-company');
+  // Setup re-opens the workspace once the switched company reaches its URL; let that land
+  // before makeDirty checks whether the checklist editor is already open.
+  await expect(page).toHaveURL(/[?&]companyId=second-company(&|$)/);
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
 
   await makeDirty(page, 'Sign-out draft');
 
