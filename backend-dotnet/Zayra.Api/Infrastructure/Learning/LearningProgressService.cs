@@ -218,50 +218,76 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
     /// </summary>
     public async Task<AttemptResultDto> SubmitAttemptAsync(LearningActor actor, int employeeId, Guid attemptId, SubmitAttemptInput input, CancellationToken ct)
     {
-        var attempt = await db.LearningAttempts.FirstOrDefaultAsync(a => a.TenantId == actor.TenantId && a.Id == attemptId && a.EmployeeId == employeeId, ct)
-            ?? throw LearningException.NotFound("Attempt");
-        var enrollment = await db.LearningEnrollments.FirstAsync(e => e.Id == attempt.EnrollmentId, ct);
-        var course = await db.LearningCourses.AsNoTracking().FirstAsync(c => c.Id == enrollment.CourseId, ct);
-        var bank = LearningAssessment.Parse(course.AssessmentJson);
-        if (attempt.Status != LearningAttemptStatuses.InProgress) return await StoredResultAsync(attempt, enrollment, bank, ct);
-
-        var assignment = await db.LearningAssignments.FirstAsync(a => a.Id == enrollment.AssignmentId, ct);
-        if (!LearningAssignmentStatuses.Active.Contains(assignment.Status) || enrollment.Status is LearningEnrollmentStatuses.Cancelled)
-            throw LearningException.Conflict("assignment_not_live", "This learning is no longer assigned to you.");
-
-        var answers = ValidAnswers(bank, input.Answers);
-        var score = LearningAssessment.Score(bank, answers, attempt.PassMarkPercent);
-        var now = clock.GetUtcNow().UtcDateTime;
-        attempt.AnswersJson = JsonSerializer.Serialize(answers);
-        attempt.ScorePercent = score.ScorePercent;
-        attempt.Status = score.Passed ? LearningAttemptStatuses.Passed : LearningAttemptStatuses.Failed;
-        attempt.SubmittedAtUtc = now;
-        attempt.Version++;
-        enrollment.ScorePercent = score.ScorePercent;
-        enrollment.LastActivityAtUtc = now;
-
+        LearningAttempt attempt = null!;
+        LearningEnrollment enrollment = null!;
+        LearningAssignment assignment = null!;
+        AssessmentBank bank = null!;
+        AssessmentScore score = default!;
         LearningCredential? credential = null;
-        if (score.Passed && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
-            credential = await CompleteAsync(enrollment, assignment, course, LearningCompletionSources.Assessment, attempt.Id.ToString(), score.ScorePercent, now, ct);
-        else if (!score.Passed && enrollment.AttemptsUsed >= enrollment.AttemptAllowance && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
-        {
-            enrollment.Status = LearningEnrollmentStatuses.Locked;
-            enrollment.LockedAtUtc = now;
-        }
-        enrollment.Version++;
+        AttemptResultDto? stored = null;
         try
         {
-            await db.SaveChangesAsync(ct);
+            // One submit of an attempt at a time. The attempt is read FOR UPDATE inside the transaction, so a second
+            // submit of the same attempt (a double click, a retried request) waits here until the first commits, then
+            // reads it again, finds it scored and answers with the stored result. Without the lock the second request
+            // could read the attempt as in progress, then find the assignment the first had just completed and refuse
+            // with "no longer assigned" — a false error for a learner who has passed.
+            await LearningDb.InTransactionAsync(db, async () =>
+            {
+                // A retry of the execution strategy starts again from the database, never from a rolled-back attempt.
+                db.ChangeTracker.Clear();
+                stored = null;
+                credential = null;
+                attempt = await db.LearningAttempts.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                    .FirstOrDefaultAsync(a => a.TenantId == actor.TenantId && a.Id == attemptId && a.EmployeeId == employeeId, ct)
+                    ?? throw LearningException.NotFound("Attempt");
+                enrollment = await db.LearningEnrollments.FirstAsync(e => e.Id == attempt.EnrollmentId, ct);
+                var course = await db.LearningCourses.AsNoTracking().FirstAsync(c => c.Id == enrollment.CourseId, ct);
+                bank = LearningAssessment.Parse(course.AssessmentJson);
+                if (attempt.Status != LearningAttemptStatuses.InProgress)
+                {
+                    stored = await StoredResultAsync(attempt, enrollment, bank, ct);
+                    return;
+                }
+
+                assignment = await db.LearningAssignments.FirstAsync(a => a.Id == enrollment.AssignmentId, ct);
+                if (!LearningAssignmentStatuses.Active.Contains(assignment.Status) || enrollment.Status is LearningEnrollmentStatuses.Cancelled)
+                    throw LearningException.Conflict("assignment_not_live", "This learning is no longer assigned to you.");
+
+                var answers = ValidAnswers(bank, input.Answers);
+                score = LearningAssessment.Score(bank, answers, attempt.PassMarkPercent);
+                var now = clock.GetUtcNow().UtcDateTime;
+                attempt.AnswersJson = JsonSerializer.Serialize(answers);
+                attempt.ScorePercent = score.ScorePercent;
+                attempt.Status = score.Passed ? LearningAttemptStatuses.Passed : LearningAttemptStatuses.Failed;
+                attempt.SubmittedAtUtc = now;
+                attempt.Version++;
+                enrollment.ScorePercent = score.ScorePercent;
+                enrollment.LastActivityAtUtc = now;
+
+                if (score.Passed && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
+                    credential = await CompleteAsync(enrollment, assignment, course, LearningCompletionSources.Assessment, attempt.Id.ToString(), score.ScorePercent, now, ct);
+                else if (!score.Passed && enrollment.AttemptsUsed >= enrollment.AttemptAllowance && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
+                {
+                    enrollment.Status = LearningEnrollmentStatuses.Locked;
+                    enrollment.LockedAtUtc = now;
+                }
+                enrollment.Version++;
+                await db.SaveChangesAsync(ct);
+            }, ct);
         }
         catch (DbUpdateConcurrencyException)
         {
-            // The same attempt was submitted concurrently and the other request won: answer with what it stored.
+            // The attempt lock serialises submits; the enrollment or assignment can still change under another request
+            // (HR reset, cancellation). If that request scored this attempt, answer with what it stored; otherwise refuse.
             db.ChangeTracker.Clear();
-            var stored = await db.LearningAttempts.AsNoTracking().FirstAsync(a => a.Id == attemptId, ct);
-            var current = await db.LearningEnrollments.AsNoTracking().FirstAsync(e => e.Id == stored.EnrollmentId, ct);
-            if (stored.Status == LearningAttemptStatuses.InProgress) throw;
-            return await StoredResultAsync(stored, current, bank, ct);
+            var latest = await db.LearningAttempts.AsNoTracking().FirstAsync(a => a.Id == attemptId, ct);
+            var current = await db.LearningEnrollments.AsNoTracking().FirstAsync(e => e.Id == latest.EnrollmentId, ct);
+            if (latest.Status == LearningAttemptStatuses.InProgress) throw;
+            return await StoredResultAsync(latest, current, bank, ct);
         }
+        if (stored is not null) return stored;
+
         await audit.WriteAsync(score.Passed ? "learning.attempt.passed" : "learning.attempt.failed", nameof(LearningAttempt), attempt.Id.ToString(),
             actor.Request, JsonSerializer.Serialize(new { attempt.EnrollmentId, attempt.AttemptNo, attempt.ScorePercent, attempt.PassMarkPercent }), ct);
         if (enrollment.Status == LearningEnrollmentStatuses.Locked)
