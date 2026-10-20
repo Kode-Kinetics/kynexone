@@ -11,17 +11,23 @@ namespace Zayra.Api.Infrastructure.Attendance;
 /// (<c>MobileController.Punch</c>) AND the window of punches a day's recompute counts (<c>WorkDayWindowAsync</c>). The
 /// work date is also the <see cref="AttendanceDailyRecordLock"/> key, so a punch dated D must be one D's recompute counts.
 ///
-/// <para><b>The model: consecutive work days partition time.</b> Day D's window is [B(D-1, D), B(D, D+1)), where the
-/// boundary B between two days is ONE instant used as the end of the first and the start of the second, so windows never
-/// overlap and never leave a gap, and a punch's date is simply the day whose window contains it. B(D, D+1) is:</para>
+/// <para><b>The model: consecutive work days partition time.</b> Day D's window is [E(D-1), E(D)), where the boundary
+/// E(D) between D and D+1 is ONE instant used as the end of the first and the start of the second, so windows never
+/// overlap and never leave a gap, and a punch's date is simply the day whose window contains it. The raw boundary
+/// B(D, D+1) is:</para>
 /// <list type="number">
 ///   <item>the local midnight starting D+1, or — when D has a shift — the later of that midnight and the end of D's shift
 ///     plus <see cref="ShiftPunchToleranceMinutes"/> (an overnight shift ends on D+1, so its clock-out after midnight and
 ///     a little after the shift end still closes D);</item>
-///   <item>pulled earlier to D+1's shift start (its assigned start, or <see cref="DefaultShiftStart"/> when it has none)
-///     minus the tolerance, when that comes first — so D's tolerance never swallows D+1's early clock-in — but never
-///     earlier than the end of D's own shift.</item>
+///   <item>only when D+1 has an ASSIGNED shift: pulled earlier to that shift's start minus the tolerance, when that comes
+///     first — so D's tolerance never swallows D+1's early clock-in — but never earlier than one minute after the end of
+///     D's own shift (so a clock-out at exactly the shift end, or in its final minute, still closes D). An unrostered
+///     D+1 does not clip: its notional 09:00 start would leave a 12-hour night 0–60 minutes of slack.</item>
 /// </list>
+/// <para>E(D) = max(B(D-1, D), B(D, D+1)). A raw boundary can only ever fall behind the one immediately before it (a
+/// near-24-hour shift ending late on D, before a just-after-midnight start on D+1); the running maximum keeps the
+/// boundaries in order — D's window is then empty — so the days still partition time. Two steps back can never
+/// overtake: B(D-2, D-1) is at most D 02:00 and B(D, D+1) at least D+1 minus the tolerance.</para>
 /// <para>With no shifts at all every boundary is local midnight: the plain calendar day, exactly as before.</para>
 ///
 /// <para>Before this, the date rule said "previous day if at or before the overnight shift's end" while the window was
@@ -40,8 +46,8 @@ public static class AttendanceWorkDate
     /// <summary>
     /// How far before its start and after its end a shift still claims a punch: 120 minutes. No tenant, policy or shift
     /// setting exists for this (<c>AttendancePolicy.GraceMinutes</c> is a lateness allowance, not a punch window), so it
-    /// is a named constant: wide enough for an early clock-in and a normal overrun, and clipped by the next day's start
-    /// so it cannot take the next shift's clock-in. A punch outside it is a correction, as before.
+    /// is a named constant: wide enough for an early clock-in and a normal overrun, and clipped by the next day's assigned
+    /// start so it cannot take the next shift's clock-in. A punch outside it is a correction, as before.
     /// </summary>
     public const int ShiftPunchToleranceMinutes = 120;
 
@@ -81,7 +87,7 @@ public static class AttendanceWorkDate
         return DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(local, timeZone), DateTimeKind.Utc);
     }
 
-    /// <summary>B(<paramref name="day"/>, day+1): where <paramref name="day"/> ends and the next day begins.</summary>
+    /// <summary>The raw boundary B(<paramref name="day"/>, day+1) (see the class summary).</summary>
     public static DateTime BoundaryUtc(DateOnly day, DayShift? shift, DayShift? nextShift, TimeZoneInfo timeZone)
     {
         var next = day.AddDays(1);
@@ -91,31 +97,45 @@ public static class AttendanceWorkDate
         {
             var shiftEnd = LocalToUtc(shift.IsOvernight ? next : day, shift.EndTime, timeZone);
             if (shiftEnd + Tolerance > boundary) boundary = shiftEnd + Tolerance;
-            floor = shiftEnd;
+            floor = shiftEnd + ShiftEndMinute;
         }
-        var nextStart = LocalToUtc(next, nextShift?.StartTime ?? DefaultShiftStart, timeZone) - Tolerance;
-        if (nextStart < boundary) boundary = nextStart > floor ? nextStart : floor;
+        if (nextShift is not null)
+        {
+            var nextStart = LocalToUtc(next, nextShift.StartTime, timeZone) - Tolerance;
+            if (nextStart < boundary) boundary = nextStart > floor ? nextStart : floor;
+        }
         return boundary;
     }
 
-    /// <summary><paramref name="day"/>'s window [StartUtc, EndUtc), given the shifts of the day before, the day, and the day after.</summary>
-    public static (DateTime StartUtc, DateTime EndUtc) WindowUtc(DateOnly day, DayShift? previous, DayShift? shift, DayShift? next, TimeZoneInfo timeZone)
+    /// <summary>A clock-out at exactly a shift's end (or within its final minute) still closes that shift.</summary>
+    private static readonly TimeSpan ShiftEndMinute = TimeSpan.FromMinutes(1);
+
+    /// <summary>E(<paramref name="day"/>): the effective boundary where <paramref name="day"/> ends and day+1 begins.</summary>
+    private static DateTime EffectiveBoundaryUtc(DateOnly day, Func<DateOnly, DayShift?> shiftOn, TimeZoneInfo timeZone)
     {
-        var start = BoundaryUtc(day.AddDays(-1), previous, shift, timeZone);
-        var end = BoundaryUtc(day, shift, next, timeZone);
-        return (start, end < start ? start : end);
+        var previous = BoundaryUtc(day.AddDays(-1), shiftOn(day.AddDays(-1)), shiftOn(day), timeZone);
+        var own = BoundaryUtc(day, shiftOn(day), shiftOn(day.AddDays(1)), timeZone);
+        return own > previous ? own : previous;
     }
 
-    /// <summary>The work date of <paramref name="punchUtc"/>: the day whose window contains it.</summary>
+    /// <summary><paramref name="day"/>'s window [StartUtc, EndUtc). Needs the shifts of day-2 .. day+1.</summary>
+    public static (DateTime StartUtc, DateTime EndUtc) WindowUtc(DateOnly day, Func<DateOnly, DayShift?> shiftOn, TimeZoneInfo timeZone) =>
+        (EffectiveBoundaryUtc(day.AddDays(-1), shiftOn, timeZone), EffectiveBoundaryUtc(day, shiftOn, timeZone));
+
+    /// <summary>
+    /// The work date of <paramref name="punchUtc"/>: the day whose window contains it. Needs the shifts of the punch's
+    /// local date -4 .. +2: a window can begin up to a day and two hours before its date and end up to two hours before it.
+    /// </summary>
     public static DateOnly Resolve(DateTime punchUtc, TimeZoneInfo timeZone, Func<DateOnly, DayShift?> shiftOn)
     {
         var utc = DateTime.SpecifyKind(punchUtc, DateTimeKind.Utc);
         var localDate = TenantTimeZone.LocalDate(timeZone, utc);
-        var previous = localDate.AddDays(-1);
-        if (utc < BoundaryUtc(previous, shiftOn(previous), shiftOn(localDate), timeZone)) return previous;
-        var next = localDate.AddDays(1);
-        if (utc >= BoundaryUtc(localDate, shiftOn(localDate), shiftOn(next), timeZone)) return next;
-        return localDate;
+        for (var day = localDate.AddDays(-2); day <= localDate.AddDays(1); day = day.AddDays(1))
+        {
+            var (start, end) = WindowUtc(day, shiftOn, timeZone);
+            if (utc >= start && utc < end) return day;
+        }
+        return localDate; // unreachable while the boundaries partition time; the calendar date is the safe answer
     }
 
     // ── the reads ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -149,7 +169,7 @@ public static class AttendanceWorkDate
         if (punches.Count == 0) return [];
         var employeeIds = punches.Select(p => p.EmployeeId).Distinct().ToList();
         var dates = punches.Select(p => TenantTimeZone.LocalDate(timeZone, p.PunchUtc))
-            .SelectMany(d => new[] { d.AddDays(-1), d, d.AddDays(1) }).Distinct().ToList();
+            .SelectMany(d => Enumerable.Range(-4, 7).Select(d.AddDays)).Distinct().ToList();
         var shifts = await ShiftsAsync(db, tenantId, employeeIds, dates, ct);
         return punches.Select(p => Resolve(p.PunchUtc, timeZone,
             d => shifts.TryGetValue((p.EmployeeId, d), out var s) ? s : null)).ToList();
@@ -159,9 +179,9 @@ public static class AttendanceWorkDate
     public static async Task<(DateTime StartUtc, DateTime EndUtc, DayShift? Shift)> WindowAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, TimeZoneInfo timeZone, CancellationToken ct)
     {
-        var shifts = await ShiftsAsync(db, tenantId, [employeeId], [date.AddDays(-1), date, date.AddDays(1)], ct);
+        var shifts = await ShiftsAsync(db, tenantId, [employeeId], [date.AddDays(-2), date.AddDays(-1), date, date.AddDays(1)], ct);
         DayShift? On(DateOnly d) => shifts.TryGetValue((employeeId, d), out var s) ? s : null;
-        var (start, end) = WindowUtc(date, On(date.AddDays(-1)), On(date), On(date.AddDays(1)), timeZone);
+        var (start, end) = WindowUtc(date, On, timeZone);
         return (start, end, On(date));
     }
 }

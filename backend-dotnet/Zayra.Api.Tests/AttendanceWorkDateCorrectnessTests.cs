@@ -304,6 +304,85 @@ public class AttendanceWorkDateCorrectnessTests
         daily[0].EarlyExitMinutes.Should().Be(0);
     }
 
+    /// <summary>
+    /// Common night shifts with NOTHING rostered the next day: the clock-out a few minutes after the shift end closes the
+    /// shift's day. The tolerance used to be clipped by the 09:00 default start of the unrostered next day, which left
+    /// 0–60 minutes of slack (a 12-hour 19–07 night's 07:10 clock-out became an out-only next day).
+    /// </summary>
+    [Theory]
+    [InlineData(23, 7, 10)]  // 23:00–07:00, out 07:10
+    [InlineData(19, 7, 10)]  // 19:00–07:00 (12 h), out 07:10
+    [InlineData(20, 8, 10)]  // 20:00–08:00 (12 h), out 08:10
+    [InlineData(22, 6, 0)]   // 22:00–06:00, out exactly at the end
+    public async Task ANightShiftWithNothingRosteredNextDay_ClosesOnItsOwnDay_WithTheFullTolerance(int startHour, int endHour, int minutesLate)
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var shiftDate = new DateOnly(2026, 9, 15);
+        var code = await SeedNightWorkerWithDeviceAsync(store, tenantId, shiftDate, new TimeOnly(startHour, 0), new TimeOnly(endHour, 0));
+        var clockIn = RiyadhToUtc(shiftDate, startHour, 0);
+        var clockOut = RiyadhToUtc(shiftDate.AddDays(1), endHour, minutesLate);
+
+        await IngestEachAsync(store, code, (clockIn, "In"), (clockOut, "Out"));
+
+        await using var check = StoreDb(store);
+        var daily = await check.AttendanceDailyRecords.ToListAsync();
+        daily.Select(d => d.WorkDate).Should().Equal([shiftDate]);
+        daily[0].LastOutUtc.Should().Be(clockOut);
+        daily[0].MissingPunch.Should().BeFalse();
+        daily[0].EarlyExitMinutes.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A short night (22:00–04:00) followed by an early start (05:00): the boundary is the night's own end, so the 04:30
+    /// clock-in belongs to the next day — and a clock-out at EXACTLY 04:00:00 still closes the night (it used to be
+    /// dated the next day, because the window end is exclusive and the boundary sat exactly on the shift end).
+    /// </summary>
+    [Fact]
+    public async Task AShortNightFollowedByAnEarlyStart_KeepsItsExactEndClockOut_AndHandsTheNextClockInOn()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var shiftDate = new DateOnly(2026, 9, 15);
+        var code = await SeedNightWorkerWithDeviceAsync(store, tenantId, shiftDate, new TimeOnly(22, 0), new TimeOnly(4, 0));
+        await using (var seed = StoreDb(store))
+        {
+            var employee = await seed.Employees.SingleAsync();
+            SeedShift(seed, tenantId, employee, shiftDate.AddDays(1), new TimeOnly(5, 0), new TimeOnly(13, 0), "EARLY");
+            await seed.SaveChangesAsync();
+        }
+        var nightIn = RiyadhToUtc(shiftDate, 22, 0);
+        var nightOut = RiyadhToUtc(shiftDate.AddDays(1), 4, 0);
+        var earlyIn = RiyadhToUtc(shiftDate.AddDays(1), 4, 30);
+
+        await IngestEachAsync(store, code, (nightIn, "In"), (nightOut, "Out"), (earlyIn, "In"));
+
+        await using var check = StoreDb(store);
+        var night = await check.AttendanceDailyRecords.SingleAsync(d => d.WorkDate == shiftDate);
+        night.LastOutUtc.Should().Be(nightOut, "a clock-out at exactly the shift end closes the shift");
+        night.MissingPunch.Should().BeFalse();
+        var early = await check.AttendanceDailyRecords.SingleAsync(d => d.WorkDate == shiftDate.AddDays(1));
+        early.FirstInUtc.Should().Be(earlyIn, "the 04:30 arrival is the next shift's early clock-in");
+        early.LastOutUtc.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A near-24-hour shift ending late on the following day, before a day with a just-after-midnight start: the raw
+    /// boundaries would invert (the day in between ends before it begins) and the days either side would overlap.
+    /// </summary>
+    [Fact]
+    public async Task AVeryLongShift_NeverInvertsTheBoundaries_TheDaysStillPartitionTime()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var employee = AddEmployee(db, tenantId);
+        SeedRiyadh(db, tenantId);
+        SeedShift(db, tenantId, employee, new DateOnly(2026, 9, 14), new TimeOnly(23, 59), new TimeOnly(23, 58), "LONG");
+        SeedShift(db, tenantId, employee, new DateOnly(2026, 9, 16), new TimeOnly(0, 30), new TimeOnly(8, 30), "DAWN");
+        await db.SaveChangesAsync();
+        await AssertDaysPartitionTimeAsync(db, tenantId, employee.Id, new DateOnly(2026, 9, 13), new DateOnly(2026, 9, 18));
+    }
+
     [Fact]
     public async Task AFullRangeRun_AfterANightShift_DoesNotCountTheShiftsEarlyMorningPunchAgainOnTheNextDay()
     {
@@ -348,29 +427,63 @@ public class AttendanceWorkDateCorrectnessTests
         SeedNightShift(db, tenantId, employee, new DateOnly(2026, 9, 15));
         SeedNightShift(db, tenantId, employee, new DateOnly(2026, 9, 17));
         await db.SaveChangesAsync();
+        await AssertDaysPartitionTimeAsync(db, tenantId, employee.Id, new DateOnly(2026, 9, 14), new DateOnly(2026, 9, 18));
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Every instant from <paramref name="from"/> to <paramref name="to"/> (local) is dated to a day whose window contains it,
+    /// consecutive windows meet exactly (no overlap, no gap) and no window ends before it starts.
+    /// </summary>
+    private static async Task AssertDaysPartitionTimeAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly from, DateOnly to)
+    {
         var service = Service(db);
         var tz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh");
-
         var disagreements = new List<string>();
-        for (var t = new DateTime(2026, 9, 14, 21, 0, 0, DateTimeKind.Utc); t < new DateTime(2026, 9, 19, 0, 0, 0, DateTimeKind.Utc); t = t.AddMinutes(5))
+        for (var t = RiyadhToUtc(from, 0, 0); t < RiyadhToUtc(to, 0, 0); t = t.AddMinutes(5))
         {
-            var date = await AttendanceWorkDate.ResolveAsync(db, tenantId, employee.Id, t, tz, default);
-            var window = await service.WorkDayWindowAsync(tenantId, employee.Id, date, default);
+            var date = await AttendanceWorkDate.ResolveAsync(db, tenantId, employeeId, t, tz, default);
+            var window = await service.WorkDayWindowAsync(tenantId, employeeId, date, default);
             if (t < window.StartUtc || t >= window.EndUtc)
                 disagreements.Add($"{TimeZoneInfo.ConvertTimeFromUtc(t, tz):yyyy-MM-dd HH:mm} local dated {date:yyyy-MM-dd} but outside its window");
         }
         disagreements.Should().BeEmpty();
-
-        // ...and the windows of consecutive days neither overlap nor leave a gap.
-        for (var d = new DateOnly(2026, 9, 14); d < new DateOnly(2026, 9, 18); d = d.AddDays(1))
+        for (var d = from; d < to; d = d.AddDays(1))
         {
-            var today = await service.WorkDayWindowAsync(tenantId, employee.Id, d, default);
-            var tomorrow = await service.WorkDayWindowAsync(tenantId, employee.Id, d.AddDays(1), default);
+            var today = await service.WorkDayWindowAsync(tenantId, employeeId, d, default);
+            var tomorrow = await service.WorkDayWindowAsync(tenantId, employeeId, d.AddDays(1), default);
+            today.EndUtc.Should().BeOnOrAfter(today.StartUtc, $"{d:yyyy-MM-dd} must not end before it starts");
             today.EndUtc.Should().Be(tomorrow.StartUtc, $"{d:yyyy-MM-dd} must end exactly where {d.AddDays(1):yyyy-MM-dd} begins");
         }
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
+    private static readonly TimeZoneInfo Riyadh = TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh");
+
+    private static DateTime RiyadhToUtc(DateOnly date, int hour, int minute) =>
+        DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(date.ToDateTime(new TimeOnly(hour, minute)), DateTimeKind.Unspecified), Riyadh), DateTimeKind.Utc);
+
+    private static async Task IngestEachAsync(string store, string code, params (DateTime At, string Direction)[] punches)
+    {
+        foreach (var (at, direction) in punches)
+        {
+            await using var db = StoreDb(store);
+            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+                new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
+            result!.Accepted.Should().Be(1);
+        }
+    }
+
+    private static void SeedShift(ZayraDbContext db, Guid tenantId, Employee employee, DateOnly assignedDate, TimeOnly start, TimeOnly end, string code)
+    {
+        var shift = new ShiftDefinition { TenantId = tenantId, Code = code, Name = code, StartTime = start, EndTime = end, BreakMinutes = 60 };
+        db.ShiftDefinitions.Add(shift);
+        db.ShiftAssignments.Add(new ShiftAssignment
+        {
+            TenantId = tenantId, CompanyId = CompanyA, EmployeeId = employee.Id, EmployeeName = employee.FullName,
+            ShiftDefinitionId = shift.Id, ShiftName = shift.Name, ShiftCode = shift.Code, AssignedDate = assignedDate,
+        });
+    }
 
     private static async Task<IActionResult> MobilePunchAsync(ZayraDbContext db, Guid tenantId, int employeeId, string direction, DateTime utcNow)
     {
@@ -396,12 +509,13 @@ public class AttendanceWorkDateCorrectnessTests
         Service(db).ProcessAsync(tenantId, new ProcessAttendanceRequest(day, to ?? day, employeeId),
             new RequestContext(null, null, Guid.NewGuid(), tenantId), CancellationToken.None);
 
-    private static async Task<string> SeedNightWorkerWithDeviceAsync(string store, Guid tenantId, DateOnly shiftDate)
+    private static async Task<string> SeedNightWorkerWithDeviceAsync(string store, Guid tenantId, DateOnly shiftDate, TimeOnly? start = null, TimeOnly? end = null)
     {
         await using var seed = StoreDb(store);
         var employee = AddEmployee(seed, tenantId);
         SeedRiyadh(seed, tenantId);
-        SeedNightShift(seed, tenantId, employee, shiftDate);
+        if (start is null) SeedNightShift(seed, tenantId, employee, shiftDate);
+        else SeedShift(seed, tenantId, employee, shiftDate, start.Value, end!.Value, "NIGHT");
         seed.AttendanceDevices.Add(new AttendanceDevice
         {
             TenantId = tenantId, DeviceName = "Gate", SerialNumber = $"SN-{Guid.NewGuid():N}", IsActive = true,
