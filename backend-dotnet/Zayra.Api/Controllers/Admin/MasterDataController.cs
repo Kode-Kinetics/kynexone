@@ -122,6 +122,8 @@ public class MasterDataController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
+        return await SerializeDefaultsAsync(req.IsDefault, tid, typeId, async () =>
+        {
         if (!await _db.MasterDataTypes.AnyAsync(x => x.Id == typeId && x.TenantId == tid && !x.IsDeleted, ct))
             return NotFound("Type not found.");
         if (await _db.MasterDataValues.AnyAsync(x => x.TenantId == tid && x.TypeId == typeId && x.Code == req.Code && !x.IsDeleted, ct))
@@ -137,7 +139,8 @@ public class MasterDataController : ControllerBase
         if (v.IsDefault) await ClearOtherDefaults(tid, typeId, v.Id, uid, ct);
         AddAdminAuditLog(tid, uid, "MasterDataValue", v.Id.ToString(), "Created", null, ValueSnapshot(v));
         await _db.SaveChangesAsync(ct);
-        return Ok(v);
+        return (IActionResult)Ok(v);
+        }, ct);
     }
 
     [HttpPut("values/{id:guid}")]
@@ -147,6 +150,12 @@ public class MasterDataController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
+        // The type is read first (untracked) only to name the lock; everything is re-read inside it.
+        var typeId = await _db.MasterDataValues.AsNoTracking().Where(x => x.Id == id && x.TenantId == tid && !x.IsDeleted)
+            .Select(x => (Guid?)x.TypeId).FirstOrDefaultAsync(ct);
+        if (typeId is null) return NotFound();
+        return await SerializeDefaultsAsync(req.IsDefault, tid, typeId.Value, async () =>
+        {
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
         var old = ValueSnapshot(v);
@@ -161,7 +170,8 @@ public class MasterDataController : ControllerBase
         if (v.IsDefault) await ClearOtherDefaults(tid, v.TypeId, v.Id, uid, ct);
         AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Updated", old, ValueSnapshot(v));
         await _db.SaveChangesAsync(ct);
-        return Ok(v);
+        return (IActionResult)Ok(v);
+        }, ct);
     }
 
     [HttpDelete("values/{id:guid}")]
@@ -180,6 +190,20 @@ public class MasterDataController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
+
+    /// <summary>
+    /// Two concurrent "make this the default" writes each cleared the OTHER defaults they could see, then both
+    /// committed their own flag: two defaults. A write that sets IsDefault now runs as the sole writer of
+    /// (tenant, type) under the codebase's transaction-scoped advisory lock (FinanceDecisionSerializer), and
+    /// re-reads and re-clears the other defaults inside it, so the second writer sees the first's commit. Writes
+    /// that do not set a default are not serialized. No schema change.
+    /// </summary>
+    private Task<IActionResult> SerializeDefaultsAsync(bool settingDefault, Guid tid, Guid typeId, Func<Task<IActionResult>> body, CancellationToken ct) =>
+        settingDefault
+            ? Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, DefaultLockScope, tid, typeId, body, ct)
+            : body();
+
+    private const string DefaultLockScope = "masterdata.default";
 
     /// <summary>
     /// Employee forms prefill the first value flagged default, so a second flag would leave the old
