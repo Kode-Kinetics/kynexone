@@ -139,6 +139,12 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
      impact that no longer existed.
    - **With the fix**, `UpsertImpactsAsync` leaves `Processed` impacts exactly as paid. It raises no new deduction
      on a paid day, and records any difference as a High `PaidAttendanceChanged` attendance exception.
+   - **What counts as a paid day** is payroll **coverage**, not impacts. The rule is: a non-voided payroll run for
+     that month, at status `Processed`, `PendingFinanceReview`, `Approved`, `Locked` or `Paid`, that pays recurring
+     salary (`IncludesRecurringPay`) and holds a non-voided slip for the employee. A day with any `Processed` impact
+     also counts. So a clean day (paid in full, with no deductions) is protected too: a later recompute that finds
+     an absence raises the exception, not a new deduction.
+   - Draft and Voided runs, and bonus-only runs (which consume no attendance), do not make a day paid.
    - **Never run this repair before the fix is deployed.**
 3. **Paid periods** (impact status `Processed`, or the work date falls in a payroll run that is approved or paid):
    **do not reprocess.** Correct each employee's pay with a payroll adjustment in the next open run, refunding the
@@ -146,6 +152,17 @@ If the index is missing or invalid, or duplicates exist, stop. Fix that before a
    - **If a paid day was reprocessed anyway**, open the unresolved `PaidAttendanceChanged` exceptions for those
      days. Each lists every impact type with what was paid and what the day now says. Make each listed difference a
      payroll adjustment, then resolve the exception.
+   - **Payroll shows these as a warning.** Processing a run, and `/validate`, raise the non-blocking warning
+     `WARN_PAID_ATTENDANCE_CHANGED`, once per unresolved exception for the run's employees in its period.
+   - **How the exception behaves over time:**
+     - There is one open exception per employee-day. Its text is rewritten when the difference changes.
+     - It **closes automatically** when a later recompute matches what was paid again.
+     - Once HR has resolved a difference, **the same difference is not raised again**, so nobody makes a second
+       adjustment for it. A *different* difference opens a new exception. The signature is stored as a `[sig:…]`
+       tag at the end of `details`, and automatic closes are marked `[auto-resolved: …]`.
+     - **Voiding or reopening** the run closes the open exceptions for the employees and month it covered.
+   - **Known gap:** the application has no screen or endpoint to resolve an attendance exception yet. Until one
+     exists, HR's "resolve" is a manual, audited data correction.
    - **If the run is later voided or reopened**, the restore hands the paid impacts back as `PendingPayroll` with the
      amounts that were **paid**, not the recomputed ones. Reprocess those days before the replacement run.
 4. **Unpaid periods** (every affected impact is still `PendingPayroll` and no payroll run covers the dates yet):
