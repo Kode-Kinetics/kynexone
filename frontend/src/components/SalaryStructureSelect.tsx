@@ -20,6 +20,7 @@ export function SalaryStructureSelect({
   id,
   disabled,
   labelSuffix,
+  onInvalidSelectionChange,
 }: {
   companyId?: string | null;
   value: string;
@@ -31,6 +32,13 @@ export function SalaryStructureSelect({
   id?: string;
   disabled?: boolean;
   labelSuffix?: ReactNode;
+  /**
+   * Edit only: true while the selected code is the employee's current one AND the company's structures loaded
+   * without it, i.e. it is retired, superseded or another company's. The server refuses a salary change on it
+   * (422 inactive/unknown_salary_structure), so the caller blocks saving a salary change until another is chosen.
+   * When the list could not be loaded nothing is known, so nothing is flagged and the server decides.
+   */
+  onInvalidSelectionChange?(invalid: boolean): void;
 }) {
   const { t } = useLocale();
   const generatedId = useId();
@@ -59,6 +67,10 @@ export function SalaryStructureSelect({
     if (!choices.some((choice) => choice.value === value)) onChange('');
   }, [retainCurrent, loadedFor, value, choices, onChange]);
 
+  const loaded = loadedFor !== undefined;
+  const selectionInvalid = loaded && !!value && !!choices.find((choice) => choice.value === value)?.retainedCurrent;
+  useEffect(() => { onInvalidSelectionChange?.(selectionInvalid); }, [selectionInvalid, onInvalidSelectionChange]);
+
   return (
     <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{t('Salary structure')}{labelSuffix}</span>
@@ -66,14 +78,15 @@ export function SalaryStructureSelect({
         <option value="">{t('Default for the grade')}</option>
         {choices.map((choice) => (
           <option key={choice.value} value={choice.value}>
-            {choice.retainedCurrent
-              ? t('{name} ({code}) — current, no longer offered', { name: choice.name, code: choice.value })
+            {choice.retainedCurrent && loaded
+              ? t('{name} ({code}) — not valid any more, choose another', { name: choice.name, code: choice.value })
               : choice.groupWide
                 ? t('{name} ({code}) — all companies', { name: choice.name, code: choice.value })
                 : `${choice.name} (${choice.value})`}
           </option>
         ))}
       </select>
+      {selectionInvalid && <span role="alert" className="mt-1 block text-xs font-normal text-rose-700 dark:text-rose-300">{t('This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.')}</span>}
       {failed && <span role="status" className="mt-1 block text-xs font-normal text-amber-700 dark:text-amber-300">{t('Salary structures could not be loaded. Leave this on the default, or try again later.')}</span>}
     </label>
   );

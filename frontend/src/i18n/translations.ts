@@ -104,7 +104,8 @@ const en: Dict = {
   "Salary structure": "Salary structure",
   "Default for the grade": "Default for the grade",
   "{name} ({code}) — all companies": "{name} ({code}) — all companies",
-  "{name} ({code}) — current, no longer offered": "{name} ({code}) — current, no longer offered",
+  "{name} ({code}) — not valid any more, choose another": "{name} ({code}) — not valid any more, choose another",
+  "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.": "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.",
   "Salary structures could not be loaded. Leave this on the default, or try again later.": "Salary structures could not be loaded. Leave this on the default, or try again later.",
   "Edit identity": "Edit identity",
   // Guided employee editing
@@ -1499,7 +1500,8 @@ const ar: Dict = {
   "Salary structure": "هيكل الراتب",
   "Default for the grade": "الافتراضي للدرجة",
   "{name} ({code}) — all companies": "{name} ({code}) — جميع الشركات",
-  "{name} ({code}) — current, no longer offered": "{name} ({code}) — الحالي، لم يعد متاحًا",
+  "{name} ({code}) — not valid any more, choose another": "{name} ({code}) — لم يعد صالحًا، اختر غيره",
+  "This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.": "هيكل الراتب هذا لم يعد صالحًا لهذا الموظف. اختر هيكلًا آخر، أو الافتراضي، قبل حفظ تغييرات الراتب.",
   "Salary structures could not be loaded. Leave this on the default, or try again later.": "تعذّر تحميل هياكل الرواتب. اترك الاختيار على الافتراضي، أو حاول مرة أخرى لاحقًا.",
   "Edit identity": "تعديل بيانات الهوية",
   // Guided employee editing
