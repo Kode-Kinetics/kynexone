@@ -107,6 +107,7 @@ public class CompaniesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
         }
         catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
+        catch (CompanyRegistrationNumberTakenException ex) { return BadRequest(ex.ToPayload()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -144,6 +145,7 @@ public class CompaniesController : ControllerBase
             return company is null ? NotFound() : Ok(company);
         }
         catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
+        catch (CompanyRegistrationNumberTakenException ex) { return BadRequest(ex.ToPayload()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

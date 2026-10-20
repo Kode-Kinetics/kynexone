@@ -828,7 +828,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var clean = Clean(registrationNumber);
         var exists = await _db.Companies.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.RegistrationNumber == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Company registration number already exists in this tenant.");
+        if (exists) throw new CompanyRegistrationNumberTakenException();
     }
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
@@ -920,4 +920,16 @@ public class OrganizationSetupService : IOrganizationSetupService
         await _audit.WriteAsync(action, typeof(T).Name, id.ToString(), context, null, cancellationToken);
         return true;
     }
+}
+
+/// <summary>A company registration number that another company of the tenant already holds. Still an
+/// <see cref="InvalidOperationException"/> (with the same message) so every existing caller - importers,
+/// the setup assistant - keeps working; the company forms catch it to put the message on the field.</summary>
+public sealed class CompanyRegistrationNumberTakenException()
+    : InvalidOperationException("Company registration number already exists in this tenant.")
+{
+    public const string Code = "registration_number_taken";
+    public const string Field = "registrationNumber";
+
+    public object ToPayload() => new { error = Code, field = Field, message = Message };
 }
