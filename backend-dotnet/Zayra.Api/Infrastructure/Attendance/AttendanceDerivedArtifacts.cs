@@ -252,6 +252,16 @@ public static class AttendanceDerivedArtifacts
     public static readonly System.Linq.Expressions.Expression<Func<AttendanceDailyRecord, bool>> IsHalfPairExpression =
         d => d.MissingPunch && (d.FirstInUtc != null || d.LastOutUtc != null);
 
+    /// <summary>
+    /// The days whose late and early-exit minutes count: every day but a half-pair one, whose minutes are held
+    /// (<see cref="IsHalfPair"/>). The ONE filter every lateness total applies — the payroll summary, reports, analytics
+    /// and the AI advisory context — so they reconcile with what payroll deducts. A live "late today" counter is the one
+    /// exception, deliberately: until the clock-out arrives every late arrival today is an In-only day, so filtering it
+    /// would show nobody late until the end of the day; it counts the late clock-in, which is a fact, not a deduction.
+    /// </summary>
+    public static readonly System.Linq.Expressions.Expression<Func<AttendanceDailyRecord, bool>> LatenessCountsExpression =
+        d => !(d.MissingPunch && (d.FirstInUtc != null || d.LastOutUtc != null));
+
     private static readonly Func<AttendanceDailyRecord, bool> IsHalfPairCompiled = IsHalfPairExpression.Compile();
 
     /// <summary>The missing-punch exception's text: what is missing and, when there are any, the minutes held.</summary>

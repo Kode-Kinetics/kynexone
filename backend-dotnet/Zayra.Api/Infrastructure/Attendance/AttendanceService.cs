@@ -1208,13 +1208,14 @@ public class AttendanceService : IAttendanceService
     public async Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct)
     {
         var records = await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to).ToListAsync(ct);
+        // Late / early-exit minutes held on a half-pair day are not deductible yet, so the payroll summary leaves them
+        // out and agrees with the payroll impacts (AttendanceDerivedArtifacts.LatenessCountsExpression, the shared rule).
+        var counts = AttendanceDerivedArtifacts.LatenessCountsExpression.Compile();
         return records
             .GroupBy(x => new { x.EmployeeId, x.EmployeeName })
-            // Late / early-exit minutes held on a half-pair day are not deductible yet, so the payroll summary leaves them
-            // out and agrees with the payroll impacts (AttendanceDerivedArtifacts.IsHalfPair).
             .Select(g => new AttendancePayrollSummaryDto(g.Key.EmployeeId, g.Key.EmployeeName,
-                g.Sum(x => AttendanceDerivedArtifacts.IsHalfPair(x) ? 0 : x.LateMinutes),
-                g.Sum(x => AttendanceDerivedArtifacts.IsHalfPair(x) ? 0 : x.EarlyExitMinutes),
+                g.Where(counts).Sum(x => x.LateMinutes),
+                g.Where(counts).Sum(x => x.EarlyExitMinutes),
                 g.Count(x => x.Status == "Absent"), g.Sum(x => x.OvertimeMinutes), g.Any(x => x.IsPayrollLocked)))
             .OrderBy(x => x.EmployeeName).ToList();
     }
