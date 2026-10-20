@@ -1180,8 +1180,14 @@ public class AttendanceService : IAttendanceService
         }
         var inEvents = events.Where(x => x.PunchDirection is "In" or "Unknown").ToList();
         var outEvents = events.Where(x => x.PunchDirection is "Out").ToList();
-        daily.FirstInUtc = inEvents.FirstOrDefault()?.PunchTimestampUtc ?? events.FirstOrDefault()?.PunchTimestampUtc;
+        // The first-in is only ever an In (or a direction-less Unknown) punch. It used to fall back to the day's first
+        // event of ANY direction, so a day with nothing but an Out punch had first-in == last-out: MissingPunch false,
+        // the policy break applied, status "Absent", an absence deduction raised and no missing-punch exception for
+        // anyone to review. Such a day is now exactly the In-only day mirrored. The last-out fallback (the last of two
+        // or more events, for devices that send no direction) is unchanged.
+        daily.FirstInUtc = inEvents.FirstOrDefault()?.PunchTimestampUtc;
         daily.LastOutUtc = outEvents.LastOrDefault()?.PunchTimestampUtc ?? (events.Count > 1 ? events.Last().PunchTimestampUtc : null);
+        var hasPunch = daily.FirstInUtc is not null || daily.LastOutUtc is not null;
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = daily.FirstInUtc is not null && daily.LastOutUtc is not null ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
@@ -1232,19 +1238,20 @@ public class AttendanceService : IAttendanceService
 
         daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - baselineMinutes);
         daily.UndertimeMinutes = Math.Max(0, baselineMinutes - daily.TotalWorkedMinutes);
-        if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
+        // "No punch at all" is !hasPunch: an out-only day has a null first-in but is not an untouched leave/holiday/rest day.
+        if (!hasPunch && daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
         {
             daily.Status = "On leave";
             daily.MissingPunch = false;
             daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
         }
-        else if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && isPublicHoliday)
+        else if (!hasPunch && daily.TotalWorkedMinutes == 0 && isPublicHoliday)
         {
             daily.Status = "Public holiday";
             daily.MissingPunch = false;
             daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
         }
-        else if (daily.FirstInUtc is null && daily.TotalWorkedMinutes == 0 && isRestDay)
+        else if (!hasPunch && daily.TotalWorkedMinutes == 0 && isRestDay)
         {
             daily.Status = "Rest day";
             daily.MissingPunch = false;
@@ -1252,7 +1259,8 @@ public class AttendanceService : IAttendanceService
         }
         else
         {
-            daily.Status = daily.FirstInUtc is not null && daily.LastOutUtc is null ? "Present"
+            // Half a pair (In-only, or Out-only) is "Present" with MissingPunch: attended, hours unknown, raised for review.
+            daily.Status = hasPunch && daily.MissingPunch ? "Present"
                 : daily.TotalWorkedMinutes == 0 ? "Absent"
                 : daily.TotalWorkedMinutes < policy.HalfDayThresholdMinutes ? "Half day"
                 : daily.LateMinutes > 0 ? "Late" : "Present";
