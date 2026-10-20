@@ -230,7 +230,9 @@ public class AccessController : ControllerBase
                 return BadRequest(new { message = "Choose the company this administrator will support, or explicitly grant group-wide access." });
             if (request.CompanyId.HasValue)
             {
-                if (!callerScope.CanAccessCompany(request.CompanyId.Value)) return Forbid();
+                // A group grant may place an administrator in any company of the tenant whichever one
+                // is selected in the switcher; a company-scoped caller only in a company they hold.
+                if (!this.HasGroupEntityScope() && !callerScope.CanAccessCompany(request.CompanyId.Value)) return Forbid();
                 var targetExists = await ScopedBypass.TenantWide(_db.Companies, tenantId.Value,
                         "Validate the authorised administrator target across the tenant company catalog.")
                     .AsNoTracking()
@@ -987,9 +989,15 @@ public class AccessController : ControllerBase
         return Guid.TryParse(value, out var id) ? id : null;
     }
 
+    /// <summary>
+    /// Tenant-level security administration (roles, permission matrix, security settings, group
+    /// scope) needs a GROUP grant. Judged on the caller's grant, not on <c>GetEntityScope()</c>: the
+    /// X-Company-Id switcher narrows a group administrator's reads to one company, it does not revoke
+    /// their tenant-level authority. A company-scoped administrator has no group grant either way.
+    /// </summary>
     private ActionResult? RequireGroupEntityScope()
     {
-        return this.GetEntityScope().IsGroupLevel ? null : Forbid();
+        return this.HasGroupEntityScope() ? null : Forbid();
     }
 
     // ── Entity Access (Legal Entity Grants) ──────────────────────────────────────
