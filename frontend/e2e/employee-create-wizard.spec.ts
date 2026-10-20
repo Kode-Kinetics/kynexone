@@ -80,7 +80,7 @@ async function boot(page: Page, options: MockOptions = {}) {
       { id: 'department-finance', branchId: 'branch-wizard', costCenterId: 'cost-finance', code: 'FIN', nameEn: 'Finance', managerEmployeeId: otherManager.id, isActive: true },
     ]));
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
-    if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }]));
+    if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }, { ...grade, id: 'grade-retired', code: 'G0', name: 'Retired grade', isActive: false }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (path.endsWith('/pay-scale')) return reply([]);
     if (path === '/api/organization/cost-centers') return reply(paged([
@@ -790,6 +790,30 @@ for (const changedDraft of ['English name changed and restored', 'Arabic name ma
   });
 }
 
+
+test('the grade list offers only active grades and follows Setup changes without a reload', async ({ page }) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  const gradeSelect = dialog.getByRole('combobox', { name: 'Grade', exact: true });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Senior']);
+
+  // Setup adds a grade and retires another, in this tab: the open form refetches on the event.
+  let rows = [grade, { ...grade, id: 'grade-new', code: 'G7', name: 'Principal' }, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior', isActive: false }];
+  await page.route('**/api/grades?**', route => route.fulfill({ json: { items: rows, total: rows.length, page: 1, pageSize: 100 } }));
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:grades-changed')));
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Principal']);
+
+  // …and from another tab, over the BroadcastChannel.
+  rows = [grade, { ...grade, id: 'grade-new', code: 'G7', name: 'Principal Renamed' }];
+  const otherTab = await page.context().newPage();
+  await otherTab.route('**/*', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>other tab</title>' }));
+  await otherTab.goto(new URL('/setup', page.url()).toString());
+  await otherTab.evaluate(() => { const channel = new BroadcastChannel('kynexone:org-lookups'); channel.postMessage({ type: 'kynexone:grades-changed', from: 'another-tab' }); channel.close(); });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Principal Renamed']);
+  await otherTab.close();
+  expect(errors).toEqual([]);
+});
 
 test('grade benefits preview follows grade and joining date and appears in review', async ({ page }, info) => {
   const { dialog, errors } = await boot(page, { quick: true });

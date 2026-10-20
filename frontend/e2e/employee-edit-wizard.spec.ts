@@ -260,6 +260,20 @@ test('choosing another salary structure sends its code with the complete package
   expect(errors).toEqual([]);
 });
 
+test('the grade dropdown follows Setup changes while the edit form is open', async ({ page }) => {
+  const { dialog, errors } = await boot(page);
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  const gradeSelect = dialog.getByRole('combobox', { name: 'Grade', exact: true });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'G5']);
+  const grade = { id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true };
+  const rows = [{ ...grade, isActive: false }, { ...grade, id: 'edit-grade-7', code: 'G7', name: 'Principal' }];
+  await page.route('**/api/grades?**', route => route.fulfill({ json: { items: rows, total: rows.length, page: 1, pageSize: 100 } }));
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:grades-changed')));
+  // G5 was retired, G7 added; the employee's current value stays selectable.
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'G7']);
+  expect(errors).toEqual([]);
+});
+
 test('sensitive edits retain the existing 202 approval behavior without claiming immediate application', async ({ page }) => {
   const { dialog, writes, errors } = await boot(page, { approval: true });
   await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex M');

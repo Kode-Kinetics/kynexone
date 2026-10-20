@@ -90,6 +90,7 @@ import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFie
 import { masterDataApi, type MasterDataValue } from '../api/setup';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
 import { SalaryStructureSelect } from '../components/SalaryStructureSelect';
+import { useLiveGrades } from '../hooks/useLiveGrades';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -442,7 +443,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live: refetched when Setup changes a grade (this tab or another) and when the user returns to the tab.
+  const { grades } = useLiveGrades();
   const [gradeBenefits, setGradeBenefits] = useState<GradeBenefitDefault[]>([]);
   const [gradeBenefitsLoading, setGradeBenefitsLoading] = useState(false);
   const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
@@ -612,12 +614,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const loadLookups = useCallback(async () => {
     // Every row of each lookup, page by page. One page of 100 left the 101st department,
     // designation or active manager missing from the form's selects with nothing to say so.
-    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
+    const [companyRes, branchRes, deptRes, desigRes, costRes, managerRes] = await Promise.all([
       companiesApi.listAll(),
       branchesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(),
       employeesApi.listAll({ status: 'Active' }),
     ]);
@@ -625,7 +626,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setBranches(branchRes);
     setDepartments(deptRes);
     setDesignations(desigRes);
-    setGrades(gradeRes);
     setCostCenters(costRes);
     setManagerCandidates(managerRes);
   }, []);
@@ -1000,8 +1000,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     [grades, form.gradeId],
   );
   const eligibleGrades = useMemo(
-    () => selectedDesignation?.gradeId ? grades.filter((grade) => grade.id === selectedDesignation.gradeId) : grades,
-    [grades, selectedDesignation],
+    () => {
+      // Retired grades are not offered for a new hire (the edit form already filters them); one already chosen
+      // on a resumed draft stays visible so the select never shows a value it has no option for.
+      const offered = grades.filter((grade) => grade.isActive || grade.id === form.gradeId);
+      return selectedDesignation?.gradeId ? offered.filter((grade) => grade.id === selectedDesignation.gradeId) : offered;
+    },
+    [grades, selectedDesignation, form.gradeId],
   );
   const salaryTotal = useMemo(() => {
     const s = form.salaryBreakdown;

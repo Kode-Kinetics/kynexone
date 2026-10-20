@@ -10,12 +10,10 @@ import {
   DEFAULT_WORK_EMAIL_PATTERN,
   departmentsApi,
   designationsApi,
-  gradesApi,
   type CompanyDto,
   type CostCenterDto,
   type DepartmentDto,
   type DesignationDto,
-  type GradeDto,
 } from '../../api/organization';
 import { masterDataApi, type MasterDataValue } from '../../api/setup';
 import { CONTRACT_TYPE_OPTIONS, EMPLOYMENT_TYPE_OPTIONS } from '../../api/employeeFieldCatalog';
@@ -26,6 +24,7 @@ import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, Emplo
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
 import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
 import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
+import { useLiveGrades } from '../../hooks/useLiveGrades';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -68,7 +67,9 @@ export function EmployeeEditFlow({
   const [company, setCompany] = useState<CompanyDto | null>(null);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live, not a one-shot fetch: a grade added or retired in Setup (any tab) reaches this dropdown without a reload.
+  const { grades: allGrades } = useLiveGrades();
+  const grades = useMemo(() => allGrades.filter((item) => item.isActive), [allGrades]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [employmentTypeOptions, setEmploymentTypeOptions] = useState(EMPLOYMENT_TYPE_OPTIONS);
@@ -82,18 +83,16 @@ export function EmployeeEditFlow({
       companiesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(employee.companyId),
       employeesApi.listAll(),
       masterDataApi.listValuesByCode('EmploymentType', true),
       masterDataApi.listValuesByCode('ContractType', true),
     ]).then((results) => {
       if (cancelled) return;
-      const [companyResult, departmentResult, designationResult, gradeResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
+      const [companyResult, departmentResult, designationResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
       setCompany(companyResult.status === 'fulfilled' ? companyResult.value.find((item) => item.id === employee.companyId) ?? null : null);
       setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive) : []);
       setDesignations(designationResult.status === 'fulfilled' ? designationResult.value.filter((item) => item.isActive) : []);
-      setGrades(gradeResult.status === 'fulfilled' ? gradeResult.value.filter((item) => item.isActive) : []);
       setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => item.isActive) : []);
       setEmployees(employeeResult.status === 'fulfilled' ? employeeResult.value : []);
       setEmploymentTypeOptions(employmentTypeResult.status === 'fulfilled' ? activeMasterOptions(employmentTypeResult.value, EMPLOYMENT_TYPE_OPTIONS) : EMPLOYMENT_TYPE_OPTIONS);

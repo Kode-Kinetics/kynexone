@@ -73,6 +73,7 @@ import type {
 } from '../api/setup';
 import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
+import { notifyGradesChanged } from '../lib/gradeEvents';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -958,18 +959,22 @@ function GradesTab() {
     if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
     if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
     setSaving(true); setError('');
+    // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
+    // scale write then fails.
+    let gradeSaved = false;
     try {
       const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
+      gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
-    finally { setSaving(false); }
+    finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
   const deleteGrade = async (id: string) => {
     if (!confirm('Delete this grade?')) return;
     setDeleting(id);
-    try { await gradesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
+    try { await gradesApi.remove(id); load(); notifyGradesChanged(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -984,7 +989,7 @@ function GradesTab() {
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
-            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); notifyGradesChanged(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
