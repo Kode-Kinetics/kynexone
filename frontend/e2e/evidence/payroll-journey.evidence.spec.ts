@@ -609,7 +609,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           ).toHaveCount(0);
           await content(maker.page).getByRole('button', { name: 'Approve → Send to Finance' }).click();
           await expect(
-            approvalCard(maker.page).getByText('Pending Finance Review', { exact: true }),
+            approvalCard(maker.page).getByText('Pending finance review', { exact: true }),
           ).toBeVisible({ timeout: 60_000 });
           ctx.note(
             `Screen and API agree: ${employeeCount} employees, gross ${currency} ${parsed![3]}, `
@@ -679,7 +679,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           await openTab(finance.page, 'Approvals');
           expect(await selectRun(finance.page, 'Select payroll run to approve', period)).toBe(runId);
           await expect(
-            approvalCard(finance.page).getByText('Pending Finance Review', { exact: true }),
+            approvalCard(finance.page).getByText('Pending finance review', { exact: true }),
             'the finance approver must pick the run up exactly where the maker left it',
           ).toBeVisible();
           await expect(
