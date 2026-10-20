@@ -887,8 +887,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Openings.Create", "HR Manager,HR Officer", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST Openings.Import", "HR Manager,HR Officer", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("PUT Openings.Update", "HR Manager,HR Officer", "GRANT recruitment.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
-        ("POST Organization.CreateDepartment", "HR Officer", "GRANT organization.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
-        ("POST Organization.CreateDesignation", "HR Officer", "GRANT organization.write: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Organization.Departments", "Manager", "GRANT organization.read: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("GET Organization.Designations", "Manager", "GRANT organization.read: owner decision. The gate names these roles for this work but their seeded bundles omit the key."),
         ("POST Overtime.Approve", "Supervisor", "DROP Supervisor: overtime pay decisions sit with Manager, which holds overtime.approve."),
