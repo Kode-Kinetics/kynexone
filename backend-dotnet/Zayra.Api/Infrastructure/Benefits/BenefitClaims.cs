@@ -104,7 +104,10 @@ public static class BenefitClaims
                 row.UpdatedAtUtc, receipts, AdditionalBenefitGrants.WorkflowDigest(route.Steps));
             await ValidateBudgetAsync(db, proposal, null, ct);
             var first = route.FirstStep;
-            var approver = await router.ResolveApproverAsync(tenantId, employee.Id, first, ct);
+            // Nobody could ever decide it ⇒ refused (422) before anything is written; its approver cannot act but
+            // Admin / approvals.override can ⇒ the Admin queue, audited (ApprovalFirstStep).
+            var routed = await Zayra.Api.Infrastructure.Approvals.ApprovalFirstStep.RouteAsync(db, router, tenantId, EntityName, employee.Id, context.UserId, first, ct);
+            var approver = routed.Approver;
             var now = DateTime.UtcNow;
             var payload = JsonSerializer.Serialize(proposal, Json);
             var approval = new ApprovalRequest
@@ -118,6 +121,7 @@ public static class BenefitClaims
                 SlaHours = Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720), LastRoutedAtUtc = now,
                 DueAtUtc = now.AddHours(Math.Clamp(first.EscalationAfterHours ?? 24, 1, 720)),
             };
+            Zayra.Api.Infrastructure.Approvals.ApprovalFirstStep.StageOverride(db, approval, context.UserId, routed);
             db.ApprovalRequests.Add(approval);
             Audit(db, approval, context.UserId, "benefits.claim.requested", new { requestId, proposal.Amount, proposal.EnrollmentId, proposal.InvoiceReference });
             await db.SaveChangesAsync(ct);

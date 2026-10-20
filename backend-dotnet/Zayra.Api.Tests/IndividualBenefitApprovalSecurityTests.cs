@@ -25,6 +25,33 @@ public class IndividualBenefitApprovalSecurityTests
     private static readonly DateOnly Today = new(2026, 10, 9);
 
     [Fact]
+    public async Task ARequestNobodyCouldDecide_IsRefusedBeforeAnythingIsWritten()
+    {
+        await using var db = Db();
+        var f = await Seed(db);
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, f.Tenant));
+
+        await Assert.ThrowsAsync<ApprovalNoEligibleDeciderException>(() => Submit(db, f));
+        db.ChangeTracker.Clear();
+        Assert.Empty(db.ApprovalRequests);
+    }
+
+    [Fact]
+    public async Task ARoleNobodyHolds_ButAnAdminExists_GoesToTheAdminQueue_WithAnAuditRow()
+    {
+        await using var db = Db();
+        var f = await Seed(db);
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, f.Tenant));
+        await TestApprovalConfig.EnsureDeciderAsync(db, f.Tenant, "Admin");
+
+        var approval = await Submit(db, f);
+
+        Assert.Equal("Admin", approval.CurrentApproverRole);
+        Assert.Equal("Role:Admin", approval.CurrentQueue);
+        Assert.Single(db.AuditLogs.Where(x => x.Action == "approval.routed_to_override" && x.EntityId == approval.Id.ToString()));
+    }
+
+    [Fact]
     public async Task ApprovalDetailShowsSealedPaymentTerms_AfterCataloguePolicyChanges()
     {
         await using var db = Db();
@@ -516,6 +543,8 @@ public class IndividualBenefitApprovalSecurityTests
             StepName = "HR approval", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
         db.AddRange(company, grade, employee, plan, workflow);
         await db.SaveChangesAsync();
+        // Someone besides the requester and the employee holds the step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         return new(tenant, employee, plan, Guid.NewGuid(), Guid.NewGuid());
     }
     private sealed record Fixture(Guid Tenant, Employee Employee, BenefitPlan Plan, Guid Maker, Guid Approver);
