@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
@@ -269,6 +270,236 @@ public class AccessManagementScopeTests
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*explicitly grant group-wide access*");
         (await db.Users.IgnoreQueryFilters().AnyAsync(user => user.TenantId == w.TenantId && user.Email == email)).Should().BeFalse();
+    }
+
+    // ── Controller gates with the company switcher (X-Company-Id) set ──────────────────────
+
+    /// <summary>A security.manage caller; group-scoped when <paramref name="companyScope"/> is null,
+    /// otherwise holding only those companies. <paramref name="selectedCompany"/> sets the switcher.</summary>
+    private AccessController Controller(ZayraDbContext db, Guid tenantId, Guid callerId, Guid? selectedCompany, Guid[]? companyScope, bool v2 = false)
+    {
+        var claims = new List<System.Security.Claims.Claim>
+        {
+            new("tenant_id", tenantId.ToString()),
+            new(System.Security.Claims.ClaimTypes.NameIdentifier, callerId.ToString()),
+            new(System.Security.Claims.ClaimTypes.Role, "Admin"),
+            new("permission", "security.manage"),
+        };
+        if (v2)
+            // The current token shape: one entity_scope claim (v2), group or a company list.
+            claims.Add(new(EntityScopeContext.V2ClaimType, System.Text.Json.JsonSerializer.Serialize(companyScope is null
+                ? (object)new { v = 2, m = EntityScopeModes.Group }
+                : new { v = 2, m = EntityScopeModes.Companies, c = companyScope })));
+        else if (companyScope is null) claims.Add(new("is_group_scope", "true"));
+        else claims.AddRange(companyScope.Select(c =>
+            new System.Security.Claims.Claim("entity_access", System.Text.Json.JsonSerializer.Serialize(new { c, r = "Admin" }))));
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext
+        {
+            User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(claims, "test"))
+        };
+        if (selectedCompany is not null) http.Request.Headers[ZayraDbContext.CompanySelectionHeader] = selectedCompany.ToString();
+        return new AccessController(CreateService(db), db, null!)
+        {
+            ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = http }
+        };
+    }
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_KeepsTenantSecurityAdministration()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).GetSecuritySettings(CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>(
+                "selecting a company narrows a group admin's reads; it must not revoke tenant-level security administration");
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).GetPermissionMatrix(CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_IsStillRefusedTenantSecurityAdministration()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            var scope = new[] { w.CompanyA };
+            (await Controller(db, w.TenantId, callerId, selected, scope).GetSecuritySettings(CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await Controller(db, w.TenantId, callerId, selected, scope).UpdateSecuritySettings(null!, CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await Controller(db, w.TenantId, callerId, selected, scope).GetPermissionMatrix(CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await Controller(db, w.TenantId, callerId, selected, scope).CreateRole(new CreateRoleRequest("Scoped role", null), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await Controller(db, w.TenantId, callerId, selected, scope).SetGroupScope(w.UserA, new SetGroupScopeRequest(true), CancellationToken.None))
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+        }
+        (await db.Roles.AnyAsync(r => r.TenantId == w.TenantId && r.Name == "Scoped role")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_CanCreateAdministratorForAnotherCompany()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var email = $"company-b-admin-{Guid.NewGuid():N}@example.test";
+
+        var result = (await Controller(db, w.TenantId, callerId, w.CompanyA, null).CreateUser(
+            new CreateUserRequest(email, "Company B Administrator", "StrongPassword!123", new[] { "Admin" }, w.CompanyB),
+            CancellationToken.None)).Result;
+
+        result.Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>();
+        db.ChangeTracker.Clear();
+        (await db.UserEntityAccesses.IgnoreQueryFilters()
+                .AnyAsync(g => g.TenantId == w.TenantId && g.User!.Email == email && g.CompanyId == w.CompanyB && g.IsActive))
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_CannotCreateAdministratorForAnotherCompany()
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var email = $"cross-admin-{Guid.NewGuid():N}@example.test";
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            (await Controller(db, w.TenantId, callerId, selected, new[] { w.CompanyA }).CreateUser(
+                    new CreateUserRequest(email, "Company B Administrator", "StrongPassword!123", new[] { "Admin" }, w.CompanyB),
+                    CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await Controller(db, w.TenantId, callerId, selected, new[] { w.CompanyA }).CreateUser(
+                    new CreateUserRequest(email, "Group Administrator", "StrongPassword!123", new[] { "Admin" }, IsGroupScope: true),
+                    CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+        }
+        (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == w.TenantId && u.Email == email)).Should().BeFalse();
+    }
+
+    private async Task<Guid> SeedCompanyBGrantAsync(World w)
+    {
+        await using var db = _fx.CreateDb();
+        var grant = new UserEntityAccess
+        {
+            TenantId = w.TenantId, UserId = w.UserB, CompanyId = w.CompanyB,
+            GrantMode = EntityGrantModes.SelectedCompanies, Role = "HR"
+        };
+        db.UserEntityAccesses.Add(grant);
+        await db.SaveChangesAsync();
+        return grant.Id;
+    }
+
+    private static IReadOnlyCollection<EntityGrantDto> Grants(Microsoft.AspNetCore.Mvc.ActionResult<IReadOnlyCollection<EntityGrantDto>> result) =>
+        (IReadOnlyCollection<EntityGrantDto>)((Microsoft.AspNetCore.Mvc.OkObjectResult)result.Result!).Value!;
+
+    [Fact]
+    public async Task GroupAdmin_WithCompanySelected_ListsAndCreatesEntityGrantsForAnyCompany()
+    {
+        var w = await SeedWorld();
+        var grantB = await SeedCompanyBGrantAsync(w);
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+
+        Grants(await Controller(db, w.TenantId, callerId, w.CompanyA, null).ListEntityGrants(null, CancellationToken.None))
+            .Select(g => g.Id).Should().Contain(grantB, "the switcher narrows reads of data, not a group admin's view of access grants");
+
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>();
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, null).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UnlinkedAdmin, null, "HR", EntityGrantModes.AllCurrentCompanies), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>();
+    }
+
+    [Fact]
+    public async Task CompanyScopedAdmin_CannotListOrGrantOutsideTheirCompanies()
+    {
+        var w = await SeedWorld();
+        var grantB = await SeedCompanyBGrantAsync(w);
+        await using var db = _fx.CreateDb();
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var scope = new[] { w.CompanyA };
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            var listed = Grants(await Controller(db, w.TenantId, callerId, selected, scope).ListEntityGrants(null, CancellationToken.None));
+            listed.Select(g => g.Id).Should().NotContain(grantB);
+            listed.Should().OnlyContain(g => g.CompanyId == w.CompanyA);
+
+            (await Controller(db, w.TenantId, callerId, selected, scope).CreateEntityGrant(
+                    new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>("Company B is outside this admin's grant");
+            (await Controller(db, w.TenantId, callerId, selected, scope).CreateEntityGrant(
+                    new CreateEntityGrantRequest(w.UserA, null, "HR", EntityGrantModes.AllCurrentCompanies), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>("an all-company grant is wider than this admin's own");
+        }
+        db.ChangeTracker.Clear();
+        (await db.UserEntityAccesses.IgnoreQueryFilters().CountAsync(g => g.TenantId == w.TenantId && g.UserId == w.UserA))
+            .Should().Be(0);
+
+        (await Controller(db, w.TenantId, callerId, w.CompanyA, scope).CreateEntityGrant(
+                new CreateEntityGrantRequest(w.UserA, w.CompanyA, "HR"), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.CreatedAtActionResult>("granting within their own company still works");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GroupAdmin_WithCompanySelected_ManagesAUserOfAnotherCompany(bool v2)
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Team Viewer");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        AccessController C() => Controller(db, w.TenantId, callerId, w.CompanyA, null, v2);
+
+        (await C().GetUser(w.UserB, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        (await C().UpdateUser(w.UserB, new UpdateUserRequest("Company B User (renamed)", null, null, null), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+        (await C().AssignRoles(w.UserB, new AssignRolesRequest(new[] { "Team Viewer" }), CancellationToken.None)).Result
+            .Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompanyScopedAdmin_CannotManageAUserOfAnotherCompany(bool v2)
+    {
+        var w = await SeedWorld();
+        await using var db = _fx.CreateDb();
+        await EnsureRoleAsync(db, w.TenantId, "Team Viewer");
+        await EnsureRoleAsync(db, w.TenantId, "Admin");
+        var callerId = await SeedAdminCallerAsync(w.TenantId);
+        var scope = new[] { w.CompanyA };
+
+        foreach (var selected in new Guid?[] { null, w.CompanyA })
+        {
+            AccessController C() => Controller(db, w.TenantId, callerId, selected, scope, v2);
+            (await C().GetUser(w.UserB, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>();
+            (await C().UpdateUser(w.UserB, new UpdateUserRequest("Taken over", null, null, null), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.NotFoundResult>("a user outside the scope is not found");
+            (await C().AssignRoles(w.UserB, new AssignRolesRequest(new[] { "Team Viewer" }), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>("the service refuses with 'User not found.'");
+            (await C().CreateUser(new CreateUserRequest($"x-{Guid.NewGuid():N}@example.test", "B Admin", "StrongPassword!123", new[] { "Admin" }, w.CompanyB),
+                    CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().CreateEntityGrant(new CreateEntityGrantRequest(w.UserA, w.CompanyB, "HR"), CancellationToken.None)).Result
+                .Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().GetSecuritySettings(CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
+            (await C().GetUser(w.UserA, CancellationToken.None)).Result.Should().BeOfType<Microsoft.AspNetCore.Mvc.OkObjectResult>("own company's user");
+        }
+        db.ChangeTracker.Clear();
+        var userB = await db.Users.IgnoreQueryFilters().Include(u => u.UserRoles).SingleAsync(u => u.Id == w.UserB);
+        userB.FullName.Should().Be("Company B User");
+        userB.UserRoles.Should().BeEmpty();
     }
 
     private async Task<World> SeedWorld()

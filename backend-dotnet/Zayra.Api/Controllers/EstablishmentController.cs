@@ -310,8 +310,10 @@ public class EstablishmentController : ControllerBase
 
         // Company-scope validation (Conflict: group tenants — each company is its own legal
         // employer/Nitaqat file; a company-scoped admin edits only their companies' departments).
-        var scope = this.GetEntityScope();
-        if (!scope.IsGroupLevel)
+        // Judged on the caller's GRANT (HasGroupEntityScope), not on GetEntityScope: the X-Company-Id
+        // switcher narrows what a group administrator READS, it does not take away their authority to
+        // maintain an unbranched (tenant-wide) department or one in a company other than the selected one.
+        if (!this.HasGroupEntityScope())
         {
             var companyId = dept.BranchId is null
                 ? null
@@ -319,7 +321,7 @@ public class EstablishmentController : ControllerBase
                     .Where(b => b.TenantId == tenantId && b.Id == dept.BranchId)
                     .Select(b => (Guid?)b.CompanyId)
                     .FirstOrDefaultAsync(ct);
-            if (!scope.CanAccessCompany(companyId)) return Forbid();
+            if (companyId is null || !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
 
         var levelIds = body.Rows.Select(r => r.StaffingLevelId).Distinct().ToList();

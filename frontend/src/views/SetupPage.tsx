@@ -210,12 +210,43 @@ function CompaniesTab() {
   const selectedCountryPack = availablePacks.find(p => setupCountryCode(p.countryCode) === setupCountryCode(form.countryCode));
   const jurisdictions = selectedCountryPack?.jurisdictions ?? [];
 
+  // Field-addressed save errors, shown under the input they belong to rather than in the banner.
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof CompanyRequest, string>>>({});
+  useEffect(() => { if (modalOpen) setFieldErrors({}); }, [modalOpen, editing]);
+  const companyFieldLabels: Partial<Record<keyof CompanyRequest, string>> = {
+    legalNameEn: 'Legal name (English)', countryCode: 'Country', registrationNumber: 'Registration number',
+    defaultCurrency: 'Default currency', emailDomain: 'Email domain', erpCompanyCode: 'ERP company code',
+  };
+  // Fields that render their own inline error; anything else the server names goes to the banner.
+  const inlineCompanyFields: ReadonlySet<keyof CompanyRequest> = new Set<keyof CompanyRequest>(['registrationNumber']);
+  // ASP.NET validation ProblemDetails: { errors: { "RegistrationNumber": ["The RegistrationNumber field is required."] } }.
+  const mapCompanyValidationErrors = (errors: Record<string, unknown>) => {
+    const fields: Partial<Record<keyof CompanyRequest, string>> = {};
+    const banner: string[] = [];
+    for (const [rawKey, raw] of Object.entries(errors)) {
+      const segment = (rawKey.split('.').pop() ?? rawKey).replace(/^\$/, '');
+      const key = (segment.charAt(0).toLowerCase() + segment.slice(1)) as keyof CompanyRequest;
+      const serverMessage = String(Array.isArray(raw) ? raw[0] ?? '' : raw ?? '').trim();
+      const label = companyFieldLabels[key];
+      const message = label && /required/i.test(serverMessage) ? `${label} is required.` : serverMessage || `${label ?? segment} is invalid.`;
+      if (inlineCompanyFields.has(key)) fields[key] = message;
+      else banner.push(message);
+    }
+    return { fields, banner };
+  };
+
   const handleSave = async () => {
+    setFieldErrors({});
     if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
     // The field has always been marked required; it was never enforced, which is part of how a
     // tenant's first company reached production with an empty country.
     if (!(form.countryCode ?? '').trim()) {
       setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
+      return;
+    }
+    if (!(form.registrationNumber ?? '').trim()) {
+      setError('');
+      setFieldErrors({ registrationNumber: 'Registration number is required — it identifies this legal entity on statutory filings.' });
       return;
     }
     if (!(form.defaultCurrency ?? '').trim()) { setError('Default currency is required'); return; }
@@ -243,8 +274,15 @@ function CompaniesTab() {
       // Preserve the actionable create-guardrail messaging previously owned by the
       // standalone /companies CreateCompanyModal (account-type / plan-limit / platform-
       // controlled). Only meaningful on create; edit paths never emit these codes.
-      const resp = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data;
-      if (resp?.error === 'account_type_single_company')
+      const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
+      if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
+        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
+      else if (resp?.errors && typeof resp.errors === 'object') {
+        const mapped = mapCompanyValidationErrors(resp.errors);
+        setFieldErrors(mapped.fields);
+        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
+      }
+      else if (resp?.error === 'account_type_single_company')
         setError(resp.message ?? 'This account is a single-company account. Ask your platform administrator to enable the Group account type.');
       else if (resp?.error === 'company_limit_reached')
         setError(resp.message ?? 'Your plan’s company limit is reached. Contact your account manager to upgrade.');
@@ -255,7 +293,10 @@ function CompaniesTab() {
     finally { setSaving(false); }
   };
 
-  const f = (key: keyof CompanyRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
+  const f = (key: keyof CompanyRequest, v: string | boolean) => {
+    setForm((x) => ({ ...x, [key]: v }));
+    setFieldErrors((current) => (current[key] ? { ...current, [key]: undefined } : current));
+  };
   const deleteCompany = async (id: string) => {
     if (!confirm('Delete this company? This cannot be undone.')) return;
     setDeleting(id);
@@ -429,8 +470,17 @@ function CompaniesTab() {
               ))}
             </select>
           </FormField>
-          <FormField label="Registration Number" required>
-            <input type="text" value={form.registrationNumber} onChange={(e) => f('registrationNumber', e.target.value)} className="input w-full" />
+          <FormField label="Registration Number" required error={fieldErrors.registrationNumber} errorId="company-registration-number-error">
+            <input
+              type="text"
+              value={form.registrationNumber}
+              onChange={(e) => f('registrationNumber', e.target.value)}
+              className={`input w-full ${fieldErrors.registrationNumber ? 'border-red-400 focus:border-red-500 dark:border-red-500/60' : ''}`}
+              aria-label="Registration Number"
+              aria-required="true"
+              aria-invalid={fieldErrors.registrationNumber ? true : undefined}
+              aria-describedby={fieldErrors.registrationNumber ? 'company-registration-number-error' : undefined}
+            />
           </FormField>
           <FormField label="Tax Number">
             <input type="text" value={form.taxNumber ?? ''} onChange={(e) => f('taxNumber', e.target.value)} className="input w-full" />
@@ -548,7 +598,9 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
     finally { setDeleting(null); }
   };
 
-  const companyName = (id: string) => companies.find((c) => c.id === id)?.legalNameEn ?? id;
+  // The server names each branch's company; the loaded company list is the fallback. Never the raw id.
+  const companyName = (b: BranchDto) =>
+    b.companyName?.trim() || companies.find((c) => c.id === b.companyId)?.legalNameEn || 'Unknown company';
 
   return (
     <>
@@ -580,7 +632,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{b.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.nameEn}</td>
-            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b.companyId)}</td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b)}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{b.city || '—'}</td>
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
@@ -2288,7 +2340,11 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
-function FormField({ label, required, children, info }: { label: string; required?: boolean; children: React.ReactNode; info?: string }) {
+function FormField({ label, required, children, info, error, errorId }: {
+  label: string; required?: boolean; children: React.ReactNode; info?: string;
+  /** Shown under the control. Give the control aria-invalid and aria-describedby={errorId}. */
+  error?: string; errorId?: string;
+}) {
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2296,6 +2352,11 @@ function FormField({ label, required, children, info }: { label: string; require
         {info && <InfoTip text={info} className="ms-1" />}
       </label>
       {children}
+      {error && (
+        <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
