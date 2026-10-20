@@ -118,8 +118,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        if (!CompanyEndpoints.MayWrite(this, id)) return NotFound();
-        return await _organization.DeleteCompanyAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        return await CompanyEndpoints.DeleteAsync(this, _organization, id, Context(), cancellationToken);
     }
 
     // ── Export ────────────────────────────────────────────────────────────────
@@ -130,8 +129,12 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // Same scope as Search: a company-scoped caller exports only the companies they hold.
+        var scope = this.GetEntityScope();
+        var accessible = scope.IsGroupLevel ? null : scope.AccessibleCompanyIds.ToList();
         var companies = await _db.Companies.AsNoTracking()
             .Where(c => c.TenantId == tenantId.Value && !c.IsDeleted)
+            .Where(c => accessible == null || accessible.Contains(c.Id))
             .OrderBy(c => c.LegalNameEn).ToListAsync(ct);
         var rows = companies.Select(c => (IReadOnlyList<object?>)new object?[]
         {

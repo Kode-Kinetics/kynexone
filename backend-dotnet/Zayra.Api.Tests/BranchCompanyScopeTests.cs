@@ -378,7 +378,7 @@ public class BranchCompanyScopeTests
         (await Organization(db, Caller(w.TenantId, null, w.A.Id)).UpdateCompany(w.B.Id, CompanyEdit(w.B, "Taken Over"), CancellationToken.None)).Result
             .Should().BeOfType<NotFoundResult>();
         (await Companies(db, Caller(w.TenantId, w.A.Id, w.A.Id)).Delete(w.B.Id, CancellationToken.None))
-            .Should().BeOfType<NotFoundResult>();
+            .Should().BeOfType<ForbidResult>("deleting a legal entity needs a group grant");
         db.ChangeTracker.Clear();
         var beta = await db.Companies.SingleAsync(c => c.Id == w.B.Id);
         beta.LegalNameEn.Should().Be("Beta Contracting");
@@ -454,5 +454,28 @@ public class BranchCompanyScopeTests
         (await Organization(db, Caller(w.TenantId, w.A.Id)).CreateBranch(Req(w.B.Id, "B9"), CancellationToken.None)).Result
             .Should().BeOfType<CreatedResult>("a group grant with a company selected still writes any company");
         (await db.Branches.CountAsync(b => b.TenantId == w.TenantId && b.Code == "B9")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task CompanyDelete_RequiresAGroupGrant_EvenForTheCallersOwnCompany()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        foreach (var selected in new Guid?[] { null, w.A.Id })
+            (await Companies(db, Caller(w.TenantId, selected, w.A.Id)).Delete(w.A.Id, CancellationToken.None))
+                .Should().BeOfType<ForbidResult>();
+        db.ChangeTracker.Clear();
+        (await db.Companies.SingleAsync(c => c.Id == w.A.Id)).IsDeleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CompanyExport_ContainsOnlyTheCallersCompanies()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var scoped = Encoding.UTF8.GetString(((FileContentResult)await Companies(db, Caller(w.TenantId, null, w.A.Id)).Export(CancellationToken.None)).FileContents);
+        scoped.Should().Contain("Alpha Trading").And.NotContain("Beta Contracting").And.NotContain("Foreign Co");
+        var group = Encoding.UTF8.GetString(((FileContentResult)await Companies(db, Caller(w.TenantId)).Export(CancellationToken.None)).FileContents);
+        group.Should().Contain("Alpha Trading").And.Contain("Beta Contracting").And.NotContain("Foreign Co");
     }
 }

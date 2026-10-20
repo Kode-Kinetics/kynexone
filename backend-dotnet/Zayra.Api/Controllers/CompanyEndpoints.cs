@@ -31,8 +31,7 @@ internal static class CompanyEndpoints
     public static bool MayRead(ControllerBase c, Guid companyId) => c.GetEntityScope().CanAccessCompany(companyId);
 
     /// <summary>Whether the caller's grant covers writing <paramref name="companyId"/>.</summary>
-    public static bool MayWrite(ControllerBase c, Guid companyId) =>
-        c.HasGroupEntityScope() || c.GetEntityScope().CanAccessCompany(companyId);
+    public static bool MayWrite(ControllerBase c, Guid companyId) => OrgWriteRules.MayWriteCompany(c, companyId);
 
     /// <summary>F5: setting or changing EmailDomain needs security.manage. <paramref name="current"/> null = a new company.</summary>
     public static bool EmailDomainNeedsSecurityAdmin(ControllerBase c, string? current, string? requested)
@@ -98,6 +97,18 @@ internal static class CompanyEndpoints
         catch (EmailDomainRefusedException ex) { return c.StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload()); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Deleting a legal entity is tenant-level, like creating one: a group grant is required.
+    /// The service keeps its own refusals (last active company, active employees).</summary>
+    public static async Task<IActionResult> DeleteAsync(
+        ControllerBase c, IOrganizationSetupService organization, Guid id, RequestContext context, CancellationToken ct)
+    {
+        var tenantId = c.GetTenantId();
+        if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.GroupGrant(c)) return c.Forbid();
+        // The service's refusals propagate exactly as they did before this check existed.
+        return await organization.DeleteCompanyAsync(tenantId.Value, id, context, ct) ? c.NoContent() : c.NotFound();
     }
 
     public static async Task<ActionResult<CompanyDto>> UpdateAsync(
