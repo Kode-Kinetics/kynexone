@@ -14,6 +14,11 @@ export function useSetupCompanyQuery() {
   const consumed = useRef<string | null | undefined>(undefined);
   const pendingSelection = useRef<string | null>(null);
   const pendingClear = useRef(false);
+  // The company our own router.replace is writing into the URL. Until that replace
+  // commits, `requested` still names the previous company (or none); treating that
+  // stale value as a new deep link re-selected the old scope, so a company switch
+  // flapped back and forth and a fresh /setup load briefly fell to All companies.
+  const pendingUrl = useRef<{ from: string | null; companyId: string | null } | null>(null);
   const authorized = selectedCompanyId && companies.some(company => company.id === selectedCompanyId) ? selectedCompanyId : null;
   const pathResolution = resolveSetupPath(new URLSearchParams(params?.toString()), {
     authorizedCompanyIds: new Set(companies.map(company => company.id)),
@@ -23,6 +28,12 @@ export function useSetupCompanyQuery() {
     // The starter has an explicit invalid-target screen. Preserve that fail-closed
     // route instead of quietly substituting another company.
     if (params?.get('mode') === 'starter' && requested && !companies.some(company => company.id === requested)) return;
+    if (pendingUrl.current) {
+      // Resume once the URL moves (our replace landed, or a real navigation did) or the
+      // selection changes; until then the URL is ours and merely stale.
+      if (requested !== pendingUrl.current.from || authorized !== pendingUrl.current.companyId) pendingUrl.current = null;
+      else return;
+    }
     if (pendingClear.current) {
       if (authorized === null) pendingClear.current = false;
       else if (requested === null || !companies.some(company => company.id === requested)) return;
@@ -70,6 +81,7 @@ export function useSetupCompanyQuery() {
       if (authorized) next.set('companyId', authorized); else next.delete('companyId');
       // Mark our own reconciliation as consumed: it must not re-select an old scope.
       consumed.current = authorized;
+      pendingUrl.current = { from: requested, companyId: authorized };
       router.replace(`/setup?${next.toString()}`, { scroll: false });
       return;
     }
