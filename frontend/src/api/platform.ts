@@ -1029,7 +1029,7 @@ export const platformApi = {
 
   // ── Feature Flags Catalog ─────────────────────────────────────────────────
   getFeatureFlags: () =>
-    platform.get<{ key: string; label: string; category: string }[]>('/api/platform/feature-flags').then(r => r.data),
+    platform.get<{ key: string; label: string; category: string; defaultEnabled?: boolean }[]>('/api/platform/feature-flags').then(r => r.data),
 };
 
 // ── Compliance types ──────────────────────────────────────────────────────────

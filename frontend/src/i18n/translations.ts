@@ -5,6 +5,7 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
+import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
@@ -14,8 +15,11 @@ import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
+import { policyBinder } from './policyBinder';
+import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
+import { employeeWorkspace } from './employeeWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -31,6 +35,13 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  ...employeeWorkspace.en,
+  "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
+  "Cost center": "Cost center",
+  "Line manager": "Line manager",
+  ...setupStudio.en,
+  ...policyBinder.en,
+  ...policyForms.en,
   ...gradeBenefitDefaults.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
@@ -1413,6 +1424,13 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...employeeWorkspace.ar,
+  "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
+  "Cost center": "مركز التكلفة",
+  "Line manager": "المدير المباشر",
+  ...setupStudio.ar,
+  ...policyBinder.ar,
+  ...policyForms.ar,
   ...gradeBenefitDefaults.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",

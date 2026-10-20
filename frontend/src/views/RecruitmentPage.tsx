@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
@@ -41,12 +41,25 @@ import type {
   OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
 import { OfferPlacementFields } from '../components/OfferPlacementFields';
+import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
+import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
+import { OfferHistoryRegister } from '../components/recruitment/OfferHistoryRegister';
+import { OfferPolicySettings } from '../components/recruitment/OfferPolicySettings';
+import { offerWorkspacePath } from '../api/offerLifecycle';
+import { useNavigationBlocker } from '../hooks/useNavigationBlocker';
+import { downloadOfferFile } from '../api/offerTemplates';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { StatusChip } from '../components/StatusChip';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { usePagedList } from '../hooks/usePagedList';
 import { requestFailureReason } from '../lib/requestFailure';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
+import { useT } from '../hooks/useT';
+import { useOfferLetterT } from '../i18n/offerLetter';
+import { useOfferLifecycleT } from '../i18n/offerLifecycle';
+import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
@@ -60,7 +73,7 @@ import {
  * step. Every rule comes from GET /api/recruitment/offers/{id} (OfferRules on the API); this only
  * presents it. `onContext` hands the rules to the parent so its Send button agrees.
  */
-function OfferApprovalPanel({ offerId, onChanged, onContext }: {
+export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
   offerId: string;
   onChanged: () => void;
   onContext?: (context: OfferApprovalContext | null) => void;
@@ -103,7 +116,7 @@ function OfferApprovalPanel({ offerId, onChanged, onContext }: {
     if (!approver) { setError('Choose who approves this offer.'); return; }
     setBusy(true); setError('');
     try {
-      await offersApi.requestApproval(offerId, { approverUserId: approver.userId, approverName: approver.name });
+      await offersApi.requestApproval(offerId, { expectedVersion: offer.version, approverUserId: approver.userId, approverName: approver.name });
       setApproverId(''); setOptions(null);
       await load(); onChanged();
     } catch (e) { notifyApiError(e); } finally { setBusy(false); }
@@ -114,7 +127,7 @@ function OfferApprovalPanel({ offerId, onChanged, onContext }: {
     if (decision === 'Rejected' && !comment.trim()) { setError('Say why you are rejecting this offer.'); return; }
     setBusy(true); setError('');
     try {
-      await offersApi.decideApproval(offerId, context.myPendingStepId, { decision, comments: comment.trim() || undefined });
+      await offersApi.decideApproval(offerId, context.myPendingStepId, { expectedVersion: offer.version, decision, comments: comment.trim() || undefined });
       setComment('');
       await load(); onChanged();
     } catch (e) { notifyApiError(e); } finally { setBusy(false); }
@@ -909,6 +922,9 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 // ── Application Detail Drawer ──────────────────────────────────────────────────
 
 function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: () => void; onRefresh: () => void }) {
+  const navigationGuard = useNavigationGuard();
+  const offerT = useOfferLifecycleT();
+  const [templateId, setTemplateId] = useState('');
   const { currencyCode } = useTenantSettings();
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [tab, setTab] = useState<'timeline' | 'interviews' | 'offer'>('timeline');
@@ -918,6 +934,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
+  useNavigationBlocker({ id: `application-drawer-${id}`, when: !!(offerForm.startDate || offerForm.basicSalary || noteText || rejectReason || interviewForm.scheduledAt), message: 'This application has unsaved changes. Discard them and leave?', onDiscard: () => {} });
 
   const load = () => {
     applicationsApi.get(id).then(setDetail).catch(() => {});
@@ -932,14 +949,14 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
 
   const doAdvance = async () => {
     setActing('advance');
-    try { await applicationsApi.advance(id); load(); onRefresh(); } catch (e) { notifyApiError(e); }
+    try { await applicationsApi.advance(id, app.version); load(); onRefresh(); } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const doReject = async () => {
     if (!rejectReason.trim()) return;
     setActing('reject');
-    try { await applicationsApi.reject(id, rejectReason); load(); onRefresh(); } catch (e) { notifyApiError(e); }
+    try { await applicationsApi.reject(id, app.version, rejectReason); load(); onRefresh(); } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
@@ -971,7 +988,9 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
     setActing('offer');
     try {
       // Department and designation are record ids; left empty, the API uses the job opening's.
-      await applicationsApi.generateOffer(id, {
+      const created = await applicationsApi.generateOffer(id, {
+        expectedApplicationVersion: app.version,
+        templateId: templateId || undefined,
         departmentId: offerForm.departmentId || undefined,
         designationId: offerForm.designationId || undefined,
         startDate: offerForm.startDate,
@@ -981,27 +1000,13 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         otherAllowances: Number(offerForm.otherAllowances) || 0,
         probationMonths: offerForm.probationMonths,
       });
-      setTab('offer'); load();
+      setOfferForm({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
+      navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const offer = detail.offer as OfferLetter | null;
-
-  const offerAction = async (action: 'send' | 'accept' | 'decline') => {
-    if (!offer) return;
-    setActing(action);
-    try {
-      if (action === 'send') await applicationsApi.sendOffer(offer.id);
-      else if (action === 'accept') await applicationsApi.acceptOffer(offer.id);
-      else {
-        const reason = window.prompt('Decline reason:') ?? '';
-        await applicationsApi.declineOffer(offer.id, reason);
-      }
-      load(); onRefresh();
-    } catch (e) { notifyApiError(e); }
-    finally { setActing(''); }
-  };
 
   // Authenticated offer preview: fetch the PDF via the axios client (bearer token attached),
   // then open the blob. The old `<a href=.../html>` sent no token (401) and served executable
@@ -1020,7 +1025,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
 
   return (
     <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/40" onClick={onClose} />
+      <div className="flex-1 bg-black/40" onClick={() => navigationGuard.run('application-close', onClose)} />
       <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-[#0B1020]">
         {/* Header */}
         <div className="flex items-start gap-3 border-b border-slate-200 p-5 dark:border-white/10">
@@ -1036,7 +1041,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               )}
             </div>
           </div>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="Close" onClick={() => navigationGuard.run('application-close', onClose)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
 
         {/* Stage advance/reject actions */}
@@ -1185,24 +1190,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
                       <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
                     </button>
-                    {canSendOffer(offer.status) && approvalContext?.canSend && (
-                      <button type="button" disabled={acting === 'send'} onClick={() => offerAction('send')}
-                        className="flex items-center gap-1 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
-                        <Send className="h-3.5 w-3.5" />Send to Candidate
-                      </button>
-                    )}
-                    {offer.status === 'Sent' && (
-                      <>
-                        <button type="button" disabled={!!acting} onClick={() => offerAction('accept')}
-                          className="flex items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-50">
-                          <CheckCircle className="h-3.5 w-3.5" />Accept
-                        </button>
-                        <button type="button" disabled={!!acting} onClick={() => offerAction('decline')}
-                          className="flex items-center gap-1 rounded-lg border border-rose-300 px-2.5 py-1.5 text-xs font-medium text-rose-500 hover:bg-rose-50 disabled:opacity-50">
-                          <XCircle className="h-3.5 w-3.5" />Decline
-                        </button>
-                      </>
-                    )}
+                    <button type="button" className="btn-primary" onClick={() => navigationGuard.push(offerWorkspacePath(offer.id))}>{offerT('Open offer')}</button>
                   </div>
                   <OfferApprovalPanel key={`${offer.id}:${offer.status}`} offerId={offer.id}
                     onChanged={() => { load(); onRefresh(); }} onContext={setApprovalContext} />
@@ -1212,6 +1200,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                   <div className="rounded-lg border border-dashed border-slate-200 p-4 dark:border-white/10">
                     <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">Generate Offer Letter</p>
                     <div className="space-y-2">
+                      <OfferTemplateSelect value={templateId} onChange={setTemplateId} />
                       <OfferPlacementFields
                         idPrefix={`drawer-offer-${id}`}
                         openingDefaults
@@ -2224,9 +2213,16 @@ function AssessmentsTab() {
 
 // ── Offers Tab ────────────────────────────────────────────────────────────────
 
-function OffersTab() {
+function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = {}) {
+  const letterT = useOfferLetterT();
+  const offerT = useOfferLifecycleT();
+  const { companyVersion, selectedCompanyId } = useCompany();
+  const { hasRole } = useAuth();
+  const navigationGuard = useNavigationGuard();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showDesigner, setShowDesigner] = useState(initialDesigner);
+  const [templateId, setTemplateId] = useState('');
   const { currencyCode } = useTenantSettings();
-  const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
   const emptyOfferForm = {
@@ -2237,17 +2233,7 @@ function OffersTab() {
   const [offerForm, setOfferForm] = useState(emptyOfferForm);
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
-  const [actioning, setActioning] = useState<string | null>(null);
-  const [approvalOpen, setApprovalOpen] = useState<string | null>(null);
-
-  // One page at a time with the server's total: this used to show the first 20 offers as all of them,
-  // so an offer waiting for approval past row 20 could not be found here.
-  const list = usePagedList<OfferLetter>((page, pageSize) =>
-    offersApi.list(undefined, statusFilter || undefined, page, pageSize));
-  const { items: offers, loading } = list;
-  const load = () => list.reload();
-
-  useEffect(() => { load(); }, [statusFilter]);
+  useNavigationBlocker({ id: 'offer-create', when: showCreate && JSON.stringify(offerForm) !== JSON.stringify(emptyOfferForm), message: 'This offer has unsaved changes. Discard them and leave?', onDiscard: () => { setShowCreate(false); setOfferForm(emptyOfferForm); } });
 
   const openCreate = async () => {
     try { setApplications(await applicationsApi.listAll()); } catch {}
@@ -2260,8 +2246,10 @@ function OffersTab() {
     }
     setOfferSaving(true); setOfferError('');
     try {
-      await offersApi.create({
+      const created = await offersApi.create({
         ...offerForm,
+        expectedApplicationVersion: applications.find(a => a.id === offerForm.applicationId)!.version,
+        templateId: templateId || undefined,
         departmentId: offerForm.departmentId || undefined,
         basicSalary: Number(offerForm.basicSalary), housingAllowance: Number(offerForm.housingAllowance),
         transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances),
@@ -2269,44 +2257,18 @@ function OffersTab() {
       });
       setShowCreate(false);
       setOfferForm(emptyOfferForm);
-      load();
+      navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { setOfferError(offerCreationFailure(e)); }
     finally { setOfferSaving(false); }
   };
 
-  const sendOffer = async (id: string) => {
-    setActioning(id);
-    try { await offersApi.send(id); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
-  };
-
-  const acceptOffer = async (id: string) => {
-    setActioning(id);
-    try { await offersApi.accept(id); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
-  };
-
-  const declineOffer = async (id: string) => {
-    setActioning(id);
-    try { await offersApi.decline(id, 'Declined by candidate'); load(); } catch (e) { notifyApiError(e); } finally { setActioning(null); }
-  };
-
-  const STATUS_COLORS: Record<string, string> = {
-    Draft: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
-    Sent: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
-    Accepted: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
-    Declined: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
-    Approved: 'bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400',
-    Expired: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
-  };
+  if (showDesigner) return <OfferLetterDesigner key={companyVersion} onClose={() => setShowDesigner(false)} />;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <select title="Filter by offer status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
-          <option value="">All Statuses</option>
-          {['Draft', 'PendingApproval', 'Approved', 'Sent', 'Accepted', 'Declined', 'Expired'].map(s => <option key={s}>{s}</option>)}
-        </select>
-        <ListCount loading={loading} total={list.total} shown={offers.length} noun="offer" />
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" className="btn-secondary" onClick={() => navigationGuard.run('offer-designer', () => setShowDesigner(true))}>{letterT('Letter designer')}</button>
+        {hasRole('Admin') && <button type="button" className="btn-secondary" disabled={!selectedCompanyId} title={!selectedCompanyId ? offerT('Select a company to manage offer settings.') : undefined} onClick={() => setSettingsOpen(true)}>{offerT('Offer settings')}</button>}
         <button type="button" onClick={openCreate} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
           <FileText className="h-3.5 w-3.5" />Create Offer
         </button>
@@ -2316,8 +2278,9 @@ function OffersTab() {
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Offer Letter</h4>
-            <button type="button" aria-label="Close" title="Close" onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            <button type="button" aria-label="Close" title="Close" onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
           </div>
+          <OfferTemplateSelect value={templateId} onChange={setTemplateId} />
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Application *</label>
@@ -2364,81 +2327,48 @@ function OffersTab() {
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
               {offerSaving ? 'Creating…' : 'Create Offer'}
             </button>
-            <button type="button" onClick={() => setShowCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
           </div>
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Offers" error={list.error} />}
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && offers.length === 0 ? null : offers.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No offers found. Create one above.</p>
-      ) : (
-        <div className="space-y-2">
-          {offers.map(o => (
-            <div key={o.id} className="surface p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="font-semibold text-slate-900 dark:text-white">{o.candidateName}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{o.offeredJobTitle} · Starts {o.startDate}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Gross: <span className="font-semibold text-slate-700 dark:text-slate-300">{o.grossSalary.toLocaleString()}</span>
-                    {o.responseDeadline && ` · Deadline: ${new Date(o.responseDeadline).toLocaleDateString()}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[o.status] ?? ''}`}>{o.status}</span>
-                  {['Draft', 'PendingApproval', 'Approved'].includes(o.status) && (
-                    <button type="button" onClick={() => setApprovalOpen(v => (v === o.id ? null : o.id))}
-                      className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200">
-                      {approvalOpen === o.id ? 'Hide approval' : 'Approval'}
-                    </button>
-                  )}
-                  {canSendOffer(o.status) && (
-                    <button type="button" onClick={() => sendOffer(o.id)} disabled={actioning === o.id}
-                      className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
-                      {actioning === o.id ? '…' : 'Send'}
-                    </button>
-                  )}
-                  {o.status === 'Sent' && (
-                    <>
-                      <button type="button" onClick={() => acceptOffer(o.id)} disabled={actioning === o.id}
-                        className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                        {actioning === o.id ? '…' : 'Accept'}
-                      </button>
-                      <button type="button" onClick={() => declineOffer(o.id)} disabled={actioning === o.id}
-                        className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">
-                        Decline
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-              {approvalOpen === o.id && (
-                <OfferApprovalPanel key={`${o.id}:${o.status}`} offerId={o.id} onChanged={load} />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      <ListWindowFooter shown={offers.length} total={list.total} noun="offers" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <OfferHistoryRegister key={companyVersion} />
+      {settingsOpen && <OfferPolicySettings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
 
 // ── Onboarding Tab ────────────────────────────────────────────────────────────
 
-function OnboardingTab() {
+export function OnboardingTab({ configurationOnly = false, policyDraft, policyDraftRevision = 0, onDirtyChange }: { configurationOnly?: boolean; policyDraft?: boolean; policyDraftRevision?: number; onDirtyChange?: (dirty: boolean) => void } = {}) {
+  const t = useT();
+  const { user, hasPermission } = useAuth();
+  const { companies, selectedCompanyId, accountType } = useCompany();
+  const activeCompanies = companies.filter(company => company.isActive);
+  const policyCompanyId = activeCompanies.find(company => company.id === selectedCompanyId)?.id ?? (activeCompanies.length === 1 ? activeCompanies[0].id : '');
+  const canWriteTemplates = hasPermission('recruitment.write');
+  const [policyBundle, setPolicyBundle] = useState<PolicyFormDraftBundle | null>(null);
+  const [policyRequested, setPolicyRequested] = useState(false);
+  const [policyTaskId, setPolicyTaskId] = useState('');
+  const [activePolicyTaskId, setActivePolicyTaskId] = useState('');
+  const [policyNotice, setPolicyNotice] = useState('');
+  const [templatesLoadedFor, setTemplatesLoadedFor] = useState('');
+  const templateRequest = useRef(0);
   const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
   const [selectedChecklistId, setSelectedChecklistId] = useState('');
   const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [showTemplate, setShowTemplate] = useState(false);
+  const [showTemplate, setShowTemplate] = useState(configurationOnly);
   const [checklistForm, setChecklistForm] = useState({ code: '', name: '', description: '', applicableTo: 'All', departmentName: '' });
-  const [templateForm, setTemplateForm] = useState({
-    taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true,
+  const [templateForm, setTemplateForm] = useState<PolicyTemplateTaskForm>({
+    taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true, applicabilityConfirmed: false, overwriteConfirmed: false, checklistId: '',
   });
+  useLayoutEffect(() => {
+    onDirtyChange?.(!!(checklistForm.code || checklistForm.name || checklistForm.description || checklistForm.departmentName || checklistForm.applicableTo !== 'All' || templateForm.taskTitle || templateForm.taskDescription || templateForm.assignedToName || templateForm.category !== 'General' || templateForm.dueOffsetDays !== 0 || templateForm.orderIndex !== 0 || templateForm.isMandatory !== true));
+    return () => onDirtyChange?.(false);
+  }, [checklistForm, templateForm, onDirtyChange]);
   const [generateForm, setGenerateForm] = useState({ employeeId: '', applicationId: '', startDate: '' });
   const [taskForm, setTaskForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false,
@@ -2447,6 +2377,49 @@ function OnboardingTab() {
   const [templateSaving, setTemplateSaving] = useState(false);
   const [taskError, setTaskError] = useState('');
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
+  const activePolicyTask = policyBundle?.tasks.find(task => task.id === activePolicyTaskId);
+  const matchingTemplate = templateTasks.find(task => task.taskTitle === templateForm.taskTitle.trim());
+  const policyProblem = activePolicyTask ? policyTaskProblem(templateForm, activePolicyTask, !!matchingTemplate)
+    ?? (matchingTemplate?.assignedToUserId && matchingTemplate.assignedToName !== templateForm.assignedToName ? 'This task has a named assignee. Keep its current owner text here; change person assignments in the existing assignment workflow.' : null) : null;
+  const policyScopeWritable = accountType === 'SingleCompany' && policyBundle?.accountType === 'SingleCompany' && activeCompanies.length === 1 && policyBundle.companyId === policyCompanyId;
+  const policyScope = `${user?.tenantId ?? ''}:${user?.id ?? ''}:${policyCompanyId}`;
+  const currentPolicyScope = useRef(policyScope); currentPolicyScope.current = policyScope;
+
+  useEffect(() => {
+    const requested = policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1';
+    setPolicyRequested(requested); setPolicyBundle(null); setPolicyTaskId(''); setActivePolicyTaskId(''); setPolicyNotice('');
+    setTemplateForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true, applicabilityConfirmed: false, overwriteConfirmed: false, checklistId: '' });
+    if (!requested || !user || !policyCompanyId) return;
+    const saved = readPolicyFormDraft(localStorage, { tenantId: user.tenantId, userId: user.id, companyId: policyCompanyId });
+    if (saved) { setPolicyBundle(saved); setPolicyTaskId(saved.selectedTaskId ?? saved.tasks[0]?.id ?? ''); setShowTemplate(true); }
+  }, [user?.tenantId, user?.id, policyCompanyId, accountType, policyDraft, policyDraftRevision]);
+
+  const persistPolicyBundle = (next: PolicyFormDraftBundle) => {
+    const result = retainPolicyFormDraft(localStorage, next);
+    setPolicyBundle(result.bundle);
+    if (!result.persisted) setTaskError(t(result.error!));
+    return result.bundle;
+  };
+  const changeTemplateForm = (patch: Partial<PolicyTemplateTaskForm>) => {
+    const next = { ...templateForm, ...patch };
+    if (!('overwriteConfirmed' in patch)) next.overwriteConfirmed = false;
+    setTemplateForm(next); setPolicyNotice('');
+    if (policyBundle && activePolicyTaskId) {
+      const saved = { ...policyBundle.saved }; delete saved[activePolicyTaskId];
+      persistPolicyBundle({ ...policyBundle, saved, selectedTaskId: activePolicyTaskId, edits: { ...policyBundle.edits, [activePolicyTaskId]: next } });
+    }
+  };
+  const fillPolicyTask = (replace = false) => {
+    const task = policyBundle?.tasks.find(item => item.id === policyTaskId);
+    if (!policyBundle || !task) return;
+    if ((replace || (!activePolicyTaskId && (templateForm.taskTitle || templateForm.taskDescription || templateForm.assignedToName)))
+      && !window.confirm(t(replace ? 'Replace your edits for this task with the extracted policy values?' : 'Replace the unsaved values in the current task form with this policy draft?'))) return;
+    const existing = templateTasks.find(item => item.taskTitle === task.taskTitle.trim());
+    const next = !replace && policyBundle.edits?.[task.id] ? policyBundle.edits[task.id] : policyTaskForm(task, policyBundle.tasks.indexOf(task), { ...existing, checklistId: selectedChecklistId });
+    setTemplateForm(next); setActivePolicyTaskId(task.id); setShowTemplate(true); setTaskError(''); setPolicyNotice(t('Policy values filled the existing task form. Review and save explicitly; no task has been assigned to an employee.'));
+    if (next.checklistId && next.checklistId !== selectedChecklistId) setSelectedChecklistId(next.checklistId);
+    persistPolicyBundle({ ...policyBundle, selectedTaskId: task.id, edits: { ...policyBundle.edits, [task.id]: next } });
+  };
 
   // Tasks one page at a time with the server's total. The summary above said "Total: 340" while the
   // list below stopped at the first 30, with nothing to reach the rest.
@@ -2458,19 +2431,22 @@ function OnboardingTab() {
     try { setSummary(await onboardingApi.summary()); } catch {}
   };
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => { if (!configurationOnly) load(); }, [statusFilter, configurationOnly]);
 
   const loadChecklists = async () => {
     try {
       const items = await onboardingApi.listChecklists();
       setChecklists(items);
-      setSelectedChecklistId(current => current || items[0]?.id || '');
+      setSelectedChecklistId(current => current || ((policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1') ? '' : items[0]?.id) || '');
     } catch (e) { notifyApiError(e); }
   };
 
   const loadTemplateTasks = async (checklistId: string) => {
+    const requestId = ++templateRequest.current;
+    const requestingScope = policyScope;
+    setTemplatesLoadedFor('');
     if (!checklistId) { setTemplateTasks([]); return; }
-    try { setTemplateTasks(await onboardingApi.listTemplateTasks(checklistId)); }
+    try { const tasks = await onboardingApi.listTemplateTasks(checklistId); if (requestId !== templateRequest.current || requestingScope !== currentPolicyScope.current) return; setTemplateTasks(tasks); setTemplatesLoadedFor(checklistId); }
     catch (e) { notifyApiError(e); }
   };
 
@@ -2478,6 +2454,7 @@ function OnboardingTab() {
   useEffect(() => { loadTemplateTasks(selectedChecklistId); }, [selectedChecklistId]);
 
   const createChecklist = async () => {
+    if (!canWriteTemplates || (policyBundle && !policyScopeWritable)) return;
     if (!checklistForm.code || !checklistForm.name) { setTaskError('Checklist code and name are required.'); return; }
     setTemplateSaving(true); setTaskError('');
     try {
@@ -2490,12 +2467,33 @@ function OnboardingTab() {
   };
 
   const saveTemplateTask = async () => {
+    if (!canWriteTemplates) return;
     if (!selectedChecklistId || !templateForm.taskTitle) { setTaskError('Select a checklist and enter a template task title.'); return; }
+    if (activePolicyTask && (!policyScopeWritable || policyProblem || templatesLoadedFor !== selectedChecklistId)) { setTaskError(t(policyProblem ?? 'This policy draft cannot be saved in the current template scope.')); return; }
+    if (activePolicyTask && policyBundle) {
+      const currentDraft = readPolicyFormDraft(localStorage, policyBundle)?.tasks.find(task => task.id === activePolicyTask.id);
+      if (JSON.stringify(currentDraft) !== JSON.stringify(activePolicyTask)) { setTaskError(t('The policy draft changed in another window. Return to Setup and open the current draft before saving.')); return; }
+    }
+    if (templateForm.dueOffsetDays === '' || templateForm.isMandatory === null) return;
+    const savingScope = policyScope;
     setTemplateSaving(true); setTaskError('');
     try {
-      await onboardingApi.upsertTemplateTask(selectedChecklistId, templateForm);
-      setTemplateForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true });
-      await loadTemplateTasks(selectedChecklistId);
+      const payload = { taskTitle: templateForm.taskTitle.trim(), taskDescription: activePolicyTask ? policyTaskDescription(templateForm.taskDescription, activePolicyTask.condition) : templateForm.taskDescription, category: templateForm.category, assignedToName: templateForm.assignedToName,
+        dueOffsetDays: templateForm.dueOffsetDays, orderIndex: templateForm.orderIndex, isMandatory: templateForm.isMandatory,
+        ...(matchingTemplate?.assignedToUserId && matchingTemplate.assignedToName === templateForm.assignedToName ? { assignedToUserId: matchingTemplate.assignedToUserId } : {}) };
+      const saved = await onboardingApi.upsertTemplateTask(selectedChecklistId, payload);
+      if (currentPolicyScope.current !== savingScope) return;
+      const verified = await onboardingApi.listTemplateTasks(selectedChecklistId);
+      if (currentPolicyScope.current !== savingScope) return;
+      setTemplateTasks(verified);
+      const readback = verified.find(task => task.id === saved.id);
+      if (!readback || Object.entries(payload).some(([field, expected]) => readback[field as keyof OnboardingChecklistTemplateTask] !== (field === 'orderIndex' && payload.orderIndex <= 0 ? saved.orderIndex : expected))) {
+        setTaskError(t('The save request completed, but the saved values could not be verified. Your draft is retained; reload the checklist before retrying.')); return;
+      }
+      if (policyBundle && activePolicyTask) {
+        persistPolicyBundle({ ...policyBundle, saved: { ...policyBundle.saved, [activePolicyTask.id]: { checklistId: selectedChecklistId, taskId: saved.id, taskTitle: saved.taskTitle } } });
+        setPolicyNotice(t('Template task saved and verified. No employee tasks were generated.'));
+      } else setTemplateForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true, applicabilityConfirmed: false, overwriteConfirmed: false, checklistId: '' });
     } catch (e) { notifyApiError(e); }
     finally { setTemplateSaving(false); }
   };
@@ -2569,8 +2567,20 @@ function OnboardingTab() {
       )}
 
       <div className="surface p-4">
+        {policyRequested && !policyBundle && <p role="status" className="mb-3 text-sm text-amber-800 dark:text-amber-200">{t('No policy task draft is available for this signed-in user and selected company. Return to Setup to prepare it.')}</p>}
+        {policyBundle && <section aria-label={t('Policy task drafts')} className="mb-4 space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-700">
+          <p className="text-sm font-semibold">{t('Policy task drafts')} · {policyBundle.companyName}</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300">{t('Checklist templates are tenant-wide, not company-specific. This draft does not generate employee tasks. Policy evidence is kept in this browser draft; saves use the standard template workflow.')}</p>
+          {!policyScopeWritable && <p className="text-sm text-amber-800 dark:text-amber-200">{t('Draft only: company-specific policy cannot be saved to tenant-wide templates in a group workspace.')}</p>}
+          {!canWriteTemplates && <p className="text-sm text-amber-800 dark:text-amber-200">{t('You can review this draft, but saving templates requires recruitment write access.')}</p>}
+          <div className="flex flex-wrap gap-2"><select aria-label={t('Policy task draft')} className="input min-w-64" value={policyTaskId} onChange={event => { setPolicyTaskId(event.target.value); persistPolicyBundle({ ...policyBundle, selectedTaskId: event.target.value }); }}>
+            {policyBundle.tasks.map(task => <option key={task.id} value={task.id}>{task.taskTitle}{policyBundle.saved?.[task.id] ? ` · ${t('Saved')}` : ''}</option>)}
+          </select><button type="button" className="btn-secondary" disabled={templateSaving || (!!selectedChecklistId && templatesLoadedFor !== selectedChecklistId)} onClick={() => fillPolicyTask()}>{t('Fill existing task form')}</button>
+          {activePolicyTaskId && <button type="button" className="btn-secondary" disabled={templateSaving} onClick={() => fillPolicyTask(true)}>{t('Replace with extracted values')}</button>}</div>
+          {policyNotice && <p role="status" className="text-sm text-emerald-800 dark:text-emerald-200">{policyNotice}</p>}
+        </section>}
         <div className="flex flex-wrap items-center gap-3">
-          <select title="Onboarding checklist" value={selectedChecklistId} onChange={e => setSelectedChecklistId(e.target.value)}
+          <select aria-label="Onboarding checklist" title="Onboarding checklist" value={selectedChecklistId} disabled={templateSaving} onChange={e => { setSelectedChecklistId(e.target.value); if (activePolicyTask) changeTemplateForm({ checklistId: e.target.value, applicabilityConfirmed: false, overwriteConfirmed: false }); }}
             className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
             <option value="">Select checklist</option>
             {checklists.map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
@@ -2591,20 +2601,20 @@ function OnboardingTab() {
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">Checklist Setup</p>
               <div className="grid grid-cols-2 gap-2">
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
+                <input aria-label="Checklist code" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
                   value={checklistForm.code} onChange={e => setChecklistForm(f => ({ ...f, code: e.target.value }))} />
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
+                <input aria-label="Checklist name" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
                   value={checklistForm.name} onChange={e => setChecklistForm(f => ({ ...f, name: e.target.value }))} />
-                <select title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <select aria-label="Applicable to" title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={checklistForm.applicableTo} onChange={e => setChecklistForm(f => ({ ...f, applicableTo: e.target.value }))}>
                   {['All', 'ByDepartment', 'ByRole'].map(v => <option key={v}>{v}</option>)}
                 </select>
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
+                <input aria-label="Department" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
                   value={checklistForm.departmentName} onChange={e => setChecklistForm(f => ({ ...f, departmentName: e.target.value }))} />
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                <input aria-label="Checklist description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
                   value={checklistForm.description} onChange={e => setChecklistForm(f => ({ ...f, description: e.target.value }))} />
               </div>
-              <button type="button" onClick={createChecklist} disabled={templateSaving}
+              <button type="button" onClick={createChecklist} disabled={templateSaving || !canWriteTemplates || (!!policyBundle && !policyScopeWritable)}
                 className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
                 {templateSaving ? 'Saving…' : 'Create Checklist'}
               </button>
@@ -2613,28 +2623,36 @@ function OnboardingTab() {
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">Template Tasks</p>
               <div className="grid grid-cols-2 gap-2">
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
-                  value={templateForm.taskTitle} onChange={e => setTemplateForm(f => ({ ...f, taskTitle: e.target.value }))} />
-                <select title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                  value={templateForm.category} onChange={e => setTemplateForm(f => ({ ...f, category: e.target.value }))}>
+                <input aria-label="Task title" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
+                  value={templateForm.taskTitle} onChange={e => changeTemplateForm({ taskTitle: e.target.value })} />
+                <select aria-label="Template category" title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.category} onChange={e => changeTemplateForm({ category: e.target.value })}>
                   {['General', 'Document', 'IT', 'Training', 'Policy', 'Access'].map(c => <option key={c}>{c}</option>)}
                 </select>
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
-                  value={templateForm.assignedToName} onChange={e => setTemplateForm(f => ({ ...f, assignedToName: e.target.value }))} />
-                <input type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                  value={templateForm.dueOffsetDays} onChange={e => setTemplateForm(f => ({ ...f, dueOffsetDays: Number(e.target.value) }))} />
-                <input type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                  value={templateForm.orderIndex} onChange={e => setTemplateForm(f => ({ ...f, orderIndex: Number(e.target.value) }))} />
-                <input className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
-                  value={templateForm.taskDescription} onChange={e => setTemplateForm(f => ({ ...f, taskDescription: e.target.value }))} />
+                <input aria-label="Owner" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
+                  value={templateForm.assignedToName} onChange={e => changeTemplateForm({ assignedToName: e.target.value })} />
+                <input aria-label="Due offset days" type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.dueOffsetDays} onChange={e => changeTemplateForm({ dueOffsetDays: e.target.value === '' ? '' : Number(e.target.value) })} />
+                <input aria-label="Order" type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={templateForm.orderIndex} onChange={e => changeTemplateForm({ orderIndex: Number(e.target.value) })} />
+                <input aria-label="Task description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                  value={templateForm.taskDescription} onChange={e => changeTemplateForm({ taskDescription: e.target.value })} />
               </div>
+              {activePolicyTask && <div className="space-y-2 text-xs">
+                <p className="text-slate-600 dark:text-slate-300">{t('Days relative to the start date used when generating tasks; 0 means that date. Owner is role text unless an existing named assignment is retained.')}</p>
+                <details><summary className="cursor-pointer font-medium">{t('Policy source')} · {activePolicyTask.sourceName}</summary><p className="mt-1 text-slate-600 dark:text-slate-300">{t('Characters')} {activePolicyTask.sourceStart + 1}–{activePolicyTask.sourceStart + activePolicyTask.sourceLength} · {t('Version')} {activePolicyTask.contentSha256.slice(0, 12)}</p><blockquote className="mt-1 border-s-2 ps-2">{activePolicyTask.sourceQuote}</blockquote></details>
+                {activePolicyTask.condition && <div className="rounded border border-amber-300 p-2 dark:border-amber-700"><p>{activePolicyTask.condition}</p><label className="mt-2 flex items-start gap-2"><input type="checkbox" checked={templateForm.applicabilityConfirmed} onChange={event => changeTemplateForm({ applicabilityConfirmed: event.target.checked })} />{t('I confirm this task applies to the selected checklist; conditions are not enforced automatically.')}</label></div>}
+                {matchingTemplate ? <div className="rounded border border-amber-300 p-2 dark:border-amber-700"><p className="font-semibold">{t('Update existing task')}: {matchingTemplate.taskTitle}</p><p>{t('Current')}: {matchingTemplate.taskDescription} · {matchingTemplate.category} · {matchingTemplate.assignedToName || t('No owner')} · {t('Due offset: {count} days', { count: matchingTemplate.dueOffsetDays })} · {t(matchingTemplate.isMandatory ? 'Mandatory' : 'Optional')}</p><label className="mt-2 flex items-start gap-2"><input type="checkbox" checked={templateForm.overwriteConfirmed} onChange={event => changeTemplateForm({ overwriteConfirmed: event.target.checked })} />{t('I reviewed the existing task values and want to update this matching task.')}</label></div>
+                  : <p className="text-slate-600 dark:text-slate-300">{t('Save will create a new template task. A changed title creates a separate task; it does not rename an existing one.')}</p>}
+                {policyProblem && <p role="status" className="text-amber-800 dark:text-amber-200">{t(policyProblem)}</p>}
+              </div>}
               <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                {activePolicyTask ? <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">{t('Mandatory')}<select title={t('Mandatory task')} className="input" value={templateForm.isMandatory === null ? '' : templateForm.isMandatory ? 'Required' : 'Optional'} onChange={event => changeTemplateForm({ isMandatory: event.target.value === '' ? null : event.target.value === 'Required' })}><option value="">{t('Not specified — choose')}</option><option value="Required">{t('Required')}</option><option value="Optional">{t('Optional')}</option></select></label> : <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
                   <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-sapphire"
-                    checked={templateForm.isMandatory} onChange={e => setTemplateForm(f => ({ ...f, isMandatory: e.target.checked }))} />
+                    checked={templateForm.isMandatory ?? false} onChange={e => changeTemplateForm({ isMandatory: e.target.checked })} />
                   Mandatory
-                </label>
-                <button type="button" onClick={saveTemplateTask} disabled={templateSaving || !selectedChecklistId}
+                </label>}
+                <button type="button" onClick={saveTemplateTask} disabled={templateSaving || !selectedChecklistId || !canWriteTemplates || (!!activePolicyTask && (!policyScopeWritable || !!policyProblem || templatesLoadedFor !== selectedChecklistId))}
                   className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
                   {templateSaving ? 'Saving…' : 'Save Template Task'}
                 </button>
@@ -2649,7 +2667,7 @@ function OnboardingTab() {
                   ))}
                 </div>
               )}
-              <div className="grid grid-cols-3 gap-2">
+              {!configurationOnly && <><div className="grid grid-cols-3 gap-2">
                 <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
                   value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
                 <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
@@ -2660,14 +2678,14 @@ function OnboardingTab() {
               <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
                 className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
                 Generate Tasks From Checklist
-              </button>
+              </button></>}
             </div>
           </div>
         )}
         {taskError && <p className="mt-3 text-xs text-rose-500">{taskError}</p>}
       </div>
 
-      <div className="flex items-center gap-3">
+      {!configurationOnly && <><div className="flex items-center gap-3">
         <select title="Filter by task status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
           <option value="">All Statuses</option>
@@ -2762,7 +2780,7 @@ function OnboardingTab() {
           ))}
         </div>
       )}
-      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} /></>}
     </div>
   );
 }
@@ -2888,8 +2906,10 @@ function RecruitmentAITab() {
 
 type Tab = 'overview' | 'requisitions' | 'openings' | 'candidates' | 'workforce' | 'interviews' | 'assessments' | 'offers' | 'onboarding' | 'reports' | 'ai';
 
-export function RecruitmentPage({ initialTab }: { initialTab?: Tab } = {}) {
+export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
+  const navigationGuard = useNavigationGuard();
   const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');
+  useEffect(() => { if (!initialTab && new URLSearchParams(window.location.search).get('tab') === 'offers') setTab('offers'); }, [initialTab]);
   const [selectedOpening, setSelectedOpening] = useState<JobOpening | null>(null);
   const [requisitionToOpen, setRequisitionToOpen] = useState<ManpowerRequisition | null>(null);
 
@@ -2922,12 +2942,12 @@ export function RecruitmentPage({ initialTab }: { initialTab?: Tab } = {}) {
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
+      <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
         {tabs.map(t => (
           <button
             key={t.id}
             type="button"
-            onClick={() => { setTab(t.id); if (t.id !== 'openings') setSelectedOpening(null); }}
+            onClick={() => navigationGuard.run(`recruitment:${t.id}`, () => { setTab(t.id); if (t.id !== 'openings') setSelectedOpening(null); })}
             className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
               tab === t.id
                 ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent'
@@ -2960,7 +2980,7 @@ export function RecruitmentPage({ initialTab }: { initialTab?: Tab } = {}) {
       {tab === 'candidates' && <CandidatesTab />}
       {tab === 'interviews' && <InterviewsTab />}
       {tab === 'assessments' && <AssessmentsTab />}
-      {tab === 'offers' && <OffersTab />}
+      {tab === 'offers' && <OffersTab initialDesigner={initialOfferDesigner} />}
       {tab === 'onboarding' && <OnboardingTab />}
       {tab === 'reports' && <ReportsTab />}
       {tab === 'ai' && <RecruitmentAITab />}

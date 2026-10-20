@@ -138,13 +138,15 @@ textarea:focus-visible {
     box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset, 0 2px 8px rgba(47,107,255,0.25);
   }
 
+  /* Hover text is blue-700, the light-theme sapphire used by the contrast overrides below:
+     raw sapphire (#2F6BFF) on the 4% sapphire hover tint is 4.27:1, under WCAG AA for 14px text. */
   .btn-secondary {
     @apply inline-flex h-9 items-center gap-2 rounded-lg
       border border-slate-200/90 bg-white/80 px-3
       text-sm font-semibold text-slate-600
       backdrop-blur-sm
       transition-all duration-150
-      hover:border-sapphire/30 hover:bg-sapphire/[0.04] hover:text-sapphire
+      hover:border-sapphire/30 hover:bg-sapphire/[0.04] hover:text-blue-700
       active:scale-[0.98]
       dark:border-white/[0.09] dark:bg-white/[0.05] dark:text-slate-300
       dark:hover:border-sapphire/30 dark:hover:bg-sapphire/[0.08] dark:hover:text-[#7AABFF];
@@ -649,7 +651,8 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-step-rail { padding: 0.75rem !important; }
   .setup-step-rail nav button { padding-block: 0.4rem; }
   .setup-control-note { display: none !important; }
-  .setup-studio-content { padding: 0.75rem; }
+  .setup-draft-toolbar { padding-block: 0.25rem; }
+  .setup-studio-content { padding: 0.5rem 0.75rem; }
   .setup-studio-heading { margin-bottom: 0.5rem; }
   .setup-company-grid { row-gap: 0.5rem; }
   .setup-company-grid > label > span:first-child { margin-bottom: 0.25rem; }
@@ -662,5 +665,57 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-work-area p { line-height: 1rem; }
   .setup-work-area details { padding: 0.7rem; }
   .setup-work-area > section { padding-top: 0.5rem; }
-  .setup-step-footer { margin-top: 0.5rem; padding-top: 0.5rem; }
+  .setup-step-footer { margin-top: 0.25rem; padding-top: 0.25rem; }
+}
+
+/* On desktop the step's actions (Back/Continue, and the policy guide's Upload/Next) stay pinned to
+ * the bottom of the viewport while the step is taller than the screen, so the next action is never
+ * below the fold — whatever banners the shell shows above. The bar spans the panel's padding so
+ * scrolled content does not show beside it, and its end padding clears the floating Kody launcher.
+ * Sticky needs every ancestor up to the window to avoid overflow:hidden/auto (.setup-studio uses
+ * overflow:clip). Mobile keeps natural scrolling above its own bottom navigation. */
+@media (min-width: 1024px) {
+  .setup-studio-content { --setup-studio-pad-x: 1.25rem; }
+  .setup-step-footer,
+  .setup-policy-guide-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    padding-bottom: 0.75rem;
+    padding-inline-end: 10rem;
+  }
+  .setup-step-footer {
+    margin-inline: calc(-1 * var(--setup-studio-pad-x));
+    padding-inline-start: var(--setup-studio-pad-x);
+    background: #fff;
+  }
+  .dark .setup-step-footer { background: #0d1225; }
+  .setup-policy-guide-footer {
+    margin-inline: -1rem;
+    padding-inline-start: 1rem;
+    background: linear-gradient(rgb(47 107 255 / 0.05), rgb(47 107 255 / 0.05)), #fff;
+  }
+  .dark .setup-policy-guide-footer { background: linear-gradient(rgb(47 107 255 / 0.05), rgb(47 107 255 / 0.05)), #0d1225; }
+}
+@media (min-width: 1024px) and (max-height: 900px) {
+  .setup-studio-content { --setup-studio-pad-x: 0.75rem; }
+  .setup-policy-guide-footer { margin-inline: -0.7rem; padding-inline-start: 0.7rem; }
+}
+
+/* Employee Workspace keeps the application shell as the only viewport scroller. The record rail
+ * becomes a compact horizontal section chooser below desktop without creating a second page-height
+ * scrollbar. */
+.employee-workspace [data-employee-workspace-scroll] {
+  min-block-size: 24rem;
+  overflow: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+  .employee-workspace *,
+  .employee-workspace *::before,
+  .employee-workspace *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

@@ -161,9 +161,9 @@ public sealed class OfferDraftHireMakersTests
             offerId = ((OfferLetter)created.Should().BeOfType<CreatedResult>().Subject.Value!).Id;
         }
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, tenantId, sender).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, sender)).Should().BeOfType<OkObjectResult>();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, tenantId, acceptor).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await Applications(db, tenantId, acceptor, true).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId))).Should().BeOfType<OkObjectResult>();
 
         Guid draftId;
         await using (var read = _fixture.CreateDb())
@@ -172,6 +172,8 @@ public sealed class OfferDraftHireMakersTests
         // DraftStatutoryIdentity. These tests are about who may activate a hire, not about readiness.
         await using (var db = _fixture.CreateDb())
             await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
+        await using (var db = _fixture.CreateDb())
+            await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, acceptor);
         return new World(tenantId, draftId, sender, acceptor, checker);
     }
 
@@ -184,8 +186,8 @@ public sealed class OfferDraftHireMakersTests
 
     // ── Controllers (constructed the way the other recruitment tests do: no DI, fallbacks apply) ──
 
-    private static ApplicationsController Applications(ZayraDbContext db, Guid tenantId, Guid userId) =>
-        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new HireMakersNullNotifications()), tenantId, userId);
+    private static ApplicationsController Applications(ZayraDbContext db, Guid tenantId, Guid userId, bool managed = false) =>
+        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new HireMakersNullNotifications(), managed ? OfferWorkflowTestSupport.Lifecycle(db) : null), tenantId, userId);
 
     private static EmployeesController Employees(ZayraDbContext db, Guid tenantId, Guid userId) =>
         WithPrincipal(new EmployeesController(

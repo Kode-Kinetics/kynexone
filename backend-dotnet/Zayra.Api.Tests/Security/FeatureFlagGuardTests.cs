@@ -59,13 +59,13 @@ public class FeatureFlagGuardTests
 
         IActionResult? result = null;
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
+        await filter.OnResourceExecutionAsync(ctx, () =>
         {
             result = null;
-            return Task.FromResult(new ActionExecutedContext(actionCtx, [], null!));
+            return Task.FromResult(new ResourceExecutedContext(actionCtx, []));
         });
 
         return ctx.Result ?? result;
@@ -226,11 +226,11 @@ public class FeatureFlagGuardTests
         httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeNull("absent flag must default to allowed");
     }
@@ -262,11 +262,11 @@ public class FeatureFlagGuardTests
         httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeNull($"'{path}' is always-allowed and must not be blocked");
     }
@@ -286,11 +286,11 @@ public class FeatureFlagGuardTests
         }, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeNull("platform admin has no tenant_id claim and must bypass the guard");
     }
@@ -320,11 +320,11 @@ public class FeatureFlagGuardTests
         httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeNull("TenantB has AI enabled; TenantA's disabled flag must not affect it");
     }
@@ -353,11 +353,11 @@ public class FeatureFlagGuardTests
         httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = MakeFilter(db);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeOfType<ObjectResult>()
             .Which.StatusCode.Should().Be(403, "TenantA's payroll is disabled; TenantB's flag must not grant access to TenantA");

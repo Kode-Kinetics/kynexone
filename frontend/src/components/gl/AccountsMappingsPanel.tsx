@@ -552,6 +552,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              data-setup-filter
               aria-label={t('Search accounts by code or name')}
               placeholder={t('Search by code or name')}
               className="input h-8 w-full ps-8 text-xs"
@@ -560,6 +561,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
+            data-setup-filter
             aria-label={t('Filter by account type')}
             className="select h-8 text-xs"
           >

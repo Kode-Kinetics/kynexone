@@ -26,8 +26,76 @@ namespace Zayra.Api.Tests;
 /// </summary>
 public class WorkEmailDerivationTests
 {
+    [Fact]
+    public void CollisionSuggestion_RemainsValidAtMaximumAddressLength()
+    {
+        var local = new string('a', 64);
+        var domain = new string('b', 63) + "." + new string('c', 63) + "." + new string('d', 61);
+        var candidate = WorkEmailDeriver.Uniqueify(local, domain, email => email == local + "@" + domain);
+        candidate.Should().Be(new string('a', 63) + "2@" + domain);
+        WorkEmailFormatException.IsInvalid(candidate).Should().BeFalse();
+    }
+
+    [Fact]
+    public void LongNameSuggestion_IsValidAndDoesNotSaveAnAddress()
+    {
+        var candidate = WorkEmailDeriver.Suggest(new string('a', 100) + " Smith", null, "acme.sa", WorkEmailPatterns.FirstLast, _ => false);
+        candidate.Should().NotBeNullOrEmpty();
+        WorkEmailFormatException.IsInvalid(candidate).Should().BeFalse();
+    }
+    [Theory]
+    [InlineData("acme.sa")]
+    [InlineData("")]
+    public void Resolve_PreservesCompleteItIssuedAddress_WithoutCompanyDomainRestriction(string companyDomain)
+    {
+        WorkEmailDeriver.Resolve("  John.Smith@subsidiary.example  ", "Ignored Name", null,
+            companyDomain, WorkEmailPatterns.Flast, _ => false, out _, out _)
+            .Should().Be("John.Smith@subsidiary.example");
+    }
+
+    [Theory]
+    [InlineData("john")]
+    [InlineData("john@")]
+    [InlineData("john@@example.com")]
+    [InlineData("john@bad domain.com")]
+    [InlineData("john..smith@example.com")]
+    public void Resolve_RejectsIncompleteOrMalformedAddress_InsteadOfInventingOne(string address)
+    {
+        var act = () => WorkEmailDeriver.Resolve(address, "John Smith", null, "acme.sa",
+            WorkEmailPatterns.FirstLast, _ => false, out _, out _);
+        act.Should().Throw<WorkEmailFormatException>();
+    }
+
+    [Fact]
+    public async Task Create_NoCompanyDomain_StillRejectsDuplicateItIssuedAddress()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        var company = await SeedCompany(db, tenantId, "Acme");
+        await Svc(db).CreateAsync(tenantId, Req("John Smith", "john@subsidiary.example", company.Id), Ctx(tenantId), CancellationToken.None);
+        var act = () => Svc(db).CreateAsync(tenantId, Req("Other Person", "JOHN@SUBSIDIARY.EXAMPLE", company.Id), Ctx(tenantId), CancellationToken.None);
+        await act.Should().ThrowAsync<WorkEmailConflictException>();
+    }
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+
+    [Theory]
+    [InlineData("acme.sa")]
+    [InlineData("")]
+    public async Task Preview_ChecksExactItIssuedAddressWithoutReplacingItsDomain(string companyDomain)
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenant(db);
+        var company = await SeedCompany(db, tenantId, "Acme", companyDomain);
+        await Svc(db).CreateAsync(tenantId, Req("Existing Person", "john@subsidiary.example", company.Id), Ctx(tenantId), CancellationToken.None);
+        var ctrl = ImportController(db, tenantId);
+        var result = await ctrl.DeriveWorkEmail(new DeriveWorkEmailRequest("John Smith", null, company.Id, null, null, "john@subsidiary.example"), CancellationToken.None);
+        var response = Assert.IsType<DeriveWorkEmailResponse>(Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(result.Result).Value);
+        response.WorkEmail.Should().Be("john@subsidiary.example");
+        response.Unique.Should().BeFalse();
+        response.SuggestedWorkEmail.Should().Be("john2@subsidiary.example");
+        (await db.Employees.SingleAsync()).WorkEmail.Should().Be("john@subsidiary.example");
+    }
 
     private static async Task<Guid> SeedTenant(ZayraDbContext db)
     {
@@ -116,17 +184,13 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public void Resolve_RefusesForeignDomain_AndThrowsOnUserSuppliedCollision()
+    public void Resolve_PreservesOtherDomain_AndThrowsOnUserSuppliedCollision()
     {
         var taken = new HashSet<string> { "taken@acme.sa" };
         bool IsTaken(string a) => taken.Contains(a);
 
-        // UPDATED (employee-access contract §3): a foreign domain is REFUSED (422 work_email_wrong_domain), never
-        // silently coerced — the work email is the login's username and must be the person's real address.
-        var refused = Assert.Throws<WorkEmailRejectedException>(() =>
-            WorkEmailDeriver.Resolve("john@evil.com", "John Smith", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out _, out _));
-        refused.Code.Should().Be(WorkEmailRejectedException.WrongDomainCode);
-        refused.SuggestedWorkEmail.Should().Be("john@acme.sa");
+        WorkEmailDeriver.Resolve("john@subsidiary.example", "John Smith", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out _, out _)
+            .Should().Be("john@subsidiary.example");
 
         // User-supplied collision → deliberate stop.
         var act = () => WorkEmailDeriver.Resolve("taken@acme.sa", "X", null, "acme.sa", WorkEmailPatterns.FirstLast, IsTaken, out _, out _);
@@ -197,7 +261,7 @@ public class WorkEmailDerivationTests
         var svc = Svc(db);
 
         // UPDATED: the first John Smith's address is typed; the second one's SUGGESTION skips past it.
-        (await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None))
+        (await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None))
             .WorkEmail.Should().Be("john.smith@acme.sa");
         (await svc.CreateAsync(tenantId, Req("John Smith", null, acme.Id), Ctx(tenantId), CancellationToken.None))
             .SuggestedWorkEmail.Should().Be("john.smith2@acme.sa");
@@ -210,10 +274,10 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         // A DIFFERENT person who supplies the SAME local part must not silently duplicate the login identity.
-        var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
         (await act.Should().ThrowAsync<WorkEmailConflictException>()).Which.Suggestion.Should().Be("john.smith2@acme.sa");
     }
 
@@ -224,23 +288,22 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None); // john.smith@acme.sa
+        await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None); // john.smith@acme.sa
 
         // "John.Smith" differs only by case; normalized it is the SAME login → must conflict, not create a twin.
-        var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "John.Smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var act = () => svc.CreateAsync(tenantId, Req("Jane Doe", "John.Smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
         await act.Should().ThrowAsync<WorkEmailConflictException>();
     }
 
     [Fact]
-    public async Task Create_ForeignDomain_IsRefused()
+    public async Task Create_ItIssuedOtherDomain_IsSavedUnchanged()
     {
-        // UPDATED (employee-access contract §3): 422 work_email_wrong_domain instead of silent coercion.
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
 
-        var act = () => Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith@evil.com", acme.Id), Ctx(tenantId), CancellationToken.None);
-        (await act.Should().ThrowAsync<WorkEmailRejectedException>()).Which.Message.Should().Be("Work email must end in @acme.sa.");
+        var result = await Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith@subsidiary.example", acme.Id), Ctx(tenantId), CancellationToken.None);
+        result.WorkEmail.Should().Be("john.smith@subsidiary.example");
     }
 
     [Fact]
@@ -289,7 +352,7 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         // UPDATED (employee-access contract §3): addresses are typed, never derived. (This tenant has no Employee
         // role, so the create staged no login of its own.) Provision a linked, still-STAGED login on the address.
@@ -300,7 +363,7 @@ public class WorkEmailDerivationTests
         emp.UserAccountId = user.Id;
         await db.SaveChangesAsync();
 
-        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         (await db.Employees.FirstAsync(e => e.Id == created.Id)).WorkEmail.Should().Be("john.smithers@acme.sa");
         (await db.Users.FirstAsync(u => u.Id == user.Id)).NormalizedEmail.Should().Be("JOHN.SMITHERS@ACME.SA");
@@ -316,7 +379,7 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         var user = new User
         {
@@ -328,7 +391,7 @@ public class WorkEmailDerivationTests
         if (legacyPointer) (await db.Employees.FirstAsync(e => e.Id == created.Id)).UserAccountId = user.Id;
         await db.SaveChangesAsync();
 
-        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var updated = await svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         updated!.WorkEmail.Should().Be("john.smithers@acme.sa");
         updated.LoginUsernameDiffers.Should().BeTrue();
@@ -344,7 +407,7 @@ public class WorkEmailDerivationTests
         var tenantId = await SeedTenant(db);
         var acme = await SeedCompany(db, tenantId, "Acme", "acme.sa");
         var svc = Svc(db);
-        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var created = await svc.CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
 
         var user = StagedLogin(tenantId, "john.smith@acme.sa", "John Smith");
         var other = new User { TenantId = tenantId, Email = "john.smithers@acme.sa", NormalizedEmail = "JOHN.SMITHERS@ACME.SA", FullName = "Other", PasswordHash = "x" };
@@ -355,7 +418,7 @@ public class WorkEmailDerivationTests
         await db.SaveChangesAsync();
 
         // Renaming to john.smithers@acme.sa would collide with `other`'s login → blocked (no desync).
-        var act = () => svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers", acme.Id), Ctx(tenantId), CancellationToken.None);
+        var act = () => svc.UpdateAsync(tenantId, created.Id, Req("John Smithers", "john.smithers@acme.sa", acme.Id), Ctx(tenantId), CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
@@ -372,9 +435,9 @@ public class WorkEmailDerivationTests
         var ctx = Ctx(tenantId);
 
         // UPDATED (employee-access contract §3): the addresses are typed (nothing is derived any more).
-        var plain = await Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith", acme.Id), ctx, CancellationToken.None);
+        var plain = await Svc(db).CreateAsync(tenantId, Req("John Smith", "john.smith@acme.sa", acme.Id), ctx, CancellationToken.None);
         plain.WorkEmailHasExistingLogin.Should().BeFalse();
-        var clash = await Svc(db).CreateAsync(tenantId, Req("Jane Doe", "jane.doe", acme.Id), ctx, CancellationToken.None);
+        var clash = await Svc(db).CreateAsync(tenantId, Req("Jane Doe", "jane.doe@acme.sa", acme.Id), ctx, CancellationToken.None);
         clash.WorkEmail.Should().Be("jane.doe@acme.sa", "a login with the address never blocks the create");
         clash.WorkEmailHasExistingLogin.Should().BeTrue();
 
@@ -458,7 +521,7 @@ public class WorkEmailDerivationTests
     }
 
     [Fact]
-    public async Task Import_ProvidedEmailDomainMismatch_IsFlagged_RowStillImports()
+    public async Task Import_ItIssuedOtherDomain_IsNotFlaggedAsMismatch()
     {
         await using var db = CreateDb();
         var tenantId = await SeedTenant(db);
@@ -473,7 +536,7 @@ public class WorkEmailDerivationTests
         var e1 = await db.Employees.SingleAsync(e => e.EmployeeCode == "E1");
         e1.WorkEmail.Should().Be("john@wrong.com"); // provided value kept as-is (accept-never-block)
         (await db.EmployeeImportGaps.Where(g => g.EmployeeId == e1.Id).Select(g => g.GapType).ToListAsync())
-            .Should().Contain("email:domain-mismatch");
+            .Should().NotContain("email:domain-mismatch");
     }
 
     [Fact]

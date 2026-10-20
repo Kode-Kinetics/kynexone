@@ -21,7 +21,7 @@ public sealed record EmployeeAccessDto(
     int EmployeeId, string EmployeeName, string EmployeeCode, string WorkEmail, string State,
     DateTime? CodeExpiresAtUtc, string? CodeIssuedByName, DateTime? LastCodeExpiredAtUtc, DateTime? LastSignInAtUtc,
     /// <summary>Codes the UI maps: stoppedReason left_company | disabled_by_admin; blockedReason = blockedCode
-    /// (company_email_domain_missing, email_belongs_to_existing_login, email_belongs_to_former_employee, …).</summary>
+    /// (work_email_invalid_format, email_belongs_to_existing_login, email_belongs_to_former_employee, …).</summary>
     string? StoppedReason, string? BlockedCode, string? BlockedReason, bool CanIssue,
     /// <summary>The workspace has a working email transport (codes are emailed instead of printed).</summary>
     bool EmailDelivery)
@@ -599,9 +599,6 @@ public sealed class EmployeeAccessService
         // Outside the caller's companies (or data scope) an employee number simply isn't found.
         var byCode = employees.Where(e => scope.CanAccessCompany(e.CompanyId) && (allowedEmployeeIds is null || allowedEmployeeIds.Contains(e.Id)))
             .GroupBy(e => e.EmployeeCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        var companyIds = employees.Where(e => e.CompanyId.HasValue).Select(e => e.CompanyId!.Value).Distinct().ToList();
-        var domains = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).AsNoTracking()
-            .Where(c => companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => (c.EmailDomain ?? string.Empty).Trim().ToLowerInvariant(), ct);
         var states = await EmployeeAccessStates.EvaluateAsync(_db, tenantId, byCode.Values.Select(e => e.Id).ToList(), DateTime.UtcNow, ct);
 
         // Addresses taken by OTHER employees or by logins.
@@ -623,9 +620,7 @@ public sealed class EmployeeAccessService
             if (dupEmails.Contains(norm)) { conflicts.Add(new(code, email, "duplicate_in_file")); continue; }
             if (WorkEmailPlusAddressException.IsPlusAddressed(email)) { conflicts.Add(new(code, email, WorkEmailPlusAddressException.Code)); continue; }
             if (WorkEmailInvalidCharactersException.IsInvalid(email)) { conflicts.Add(new(code, email, WorkEmailInvalidCharactersException.Code)); continue; }
-            var domain = e.CompanyId is Guid cid && domains.TryGetValue(cid, out var d) ? d : string.Empty;
-            if (domain.Length == 0) { conflicts.Add(new(code, email, EmployeeLoginProvisioner.BlockedCodes.CompanyEmailDomainMissing)); continue; }
-            if (!EmployeeLoginProvisioner.IsOnDomain(email, domain)) { wrongDomain.Add(new(code, email, domain)); continue; }
+            if (WorkEmailFormatException.IsInvalid(email)) { conflicts.Add(new(code, email, WorkEmailFormatException.Code)); continue; }
             if (string.Equals(AuthService.Normalize(e.WorkEmail ?? string.Empty), norm, StringComparison.Ordinal))
             { matched.Add(new(e.Id, e.EmployeeCode, e.FullName, e.WorkEmail ?? string.Empty, email.ToLowerInvariant())); continue; } // idempotent re-run
             if (takenByEmployees.TryGetValue(norm, out var others) && others.Any(id => id != e.Id))

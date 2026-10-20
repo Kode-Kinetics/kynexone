@@ -330,19 +330,19 @@ public class ReleaseAContractTests
         notOptIn.Should().Throw<ArgumentException>();
     }
 
-    private static async Task<(ActionExecutingContext Context, Func<bool> Passed)> RunAsync(
-        IAsyncActionFilter filter, string path, Guid tenantId, IServiceProvider? services = null)
+    private static async Task<(ResourceExecutingContext Context, Func<bool> Passed)> RunAsync(
+        IAsyncResourceFilter filter, string path, Guid tenantId, IServiceProvider? services = null)
     {
         var http = new DefaultHttpContext { RequestServices = services! };
         http.Request.Path = path;
         http.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("tenant_id", tenantId.ToString())], "Test"));
         var action = new ActionContext(http, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(action, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(action, [], []);
         var passed = false;
-        await filter.OnActionExecutionAsync(ctx, () =>
+        await filter.OnResourceExecutionAsync(ctx, () =>
         {
             passed = true;
-            return Task.FromResult(new ActionExecutedContext(action, [], null!));
+            return Task.FromResult(new ResourceExecutedContext(action, []));
         });
         return (ctx, () => passed);
     }

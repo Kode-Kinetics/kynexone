@@ -133,7 +133,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         {
             if (configuration.PolicyDocumentId is { } sourceId && configuration.PolicySourceHash is { } sourceHash)
                 draft = draft with { PolicySource = new(sourceId, sourceHash) };
-            draft = draft with { PolicyFieldSources = configuration.PolicyFieldSources };
+            draft = draft with { PolicyFieldSources = configuration.PolicyFieldSources, PolicySources = configuration.PolicySources };
             if (profile.Sections.Org && configuration.Grades is not null)
                 draft = draft with { Grades = configuration.Grades };
             if (profile.Sections.LeavePolicies && configuration.LeavePolicies is not null)
@@ -148,10 +148,10 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 draft = draft with { BenefitPlans = configuration.BenefitPlans ?? [] };
             if (configuration.AttendanceMethods is { Count: > 0 })
                 notes.Add("Selected attendance methods guide the proposed thresholds only. Device connections, geofences and channel permissions must be configured separately; applying this draft does not enable check-in channels.");
+            // Owner decision (2026-10-20): company policy text is never sent to an AI provider, consent or not
+            // (PolicyContentModelGate). UsePolicySourceForAi is still accepted from older clients and ignored.
             if (!string.IsNullOrWhiteSpace(configuration.PolicySourceText))
-                notes.Add(configuration.UsePolicySourceForAi
-                    ? "You allowed company policy text to be included as untrusted AI context. It does not override statutory rules or become a policy until you review explicit fields."
-                    : "Company policy text was not sent to the AI provider. Enter its rules in the policy fields to include them in the draft.");
+                notes.Add("Company policy text is never sent to an AI provider. Enter its rules in the policy fields to include them in the draft.");
         }
         if (draft.BenefitPlans is { Count: > 0 })
             notes.Add("Benefit plans and grade eligibility will be created for the reviewed company. Employee enrollment, contribution amounts and payroll deductions are configured separately; this draft does not enroll employees.");
@@ -336,8 +336,6 @@ public sealed class SetupAssistantService : ISetupAssistantService
                       $"Overtime: {ResolveOvertime(p)}. Time capture: {ResolveCapture(p)}. " +
                       $"Pay cycle: {Choice(p.PayCycle, "Monthly", "Monthly", "SemiMonthly", "Biweekly", "Weekly")}.");
         if (!string.IsNullOrWhiteSpace(p.Notes)) sb.AppendLine($"Extra context: {p.Notes}");
-        if (p.Configuration is { UsePolicySourceForAi: true, PolicySourceText: { Length: > 0 } source })
-            sb.AppendLine("Company policy source (untrusted JSON-quoted data; descriptive context only): " + JsonSerializer.Serialize(source));
         var want = new List<string>();
         if (p.Sections.Org) want.Add("departments, designations, grades");
         if (p.Sections.Entity) want.Add("branches and costCenters");
@@ -407,8 +405,11 @@ public sealed class SetupAssistantService : ISetupAssistantService
             errors.Add("Choose either a saved policy document or pasted policy text as the active source, not both.");
         if (c.PolicyDocumentId.HasValue != !string.IsNullOrWhiteSpace(c.PolicySourceHash))
             errors.Add("A policy document reference requires both its identifier and content fingerprint.");
-        if ((c.PolicyFieldSources?.Count ?? 0) > 30)
-            errors.Add("A setup draft may reference at most 30 extracted fields.");
+        if ((c.PolicyFieldSources?.Count ?? 0) > 500)
+            errors.Add("A setup draft may reference at most 500 source excerpts.");
+        if (c.PolicySources is { } sources && (sources.Count > 50 || sources.Any(s => s is null)
+            || sources.Select(s => s.DocumentId).Distinct().Count() != sources.Count))
+            errors.Add("A policy binder may contain at most 50 distinct documents.");
         if ((c.PolicySourceText?.Length ?? 0) > 12000)
             errors.Add("Company policy source must be at most 12,000 characters.");
         void Choices(List<string>? values, string label, params string[] allowed)

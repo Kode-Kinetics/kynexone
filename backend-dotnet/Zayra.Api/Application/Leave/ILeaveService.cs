@@ -24,6 +24,10 @@ public interface ILeaveService
     Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default);
     Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default);
     Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default);
+    /// <summary>Approves a pending cancellation of an approved leave: cancels the leave and records the decision in one transaction.</summary>
+    Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default);
+    /// <summary>Refuses a pending cancellation of an approved leave: the leave stays Approved, the refusal is recorded.</summary>
+    Task<LeaveRequest> RejectCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default);
     /// <summary>For each request that is KSA statutory leave: the employee's other pending or approved
     /// leave of the same kind (marked whether it is the same statutory event), and the request's own event
     /// date and separate-event declaration — the approver's view.</summary>
@@ -50,3 +54,10 @@ public sealed record StatutoryLeaveHistoryItem(
 /// <param name="SeparateEventReason">Set when the requester declared this a separate event.</param>
 public sealed record StatutoryLeaveContext(
     string StatutoryKind, IReadOnlyList<StatutoryLeaveHistoryItem> History, DateOnly? EventDate, string? SeparateEventReason);
+
+/// <summary>
+/// A leave decision refused because another decision about the same leave committed first (for example a
+/// cancellation that was already rejected, or a leave that is no longer awaiting a cancellation decision).
+/// Answered as 409 <c>invalid_leave_state</c>: the reviewer reloads and sees the decision that won.
+/// </summary>
+public sealed class LeaveDecisionConflictException(string message) : InvalidOperationException(message);

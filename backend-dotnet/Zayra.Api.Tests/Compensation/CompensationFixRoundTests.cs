@@ -62,7 +62,7 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
             ctrl.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
             {
                 new Claim("tenant_id", w.Tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, w.UserHr.ToString()),
-                new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "employees.delete"),
+                new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "employees.write"), new Claim("permission", "employees.delete"),
             }, "Test"));
             (await ctrl.Delete(w.ManagerB, default)).Should().BeOfType<NoContentResult>();
         }

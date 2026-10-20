@@ -43,7 +43,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var offerId = await GenerateAsync(w, w.Author);
 
         await using var db = _fixture.CreateDb();
-        var sent = await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None);
+        var sent = await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author);
 
         ErrorOf(sent.Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_approval_required");
         (await StatusOf(offerId)).Should().Be("Draft");
@@ -56,7 +56,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var offerId = await GenerateAsync(w, w.Author);
 
         await using var db = _fixture.CreateDb();
-        (await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None))
+        (await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author))
             .Should().BeOfType<OkObjectResult>();
     }
 
@@ -80,10 +80,10 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var revisedId = await GenerateAsync(w, w.Author);
 
         await using (var db = _fixture.CreateDb())
-            ErrorOf((await Applications(db, w.TenantId, w.Author).SendOffer(revisedId, CancellationToken.None))
+            ErrorOf((await OfferWorkflowTestSupport.IssueAsync(db, revisedId, w.Author))
                 .Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_approval_required");
         await using (var db = _fixture.CreateDb())
-            ErrorOf((await Offers(db, w.TenantId, w.Author).Send(revisedId, CancellationToken.None))
+            ErrorOf((await OfferWorkflowTestSupport.IssueAsync(db, revisedId, w.Author))
                 .Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_approval_required");
         (await StatusOf(revisedId)).Should().Be("Draft");
     }
@@ -99,11 +99,11 @@ public sealed class RecruitmentOfferMakerCheckerTests
         await using (var db = _fixture.CreateDb())
         {
             var self = await Offers(db, w.TenantId, w.Author).AddApproval(
-                offerId, new AddOfferApprovalRequest("Me", w.Author, "HR Manager"), CancellationToken.None);
+                offerId, new AddOfferApprovalRequest("Me", w.Author, "HR Manager", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None);
             ErrorOf((ObjectResult)self).Should().Be("offer_maker_checker");
         }
         await using (var db = _fixture.CreateDb())
-            ErrorOf((await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None))
+            ErrorOf((await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author))
                 .Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_approval_required");
 
         (await StatusOf(offerId)).Should().Be("Draft");
@@ -119,11 +119,11 @@ public sealed class RecruitmentOfferMakerCheckerTests
 
         await using (var db = _fixture.CreateDb())
             ErrorOf((ObjectResult)await Offers(db, w.TenantId, w.Author).AddApproval(
-                offerId, new AddOfferApprovalRequest("Anyone", null, "Finance"), CancellationToken.None))
+                offerId, new AddOfferApprovalRequest("Anyone", null, "Finance", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None))
                 .Should().Be("offer_approver_required");
         await using (var db = _fixture.CreateDb())
             ErrorOf((ObjectResult)await Offers(db, w.TenantId, w.Author).AddApproval(
-                offerId, new AddOfferApprovalRequest("Staff", w.Staff, "Employee"), CancellationToken.None))
+                offerId, new AddOfferApprovalRequest("Staff", w.Staff, "Employee", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None))
                 .Should().Be("offer_approver_ineligible");
 
         await using var verify = _fixture.CreateDb();
@@ -142,14 +142,14 @@ public sealed class RecruitmentOfferMakerCheckerTests
         {
             await using var db = _fixture.CreateDb();
             var refused = await Offers(db, w.TenantId, intruder).DecideApproval(
-                offerId, stepId, new DecideApprovalRequest("Approved", "looks fine"), CancellationToken.None);
+                offerId, stepId, new DecideApprovalRequest("Approved", "looks fine", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None);
             ((ObjectResult)refused).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
         }
         (await StatusOf(offerId)).Should().Be("PendingApproval");
 
         await using (var db = _fixture.CreateDb())
             (await Offers(db, w.TenantId, w.Checker).DecideApproval(
-                offerId, stepId, new DecideApprovalRequest("Approved", "within band"), CancellationToken.None))
+                offerId, stepId, new DecideApprovalRequest("Approved", "within band", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None))
                 .Should().BeOfType<OkObjectResult>();
 
         (await StatusOf(offerId)).Should().Be("Approved");
@@ -167,19 +167,19 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var stepId = await AddStepAsync(w, offerId, w.Checker);
         await using (var db = _fixture.CreateDb())
             (await Offers(db, w.TenantId, w.Checker).DecideApproval(
-                offerId, stepId, new DecideApprovalRequest("Approved", null), CancellationToken.None))
+                offerId, stepId, new DecideApprovalRequest("Approved", null, await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None))
                 .Should().BeOfType<OkObjectResult>();
 
         await using (var db = _fixture.CreateDb())
-            ErrorOf((await Applications(db, w.TenantId, w.Checker).SendOffer(offerId, CancellationToken.None))
+            ErrorOf((await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Checker))
                 .Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_maker_checker");
         await using (var db = _fixture.CreateDb())
-            ErrorOf((await Offers(db, w.TenantId, w.Checker).Send(offerId, CancellationToken.None))
+            ErrorOf((await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Checker))
                 .Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("offer_maker_checker");
         (await StatusOf(offerId)).Should().Be("Approved");
 
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None))
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author))
                 .Should().BeOfType<OkObjectResult>();
         (await StatusOf(offerId)).Should().Be("Sent");
     }
@@ -194,15 +194,15 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var w = await SeedWorldAsync(policy: "false");
         var offerId = await GenerateAsync(w, w.Author);
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author)).Should().BeOfType<OkObjectResult>();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId))).Should().BeOfType<OkObjectResult>();
 
         await using (var db = _fixture.CreateDb())
         {
             var declined = await Applications(db, w.TenantId, w.Author)
-                .DeclineOffer(offerId, new DeclineOfferRequest("changed mind"), CancellationToken.None);
-            ErrorOf(declined.Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("invalid_offer_state");
+                .DeclineOffer(offerId, new DeclineOfferRequest("changed mind", await OfferWorkflowTestSupport.VersionAsync(db, offerId), "Declined", "StaffRecorded", DateTime.UtcNow), CancellationToken.None);
+            ErrorOf(declined.Should().BeOfType<ConflictObjectResult>().Subject).Should().Be("application_not_active");
         }
 
         (await StatusOf(offerId)).Should().Be("Accepted");
@@ -217,9 +217,9 @@ public sealed class RecruitmentOfferMakerCheckerTests
         var w = await SeedWorldAsync(policy: "false");
         var offerId = await GenerateAsync(w, w.Author);
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.Author).SendOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await OfferWorkflowTestSupport.IssueAsync(db, offerId, w.Author)).Should().BeOfType<OkObjectResult>();
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId))).Should().BeOfType<OkObjectResult>();
 
         await using var verify = _fixture.CreateDb();
         var draftId = (await verify.JobApplications.AsNoTracking().SingleAsync(x => x.Id == w.ApplicationId)).OnboardingDraftId!.Value;
@@ -251,7 +251,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
             await db.SaveChangesAsync();
         }
         await using (var db = _fixture.CreateDb())
-            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            (await Applications(db, w.TenantId, w.OtherHr).AcceptOffer(offerId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, offerId))).Should().BeOfType<OkObjectResult>();
         Guid draftId;
         await using (var db = _fixture.CreateDb())
             draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == w.ApplicationId)).OnboardingDraftId!.Value;
@@ -282,7 +282,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
         Guid TenantId, Guid ApplicationId, Guid? CompanyId,
         Guid Author, Guid Checker, Guid OtherHr, Guid Staff);
 
-    private async Task<World> SeedWorldAsync(string? policy = null, string? companyCurrency = null, bool departmentInOtherEntity = false)
+    private async Task<World> SeedWorldAsync(string? policy = null, string? companyCurrency = "SAR", bool departmentInOtherEntity = false)
     {
         await using var db = _fixture.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -368,16 +368,18 @@ public sealed class RecruitmentOfferMakerCheckerTests
         await using var db = _fixture.CreateDb();
         var created = await Applications(db, w.TenantId, userId).GenerateOffer(
             w.ApplicationId,
-            new GenerateOfferRequest(department, DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1)), 20_000, 5_000, 1_500, 0, 3),
+            new GenerateOfferRequest(department, DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1)), 20_000, 5_000, 1_500, 0, 3, ExpectedApplicationVersion: (await db.JobApplications.AsNoTracking().SingleAsync(a => a.Id == w.ApplicationId)).Version),
             CancellationToken.None);
-        return ((OfferLetter)created.Should().BeOfType<CreatedResult>().Subject.Value!).Id;
+        var id = ((OfferLetter)created.Should().BeOfType<CreatedResult>().Subject.Value!).Id;
+        await OfferWorkflowTestSupport.PrepareAsync(db, id, userId);
+        return id;
     }
 
     private async Task<Guid> AddStepAsync(World w, Guid offerId, Guid approver)
     {
         await using var db = _fixture.CreateDb();
         var added = await Offers(db, w.TenantId, w.Author).AddApproval(
-            offerId, new AddOfferApprovalRequest("Checker", approver, "HR Manager"), CancellationToken.None);
+            offerId, new AddOfferApprovalRequest("Checker", approver, "HR Manager", await OfferWorkflowTestSupport.VersionAsync(db, offerId)), CancellationToken.None);
         return ((OfferApproval)added.Should().BeOfType<OkObjectResult>().Subject.Value!).Id;
     }
 
@@ -393,10 +395,10 @@ public sealed class RecruitmentOfferMakerCheckerTests
     // ── Controllers ───────────────────────────────────────────────────────────
 
     private static ApplicationsController Applications(ZayraDbContext db, Guid tenantId, Guid userId) =>
-        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new MakerCheckerNullNotifications()), tenantId, userId);
+        WithPrincipal(new ApplicationsController(db, new RecruitmentService(db), new MakerCheckerNullNotifications(), OfferWorkflowTestSupport.Lifecycle(db)), tenantId, userId);
 
     private static OffersController Offers(ZayraDbContext db, Guid tenantId, Guid userId) =>
-        WithPrincipal(new OffersController(db, new MakerCheckerNullLetters(), new RecruitmentService(db)), tenantId, userId);
+        WithPrincipal(new OffersController(db, new MakerCheckerNullLetters(), new RecruitmentService(db), OfferWorkflowTestSupport.Lifecycle(db), OfferWorkflowTestSupport.Artifacts(db)), tenantId, userId);
 
     private static EmployeesController Employees(ZayraDbContext db, Guid tenantId, Guid userId) =>
         WithPrincipal(new EmployeesController(

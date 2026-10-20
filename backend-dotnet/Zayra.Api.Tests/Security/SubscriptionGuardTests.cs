@@ -45,11 +45,11 @@ public class SubscriptionGuardTests
         httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = new SubscriptionGuardFilter(db, NullLogger<SubscriptionGuardFilter>.Instance);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         return (ctx.Result, httpCtx);
     }
@@ -312,11 +312,11 @@ public class SubscriptionGuardTests
         }, "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
-        var ctx = new ActionExecutingContext(actionCtx, [], new Dictionary<string, object?>(), null!);
+        var ctx = new ResourceExecutingContext(actionCtx, [], []);
 
         var filter = new SubscriptionGuardFilter(db, NullLogger<SubscriptionGuardFilter>.Instance);
-        await filter.OnActionExecutionAsync(ctx, () =>
-            Task.FromResult(new ActionExecutedContext(actionCtx, [], null!)));
+        await filter.OnResourceExecutionAsync(ctx, () =>
+            Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
         ctx.Result.Should().BeNull("no tenant_id claim = platform admin; must bypass");
     }

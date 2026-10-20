@@ -45,6 +45,17 @@ public sealed record EmailDeliveryResult(EmailDeliveryStatus Status, string Deta
 /// </summary>
 public sealed class EmailNotConfiguredException(string message) : InvalidOperationException(message);
 
+public sealed record EffectiveEmailSender(bool Configured, string Mode, string Source, string? FromAddress,
+    string? FromName, string ConfigurationFingerprint, bool RecipientRestricted);
+
+/// <summary>Only a conclusive pre-submission failure permits safe offer retry. Never store raw provider errors.</summary>
+public sealed class EmailTransportException(string code, bool submissionMayHaveStarted, Exception? inner = null)
+    : IOException(code, inner)
+{
+    public string Code { get; } = code;
+    public bool SubmissionMayHaveStarted { get; } = submissionMayHaveStarted;
+}
+
 public enum EmailTransportMode
 {
     /// <summary>Send through the configured SMTP relay (the default).</summary>

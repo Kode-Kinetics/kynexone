@@ -10,6 +10,7 @@ import {
   type AIHRQueryLog,
 } from '../api/intelligence';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
+import { usePolicyIntake } from '../lib/policyIntake';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { usePagedList } from '../hooks/usePagedList';
 import { requestFailureReason } from '../lib/requestFailure';
@@ -53,6 +54,7 @@ const SUGGESTIONS = [
 
 export default function AIAssistantPage() {
   const [tab, setTab] = useState<Tab>('assistant');
+  const policyIntake = usePolicyIntake();
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -155,7 +157,8 @@ export default function AIAssistantPage() {
     { id: 'insights', label: 'Insights' },
     { id: 'risk', label: 'Risk Scores' },
     { id: 'history', label: 'Query Log' },
-    { id: 'policy-docs', label: 'Policy Documents' },
+    // Policy documents exist only while the tenant has policy intake switched on (off by the owner's decision).
+    ...(policyIntake ? [{ id: 'policy-docs' as const, label: 'Policy Documents' }] : []),
   ];
 
   return (
@@ -419,7 +422,7 @@ export default function AIAssistantPage() {
       )}
 
       {/* Policy Documents */}
-      {tab === 'policy-docs' && (
+      {tab === 'policy-docs' && policyIntake && (
         <div className="space-y-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Policy Documents</h2>

@@ -16,14 +16,17 @@ public class PolicyDocumentService : IPolicyDocumentService
     private readonly AiOptions _aiOptions;
     private readonly IAiCallRecorder _recorder;
     private readonly ILogger<PolicyDocumentService> _logger;
+    private readonly IPolicyContentModelGate _gate;
 
     public PolicyDocumentService(
         ZayraDbContext db,
         ILlmClient llm,
         AiOptions aiOptions,
         IAiCallRecorder recorder,
-        ILogger<PolicyDocumentService> logger)
+        ILogger<PolicyDocumentService> logger,
+        IPolicyContentModelGate gate)
     {
+        _gate = gate;
         _db = db;
         _llm = llm;
         _aiOptions = aiOptions;
@@ -246,6 +249,16 @@ public class PolicyDocumentService : IPolicyDocumentService
 
             Answer:
             """;
+
+        // Owner decision: policy excerpts never reach the model gateway, for any provider (PolicyContentModelGate).
+        // The asker still gets the matching passages verbatim, labelled as document text.
+        if (!_gate.MaySendPolicyContent(_aiOptions))
+        {
+            await RecordAsync(tenantId, userId, userRole, promptSummary, null, null, 0,
+                "policy content is never sent to a model provider; no model call attempted", ct);
+            return Deterministic(relevantChunks, sources,
+                "Company policy documents are never sent to an AI provider, so no written answer was produced.");
+        }
 
         // Who can actually answer — NOT simply the configured provider. AI_PROVIDER=ollama with no
         // base URL is "configured" and answers nothing; reporting that call as "ollama" is the same

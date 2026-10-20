@@ -3,7 +3,7 @@ import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CANONICAL_CONFLICT_CODES, CANONICAL_SKIP_CODES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
   WORK_EMAIL_ERROR_KEYS, appAddress, dateLine, formatWelcomeCode, pairUp, parseWorkEmailRows, skipReasonKey, sortSlips,
-  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey, workEmailDomainProblem, STOPPED_REASON_KEYS, BLOCKED_REASON_KEYS,
+  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey, STOPPED_REASON_KEYS, BLOCKED_REASON_KEYS,
 } from '../src/lib/employeeAccess';
 
 // HR side of employee sign-in access (lib/employeeAccess.ts): the slip's formatting, the paste parser,
@@ -66,6 +66,12 @@ test('skip reasons and work-email refusals map to sentences', () => {
   expect(BULK_PRINTABLE_STATES.has('active')).toBe(false);
 });
 
+test('save-time duplicate conflicts have a plain message for single entry and edit', () => {
+  const code = workEmailErrorCode({ response: { status: 409, data: { error: 'work_email_conflict', attempted: 'taken@external.test', suggestion: 'taken2@external.test' } } });
+  expect(code).toBe('work_email_conflict');
+  expect(workEmailProblemKey(code)).toBe('This email is already used by another employee.');
+});
+
 test('every sentence looked up by code exists in English and Arabic', () => {
   const keys = [
     ...Object.values(ACCESS_STATE_COPY).flatMap((c) => [c.label, c.action].filter((x): x is string => !!x)),
@@ -98,7 +104,10 @@ test('every canonical skip and conflict code has its own sentence', () => {
 test('the work-email local part is checked with the server rule as HR types', () => {
   expect(workEmailLocalProblem('')).toBeNull();
   expect(workEmailLocalProblem('noah.williams-2_x@evostel.com')).toBeNull();
-  expect(workEmailLocalProblem('noah')).toBeNull();
+  expect(workEmailLocalProblem('noah')).toBe('work_email_invalid_format');
+  expect(workEmailLocalProblem('noah@')).toBe('work_email_invalid_format');
+  expect(workEmailLocalProblem('noah@@external.test')).toBe('work_email_invalid_format');
+  expect(workEmailLocalProblem('noah@external.test')).toBeNull();
   expect(workEmailLocalProblem('noah+hr@evostel.com')).toBe('work_email_plus_address');
   expect(workEmailLocalProblem('nöah@evostel.com')).toBe('work_email_invalid_characters');
   expect(workEmailLocalProblem('نوح@evostel.com')).toBe('work_email_invalid_characters');
@@ -108,14 +117,21 @@ test('the work-email local part is checked with the server rule as HR types', ()
   expect(skipReasonKey('privileged_login')).toBe('This person has HR or admin permissions. A security admin must reset their sign-in.');
 });
 
-test('a different domain is reported, the company one is fine, and reason codes have sentences', () => {
-  expect(workEmailDomainProblem('noah@gmail.com', 'evostel.com')).toBe('evostel.com');
-  expect(workEmailDomainProblem('noah@Evostel.com', 'evostel.com')).toBeNull();
-  expect(workEmailDomainProblem('noah', 'evostel.com')).toBeNull();
-  expect(workEmailDomainProblem('noah@gmail.com', '')).toBeNull();
+test('complete addresses from any domain are valid and reason codes have sentences', () => {
+  expect(workEmailLocalProblem('noah@gmail.com')).toBeNull();
+  expect(workEmailLocalProblem('noah@Evostel.com')).toBeNull();
+  expect(workEmailProblemKey('work_email_invalid_format')).toBe('Enter the complete work email address issued by IT, for example name@company.com.');
   expect(skipReasonKey('awaiting_approval')).toBe('Waiting for approval. You can give access once {name} is approved.');
   expect(skipReasonKey('reset_requires_permission')).toBe("Ask an HR Manager to reset this person's sign-in.");
   for (const key of [...Object.values(STOPPED_REASON_KEYS), ...Object.values(BLOCKED_REASON_KEYS)]) {
     expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
   }
+});
+
+test('complete-address validation rejects malformed dots and domain labels without restricting the domain', () => {
+  for (const address of ['.noah@external.test', 'noah.@external.test', 'noah..smith@external.test', 'noah@-external.test', 'noah@external-.test', 'noah@external..test', 'noah@external_test.com', 'noah@external/test.com', `${'n'.repeat(65)}@external.test`, `noah@${'x'.repeat(64)}.test`, `${'n'.repeat(64)}@${'x'.repeat(63)}.${'y'.repeat(63)}.${'z'.repeat(62)}`]) {
+    expect(workEmailLocalProblem(address), address).toBe('work_email_invalid_format');
+  }
+  expect(workEmailLocalProblem('noah.smith@external-mail.test')).toBeNull();
+  expect(workEmailLocalProblem(`${'n'.repeat(64)}@external.test`)).toBeNull();
 });

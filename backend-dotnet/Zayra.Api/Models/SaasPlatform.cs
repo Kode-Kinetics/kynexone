@@ -165,6 +165,14 @@ public static class FeatureKeys
     /// reads it. See OptInFeatures.
     /// </summary>
     public const string SuccessionCandidateVisibility = "succession_candidate_visibility";
+    /// <summary>
+    /// Policy intake: uploading company policy documents, parsing them (the local preparation rules included),
+    /// extracting setup values from them, recording reviews against them, the policy library and policy Q&amp;A.
+    /// OPT-IN, default OFF for every tenant (owner decision 2026-10-20: only manual company setup is enabled).
+    /// Switched on per tenant only by the platform team. Even when on, policy text is never sent to a model
+    /// (PolicyContentModelGate). See OptInFeatures.
+    /// </summary>
+    public const string PolicyIntake = "policy_intake";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

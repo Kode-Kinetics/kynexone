@@ -27,7 +27,7 @@ public sealed class PolicyDocumentGovernanceTests
     private static ZayraDbContext Db() => new(new DbContextOptionsBuilder<ZayraDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
     private static PolicyDocumentService Service(ZayraDbContext db) => new(db, new NeverLlm(),
-        new AiOptions("none", "", "", "", "", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+        new AiOptions("none", "", "", "", "", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance, PolicyContentNeverLeaves.Instance);
 
     [Theory]
     [InlineData("handbook.doc", "binary")]
@@ -47,6 +47,16 @@ public sealed class PolicyDocumentGovernanceTests
         using var input = new MemoryStream(Encoding.UTF8.GetBytes(new string('x', PolicyTextParser.MaxTextCharacters + 1)));
         Action parse = () => PolicyTextParser.Extract(input, "policy.txt", "text/plain");
         parse.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void ParserAcceptsCompleteBinderBeyondFormerTwoHundredThousandCharacterLimit()
+    {
+        var text = string.Concat(Enumerable.Repeat("HR handbook section.\n", 25_000));
+        using var input = new MemoryStream(Encoding.UTF8.GetBytes(text));
+        var parsed = PolicyTextParser.Extract(input, "unified-handbook.txt", "text/plain");
+        parsed.Text.Should().Be(text.Trim());
+        parsed.Text.Length.Should().BeGreaterThan(200_000);
     }
 
     [Fact]
@@ -167,7 +177,9 @@ public sealed class PolicyDocumentGovernanceTests
         db.TenantAiUsages.Add(new() { TenantId = tenant, YearMonth = DateTime.UtcNow.Year * 100 + DateTime.UtcNow.Month, TokensUsed = 50_000 });
         await db.SaveChangesAsync();
         var svc = new PolicyDocumentService(db, new NeverLlm(),
-            new AiOptions("ollama", "test-model", "", "", "https://ollama.test", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance);
+            new AiOptions("ollama", "test-model", "", "", "https://ollama.test", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance,
+            // The quota branch sits behind the policy-content gate; open it (test-only) so the branch keeps its coverage.
+            OpenPolicyContentGateForTests.Instance);
         var result = await svc.AskAsync(tenant, Guid.NewGuid(), "Employee", "annual leave allowance", new(false, false, [company], null), default);
         result.Provider.Should().Be("fallback");
         result.DegradedReason.Should().Contain("monthly AI allowance");

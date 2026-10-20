@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Attendance;
@@ -62,8 +63,12 @@ public static class AttendanceDerivedArtifacts
         ZayraDbContext db, Guid tenantId, Guid? employeeCompanyId,
         AttendanceDailyRecord daily, CancellationToken ct)
     {
-        var record = await db.AttendanceRecords.FirstOrDefaultAsync(
-            x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
+        // Tenant-wide: (tenant, employee, work date) is UNIQUE on attendance_records, so the lookup must find the row
+        // whatever the caller's company scope. The device webhook is anonymous, and an anonymous request has an EMPTY
+        // company scope in every environment: the filtered read missed the row an earlier punch or run had created, the
+        // insert below then broke the unique index (23505), and the ingest failed after its raw events were saved.
+        var record = await ScopedBypass.NullableTenantWide(db.AttendanceRecords, tenantId, LegacyRecordJustification)
+            .FirstOrDefaultAsync(x => x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
         if (record is null)
         {
             record = new AttendanceRecord { TenantId = tenantId, EmployeeId = daily.EmployeeId, WorkDate = daily.WorkDate };
@@ -79,6 +84,11 @@ public static class AttendanceDerivedArtifacts
         record.Status = daily.Status;
         record.Notes = daily.MissingPunch ? "Missing punch" : "";
     }
+
+    private const string LegacyRecordJustification =
+        "The legacy attendance row of the employee-day being settled is unique per (tenant, employee, work date) and must " +
+        "be found to be updated whatever the caller's company scope (the anonymous device webhook has none); the employee " +
+        "is already authorised by the calling path and nothing is returned to the caller.";
 
     /// <summary>
     /// The payroll impacts for the day. Replaces the day's impacts wholesale rather than adding to

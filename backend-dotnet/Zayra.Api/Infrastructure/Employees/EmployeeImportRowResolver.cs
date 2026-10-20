@@ -300,40 +300,10 @@ public static class EmployeeImportRowResolver
         r.CompanyId = company?.Id;
         r.CompanyCountryCode = company?.CountryCode ?? string.Empty;
 
-        // ── Work email (validate against company domain; accept-never-block) ──
-        var workEmailRaw = V("WorkEmail");
-        var emailDomain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
-        var emailPattern = Models.WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
-        r.WorkEmailDomain = emailDomain;
-        r.WorkEmailPattern = emailPattern;
-        if (string.IsNullOrWhiteSpace(emailDomain))
-        {
-            // EDGE 7: company has no email domain → derivation isn't configured for this company; keep any
-            // provided value and NEVER block. A blank work email is a normal profile-completeness item (the
-            // readiness/completeness signal already surfaces it), so we deliberately do NOT flood every row
-            // of a non-derivation tenant with a per-row import gap.
-            r.WorkEmailProvided = workEmailRaw;
-        }
-        else if (string.IsNullOrWhiteSpace(workEmailRaw))
-        {
-            // Blank stays blank: a derived address is a SUGGESTION only, never saved (employee-access contract §3).
-            // The employee waits for their real work email (Employees → "Add work emails").
-        }
-        else
-        {
-            // Provided + domain present → validate against the company domain (req 6). Mismatch/malformed → FLAG, keep value.
-            r.WorkEmailProvided = workEmailRaw;
-            var (matches, providedDomain) = WorkEmailDeriver.ValidateAgainstDomain(workEmailRaw, emailDomain);
-            if (!matches)
-            {
-                r.Gaps.Add(new ImportGap("email:domain-mismatch", "readiness",
-                    providedDomain is null
-                        ? $"Work email '{workEmailRaw}' is missing a domain — expected '@{emailDomain}'."
-                        : $"Work email domain '@{providedDomain}' does not match the company domain '@{emailDomain}'.",
-                    workEmailRaw));
-                r.Warnings.Add($"Work email '{workEmailRaw}' does not match the company domain '@{emailDomain}' — imported as-is and flagged.");
-            }
-        }
+        // Keep the complete IT-issued address. Company preferences are suggestions, not restrictions.
+        r.WorkEmailProvided = V("WorkEmail");
+        r.WorkEmailDomain = (company?.EmailDomain ?? string.Empty).Trim().ToLowerInvariant();
+        r.WorkEmailPattern = Models.WorkEmailPatterns.Normalize(company?.WorkEmailPattern);
 
         // ── Branch: optional, and NEVER guessed ─────────────────────────────────────────────────────
         // A blank BranchCode used to silently inherit the company's FIRST branch — an office the file never
@@ -679,9 +649,9 @@ public static class ImportGapHealer
         // address is edited to end with the company domain (self-heal parity with the org gaps). A duplicate
         // needs a human/re-derive decision — never auto-heals.
         "email:needs-info" => !string.IsNullOrWhiteSpace(e.WorkEmail),
-        "email:domain-mismatch" => !string.IsNullOrWhiteSpace(companyDomain)
-            && !string.IsNullOrWhiteSpace(e.WorkEmail)
-            && e.WorkEmail.Trim().EndsWith("@" + companyDomain, StringComparison.OrdinalIgnoreCase),
+        "email:domain-mismatch" => !string.IsNullOrWhiteSpace(e.WorkEmail)
+            && !Zayra.Api.Infrastructure.Auth.WorkEmailFormatException.IsInvalid(e.WorkEmail)
+            && !Zayra.Api.Infrastructure.Auth.WorkEmailInvalidCharactersException.IsInvalid(e.WorkEmail),
         "email:duplicate" => false,
         "link:manager" => e.ManagerEmployeeId is not null,
         "link:supervisor" => e.SupervisorEmployeeId is not null,

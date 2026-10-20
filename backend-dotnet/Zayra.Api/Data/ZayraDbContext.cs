@@ -498,9 +498,52 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 throw new InvalidOperationException("audit_log_append_only_violation: central audit log rows cannot be modified or deleted.");
             if (entry.Entity is PayrollAuditLog)
                 throw new InvalidOperationException("audit_log_append_only_violation: payroll audit log rows cannot be modified or deleted.");
+            if (entry.Entity is OfferLifecycleEvent)
+                throw new InvalidOperationException("offer_event_immutable: lifecycle events cannot be modified or deleted.");
+            if (entry.Entity is OfferDispatchAttempt)
+                throw new InvalidOperationException("offer_attempt_immutable: transport evidence cannot be modified or deleted.");
+            if (entry.Entity is OfferDispatch && (entry.State == EntityState.Deleted || DispatchIdentityProperties.Any(name => entry.Property(name).IsModified)))
+                throw new InvalidOperationException("offer_dispatch_immutable: reviewed email identity cannot be rewritten.");
+            if (entry.Entity is EmployeeDraft && entry.State == EntityState.Modified
+                && new[] { nameof(EmployeeDraft.TenantId), nameof(EmployeeDraft.AcceptedOfferId), nameof(EmployeeDraft.AcceptedOfferCompanyId), nameof(EmployeeDraft.AcceptedOfferCompensationJson) }
+                    .Any(name => entry.Property(name).IsModified))
+                throw new InvalidOperationException("offer_handoff_immutable: accepted source identity and terms cannot be rewritten.");
+            if (entry.Entity is EmployeeDraft sourceDraft && sourceDraft.AcceptedOfferId is not null && entry.State == EntityState.Deleted)
+                throw new InvalidOperationException("offer_handoff_immutable: accepted draft history is retained.");
+            if (entry.Entity is EmployeeDraft placementDraft && entry.State == EntityState.Modified
+                && entry.Property(nameof(EmployeeDraft.OfferCompensationPlacementCompanyId)).IsModified
+                && (entry.OriginalValues[nameof(EmployeeDraft.OfferCompensationPlacementCompanyId)] is not null
+                    || placementDraft.OfferCompensationPlacementCompanyId is null
+                    || !Zayra.Api.Application.Recruitment.OfferCompensationHandoff.IsLegacyUnscopedSnapshot(placementDraft)
+                    || placementDraft.OfferCompensationConfirmedFingerprint is null || placementDraft.OfferCompensationConfirmedAtUtc is null
+                    || placementDraft.OfferCompensationConfirmedByUserId is null || placementDraft.OfferCompensationDispositionsJson is null))
+                throw new InvalidOperationException("offer_handoff_immutable: legacy placement can only be bound once during explicit confirmation.");
+            if (entry.Entity is OfferLetter)
+            {
+                if (entry.State == EntityState.Deleted)
+                    throw new InvalidOperationException("offer_immutable: offer history can only be removed by authorized tenant erasure.");
+                if (entry.OriginalValues[nameof(OfferLetter.FrozenAtUtc)] is not null
+                    && FrozenOfferProperties.Any(name => entry.Property(name).IsModified))
+                    throw new InvalidOperationException("offer_immutable: frozen terms and recipient identity cannot be rewritten. Create a revision.");
+            }
+            if (entry.Entity is OfferArtifact)
+            {
+                if (entry.State == EntityState.Deleted || ArtifactIdentityProperties.Any(name => entry.Property(name).IsModified)
+                    || (Equals(entry.OriginalValues[nameof(OfferArtifact.State)], "Finalized") && entry.Property(nameof(OfferArtifact.State)).IsModified))
+                    throw new InvalidOperationException("offer_immutable: artifact identity and finalized provenance cannot be rewritten.");
+            }
             EnforceBenefitApprovalWitness(entry);
         }
     }
+
+    private static readonly string[] FrozenOfferProperties = ["TenantId", "CompanyId", "ApplicationId", "SeriesId", "RevisionNumber", "PreviousRevisionId",
+        "CandidateId", "CandidateName", "RecipientEmail", "OfferedJobTitle", "OfferedDepartment", "StartDate", "ProbationMonths", "ResponseDeadline",
+        "BasicSalary", "HousingAllowance", "TransportAllowance", "OtherAllowances", "GrossSalary", "AnnualRecurringCash", "OneTimeCash",
+        "CompensationSnapshotJson", "CompensationCurrency", "CompensationPrecision", "OfferPolicyVersion", "ContentHtml", "DesignSnapshotJson", "FrozenAtUtc", "ArtifactId", "GeneratedAtUtc"];
+    private static readonly string[] ArtifactIdentityProperties = ["TenantId", "CompanyId", "OfferId", "ApplicationId", "StorageKey", "Sha256", "SizeBytes",
+        "Provenance", "RendererVersion", "SourceOfferVersion", "PendingOfferVersion", "CreatedAtUtc"];
+    private static readonly string[] DispatchIdentityProperties = ["TenantId", "CompanyId", "ApplicationId", "OfferId", "ArtifactId", "IdempotencyKey", "RequestFingerprint",
+        "Subject", "Message", "RecipientEmail", "RecipientName", "InitiatorUserId", "InitiatorName", "ResendReason", "FromAddress", "FromName", "SenderSource", "SenderFingerprint", "ReservationVersion", "CreatedAtUtc"];
 
     /// <summary>
     /// Phase 2 write-side enforcement for ICompanyScopedOperational entities. The read
@@ -1020,6 +1063,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ApplicationEvent> ApplicationEvents => Set<ApplicationEvent>();
     public DbSet<InterviewSchedule> InterviewSchedules => Set<InterviewSchedule>();
     public DbSet<OfferLetter> OfferLetters => Set<OfferLetter>();
+    public DbSet<OfferLetterTemplate> OfferLetterTemplates => Set<OfferLetterTemplate>();
+    public DbSet<OfferCompanyPolicy> OfferCompanyPolicies => Set<OfferCompanyPolicy>();
+    public DbSet<OfferSeries> OfferSeries => Set<OfferSeries>();
+    public DbSet<OfferLifecycleEvent> OfferLifecycleEvents => Set<OfferLifecycleEvent>();
+    public DbSet<OfferArtifact> OfferArtifacts => Set<OfferArtifact>();
+    public DbSet<OfferDispatch> OfferDispatches => Set<OfferDispatch>();
+    public DbSet<OfferDispatchAttempt> OfferDispatchAttempts => Set<OfferDispatchAttempt>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -1445,6 +1495,15 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Salary).HasPrecision(12, 2);
             entity.Property(x => x.ProfileCompletenessScore).HasPrecision(5, 2);
+            entity.Property(x => x.OfferCompensationConfirmedFingerprint).HasMaxLength(64);
+            entity.Property(x => x.AcceptedOfferCompensationJson).HasColumnType("text");
+            entity.Property(x => x.OfferCompensationDispositionsJson).HasColumnType("text");
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.AcceptedOfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.AcceptedOfferCompanyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.OfferCompensationPlacementCompanyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.Status });
         });
 
@@ -2805,7 +2864,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("job_applications");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.OfferedSalary).HasPrecision(12, 2);
+            entity.Property(x => x.OfferedSalary).HasPrecision(19, 3);
             entity.HasIndex(x => new { x.TenantId, x.JobOpeningId, x.CandidateId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.JobOpeningId, x.Stage });
         });
@@ -2828,13 +2887,139 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("offer_letters");
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.BasicSalary).HasPrecision(12, 2);
-            entity.Property(x => x.HousingAllowance).HasPrecision(12, 2);
-            entity.Property(x => x.TransportAllowance).HasPrecision(12, 2);
-            entity.Property(x => x.OtherAllowances).HasPrecision(12, 2);
-            entity.Property(x => x.GrossSalary).HasPrecision(12, 2);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Id }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.SeriesId, x.RevisionNumber }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.ApplicationId, x.Id }).IsUnique();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<OfferSeries>().WithMany().HasForeignKey(x => new { x.TenantId, x.SeriesId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferArtifact>().WithMany().HasForeignKey(x => new { x.TenantId, x.ArtifactId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.PreviousRevisionId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.Property(x => x.BasicSalary).HasPrecision(19, 3);
+            entity.Property(x => x.HousingAllowance).HasPrecision(19, 3);
+            entity.Property(x => x.TransportAllowance).HasPrecision(19, 3);
+            entity.Property(x => x.OtherAllowances).HasPrecision(19, 3);
+            entity.Property(x => x.GrossSalary).HasPrecision(19, 3);
+            entity.Property(x => x.AnnualRecurringCash).HasPrecision(19, 3);
+            entity.Property(x => x.OneTimeCash).HasPrecision(19, 3);
+            entity.Property(x => x.CompensationCurrency).HasMaxLength(3);
+            entity.Property(x => x.CompensationSnapshotJson).HasColumnType("text");
             entity.Property(x => x.ContentHtml).HasColumnType("text");
+            entity.Property(x => x.DesignSnapshotJson).HasColumnType("text");
             entity.HasIndex(x => new { x.TenantId, x.ApplicationId });
+        });
+
+        modelBuilder.Entity<OfferLetterTemplate>(entity =>
+        {
+            entity.ToTable("offer_letter_templates");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.DesignJson).HasColumnType("text");
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId });
+        });
+
+        modelBuilder.Entity<OfferCompanyPolicy>(entity =>
+        {
+            entity.ToTable("offer_company_policies", table => table.HasCheckConstraint("ck_offer_company_policy_precision", "precision BETWEEN 0 AND 3"));
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.Property(x => x.RequiredComponentCodesJson).HasColumnType("text");
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId }).IsUnique();
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<JobApplication>(entity =>
+        {
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Id }).IsUnique();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.CurrentIssuedOfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.OfferReservationOfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<OfferSeries>(entity =>
+        {
+            entity.ToTable("offer_series");
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Id }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.ApplicationId, x.Id }).IsUnique();
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasIndex(x => new { x.TenantId, x.LegacyRootOfferId }).IsUnique();
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.LegacyRootOfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<JobApplication>().WithMany().HasForeignKey(x => new { x.TenantId, x.ApplicationId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<OfferLifecycleEvent>(entity =>
+        {
+            entity.ToTable("offer_lifecycle_events");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.Property(x => x.DataJson).HasColumnType("text");
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(160);
+            entity.HasIndex(x => new { x.TenantId, x.OfferId, x.IdempotencyKey }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.RecordedAtUtc, x.Id });
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.OfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<JobApplication>().WithMany().HasForeignKey(x => new { x.TenantId, x.ApplicationId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<OfferArtifact>(entity =>
+        {
+            entity.ToTable("offer_artifacts");
+            entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.Property(x => x.StorageKey).HasMaxLength(600);
+            entity.Property(x => x.Sha256).HasMaxLength(64);
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.HasIndex(x => x.StorageKey).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Id }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.OfferId, x.Id }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.OfferId });
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.OfferId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<JobApplication>().WithMany().HasForeignKey(x => new { x.TenantId, x.ApplicationId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<OfferDispatch>(entity =>
+        {
+            entity.ToTable("offer_dispatches"); entity.HasKey(x => x.Id);
+            entity.HasAlternateKey(x => new { x.TenantId, x.Id });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.ApplicationId, x.OfferId, x.Id }).IsUnique();
+            entity.Property(x => x.CompanyId).IsRequired(); entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(160);
+            entity.HasIndex(x => new { x.TenantId, x.OfferId, x.IdempotencyKey }).IsUnique();
+            entity.HasIndex(x => new { x.Outcome, x.LeaseUntilUtc, x.CreatedAtUtc });
+            entity.HasOne<OfferLetter>().WithMany().HasForeignKey(x => new { x.TenantId, x.OfferId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OfferArtifact>().WithMany().HasForeignKey(x => new { x.TenantId, x.ArtifactId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<JobApplication>().WithMany().HasForeignKey(x => new { x.TenantId, x.ApplicationId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<OfferDispatchAttempt>(entity =>
+        {
+            entity.ToTable("offer_dispatch_attempts"); entity.HasKey(x => x.Id);
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.HasIndex(x => new { x.TenantId, x.DispatchId, x.OccurredAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.DispatchId, x.LeaseToken, x.Stage }).IsUnique();
+            entity.HasOne<OfferDispatch>().WithMany().HasForeignKey(x => new { x.TenantId, x.DispatchId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<ShiftDefinition>(entity =>
