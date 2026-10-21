@@ -5,7 +5,7 @@ import { msg } from '../../i18n/translations';
 import type {
   CodeName, CompanySetupCostCentre, CompanySetupDepartment, CompanySetupDesignation, CompanySetupDraftBody, CompanySetupGrade,
 } from '../../api/companySetup';
-import { inCatalog, stepWarnings } from '../../lib/companySetupWizard';
+import { MANAGE_TAB, inCatalog, stepWarnings } from '../../lib/companySetupWizard';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
@@ -19,13 +19,16 @@ type ListKey = 'costCentres' | 'departments' | 'designations' | 'grades';
  */
 export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody | null }) {
   const { t, locale } = useLocale();
-  const { body, update, context, readOnly } = useWizardForm();
+  const { body, update, context, readOnly, baseline } = useWizardForm();
   const catalog = context?.sharedCatalog;
+  // New shared codes need group scope (A5): a company super admin picks from the catalog only.
   const canAddShared = !!context?.isGroupScope;
+  const existing = !!body.existingCompanyId;
+  const manage = (key: keyof typeof MANAGE_TAB) => existing ? { href: `/setup?tab=${MANAGE_TAB[key].tab}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: MANAGE_TAB[key].label } : undefined;
   const set = <K extends ListKey>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows }));
   const name = (c: CodeName) => (locale === 'ar' ? c.nameAr || c.nameEn : c.nameEn);
   const SECTION: Record<ListKey, string> = { costCentres: t('Cost centres'), departments: t('Departments'), designations: t('Designations'), grades: t('Grades') };
-  const defaultsButton = (key: ListKey) => defaults && defaults[key].length > 0 && !readOnly
+  const defaultsButton = (key: ListKey) => defaults && defaults[key].length > 0 && !readOnly && !existing && (key === 'costCentres' || canAddShared)
     ? <UseDefaultsButton current={body[key] as unknown[]} defaults={defaults[key] as unknown[]} section={SECTION[key]} onApply={() => set(key, defaults[key] as never)} />
     : undefined;
 
@@ -99,7 +102,7 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         <SectionHeader title={t('Cost centres')} description={t('Belong to this company only. Departments below can be charged to one of them.')} actions={defaultsButton('costCentres')} />
         <RowsEditor<CompanySetupCostCentre> path="costCentres" rows={body.costCentres} columns={costCentreCols} onChange={rows => set('costCentres', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add cost centre')} emptyText={t('No cost centres yet. Optional; add them if finance reports by cost centre.')}
-          rowLabel={i => t('Cost centre {number}', { number: i + 1 })} />
+          rowLabel={i => t('Cost centre {number}', { number: i + 1 })} manage={manage('costCentres')} baselineRows={baseline?.costCentres} />
       </section>
 
       <div className="rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/15">
@@ -114,6 +117,7 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         <RowsEditor<CompanySetupDepartment> path="departments" rows={body.departments} columns={departmentCols} onChange={rows => set('departments', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add department')} emptyText={t('No departments yet.')}
           rowLabel={i => t('Department {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.departments, row.code) ?? undefined}
+          manage={manage('departments')} baselineRows={baseline?.departments} canAdd={canAddShared}
           footer={!canAddShared ? <span className="text-xs text-slate-600 dark:text-slate-400">{t('New codes need a group administrator.')}</span> : undefined} />
       </section>
 
@@ -122,7 +126,8 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         {reuseChips('designations', catalog?.designations, c => ({ code: c.code, titleEn: c.nameEn, titleAr: c.nameAr ?? '' }) as never)}
         <RowsEditor<CompanySetupDesignation> path="designations" rows={body.designations} columns={designationCols} onChange={rows => set('designations', rows)}
           newRow={() => ({ code: '', titleEn: '', titleAr: '' })} addLabel={t('Add designation')} emptyText={t('No designations yet.')}
-          rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? undefined} />
+          rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? undefined}
+          manage={manage('designations')} baselineRows={baseline?.designations} canAdd={canAddShared} />
       </section>
 
       <section>
@@ -130,7 +135,8 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         {reuseChips('grades', catalog?.grades, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '', level: 1, minSalary: 0, midSalary: 0, maxSalary: 0 }) as never)}
         <RowsEditor<CompanySetupGrade> path="grades" rows={body.grades} columns={gradeCols} onChange={rows => set('grades', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '', level: body.grades.length + 1, minSalary: 0, midSalary: 0, maxSalary: 0 })} addLabel={t('Add grade')} emptyText={t('No grades yet.')}
-          rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? undefined} />
+          rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? undefined}
+          manage={manage('grades')} baselineRows={baseline?.grades} canAdd={canAddShared} />
         {warnings.map(w => <div key={w.field} className="mt-3"><Notice tone="warning" role="status">{t(w.message, w.params)}</Notice></div>)}
       </section>
     </div>

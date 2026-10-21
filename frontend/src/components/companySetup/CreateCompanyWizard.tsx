@@ -10,12 +10,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useFormat } from '../../hooks/useFormat';
 import { rolesApi, type AccessCeiling } from '../../api/identity';
 import {
-  companySetupApi, httpStatus, type CompanySetupContext, type CompanySetupDraftBody, type CompanySetupDraftSummary,
+  companySetupApi, httpStatus, type CompanySetupContext, type CompanySetupDraft, type CompanySetupDraftBody, type CompanySetupDraftSummary,
   type CompanySetupErrorBody, type CompanySetupPlan, type CompanySetupResult,
 } from '../../api/companySetup';
 import {
-  STEP_IDS, WIZARD_STEPS, buildTree, canCommit, emptyBody, firstBlockingStep, problemsByField, stepState, validateStep,
-  type FieldError, type StepId, type StepState,
+  GUIDED_SETUP_HREF, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingStep, planIsNoChange, problemsByField,
+  stepCopy, stepState, validateStep, type FieldError, type StepId, type StepState, type WizardMode,
 } from '../../lib/companySetupWizard';
 import { ConfirmDialog, type ConfirmState } from '../ui/ConfirmDialog';
 import { WizardRail } from './WizardRail';
@@ -28,6 +28,8 @@ import { RulesStep } from './RulesStep';
 import { AdminStep } from './AdminStep';
 import { ReviewStep } from './ReviewStep';
 import { CompanyReadinessList } from './CompanyReadinessList';
+import { CompanySummaryStep } from './CompanySummaryStep';
+import { MoreSettingsLinks } from './MoreSettingsLinks';
 import { Notice, WizardFormProvider, fieldId } from './wizardForm';
 import { useDraftAutosave } from './useDraftAutosave';
 
@@ -39,6 +41,12 @@ const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
   5: { heading: msg('Work & pay rules'), help: msg('Confirm what the country pack sets up. Change only what is different for this company.') },
   6: { heading: msg('Company super admin'), help: msg('Choose who administers this company.') },
   7: { heading: msg('Review & create'), help: msg('This is exactly what Create will do. Nothing is created until you press Create company.') },
+};
+
+/** Existing mode (Addendum A) reads differently only where the journey differs: the summary and the review. */
+const EXISTING_HEADINGS: Partial<Record<StepId, { heading: string; help: string }>> = {
+  1: { heading: msg('Complete setup for {company}'), help: msg('See what this company has today, then go step by step. Your work is saved as a draft as you go, so you can stop and come back.') },
+  7: { heading: msg('Review & update'), help: msg('These are exactly the changes Update will save. Nothing changes until you press Update company.') },
 };
 
 const fieldStep = (field: string): StepId => {
@@ -53,11 +61,16 @@ const fieldStep = (field: string): StepId => {
 type LoadState = 'loading' | 'ready' | 'error' | 'forbidden';
 
 /**
- * The create-company journey: one draft, seven steps, one Create. Drafts live on the server
- * (autosaved, versioned) so they survive sign-out and devices; Create commits the draft by id, which
- * is also the idempotency key, so a retry after a lost response returns the same company.
+ * The company setup journey: one draft, seven steps, one commit. Drafts live on the server
+ * (autosaved, versioned) so they survive sign-out and devices; the commit names the draft by id, which
+ * is also the idempotency key, so a retry after a lost response returns the same result.
+ *
+ * One wizard, two modes (Addendum A): without `existingCompanyId` it creates a company; with it, it
+ * completes setup for that active company — prefilled from what it has, adding and editing only.
  */
-export function CreateCompanyWizard() {
+export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?: string } = {}) {
+  const mode: WizardMode = existingCompanyId ? 'existing' : 'create';
+  const existing = mode === 'existing';
   const { t, locale } = useLocale();
   const fmt = useFormat();
   const router = useRouter();
@@ -97,7 +110,10 @@ export function CreateCompanyWizard() {
   };
 
   // ── Who may appoint a company super admin ──────────────────────────────────
-  const groupAdmin = !!context?.isGroupScope && hasRole('Admin');
+  // A group-scope Admin for any company; in existing mode also a company super admin for their own company,
+  // who may add another company-scoped admin but never group scope (A5; the server enforces the ceiling).
+  const groupAdmin = hasRole('Admin') && (!!context?.isGroupScope || existing);
+  const manageable = existing ? context?.manageableCompanies?.find(c => c.id === existingCompanyId) ?? null : null;
   useEffect(() => {
     if (!groupAdmin) { setCeiling(null); return; }
     let active = true;
@@ -121,13 +137,22 @@ export function CreateCompanyWizard() {
   }, [adminDecided, adminStepVisible, draftId, body.companyAdmin.mode]);
 
   // ── Load context, drafts and (when linked) the draft to resume ─────────────
-  const openDraft = useCallback(async (id: string) => {
+  const draftAddress = useCallback((id: string) => (existingCompanyId ? completeCompanyHref(existingCompanyId, id) : `/setup/new-company?draft=${id}`), [existingCompanyId]);
+  /** Resolves true when the draft is on screen. */
+  const openDraft = useCallback(async (id: string): Promise<boolean> => {
     setBusy('resuming'); setError('');
     try {
       const draft = await companySetupApi.draft(id);
       if (draft.status !== 'Open') {
-        setError(draft.status === 'Submitted' ? t('This draft was already used to create a company.') : t('This draft was discarded. Start a new company instead.'));
-        return;
+        setError(draft.status === 'Submitted'
+          ? (existingCompanyId ? t('This draft was already used to save changes. Start again from Guided Setup.') : t('This draft was already used to create a company.'))
+          : (existingCompanyId ? t('This draft was discarded. Start again from Guided Setup.') : t('This draft was discarded. Start a new company instead.')));
+        return false;
+      }
+      // A draft opens only in its own journey: a create draft is not a change to this company, and vice versa.
+      if ((draft.body.existingCompanyId ?? null) !== (existingCompanyId ?? null)) {
+        setError(t('This draft belongs to a different setup. Open it from Guided Setup.'));
+        return false;
       }
       autosave.adopt(draft);
       setDraftId(draft.id);
@@ -137,13 +162,26 @@ export function CreateCompanyWizard() {
       setStep(resumeStep);
       setVisited(new Set(STEP_IDS.filter(s => s <= resumeStep)));
       setChoice({ startFrom: draft.body.startFrom, countryCode: draft.body.company.countryCode, copyFromCompanyId: draft.body.copyFromCompanyId });
-      router.replace(`/setup/new-company?draft=${draft.id}`, { scroll: false });
-      companySetupApi.defaults(draft.body.company.countryCode || 'SA', draft.body.startFrom === 'copy' ? draft.body.copyFromCompanyId : undefined)
+      router.replace(draftAddress(draft.id), { scroll: false });
+      (existingCompanyId
+        ? companySetupApi.existingDefaults(existingCompanyId)
+        : companySetupApi.defaults(draft.body.company.countryCode || 'SA', draft.body.startFrom === 'copy' ? draft.body.copyFromCompanyId : undefined))
         .then(setDefaults).catch(() => setDefaults(null));
+      return true;
     } catch (err) {
       setError(httpStatus(err) === 404 ? t('This draft no longer exists. It may have been discarded.') : t('The draft could not be opened. Check your connection and try again.'));
+      return false;
     } finally { setBusy(''); }
-  }, [autosave, router, t]);
+  }, [autosave, router, t, draftAddress, existingCompanyId]);
+
+  /** Existing mode before a draft: what the company has today, shown (never saved) until Start. */
+  const loadPrefill = useCallback(async () => {
+    if (!existingCompanyId) return;
+    const prefill = await companySetupApi.existingDefaults(existingCompanyId);
+    const shown = { ...prefill, existingCompanyId };
+    setDefaults(shown);
+    setBody(shown);
+  }, [existingCompanyId]);
 
   useEffect(() => {
     let active = true;
@@ -152,6 +190,20 @@ export function CreateCompanyWizard() {
         if (!active) return;
         setContext(ctx);
         setDrafts(list);
+        if (existingCompanyId) {
+          // Only a company this caller may manage opens (A5); the server refuses the rest anyway.
+          const target = ctx.manageableCompanies?.find(c => c.id === existingCompanyId);
+          if (!target) { setLoad('forbidden'); return; }
+          const resume = requestedDraft ?? target.openDraftId ?? null;
+          // A draft that cannot be opened (discarded, gone) leaves the company's current setup on screen to start again.
+          if (resume) {
+            setLoad('ready');
+            void openDraft(resume).then(ok => { if (!ok && active) loadPrefill().catch(() => { if (active) setLoad('error'); }); });
+            return;
+          }
+          loadPrefill().then(() => { if (active) setLoad('ready'); }).catch(() => { if (active) setLoad('error'); });
+          return;
+        }
         if (ctx.sisterCompanies.length > 0 && !requestedDraft) setChoice(c => ({ ...c, countryCode: ctx.sisterCompanies[0].countryCode || c.countryCode }));
         setLoad('ready');
         if (requestedDraft && ctx.canCreate) void openDraft(requestedDraft);
@@ -226,21 +278,46 @@ export function CreateCompanyWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, draftId]);
 
+  const adoptNew = (draft: CompanySetupDraft) => {
+    autosave.adopt(draft);
+    setDraftId(draft.id);
+    setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
+    setBody(draft.body);
+    setDrafts(list => [{ id: draft.id, legalNameEn: draft.body.company.legalNameEn, step: draft.step, updatedAtUtc: draft.updatedAtUtc, createdByName: draft.createdByName, existingCompanyId: draft.body.existingCompanyId ?? null }, ...list]);
+    router.replace(draftAddress(draft.id), { scroll: false });
+    goTo(2);
+  };
+
+  /** Existing mode: the first save makes the draft from the prefill. One open draft per company (A1). */
+  const startExisting = async () => {
+    if (!existingCompanyId || !defaults) return;
+    setBusy('starting'); setError('');
+    try {
+      adoptNew(await companySetupApi.createDraft({ ...body, existingCompanyId }));
+    } catch (err) {
+      const status = httpStatus(err);
+      if (status === 409) {
+        // Someone opened a draft for this company meanwhile: continue that one rather than start a second.
+        const ctx = await companySetupApi.context().catch(() => null);
+        const open = ctx?.manageableCompanies?.find(c => c.id === existingCompanyId)?.openDraftId;
+        if (ctx) setContext(ctx);
+        if (open) { setBusy(''); await openDraft(open); return; }
+      }
+      setError(status === 403 || status === 409
+        ? (serverText(err) || t('Setup for this company cannot be changed right now.'))
+        : t('The draft could not be started. Nothing was saved. Check your connection and try again.'));
+    } finally { setBusy(''); }
+  };
+
   const start = async () => {
+    if (existing) { await startExisting(); return; }
     if (choice.startFrom === 'copy' && !choice.copyFromCompanyId) { setError(t('Choose the company to copy from.')); return; }
     if (choice.startFrom === 'defaults' && !choice.countryCode) { setError(t('Choose the country the company is registered in.')); return; }
     setBusy('starting'); setError('');
     try {
       const prepared = await companySetupApi.defaults(choice.countryCode, choice.startFrom === 'copy' ? choice.copyFromCompanyId : undefined);
       setDefaults(prepared);
-      const draft = await companySetupApi.createDraft({ ...prepared, startFrom: choice.startFrom, copyFromCompanyId: choice.startFrom === 'copy' ? choice.copyFromCompanyId : undefined });
-      autosave.adopt(draft);
-      setDraftId(draft.id);
-      setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
-      setBody(draft.body);
-      setDrafts(list => [{ id: draft.id, legalNameEn: draft.body.company.legalNameEn, step: draft.step, updatedAtUtc: draft.updatedAtUtc, createdByName: draft.createdByName }, ...list]);
-      router.replace(`/setup/new-company?draft=${draft.id}`, { scroll: false });
-      goTo(2);
+      adoptNew(await companySetupApi.createDraft({ ...prepared, startFrom: choice.startFrom, copyFromCompanyId: choice.startFrom === 'copy' ? choice.copyFromCompanyId : undefined }));
     } catch (err) {
       const status = httpStatus(err);
       setError(status === 403 || status === 409
@@ -272,7 +349,7 @@ export function CreateCompanyWizard() {
     setBusy('exiting'); setError('');
     const ok = await autosave.flush();
     setBusy('');
-    if (ok) router.push('/setup?tab=companies');
+    if (ok) router.push(existing ? GUIDED_SETUP_HREF : '/setup?tab=companies');
     else if (autosave.state !== 'conflict') setError(t('The draft could not be saved, so you are still here. Check your connection and try again.'));
   };
 
@@ -300,6 +377,24 @@ export function CreateCompanyWizard() {
     },
   });
 
+  /** Existing mode: drop this company's open draft and show what the company has today again. */
+  const discardCurrent = () => {
+    if (!draftId || !existingCompanyId) return;
+    setConfirmation({
+      title: t('Discard this draft?'),
+      message: t('The changes in this draft are dropped. Nothing was changed for {company}.', { company: body.company.legalNameEn }),
+      confirmLabel: t('Discard draft'),
+      onConfirm: async () => {
+        await companySetupApi.discardDraft(draftId);
+        setConfirmation(null);
+        setDraftId(null); setDraftMeta(null); setPlan(null);
+        setVisited(new Set([1])); setAttempted(new Set()); setTouched(new Set());
+        router.replace(completeCompanyHref(existingCompanyId), { scroll: false });
+        await loadPrefill().catch(() => setError(t('The company could not be reloaded. Check your connection and try again.')));
+      },
+    });
+  };
+
   const create = async () => {
     if (!draftId) return;
     setBusy('creating'); setCommitError(null);
@@ -319,19 +414,30 @@ export function CreateCompanyWizard() {
       const serverMessage = serverText(err);
       if (status === 409 || status === 422 || status === 400) {
         const target = data?.step && steps.includes(data.step as StepId) ? data.step as StepId : data?.field ? fieldStep(data.field) : 2;
-        setCommitError({ message: serverMessage || t('The company could not be created because something in the draft clashes with an existing record. Nothing was created.'), retry: false, step: target });
+        setCommitError({ message: serverMessage || (existing
+          ? t('The changes could not be saved because something in the draft clashes with an existing record. Nothing was changed.')
+          : t('The company could not be created because something in the draft clashes with an existing record. Nothing was created.')), retry: false, step: target });
         void refreshPlan(body);
       } else if (status === 403) {
-        setCommitError({ message: serverMessage || t('You no longer have permission to create companies. Nothing was created.'), retry: false });
+        setCommitError({ message: serverMessage || (existing ? t('You no longer have permission to change this company’s setup. Nothing was changed.') : t('You no longer have permission to create companies. Nothing was created.')), retry: false });
       } else {
-        // Lost response: the commit may have gone through. Retrying with the same draft id returns the same company.
-        setCommitError({ message: t('We could not confirm whether the company was created. Try again: retrying never creates a second company.'), retry: true });
+        // Lost response: the commit may have gone through. Retrying with the same draft id returns the same result.
+        setCommitError({ message: existing
+          ? t('We could not confirm whether the changes were saved. Try again: retrying never applies them twice.')
+          : t('We could not confirm whether the company was created. Try again: retrying never creates a second company.'), retry: true });
       }
     } finally { setBusy(''); }
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (load === 'loading') return <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Opening company setup…')}</p>;
+  if (load === 'forbidden' && existing) return (
+    <Notice tone="warning" role="alert">
+      <p className="font-semibold">{t('You cannot complete setup for this company.')}</p>
+      <p className="mt-1">{t('It is not active, or it is not one of the companies you manage. Ask your group super admin.')}</p>
+      <Link href={GUIDED_SETUP_HREF} className="btn-secondary mt-3">{t('Back to Guided Setup')}</Link>
+    </Notice>
+  );
   if (load === 'forbidden') return (
     <Notice tone="warning" role="alert">
       <p className="font-semibold">{t('Only a group administrator or HR manager can create a company.')}</p>
@@ -346,22 +452,33 @@ export function CreateCompanyWizard() {
     </Notice>
   );
 
-  if (result) return (
-    <div className="surface space-y-6 p-5 sm:p-8" data-testid="create-company-success">
-      <div className="flex items-start gap-3">
-        <CheckCircle2 className="mt-1 h-7 w-7 shrink-0 text-emerald-600" aria-hidden="true" />
-        <div className="min-w-0">
-          <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-slate-950 outline-none dark:text-white">{t('{name} is created', { name: (locale === 'ar' && body.company.legalNameAr?.trim()) || body.company.legalNameEn })}</h2>
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{result.replayed ? t('This company was already created from this draft; here is the same result.') : t('The company and its setup were created together. Finish the items below before the first payroll.')}</p>
+  if (result) {
+    const name = (locale === 'ar' && body.company.legalNameAr?.trim()) || body.company.legalNameEn;
+    return (
+      <div className="surface space-y-6 p-5 sm:p-8" data-testid="create-company-success" data-mode={mode}>
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="mt-1 h-7 w-7 shrink-0 text-emerald-600" aria-hidden="true" />
+          <div className="min-w-0">
+            <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-slate-950 outline-none dark:text-white"><bdi>{existing ? t('{name} is updated', { name }) : t('{name} is created', { name })}</bdi></h2>
+            <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{existing
+              ? (result.replayed ? t('These changes were already saved from this draft; here is the same result.') : t('The changes were saved together. Finish the items below before the next payroll.'))
+              : (result.replayed ? t('This company was already created from this draft; here is the same result.') : t('The company and its setup were created together. Finish the items below before the first payroll.'))}</p>
+          </div>
+        </div>
+        <CompanyReadinessList items={result.readiness} />
+        <details className="rounded-xl border border-slate-200 dark:border-white/10">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white">{t('More settings for this company')}</summary>
+          <div className="px-4 pb-4"><MoreSettingsLinks companyId={result.companyId} /></div>
+        </details>
+        <div className="flex flex-wrap gap-2">
+          {existing
+            ? <Link href={GUIDED_SETUP_HREF} className="btn-primary">{t('Back to Guided Setup')}</Link>
+            : <Link href={`/setup?tab=aiSetup&path=configuration&companyId=${result.companyId}`} className="btn-primary">{t('Open the new company’s setup')}</Link>}
+          <Link href="/setup?tab=companies" className="btn-secondary">{t('Back to companies')}</Link>
         </div>
       </div>
-      <CompanyReadinessList items={result.readiness} />
-      <div className="flex flex-wrap gap-2">
-        <Link href={`/setup?tab=aiSetup&companyId=${result.companyId}`} className="btn-primary">{t('Open the new company’s setup')}</Link>
-        <Link href="/setup?tab=companies" className="btn-secondary">{t('Back to companies')}</Link>
-      </div>
-    </div>
-  );
+    );
+  }
 
   const tree = buildTree(body, context);
   const position = steps.indexOf(step) + 1;
@@ -372,8 +489,12 @@ export function CreateCompanyWizard() {
     conflict: '', error: t('Not saved yet. Your changes are kept on this screen; we will try again when you next change something.'),
   }[autosave.state];
   const stepErrors = attempted.has(step) ? validateStep(step, input) : [];
-  const locked = !context.canCreate;
+  // Existing mode is not limited by the create gates (plan limit, creation mode): the company already exists.
+  const locked = existing ? false : !context.canCreate;
   const nextLabel = step === 1 && !draftId ? t('Start') : t('Next');
+  const noChange = existing && planIsNoChange(plan);
+  const heading = (existing ? EXISTING_HEADINGS[step] : undefined) ?? STEP_HEADINGS[step];
+  const headingParams = { company: (locale === 'ar' && body.company.legalNameAr?.trim()) || body.company.legalNameEn || manageable?.legalNameEn || '' };
 
   return (
     <div className="space-y-4" data-testid="create-company-wizard">
@@ -398,13 +519,13 @@ export function CreateCompanyWizard() {
         )}
         <div className="grid lg:grid-cols-[13.5rem_minmax(0,1fr)] xl:grid-cols-[13.5rem_minmax(0,1fr)_17rem]">
           <aside className="border-b border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
-            <WizardRail steps={steps} current={step} states={states} reachable={reachable} onSelect={goTo} disabled={!!busy} />
+            <WizardRail steps={steps} current={step} states={states} reachable={reachable} onSelect={goTo} disabled={!!busy} mode={mode} />
           </aside>
           <div className={`min-w-0 p-4 sm:p-5 ${step === 7 ? 'xl:col-span-2' : ''}`}>
             <div className="mb-5">
               <p className="hidden text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 lg:block">{t('Step {position} of {total}', { position, total: steps.length })}</p>
-              <h2 ref={headingRef} tabIndex={-1} className="mt-1 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">{t(STEP_HEADINGS[step].heading)}</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">{t(STEP_HEADINGS[step].help)}</p>
+              <h2 ref={headingRef} tabIndex={-1} className="mt-1 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white"><bdi>{t(heading.heading, headingParams)}</bdi></h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">{t(heading.help)}</p>
             </div>
             {error && <div className="mb-4"><Notice tone="error" role="alert">{error}</Notice></div>}
             {stepErrors.length > 0 && (
@@ -415,12 +536,14 @@ export function CreateCompanyWizard() {
                 </ul>
               </Notice></div>
             )}
-            <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict' }}>
+            <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict', baseline: existing ? defaults : null }}>
               <div onBlurCapture={event => {
                 const field = (event.target as HTMLElement).dataset?.field;
                 if (field && !touched.has(field)) setTouched(prev => new Set([...prev, field]));
               }}>
-                {step === 1 && <StartStep context={context} drafts={drafts} currentDraftId={draftId} choice={choice} onChoice={setChoice}
+                {step === 1 && existing && manageable && <CompanySummaryStep body={body} company={manageable} draft={draftId ? draftMeta : null} onDiscard={draftId ? discardCurrent : undefined} />}
+                {step === 1 && existing && !manageable && <p role="status" className="text-sm text-slate-600 dark:text-slate-300">{t('Opening company setup…')}</p>}
+                {step === 1 && !existing && <StartStep context={context} drafts={drafts.filter(d => !d.existingCompanyId)} currentDraftId={draftId} choice={choice} onChoice={setChoice}
                   onResume={id => void openDraft(id)} onDiscard={discard} started={!!draftId} />}
                 {step === 2 && <CompanyStep />}
                 {step === 3 && <BranchesStep defaults={defaults} />}
@@ -435,7 +558,7 @@ export function CreateCompanyWizard() {
                 <p>{commitError.message}</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {commitError.retry && <button type="button" className="btn-secondary" onClick={() => void create()}>{t('Try again')}</button>}
-                  {commitError.step && <button type="button" className="btn-secondary" onClick={() => goTo(commitError.step!)}>{t('Go to {step}', { step: t(WIZARD_STEPS[commitError.step].title) })}</button>}
+                  {commitError.step && <button type="button" className="btn-secondary" onClick={() => goTo(commitError.step!)}>{t('Go to {step}', { step: t(stepCopy(commitError.step, mode).title) })}</button>}
                   {autosave.state === 'conflict' && <button type="button" className="btn-secondary" onClick={() => void reloadDraft()}>{t('Reload draft')}</button>}
                 </div>
               </Notice></div>
@@ -443,16 +566,18 @@ export function CreateCompanyWizard() {
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-white/10">
               {position > 1
                 ? <button type="button" className="btn-secondary" onMouseDown={keepFocus} onClick={back} disabled={!!busy}><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>
-                : <Link href="/setup?tab=companies" className="btn-secondary">{t('Cancel')}</Link>}
+                : <Link href={existing ? GUIDED_SETUP_HREF : '/setup?tab=companies'} className="btn-secondary">{t('Cancel')}</Link>}
               {!isLast
                 ? <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" onMouseDown={keepFocus} onClick={next} disabled={!!busy || locked}>
                     {busy === 'starting' ? t('Preparing the draft…') : nextLabel}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
                   </button>
                 : <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void create()} disabled={!!busy || !canCommit(plan) || planState === 'loading' || autosave.state === 'conflict'}>
-                    {busy === 'creating' ? t('Creating the company…') : t('Create company')}
+                    {busy === 'creating'
+                      ? (existing ? t('Saving the changes…') : t('Creating the company…'))
+                      : existing ? (noChange ? t('Finish without changes') : t('Update company')) : t('Create company')}
                   </button>}
             </div>
-            {isLast && plan && !canCommit(plan) && <p className="mt-2 text-end text-xs text-rose-700 dark:text-rose-300">{t('Create is available once every conflict above is resolved.')}</p>}
+            {isLast && plan && !canCommit(plan) && <p className="mt-2 text-end text-xs text-rose-700 dark:text-rose-300">{existing ? t('Update is available once every conflict above is resolved.') : t('Create is available once every conflict above is resolved.')}</p>}
           </div>
           {step !== 7 && (
             <aside className="border-t border-slate-200 p-4 dark:border-white/10 lg:col-span-2 xl:col-span-1 xl:border-s xl:border-t-0" aria-label={t('Company structure')}>

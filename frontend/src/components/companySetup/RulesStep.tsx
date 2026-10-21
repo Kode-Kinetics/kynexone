@@ -6,6 +6,7 @@ import type { CompanySetupDraftBody, CompanySetupPlan, EmployeeNumbering, PlanAr
 import { WEEKEND_OPTIONS, numberingPreview } from '../../lib/companySetupWizard';
 import { useCountryName } from './CountryOptions';
 import { SectionHeader, WizardField, useWizardForm } from './wizardForm';
+import { MoreSettingsLinks } from './MoreSettingsLinks';
 
 /**
  * Step 5. Rules come from the country pack; the screen shows what the pack resolves to and what the
@@ -32,7 +33,11 @@ export function RulesStep({ defaults, preview, previewState }: {
     if (previewState === 'error' || rows.length === 0) return <p className="text-xs text-slate-500">{t('Checked again on the review step.')}</p>;
     return (
       <ul className="mt-1 space-y-0.5">
-        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{locale === 'ar' ? i.labelAr || i.label : i.label}</bdi>: {i.action === 'reuse' ? t(reused) : i.action === 'create' ? t(created) : t('Conflict — see the review step')}</li>)}
+        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{locale === 'ar' ? i.labelAr || i.label : i.label}</bdi>: {
+          i.action === 'reuse' || i.action === 'unchanged' ? t(reused)
+            : i.action === 'create' ? t(created)
+            : i.action === 'update' ? t('Will be updated')
+            : t('Conflict — see the review step')}</li>)}
       </ul>
     );
   };
@@ -95,7 +100,15 @@ export function RulesStep({ defaults, preview, previewState }: {
           {toggle(rules.employeeNumbering.useYear, v => setNumbering({ useYear: v }), t('Add the joining year'), 'rules.employeeNumbering.useYear')}
         </div>
         <p className="mt-3 text-sm text-slate-800 dark:text-slate-200" data-testid="numbering-preview">{t('The next employee number will look like {example}.', { example: numberingPreview(body) })}</p>
+        {body.existingCompanyId && <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Existing employee numbers stay as they are; the rule applies to people added from now on.')}</p>}
       </section>
+
+      <details className="rounded-xl border border-slate-200 dark:border-white/10" data-testid="more-settings-section">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white">{t('More settings for this company')}
+          <span className="mt-0.5 block text-xs font-normal text-slate-600 dark:text-slate-400">{t('Shifts, overtime, benefits, salary structures and more each have their own screen. Your draft is saved, so you can come back.')}</span>
+        </summary>
+        <div className="px-4 pb-4"><MoreSettingsLinks companyId={body.existingCompanyId} /></div>
+      </details>
     </div>
   );
 }

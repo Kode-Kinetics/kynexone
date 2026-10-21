@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
 import { companySetupApi, type CompanySetupDraftSummary } from '../../api/companySetup';
-import { WIZARD_STEPS, type StepId } from '../../lib/companySetupWizard';
+import { draftHref, stepCopy, type StepId } from '../../lib/companySetupWizard';
 
 /**
  * "Continue where you left off" on Setup → Companies: open create-company drafts, newest first.
@@ -31,11 +31,11 @@ export function CompanyDraftsCard() {
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900 dark:text-white"><bdi>{d.legalNameEn || t('Untitled company')}</bdi></p>
               <p className="text-xs text-slate-600 dark:text-slate-400">
-                {t('Stopped at step {step}: {title}', { step: d.step, title: t(WIZARD_STEPS[(Math.min(Math.max(d.step, 1), 7)) as StepId].title) })}
+                {t('Stopped at step {step}: {title}', { step: d.step, title: t(stepCopy((Math.min(Math.max(d.step, 1), 7)) as StepId, d.existingCompanyId ? 'existing' : 'create').title) })}
                 {' · '}{t('Saved {when} by {name}', { when: fmt.dateTime(d.updatedAtUtc), name: d.createdByName })}
               </p>
             </div>
-            <Link href={`/setup/new-company?draft=${d.id}`} className="btn-primary">{t('Resume')}<span className="sr-only"> {d.legalNameEn}</span></Link>
+            <Link href={draftHref(d)} className="btn-primary">{t('Resume')}<span className="sr-only"> {d.legalNameEn}</span></Link>
           </li>
         ))}
       </ul>

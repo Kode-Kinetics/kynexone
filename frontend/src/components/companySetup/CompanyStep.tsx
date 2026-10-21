@@ -4,7 +4,7 @@ import { useT } from '../../hooks/useT';
 import { DEFAULT_WORK_EMAIL_PATTERN, WORK_EMAIL_PATTERNS, WORK_EMAIL_PATTERN_LABELS, isValidEmailDomain } from '../../api/organization';
 import { assembleWorkEmail, deriveWorkEmailLocalPart } from '../../api/employees';
 import type { CompanySetupCompany } from '../../api/companySetup';
-import { COUNTRY_CURRENCY, CURRENCIES, isSaudi } from '../../lib/companySetupWizard';
+import { COUNTRY_CURRENCY, CURRENCIES, firstPayrollMonthLocked, isSaudi } from '../../lib/companySetupWizard';
 import { CountryOptions } from './CountryOptions';
 import { SectionHeader, WizardField, useWizardForm } from './wizardForm';
 
@@ -19,6 +19,11 @@ export function CompanyStep() {
   const { body, update, readOnly } = useWizardForm();
   const c = body.company;
   const saudi = isSaudi(c.countryCode);
+  // Addendum A4: an existing company keeps its country and currency (payroll, GOSI and bank files depend on them),
+  // and its first payroll month once payroll has started.
+  const existing = !!body.existingCompanyId;
+  const monthLocked = existing && firstPayrollMonthLocked(c);
+  const identityReason = t('Fixed for an existing company: payroll, GOSI and bank files depend on it.');
   const set = (patch: Partial<CompanySetupCompany>) => update(b => ({ ...b, company: { ...b.company, ...patch } }));
   const text = (key: keyof CompanySetupCompany, opts: { arabic?: boolean; inputMode?: 'numeric' | 'text'; placeholder?: string; autoComplete?: string } = {}) =>
     (control: object) => <input {...control} className="input w-full" readOnly={readOnly} dir={opts.arabic ? 'rtl' : undefined} lang={opts.arabic ? 'ar' : undefined}
@@ -33,21 +38,22 @@ export function CompanyStep() {
           <WizardField field="company.legalNameEn" label={t('Legal name (English)')} required>{text('legalNameEn', { placeholder: t('For example, Riyadh Trading Company LLC') })}</WizardField>
           <WizardField field="company.legalNameAr" label={t('Legal name (Arabic)')} required={saudi} help={saudi ? undefined : t('Optional outside Saudi Arabia.')}>{text('legalNameAr', { arabic: true })}</WizardField>
           <WizardField field="company.tradeName" label={t('Trade name (optional)')}>{text('tradeName')}</WizardField>
-          <WizardField field="company.countryCode" label={t('Country')} required>
-            {control => <select {...control} className="select w-full" disabled={readOnly} value={c.countryCode} onChange={e => {
+          <WizardField field="company.countryCode" label={t('Country')} required help={existing ? identityReason : undefined}>
+            {control => <select {...control} className="select w-full" disabled={readOnly || existing} value={c.countryCode} onChange={e => {
               const country = e.target.value;
               const currency = COUNTRY_CURRENCY[country];
               set({ countryCode: country, ...(isSaudi(country) ? { currency: 'SAR' } : currency && !c.currency ? { currency } : {}) });
             }}><CountryOptions /></select>}
           </WizardField>
-          <WizardField field="company.currency" label={t('Salary currency')} required help={saudi ? t('Saudi companies pay salaries in SAR.') : t('The currency salaries and grade bands are paid in.')}>
-            {control => <select {...control} className="select w-full" disabled={readOnly || saudi} value={c.currency} onChange={e => set({ currency: e.target.value })}>
+          <WizardField field="company.currency" label={t('Salary currency')} required help={existing ? identityReason : saudi ? t('Saudi companies pay salaries in SAR.') : t('The currency salaries and grade bands are paid in.')}>
+            {control => <select {...control} className="select w-full" disabled={readOnly || saudi || existing} value={c.currency} onChange={e => set({ currency: e.target.value })}>
               <option value="">{t('Choose a currency…')}</option>
               {CURRENCIES.map(code => <option key={code} value={code}>{code}</option>)}
             </select>}
           </WizardField>
-          <WizardField field="company.firstPayrollMonth" label={t('First payroll month')} required help={t('The first month you will run payroll for this company in KynexOne. Defaults to next month.')}>
-            {control => <input {...control} type="month" className="input w-full" readOnly={readOnly} value={c.firstPayrollMonth} onChange={e => set({ firstPayrollMonth: e.target.value })} />}
+          <WizardField field="company.firstPayrollMonth" label={t('First payroll month')} required
+            help={monthLocked ? t('Payroll has already started for this company, so its first payroll month stays as it is.') : existing ? t('The first month this company runs payroll in KynexOne. You can change it until payroll starts.') : t('The first month you will run payroll for this company in KynexOne. Defaults to next month.')}>
+            {control => <input {...control} type="month" className="input w-full" readOnly={readOnly || monthLocked} aria-readonly={monthLocked || undefined} value={c.firstPayrollMonth} onChange={e => set({ firstPayrollMonth: e.target.value })} />}
           </WizardField>
         </div>
       </section>
