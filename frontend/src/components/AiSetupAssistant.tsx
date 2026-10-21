@@ -506,7 +506,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
       <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10" role="alert">
         <h2 className="text-base font-semibold text-amber-950 dark:text-amber-100">This company is not available for setup</h2>
         <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">The link may point to an inactive, removed, or inaccessible company. No other company has been selected in its place.</p>
-        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup&mode=starter', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup&path=policyStarter', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
         {onReturnToWorkspace && <button type="button" className="btn-secondary mt-4" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>}
       </section>
     );

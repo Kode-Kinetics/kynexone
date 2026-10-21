@@ -186,7 +186,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
         </div>
         <div className="flex flex-wrap gap-2">
           {canManagePolicies && <button type="button" onClick={onOpenLibrary} className="btn-secondary text-sm">{t('Policy library')}</button>}
-          <button type="button" onClick={onOpenLegacyDraft} className="btn-secondary text-sm">{t('Starter configuration draft')}</button>
+          <button type="button" onClick={onOpenLegacyDraft} className="btn-secondary text-sm">{t('Policy starter (attendance, overtime, benefits…)')}</button>
           <button type="button" onClick={onOpenAdministration} className="btn-secondary text-sm">{t('Administration settings')}</button>
         </div>
       </div>

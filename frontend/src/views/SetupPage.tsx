@@ -11,6 +11,7 @@ import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
+import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
@@ -2554,7 +2555,10 @@ export function SetupPage() {
     : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
-  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  // Guided Setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
+  // studio stays reachable only as Configuration Center's "Policy starter" for what has no screen of its own (A7).
+  const isGuided = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'policyStarter';
   const starterScope = authorizedCompany ?? 'group';
   const setupPathHref = (path: SetupStudioPath) => {
     const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
@@ -2700,12 +2704,12 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Configure every setup area directly, or use Setup Studio to prepare a reviewed starter configuration.')
+            ? t('Use Guided Setup to create a company or finish setting one up, or configure any area directly in Configuration Center.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
 
-      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
+      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path === 'policyStarter' ? 'configuration' : setupPath.path} onSelect={selectSetupPath} />}
 
       {!configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex flex-nowrap gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
@@ -2743,6 +2747,14 @@ export function SetupPage() {
               </div>
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
+            {isGuided && <GuidedSetupChooser />}
+            {isStarter && <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]" data-testid="policy-starter-banner">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Policy starter (attendance, overtime, benefits…)')}</p>
+                <p className="mt-0.5 max-w-3xl text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Prepares attendance rules, overtime handling, benefit plans and HR approval rules as one reviewed draft. To create a company or finish its structure, use Guided Setup.')}</p>
+              </div>
+              <button type="button" className="btn-secondary" onClick={() => selectSetupPath('configuration')}>{t('Back to Configuration Center')}</button>
+            </div>}
             {isStarter && <div onChangeCapture={event => {
               setEditorDirty(true);
               const target = event.target;
@@ -2769,7 +2781,7 @@ export function SetupPage() {
               onOpenLegacyDraft={() => {
                 if (!confirmLeave()) return;
                 const params = new URLSearchParams(searchParams?.toString());
-                params.set('tab', 'aiSetup'); params.set('mode', 'starter'); params.delete('path');
+                params.set('tab', 'aiSetup'); params.set('path', 'policyStarter'); params.delete('mode');
                 params.set('area', resolveSetupArea(params.get('area')));
                 if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
                 router.push(`/setup?${params.toString()}`, { scroll: false });

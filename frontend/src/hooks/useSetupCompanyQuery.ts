@@ -27,7 +27,7 @@ export function useSetupCompanyQuery() {
   useEffect(() => {
     // The starter has an explicit invalid-target screen. Preserve that fail-closed
     // route instead of quietly substituting another company.
-    if (params?.get('mode') === 'starter' && requested && !companies.some(company => company.id === requested)) return;
+    if (params?.get('path') === 'policyStarter' && requested && !companies.some(company => company.id === requested)) return;
     if (pendingUrl.current) {
       // Resume once the URL moves (our replace landed, or a real navigation did) or the
       // selection changes; until then the URL is ours and merely stale.
