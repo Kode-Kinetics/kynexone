@@ -2722,7 +2722,7 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Use Guided Setup to create a company or finish setting one up, or configure any area directly in Configuration Center.')
+            ? t('Create or complete a company in Guided Setup, or configure any area in Configuration Center.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
@@ -2766,18 +2766,20 @@ export function SetupPage() {
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
             {isGuided && <GuidedSetupChooser />}
-            {isStarter && <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]" data-testid="policy-starter-banner">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Policy starter (attendance, overtime, benefits…)')}</p>
-                <p className="mt-0.5 max-w-3xl text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Prepares attendance rules, overtime handling, benefit plans and HR approval rules as one reviewed draft. To create a company or finish its structure, use Guided Setup.')}</p>
-              </div>
-              <button type="button" className="btn-secondary" onClick={() => selectSetupPath('configuration')}>{t('Back to Configuration Center')}</button>
-            </div>}
-            {isStarter && <div onChangeCapture={event => {
+            {isStarter && <div className="flex flex-col">
+              {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
+                  own controls (setup-experience: policy entry in the first viewport). */}
+              <p className="order-last mt-3 flex flex-wrap sm:order-first sm:mb-2 sm:mt-0 items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="policy-starter-banner">
+                <span className="font-semibold text-slate-900 dark:text-white">{t('Policy starter (attendance, overtime, benefits…)')}</span>
+                <span>{t('For a company’s structure, use Guided Setup.')}</span>
+                <button type="button" className="font-semibold text-sapphire underline-offset-2 hover:underline dark:text-cyanAccent" onClick={() => selectSetupPath('configuration')}>{t('Back to Configuration Center')}</button>
+              </p>
+              <div className="min-w-0" onChangeCapture={event => {
               setEditorDirty(true);
               const target = event.target;
               if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>
+            </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               confirmLeave={confirmLeave}
