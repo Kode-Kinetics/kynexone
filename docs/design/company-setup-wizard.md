@@ -152,8 +152,14 @@ CompanySetupDraftSummary { id, legalNameEn, step, updatedAtUtc, createdByName }
 CompanySetupPlan { ok: bool, items: PlanItem[], problems: Problem[], warnings: Problem[] }
 PlanItem { area: "company"|"branch"|"location"|"costCentre"|"department"|"designation"|"grade"
   |"employeeIdRule"|"cutover"|"holidayCalendar"|"leavePolicy"|"gccSetting"|"workWeek"|"companyAdmin",
-  code, label, action: "create"|"reuse"|"conflict", reason? }
+  code, label, labelAr?, action: "create"|"reuse"|"conflict", reason? }
 Problem { step: int, field: string, code: string, message: string, messageAr?: string }
+
+Errors (400/409/422): { code, message, messageAr?, field?, step? }. Problem.field and error.field
+are dotted lower-camel paths with numeric indexes: `company.registrationNumber`, `branches.0.code`.
+Refusal codes: company_limit_reached, account_type_single_company,
+company_creation_platform_controlled, company_creation_platform_approval, not_group_scope.
+CompanySetupContext may carry canGrantCompanyAdmin?: bool (same role ceiling as User Management).
 
 CompanySetupResult { companyId, created: Record<area, int>, reused: Record<area, int>,
   readiness: ReadinessItem[], replayed: bool }
@@ -164,9 +170,9 @@ ReadinessItem { key, label, labelAr?, status: "done"|"todo"|"recommended",
 ## Schema (one migration, owned by the backend builder)
 
 - `company_setup_drafts`: id uuid pk, tenant_id, created_by_user_id, status (CHECK Open/Submitted/
-  Discarded), step smallint CHECK 1-6, version int, body jsonb (shape nobody queries; ≤128 KiB
+  Discarded), step smallint CHECK 1-7, version int, body jsonb (shape nobody queries; ≤128 KiB
   CHECK), result_company_id uuid null FK companies ON DELETE SET NULL, created_at_utc,
-  updated_at_utc, submitted_at_utc. (step CHECK is 1-7.) Index (tenant_id, status, updated_at_utc DESC) for the resume
+  updated_at_utc, submitted_at_utc. Index (tenant_id, status, updated_at_utc DESC) for the resume
   list. Data dictionary + ownership/retention row (Open drafts purge after 90 days idle) + RLS
   shape a.
 - `companies.unified_national_number` varchar(20) null.
