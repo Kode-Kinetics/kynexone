@@ -25,6 +25,10 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/company-setup")]
 [Authorize(Roles = "Admin,HR Manager")]
+// Every endpoint — reads included — needs the setup permission: drafts can hold a proposed administrator's name and
+// work email, and the wizard is a setup action. Without this, organization.read (held by HR Officer, Recruiter,
+// Compliance Officer…) would satisfy the role gate through the legacy role→permission map.
+[HasPermission(ApplyPermission)]
 public class CompanySetupController : ControllerBase
 {
     public const string ApplyPermission = "organization.setup.apply";
