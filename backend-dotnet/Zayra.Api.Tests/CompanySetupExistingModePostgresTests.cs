@@ -649,6 +649,25 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
+    public async Task A_company_super_admin_s_invite_is_scoped_to_their_own_company_only()
+    {
+        var w = await SeedAsync();
+        var caller = Caller(w, w.CompanyAdminId, w.SisterId);
+        var body = await PrefillAsync(w, w.SisterId, caller);
+        var invite = body with { CompanyAdmin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Second Admin", "المسؤول الثاني", "second.admin@sister.example") };
+        var (_, result) = await DraftAndCommitAsync(w, invite, caller);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+
+        await using var db = fixture.CreateDb();
+        var user = await db.Users.IgnoreQueryFilters().Include(u => u.UserRoles).ThenInclude(r => r.Role).Include(u => u.EntityAccesses)
+            .SingleAsync(u => u.TenantId == w.TenantId && u.NormalizedEmail == AuthService.Normalize("second.admin@sister.example"));
+        user.IsGroupScope.Should().BeFalse("a company admin never grants group scope");
+        user.UserRoles.Should().ContainSingle(r => r.Role!.NormalizedName == "ADMIN");
+        user.EntityAccesses.Where(e => e.IsActive).Should().ContainSingle().Which.CompanyId.Should().Be(w.SisterId);
+        result.Value!.Readiness.Single(i => i.Key == "companyAdmin").Status.Should().Be(V.ReadinessTodo, "no admin of this company has signed in yet");
+    }
+
+    [Fact]
     public async Task A_draft_or_inactive_company_is_refused()
     {
         var w = await SeedAsync();
