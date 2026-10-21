@@ -11,7 +11,7 @@ import { useFormat } from '../../hooks/useFormat';
 import { rolesApi, type AccessCeiling } from '../../api/identity';
 import {
   companySetupApi, httpStatus, type CompanySetupContext, type CompanySetupDraftBody, type CompanySetupDraftSummary,
-  type CompanySetupPlan, type CompanySetupResult,
+  type CompanySetupErrorBody, type CompanySetupPlan, type CompanySetupResult,
 } from '../../api/companySetup';
 import {
   STEP_IDS, WIZARD_STEPS, buildTree, canCommit, emptyBody, firstBlockingStep, problemsByField, stepState, validateStep,
@@ -89,6 +89,12 @@ export function CreateCompanyWizard() {
   const focusField = useRef<string | null>(null);
 
   const autosave = useDraftAutosave({ draftId, body, step });
+  const errorBody = (err: unknown) => (err as { response?: { data?: Partial<CompanySetupErrorBody> } } | null)?.response?.data;
+  /** The server's refusal in the reader's language, or ''. */
+  const serverText = (err: unknown) => {
+    const data = errorBody(err);
+    return (locale === 'ar' ? data?.messageAr || data?.message : data?.message) ?? '';
+  };
 
   // ── Who may appoint a company super admin ──────────────────────────────────
   const groupAdmin = !!context?.isGroupScope && hasRole('Admin');
@@ -100,8 +106,12 @@ export function CreateCompanyWizard() {
   }, [groupAdmin]);
   // The server decides when the ceiling is unknown (accessCeiling.ts): only a known refusal hides the step.
   const adminRole = ceiling && ceiling !== 'loading' ? ceiling.roles.find(r => r.name.toLowerCase() === 'admin') : undefined;
-  const adminStepVisible = groupAdmin && ceiling !== 'loading' && (adminRole ? adminRole.canAssign : true);
-  const adminDecided = !context || !groupAdmin || ceiling !== 'loading';
+  // The server's own answer wins when it gives one; otherwise the role ceiling decides.
+  const serverGrant = context?.canGrantCompanyAdmin;
+  const adminStepVisible = typeof serverGrant === 'boolean'
+    ? serverGrant
+    : groupAdmin && ceiling !== 'loading' && (adminRole ? adminRole.canAssign : true);
+  const adminDecided = !context || typeof serverGrant === 'boolean' || !groupAdmin || ceiling !== 'loading';
   const steps = useMemo(() => STEP_IDS.filter(s => s !== 6 || adminStepVisible), [adminStepVisible]);
 
   // A viewer who cannot grant the Admin role cannot leave an invite or grant in the draft.
@@ -234,7 +244,7 @@ export function CreateCompanyWizard() {
     } catch (err) {
       const status = httpStatus(err);
       setError(status === 403 || status === 409
-        ? ((err as { response?: { data?: { message?: string } } }).response?.data?.message ?? t('A new company cannot be created right now.'))
+        ? (serverText(err) || t('A new company cannot be created right now.'))
         : t('The draft could not be started. Nothing was saved. Check your connection and try again.'));
     } finally { setBusy(''); }
   };
@@ -305,8 +315,8 @@ export function CreateCompanyWizard() {
       window.dispatchEvent(new Event('kynexone:companies-changed'));
     } catch (err) {
       const status = httpStatus(err);
-      const data = (err as { response?: { data?: { message?: string; messageAr?: string; field?: string; step?: number } } }).response?.data;
-      const serverMessage = (locale === 'ar' ? data?.messageAr || data?.message : data?.message) ?? '';
+      const data = errorBody(err);
+      const serverMessage = serverText(err);
       if (status === 409 || status === 422 || status === 400) {
         const target = data?.step && steps.includes(data.step as StepId) ? data.step as StepId : data?.field ? fieldStep(data.field) : 2;
         setCommitError({ message: serverMessage || t('The company could not be created because something in the draft clashes with an existing record. Nothing was created.'), retry: false, step: target });

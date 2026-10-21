@@ -22,6 +22,8 @@ export interface CompanySetupContext {
   sisterCompanies: { id: string; legalNameEn: string; countryCode: string }[];
   sharedCatalog: { departments: CodeName[]; designations: CodeName[]; grades: GradeRef[] };
   gradesCurrency?: string | null;
+  /** Whether this caller may appoint a company super admin. Absent on older servers: fall back to the role ceiling. */
+  canGrantCompanyAdmin?: boolean | null;
 }
 
 export type StartFrom = 'defaults' | 'copy';
@@ -117,7 +119,7 @@ export type PlanArea =
   | 'employeeIdRule' | 'cutover' | 'holidayCalendar' | 'leavePolicy' | 'gccSetting' | 'workWeek' | 'companyAdmin';
 export type PlanAction = 'create' | 'reuse' | 'conflict';
 
-export interface PlanItem { area: PlanArea; code: string; label: string; action: PlanAction; reason?: string | null }
+export interface PlanItem { area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null }
 export interface Problem { step: number; field: string; code: string; message: string; messageAr?: string | null }
 export interface CompanySetupPlan { ok: boolean; items: PlanItem[]; problems: Problem[]; warnings: Problem[] }
 
@@ -129,6 +131,9 @@ export interface ReadinessItem {
   scope: 'company' | 'workspace';
   href: string;
 }
+
+/** Every refusal from /api/company-setup. `field` is dotted lower-camel with numeric indexes (`branches.0.code`). */
+export interface CompanySetupErrorBody { code: string; message: string; messageAr?: string | null; field?: string | null; step?: number | null }
 
 export interface CompanySetupResult {
   companyId: string;

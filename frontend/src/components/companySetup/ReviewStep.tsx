@@ -92,7 +92,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps }: {
                 {group.items.map((item, i) => (
                   <li key={`${item.area}-${item.code}-${i}`} className="flex flex-wrap items-start justify-between gap-2 px-4 py-2.5" data-action={item.action}>
                     <div className="min-w-0">
-                      <p className="text-sm text-slate-900 dark:text-white"><span className="text-slate-500 dark:text-slate-400">{t(AREA_LABEL[item.area])}</span>{' · '}<bdi>{item.label}</bdi>{item.code && <span className="ms-1 text-xs text-slate-500"><bdi>{item.code}</bdi></span>}</p>
+                      <p className="text-sm text-slate-900 dark:text-white"><span className="text-slate-500 dark:text-slate-400">{t(AREA_LABEL[item.area])}</span>{' · '}<bdi>{locale === 'ar' ? item.labelAr || item.label : item.label}</bdi>{item.code && <span className="ms-1 text-xs text-slate-500"><bdi>{item.code}</bdi></span>}</p>
                       {item.reason && <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400"><bdi>{item.reason}</bdi></p>}
                     </div>
                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${ACTION_STYLE[item.action]}`}>{actionLabel(item.action)}</span>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useT } from '../../hooks/useT';
+import { useLocale } from '../../contexts/LocaleContext';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupDraftBody, CompanySetupPlan, EmployeeNumbering, PlanArea } from '../../api/companySetup';
 import { WEEKEND_OPTIONS, numberingPreview } from '../../lib/companySetupWizard';
@@ -16,7 +16,7 @@ export function RulesStep({ defaults, preview, previewState }: {
   preview: CompanySetupPlan | null;
   previewState: 'idle' | 'loading' | 'error';
 }) {
-  const t = useT();
+  const { t, locale } = useLocale();
   const country = useCountryName();
   const { body, update, readOnly } = useWizardForm();
   const rules = body.rules;
@@ -32,7 +32,7 @@ export function RulesStep({ defaults, preview, previewState }: {
     if (previewState === 'error' || rows.length === 0) return <p className="text-xs text-slate-500">{t('Checked again on the review step.')}</p>;
     return (
       <ul className="mt-1 space-y-0.5">
-        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{i.label}</bdi>: {i.action === 'reuse' ? t(reused) : i.action === 'create' ? t(created) : t('Conflict — see the review step')}</li>)}
+        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{locale === 'ar' ? i.labelAr || i.label : i.label}</bdi>: {i.action === 'reuse' ? t(reused) : i.action === 'create' ? t(created) : t('Conflict — see the review step')}</li>)}
       </ul>
     );
   };
