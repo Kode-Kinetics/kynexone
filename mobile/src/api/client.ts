@@ -10,16 +10,48 @@ import axios, {
 } from 'axios';
 import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
 import { tokenStorage, clearAllAuthData } from '@/storage';
+import {
+  beginSession,
+  captureSession,
+  invalidateSession,
+  mayCommit,
+} from '@/auth/sessionGeneration';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
 
 // We lazily import authStore to avoid circular deps
 let _onSessionExpired: (() => void) | null = null;
+
+export class SessionExpiredError extends Error {
+  constructor() {
+    super('Your session has expired. Please sign in again.');
+    this.name = 'SessionExpiredError';
+  }
+}
+
+export function isSessionExpiredError(error: unknown): error is SessionExpiredError {
+  return error instanceof SessionExpiredError;
+}
 
 export function setSessionExpiredHandler(handler: () => void) {
   _onSessionExpired = handler;
 }
 
 let refreshPromise: Promise<string> | null = null;
+let expirationPromise: Promise<void> | null = null;
+
+class StaleRefreshError extends Error {}
+
+function expireSession(): Promise<void> {
+  if (!expirationPromise) {
+    invalidateSession();
+    expirationPromise = clearAllAuthData()
+      .then(() => _onSessionExpired?.())
+      .finally(() => {
+        expirationPromise = null;
+      });
+  }
+  return expirationPromise;
+}
 
 /**
  * Anonymous auth traffic must never inherit an old mobile session. This client
@@ -68,6 +100,7 @@ function getOrStartRefresh(): Promise<string> {
 }
 
 async function refreshAccessToken(): Promise<string> {
+  const session = captureSession();
   const refreshToken = await tokenStorage.getRefreshToken();
   if (!refreshToken) throw new Error('No refresh token');
 
@@ -83,7 +116,10 @@ async function refreshAccessToken(): Promise<string> {
 
   const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = response.data;
   const expiresAt = new Date(expiresAtUtc).getTime();
+  const currentRefreshToken = await tokenStorage.getRefreshToken();
+  if (!mayCommit(session, currentRefreshToken)) throw new StaleRefreshError();
   await tokenStorage.saveTokens({ accessToken, refreshToken: newRefreshToken, expiresAt });
+  beginSession(newRefreshToken);
   return accessToken;
 }
 
@@ -146,9 +182,11 @@ export function createApiClient(tenantId: string): AxiosInstance {
           originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           return client(originalRequest);
         } catch (refreshError) {
-          await clearAllAuthData();
-          _onSessionExpired?.();
-          return Promise.reject(refreshError);
+          if (refreshError instanceof StaleRefreshError) {
+            return Promise.reject(new SessionExpiredError());
+          }
+          await expireSession();
+          return Promise.reject(new SessionExpiredError());
         }
       }
 

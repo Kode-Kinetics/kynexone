@@ -17,6 +17,7 @@ import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
 import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
+import { beginSession, invalidateSession } from './sessionGeneration';
 
 interface AuthState {
   user: AuthUser | null;
@@ -71,20 +72,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const normalizedTenant = normalizeWorkspace(tenantId);
       if (!storedUser || !normalizedTenant) {
+        invalidateSession();
         await clearAllAuthData();
         set({ isInitialized: true, isLoading: false });
         return;
       }
 
+      const refreshToken = await tokenStorage.getRefreshToken();
       if (await tokenStorage.isTokenExpired()) {
-        const refreshToken = await tokenStorage.getRefreshToken();
         if (!refreshToken) {
+          invalidateSession();
           await clearAllAuthData();
           set({ isInitialized: true, isLoading: false });
           return;
         }
       }
 
+      if (refreshToken) beginSession(refreshToken);
       if (normalizedTenant !== tenantId) await appStorage.set('zayra_tenant_id', normalizedTenant);
       initApiClient(normalizedTenant);
       setSessionExpiredHandler(() => get().handleSessionExpired());
@@ -105,6 +109,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // /auth/me is the authoritative role/access graph. Cached permissions
         // cannot reopen MainTabs when that graph is unavailable or rejected;
         // an offline mode would need a separate restricted design and TTL.
+        invalidateSession();
         await clearAllAuthData();
         set({
           user: null,
@@ -116,12 +121,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
       }
     } catch {
+      invalidateSession();
       await clearAllAuthData();
       set({ isInitialized: true, isLoading: false, isAuthenticated: false });
     }
   },
 
   finishLogin: async (user, tokens, tenantId) => {
+    beginSession(tokens.refreshToken);
     await Promise.all([
       tokenStorage.saveTokens(tokens),
       userStorage.saveUser(user),
@@ -217,6 +224,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Turning the factor on rotates the server-side session stamp, so this
     // session's tokens are already dead; calling /auth/logout would only 401.
     const { user, tenantId } = get();
+    invalidateSession();
     await clearAllAuthData();
     set({
       user: null,
@@ -233,6 +241,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   consumeMfaEnrolledNotice: () => set({ mfaEnrolledNotice: null }),
 
   logout: async () => {
+    invalidateSession();
     set({ isLoading: true });
     try {
       const refreshToken = await tokenStorage.getRefreshToken();
