@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useTranslation } from 'react-i18next';
+import { withSensitiveDownload } from '@/security/sensitiveFiles';
 import {
   DirectionalIcon,
   LiquidBackdrop,
@@ -96,22 +96,22 @@ export default function PayslipDetailScreen() {
   const downloadPdf = async () => {
     setDownloading(true);
     setDownloadError(null);
-    // Cache, never documents: the payslip is deleted from the device once the share sheet closes.
-    const target = `${FileSystem.cacheDirectory}payslip_${id}.pdf`;
     try {
       if (!(await Sharing.isAvailableAsync())) {
         setDownloadError(t('leavePay.payslip.shareUnavailable'));
         return;
       }
       const { url, headers } = await payslipApi.download(id);
-      const result = await FileSystem.downloadAsync(url, target, { headers });
-      if (result.status !== 200) throw new Error(`HTTP ${result.status}`);
-      await Sharing.shareAsync(result.uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+      await withSensitiveDownload(
+        { url, headers, fileExtension: 'pdf' },
+        async (uri) => {
+          await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+        },
+      );
     } catch {
       haptics.error();
       setDownloadError(t('leavePay.payslip.downloadFailed'));
     } finally {
-      await FileSystem.deleteAsync(target, { idempotent: true }).catch(() => undefined);
       setDownloading(false);
     }
   };

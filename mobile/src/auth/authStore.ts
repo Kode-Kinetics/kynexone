@@ -19,6 +19,7 @@ import { initApiClient, setSessionExpiredHandler } from '@/api/client';
 import type { AuthTokens, AuthUser } from '@/types';
 import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
+import { purgeSensitiveFiles } from '@/security/sensitiveFiles';
 import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
 import { isWelcomeCode } from './welcomeCode';
@@ -71,15 +72,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   initialize: async () => {
     set({ isLoading: true });
-    try {
-      const envelope = await loadCredentialEnvelope();
-      const normalizedTenant = normalizeWorkspace(envelope?.tenantId);
-      if (!envelope || !normalizedTenant) {
+    await purgeSensitiveFiles();
+    const resetAfterCleanup = async (sessionExpired: boolean) => {
+      try {
         await terminateSession(clearAllAuthData);
-        set({ isInitialized: true, isLoading: false });
-        return;
+      } finally {
+        set({
+          user: null,
+          tenantId: null,
+          isAuthenticated: false,
+          isInitialized: true,
+          isLoading: false,
+          sessionExpired,
+          mfaPrompt: null,
+          mfaPromptDismissed: false,
+        });
       }
+    };
 
+    let envelope;
+    try {
+      envelope = await loadCredentialEnvelope();
+    } catch {
+      await resetAfterCleanup(false);
+      return;
+    }
+
+    const normalizedTenant = normalizeWorkspace(envelope?.tenantId);
+    if (!envelope || !normalizedTenant) {
+      await resetAfterCleanup(false);
+      return;
+    }
+
+    try {
       // A valid envelope always has refresh capability. Establish ownership
       // before /auth/me can receive a 401 and enter the refresh path.
       beginSession(envelope.refreshToken);
@@ -87,37 +112,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       initApiClient(normalizedTenant);
       setSessionExpiredHandler(() => get().handleSessionExpired());
 
-      try {
-        const freshUser = await authApi.getMe();
-        await userStorage.saveUser(freshUser);
-        set({
-          user: freshUser,
-          tenantId: normalizedTenant,
-          isAuthenticated: true,
-          isInitialized: true,
-          isLoading: false,
-          sessionExpired: false,
-        });
-        void get().refreshMfaStatus();
-      } catch {
-        // /auth/me is the authoritative role/access graph. Cached permissions
-        // cannot reopen MainTabs when that graph is unavailable or rejected;
-        // an offline mode would need a separate restricted design and TTL.
-        invalidateSession();
-        await clearAllAuthData();
-        set({
-          user: null,
-          tenantId: null,
-          isAuthenticated: false,
-          isInitialized: true,
-          isLoading: false,
-          sessionExpired: true,
-        });
-      }
+      const freshUser = await authApi.getMe();
+      await userStorage.saveUser(freshUser);
+      set({
+        user: freshUser,
+        tenantId: normalizedTenant,
+        isAuthenticated: true,
+        isInitialized: true,
+        isLoading: false,
+        sessionExpired: false,
+      });
+      void get().refreshMfaStatus();
     } catch {
-      invalidateSession();
-      await clearAllAuthData();
-      set({ isInitialized: true, isLoading: false, isAuthenticated: false });
+      // /auth/me is authoritative; cached permissions never reopen navigation.
+      await resetAfterCleanup(true);
     }
   },
 
@@ -250,7 +258,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           deviceId ? deviceApi.unregister(deviceId) : Promise.resolve(),
         ]);
       } finally {
-        await clearAllAuthData();
+        try {
+          await clearAllAuthData();
+        } finally {
+          // Keep purge inside the serialized teardown so a newer session cannot
+          // create a temporary file while an older logout is still cleaning up.
+          await purgeSensitiveFiles();
+        }
       }
     });
     set({ isLoading: true });

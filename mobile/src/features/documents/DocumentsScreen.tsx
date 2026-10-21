@@ -4,11 +4,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { documentsApi } from '@/api/adapters';
 import { normalizePickedFile, type PickedFile } from '@/api/services';
+import { withSensitiveDownload } from '@/security/sensitiveFiles';
 import { FEATURES } from '@/config/features';
 import { useTheme } from '@/theme/ThemeProvider';
 import { useFormat } from '@/utils/format';
@@ -121,20 +121,19 @@ export default function DocumentsScreen() {
     if (!FEATURES.DOCUMENT_DOWNLOAD || openingId) return;
     setOpeningId(doc.id);
     setNotice(null);
-    let uri: string | null = null;
     try {
       const { url, headers } = await documentsApi.downloadDocument(doc.id);
-      const safeName = (doc.fileName ?? `document-${doc.id}`).replace(/[^\w.-]+/g, '_');
-      const result = await FileSystem.downloadAsync(url, `${FileSystem.cacheDirectory}${safeName}`, { headers });
-      uri = result.uri;
-      if (result.status !== 200) throw new Error(String(result.status));
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(result.uri);
+      const fileExtension = doc.fileName?.match(/\.([^.]+)$/)?.[1];
+      await withSensitiveDownload(
+        { url, headers, fileExtension },
+        async (uri) => {
+          if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
+        },
+      );
     } catch {
       haptics.error();
       setNotice({ ok: false, text: t('manager.docs.openError') });
     } finally {
-      // Personal documents never linger on the device after they are shared.
-      if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
       setOpeningId(null);
     }
   };
